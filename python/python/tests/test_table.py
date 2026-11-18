@@ -1847,6 +1847,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # Test with target_partition_size
@@ -1872,6 +1873,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # target_partition_size has a default value,
@@ -1896,6 +1898,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1912,6 +1915,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1932,6 +1936,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1952,6 +1957,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
 
@@ -2083,6 +2089,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name="my_custom_index",
         train=True,
+        exist_ok=False,
     )
 
     # Test with train=False
@@ -2094,6 +2101,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name=None,
         train=False,
+        exist_ok=False,
     )
 
     # Test with both name and train
@@ -2105,6 +2113,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name="my_index_name",
         train=True,
+        exist_ok=False,
     )
 
 
@@ -2142,6 +2151,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # Scalar index via new API
@@ -2153,6 +2163,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # FTS index via new API
@@ -2164,6 +2175,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
 
@@ -3446,7 +3458,8 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a")
         .when_matched_update_all()
         .when_not_matched_insert_all()
-        .execute(new_data, timeout=timedelta(seconds=10))
+        .use_index(False)
+        .execute(new_data, timeout=timedelta(seconds=10), retries=0)
     )
     assert merge_insert_res.version == 2
     assert merge_insert_res.num_inserted_rows == 1
@@ -3525,7 +3538,7 @@ def test_merge_insert(mem_db: DBConnection):
     # timeout
     with pytest.raises(Exception, match="merge insert timed out"):
         table.merge_insert("a").when_matched_update_all().execute(
-            new_data, timeout=timedelta(0)
+            new_data, timeout=timedelta(0), retries=255
         )
 
 
@@ -5994,6 +6007,62 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         getattr(table, method)("x", batch_size=batch_size)
 
 
+@pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
+@pytest.mark.parametrize(
+    "refresh_kwargs,option",
+    [
+        ({"retry_policy": lancedb.FunctionRetryPolicy(transient=True)}, "retry_policy"),
+        ({"where": "x > 0"}, "where"),
+        ({"error_policy": "skip"}, "error_policy"),
+        ({"max_failed_fraction": 0.5}, "max_failed_fraction"),
+        ({"max_failed_rows": 10}, "max_failed_rows"),
+        ({"row_timeout_seconds": 30}, "row_timeout_seconds"),
+        ({"init_timeout_seconds": 60}, "init_timeout_seconds"),
+        ({"max_concurrency": 4}, "max_concurrency"),
+        ({"publication_interval_rows": 60}, "publication_interval_rows"),
+        (
+            {"resource_budget": {"cpu_millis": 1000, "memory_bytes": 1024}},
+            "resource_budget",
+        ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1024,
+                    "ephemeral_storage_bytes": 2048,
+                }
+            },
+            "supervisor_resources",
+        ),
+        (
+            {
+                "planning_workers": {
+                    "resources": {
+                        "cpu_millis": 1000,
+                        "memory_bytes": 1024,
+                        "ephemeral_storage_bytes": 2048,
+                    },
+                    "max_workers": 2,
+                    "rows_per_worker": 100,
+                    "fragments_per_worker": 1,
+                }
+            },
+            "planning_workers",
+        ),
+        ({"num_workers": 2}, "num_workers"),
+        ({"max_executor_processes_per_worker": 2}, "max_executor_processes_per_worker"),
+    ],
+)
+def test_local_refresh_rejects_enterprise_options(
+    tmp_path, method, refresh_kwargs, option
+):
+    table = lancedb.connect(tmp_path).create_table("rows", [{"x": 1}])
+    with pytest.raises(
+        NotImplementedError, match=f"{option} requires a LanceDB Enterprise refresh"
+    ):
+        getattr(table, method)("x", **refresh_kwargs)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["refresh_column", "refresh_column_async"])
 @pytest.mark.parametrize("batch_size", [0, -1])
@@ -6013,6 +6082,16 @@ def test_function_errors_are_remote_only(tmp_path):
         NotImplementedError, match="recorded only in LanceDB Enterprise"
     ):
         table.function_errors()
+
+
+def test_function_column_status_is_remote_only(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"x": 1}])
+    with pytest.raises(
+        NotImplementedError,
+        match="exact Function column status is supported only in LanceDB Enterprise",
+    ):
+        table.wait_fresh("x")
 
 
 @pytest.mark.experimental_functions
@@ -6235,6 +6314,21 @@ def test_auto_refresh_options_require_computed_columns(tmp_path):
         table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
 
 
+def test_auto_refresh_resource_budget_requires_a_function(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("invalid_budget", [{"x": 1}])
+    before = table.version
+    with pytest.raises(ValueError, match="registered Function"):
+        table.add_columns(
+            computed={"doubled": "x * 2"},
+            auto_refresh_resource_budget={
+                "cpu_millis": 1_000,
+                "memory_bytes": 1_024,
+            },
+        )
+    assert table.version == before
+    assert table.schema.names == ["x"]
+
+
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
@@ -6246,3 +6340,108 @@ async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     metadata = (await table.schema()).field("doubled").metadata
     assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
     assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["create_index", "create_index_async", "create_scalar_index", "create_fts_index"],
+)
+@pytest.mark.parametrize("name", [None, "kept_index"])
+def test_index_exist_ok_preserves_definition_and_version(mem_db, method, name):
+    table = mem_db.create_table(
+        "keep_index", [{"id": i, "text": f"document {i}"} for i in range(20)]
+    )
+    column = "text" if method == "create_fts_index" else "id"
+    config = FTS() if column == "text" else BTree()
+    table.create_index(column, config=config, name=name, exist_ok=True)
+    before = table.version
+    original = table.list_indices()
+    kwargs = dict(name=name, exist_ok=True)
+    if method in ("create_index", "create_index_async"):
+        kwargs["config"] = config
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = getattr(table, method)(column, **kwargs)
+    if method == "create_index_async":
+        result.wait()
+    assert table.version == before
+    assert [(index.name, index.index_type) for index in table.list_indices()] == [
+        (index.name, index.index_type) for index in original
+    ]
+    with pytest.raises((ValueError, RuntimeError), match="already exists"):
+        table.create_index(column, config=config, name=name, replace=False)
+    table.create_index(column, config=config, name=name)
+    assert table.version > before
+
+
+@pytest.mark.parametrize(
+    "column,name,existing",
+    [
+        ("vector", "kept", "kept"),
+        ("`docs`.`nested.dot`", None, "docs.`nested.dot`_idx"),
+    ],
+)
+def test_accelerated_index_exist_ok_skips_gpu_validation(column, name, existing):
+    dataset = MagicMock()
+    dataset.list_indices.return_value = [{"name": existing}]
+    with patch("lancedb.table._validate_index_accelerator") as validate:
+        table_module._create_accelerated_index(
+            dataset, column=column, accelerator="cuda", name=name, exist_ok=True
+        )
+    validate.assert_not_called()
+    dataset.create_index.assert_not_called()
+
+
+def test_accelerated_index_exist_ok_preserves_concurrent_winner():
+    dataset = MagicMock()
+    dataset.list_indices.side_effect = [[], [{"name": "vector_idx"}]]
+    dataset.create_index.side_effect = RuntimeError("concurrent create")
+    with patch("lancedb.table._validate_index_accelerator"):
+        table_module._create_accelerated_index(
+            dataset, column="vector", accelerator="cuda", replace=True, exist_ok=True
+        )
+    assert dataset.create_index.call_args.kwargs["replace"] is False
+    assert dataset.create_index.call_args.kwargs["name"] == "vector_idx"
+
+
+@pytest.mark.parametrize("column", ["`user-id`", "`user:id`", "nested.`user-id`"])
+def test_index_exist_ok_matches_lance_default_name(mem_db, column):
+    table = mem_db.create_table(
+        "quoted_index",
+        [{"user-id": 1, "user:id": 2, "nested": {"user-id": 4}}],
+    )
+    table.create_index(column, config=BTree())
+    before = table.version
+    table.create_index(column, config=BTree(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1
+
+
+def test_fts_exist_ok_matches_quoted_default_name(mem_db):
+    table = mem_db.create_table("quoted_fts", [{"body-text": "keep this document"}])
+    table.create_index("`body-text`", config=FTS())
+    before = table.version
+    table.create_index("`body-text`", config=FTS(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "method", ["prewarm_data", "prewarm_data_async", "explain_prewarm_data"]
+)
+async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous, method):
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            await getattr(table, method)(filter="id > 0", concurrency=2)
+    else:
+        table = lancedb.connect(tmp_path).create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            getattr(table, method)(filter="id > 0", concurrency=2)

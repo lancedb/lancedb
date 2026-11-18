@@ -10,10 +10,12 @@ from lance_namespace.errors import TableNotFoundError as NamespaceTableNotFoundE
 from lancedb.db import DBConnection
 from lancedb.remote.errors import (
     AlreadyExistsError,
+    ConflictError,
     FunctionNotFoundError,
     HttpError,
     LanceDBClientError,
     NamespaceNotFoundError,
+    ResponseInterruptedError,
     RetryError,
     SecretNotFoundError,
     TableNotFoundError,
@@ -70,6 +72,31 @@ def test_pickle_http_transport_error():
     assert isinstance(restored, HttpError)
     assert restored.is_transport_error is True
     assert restored.request_id == "req-789"
+
+
+def test_pickle_response_interrupted_error():
+    err = ResponseInterruptedError("interrupted", "req-1", 2, 2048, 7, True)
+    restored = pickle.loads(pickle.dumps(err))
+    assert type(restored) is ResponseInterruptedError
+    assert str(restored) == "interrupted"
+    assert restored.request_id == "req-1"
+    assert (restored.batches, restored.rows, restored.table_version) == (2, 2048, 7)
+    assert restored.is_transport_error is True
+    assert restored.status_code is None
+
+
+@pytest.mark.parametrize("error_code", [None, "conflict", "future_conflict_code"])
+def test_http_conflict_error_preserves_reason_and_metadata(error_code):
+    reason = "Conflict: branch 'exp' cannot be deleted, main depends on its files"
+    original = HttpError(reason, "req-conflict", 409, error_code)
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is ConflictError
+        assert isinstance(error, HttpError)
+        assert str(error) == reason
+        assert error.request_id == "req-conflict"
+        assert error.status_code == 409
+        assert error.error_code == error_code
+        assert error.is_transport_error is False
 
 
 @pytest.mark.parametrize(
@@ -205,3 +232,87 @@ def test_pickle_retry_error():
     assert restored.max_connect_failures == 3
     assert restored.max_read_failures == 3
     assert restored.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "code,category,type_name",
+    [
+        (3, "column_not_found", "SqlColumnNotFoundError"),
+        (3, "schema_mismatch", "SqlSchemaMismatchError"),
+        (5, "table_not_found", "SqlTableNotFoundError"),
+        (5, "reference_not_found", "SqlReferenceNotFoundError"),
+        (13, "column_not_found", "SqlError"),
+        (14, "table_not_found", "SqlError"),
+        (3, None, "SqlError"),
+        (5, "future_code", "SqlError"),
+    ],
+)
+def test_sql_errors_use_only_server_codes(code, category, type_name):
+    from lancedb.remote import errors
+
+    original = errors.SqlError(
+        "column_not_found: user/file.rs:12",
+        "current",
+        code,
+        category,
+        "sql-job",
+        "worker",
+    )
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is getattr(errors, type_name)
+        assert str(error) == "column_not_found: user/file.rs:12"
+        assert error.request_id == "current"
+        assert error.grpc_code == code
+        assert error.error_code == category
+        assert error.job_id == "sql-job"
+        assert error.job_request_id == "worker"
+        assert error.status_code is None
+        if type_name != "SqlError":
+            assert isinstance(error, ValueError)
+
+
+@pytest.mark.parametrize(
+    "status,category,type_name",
+    [
+        (400, "column_not_found", "ColumnNotFoundError"),
+        (400, "schema_mismatch", "SchemaMismatchError"),
+        (404, "table_not_found", "TableNotFoundError"),
+        (404, "reference_not_found", "ReferenceNotFoundError"),
+        (409, None, "ConflictError"),
+        (409, "conflict", "ConflictError"),
+        (500, "conflict", "HttpError"),
+        (500, "column_not_found", "HttpError"),
+        (503, "table_not_found", "HttpError"),
+    ],
+)
+def test_http_input_errors_keep_status_and_job_metadata(status, category, type_name):
+    from lancedb.remote import errors
+
+    original = errors.HttpError(
+        "original diagnostic",
+        "current",
+        status,
+        error_code=category,
+        job_id="sql-job",
+        job_request_id="worker",
+    )
+    for error in [original, pickle.loads(pickle.dumps(original))]:
+        assert type(error) is getattr(errors, type_name)
+        assert error.status_code == status
+        assert error.job_id == "sql-job"
+        assert error.job_request_id == "worker"
+        assert error.request_id == "current"
+
+
+def test_local_query_keeps_missing_column_type(tmp_path):
+    import lancedb
+    from lancedb.exceptions import ColumnNotFoundError
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("events", [{"id": 1}])
+    with pytest.raises(ColumnNotFoundError) as exc_info:
+        table.search().where("missing > 0").to_arrow()
+    assert "missing" in str(exc_info.value)
+    assert exc_info.value.request_id is None
+    assert exc_info.value.job_id is None
+    assert exc_info.value.job_request_id is None

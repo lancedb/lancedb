@@ -34,7 +34,7 @@ table when finished. No embedding model is needed for a text query.
 
 - **Python:** Install with `pip install lancedb`, save as `text_search.py`, then run `python text_search.py`.
 - **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `text_search.mts`, then run `node text_search.mts` with Node.js 22.18 or later.
-- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin text_search` from the extracted directory.
+- **Rust:** Download and extract the [complete Rust examples](https://raw.githubusercontent.com/lancedb/lancedb/2af85bea8999c8cd23ec01ff62ba110c54652c10/docs/web/static/code/search-rust.zip), then run `cargo run --locked --bin text_search` from the extracted directory.
 
 <CodeGroup>
 <CodeBlock filename="Python" language="python" icon="python">
@@ -65,7 +65,6 @@ First, open or create the table you want to search:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from lancedb.index import FTS
 
 uri = "data/sample-lancedb"
@@ -183,6 +182,56 @@ BM25 scores depend on the indexed corpus and its term statistics. Compare
 rankings on the dataset you will search; treat scores as relative relevance
 values rather than probabilities.
 
+### Match any word or every word {#term-operators}
+
+A multi-word string such as `"happy puppy"` uses **OR**: a row can match either
+term. Writing `"happy AND puppy"` does not select an AND operator; the string
+is analyzed as search text. To require both terms, construct a match query:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.query import FullTextOperator, MatchQuery
+
+query = MatchQuery("happy puppy", "text", operator=FullTextOperator.AND)
+results = table.search(query, query_type="fts").limit(10).to_list()
+```
+
+```typescript TypeScript icon="square-js"
+import { MatchQuery, Operator } from "@lancedb/lancedb";
+
+const query = new MatchQuery("happy puppy", "text", { operator: Operator.And });
+const results = await tbl.query().fullTextSearch(query).limit(10).toArray();
+```
+
+```rust Rust icon="rust"
+use lance_index::scalar::{
+    FullTextSearchQuery,
+    inverted::query::{MatchQuery, Operator},
+};
+use lancedb::query::{ExecutableQuery, QueryBase};
+
+let query = MatchQuery::new("happy puppy".to_owned())
+    .with_column(Some("text".to_owned()))
+    .with_operator(Operator::And);
+let results = tbl
+    .query()
+    .full_text_search(FullTextSearchQuery::new_query(query.into()))
+    .limit(10)
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+AND requires all analyzed terms, without requiring adjacency or order. Use
+[`PhraseQuery`](#phrase-vs-terms-queries) for an ordered phrase, or combine
+separate queries with [`&` and `|`](#boolean-queries). Python `and` and `or`
+do not build queries.
+
+On Enterprise, the existing [`fts()` SQL reference](/sql/dql/fts#term-operators)
+shows the equivalent JSON (`"operator":"And"`), `_score`, and a
+[`COUNT(*)` workaround](/sql/dql/fts#count) for counting matches without a
+top-k limit. `len(results)` counts only the returned result page.
+
 ### Keeping the index up to date {#keeping-the-index-up-to-date}
 
 In LanceDB Embedded, new rows can remain outside the FTS index until you optimize the table.
@@ -225,7 +274,7 @@ on an Enterprise table.
 
 Use a metadata predicate to restrict qualifying records. See
 [filtering options](#filtering-options) for prefiltering and postfiltering.
-Enterprise SQL provides [`fts()`](/sql/functions#fts) for scored text retrieval.
+Enterprise SQL provides [`fts()`](/sql/dql/fts) for scored text retrieval.
 
 ## Configure tokenization and matching {#advanced-usage}
 
@@ -280,9 +329,11 @@ table.create_fts_index(
 
 Model-backed tokenizers require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to a different model root:
 
-```bash
+<CodeGroup>
+```bash Bash icon="terminal"
 export LANCE_LANGUAGE_MODEL_HOME=/path/to/lance/language_models
 ```
+</CodeGroup>
 
 For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`, `lindera/ipadic` under `<model-home>/lindera/ipadic/...`, and `lindera/ko-dic` under `<model-home>/lindera/ko-dic/...`.
 
@@ -394,6 +445,13 @@ table.create_index("text", config=FTS(with_position=True, remove_stop_words=Fals
 </CodeGroup>
 
 Storing token positions increases the index size and adds indexing work.
+On Enterprise, wait for the replacement index to finish before issuing the
+phrase query, using `table.wait_for_index(["text_idx"])` with your actual
+index name. An existing index without positions must be rebuilt; changing the
+query does not add positions. A phrase query against such an index is rejected
+with an error asking you to recreate it with positions, rather than returning
+an empty match set. See [FTS index options](/indexing/fts-index#fts-parameters)
+and the [SQL phrase reference](/sql/dql/fts#phrase).
 
 ### Fuzzy Search {#fuzzy-search}
 
@@ -418,6 +476,17 @@ LanceDB supports searching for substrings in the text column, you can set the `b
 | ngram_max_length | int  | 3       | Maximum length of the n-grams to search for        |
 | prefix_only      | bool | false   | Whether to only search for prefixes of the n-grams |
 
+## Expected performance at scale {#expected-performance}
+
+<Badge color="red">Enterprise</Badge>
+
+At 1 billion rows, LanceDB Enterprise reaches p50 62 ms and p99 274 ms on
+fully cached data with no custom tuning -- a representative floor to plan
+around, not a ceiling. Measured under a mixed workload of phrase,
+match-any and match-all queries, with an ICU-tokenized FTS v3 index
+(positions and lowercasing enabled, stemming disabled). The exact numbers
+depend on your deployment's shape (cluster size, storage class, dataset);
+for higher performance, talk to the sales team.
 
 ## Fuzzy Search and Boosting Example {#fuzzy-search-and-boosting-example}
 
@@ -432,7 +501,6 @@ Run the following steps in order. They use a temporary local database with four 
 ```python Python icon="python"
 from tempfile import TemporaryDirectory
 
-import lancedb
 import pandas as pd
 from lancedb.index import FTS
 from lancedb.query import MatchQuery, PhraseQuery, BoostQuery, MultiMatchQuery
@@ -901,8 +969,6 @@ First, create a table with sample text data and configure n-gram tokenization:
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-import lancedb
-
 from tempfile import TemporaryDirectory
 from lancedb.index import FTS
 
@@ -980,9 +1046,11 @@ assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 </CodeGroup>
 
 
+<CodeGroup>
 ```python Python icon="python"
 directory.cleanup()
 ```
+</CodeGroup>
 
 </Accordion>
 
@@ -1001,7 +1069,6 @@ This example uses a temporary local database. Run the steps in order.
 ```python Python icon="python"
 from tempfile import TemporaryDirectory
 
-import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 from lancedb.query import MatchQuery, PhraseQuery

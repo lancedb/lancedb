@@ -16,19 +16,20 @@ use arrow::array::make_array;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
+use futures::TryStreamExt;
 use lancedb::ApproxMode;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, CombinedFieldsQuery, DocumentGranularity, FtsQuery,
     FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
-use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
     ColumnOrdering, ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
     VectorQuery as LanceDbVectorQuery,
 };
+use lancedb::query::{HasQuery, QueryBase};
 use lancedb::table::AnyQuery;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
@@ -355,6 +356,7 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub take_offsets: Option<Vec<u64>>,
+    pub take_row_ids: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
@@ -387,6 +389,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 take_offsets: query_request.take_offsets,
+                take_row_ids: query_request.take_row_ids,
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
@@ -419,6 +422,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
                 take_offsets: vector_query.base.take_offsets,
+                take_row_ids: vector_query.base.take_row_ids,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
@@ -613,8 +617,18 @@ impl Query {
                 query_text = query_text[1..query_text.len() - 1].to_string();
             }
 
+            let operator = query
+                .get_item("operator")?
+                .filter(|operator| !operator.is_none())
+                .map(|operator| {
+                    let operator = operator.extract::<String>()?;
+                    Operator::try_from(operator.as_str())
+                        .map_err(|err| PyValueError::new_err(err.to_string()))
+                })
+                .transpose()?
+                .unwrap_or(Operator::Or);
             let query: FtsQuery = match (is_phrase, is_multi_match) {
-                (false, _) => MatchQuery::new(query_text).into(),
+                (false, _) => MatchQuery::new(query_text).with_operator(operator).into(),
                 (true, false) => PhraseQuery::new(query_text).into(),
                 (true, true) => {
                     return Err(PyValueError::new_err(
@@ -892,6 +906,28 @@ impl FTSQuery {
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
+        })
+    }
+
+    pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let mut inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
+        let request = inner.mut_query();
+        request.limit = None;
+        request.offset = None;
+        request.select = Select::columns(&["_score"]);
+        request.order_by = None;
+        request.with_row_id = false;
+        request.reranker = None;
+        future_into_py(self_.py(), async move {
+            let mut stream = inner.execute().await.infer_error()?;
+            let mut count = 0_u64;
+            while let Some(batch) = stream.try_next().await.infer_error()? {
+                count += batch.num_rows() as u64;
+            }
+            Ok(count)
         })
     }
 

@@ -32,6 +32,7 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
+import type { JobProgress } from "../lancedb/job";
 import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
@@ -311,7 +312,6 @@ describe("remote connection", () => {
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
-          [() => table.optimize(), "optimize"],
           [
             () => table.createIndex("vector", { config: Index.hnswPq() }),
             "IVF_HNSW_PQ",
@@ -483,6 +483,222 @@ describe("remote connection", () => {
     expect(insertRequests).toBe(2);
   });
 
+  it.each([
+    { status: 429, retries: undefined, attempts: 2 },
+    { status: 429, retries: 0, attempts: 1 },
+    { status: 504, retries: undefined, attempts: 1 },
+    { status: 504, retries: 0, attempts: 1 },
+  ])("applies per-call add retries: %j", async (scenario) => {
+    let attempts = 0;
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url?.endsWith("/describe/")) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        expect(req.url).toContain("/insert/");
+        req.resume();
+        req.on("end", () => {
+          attempts++;
+          res
+            .writeHead(attempts === 1 ? scenario.status : 200)
+            .end('{"version":2}');
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+        const result = table.add([{ id: 1n }], { retries: scenario.retries });
+        if (scenario.attempts === 2) {
+          await expect(result).resolves.toMatchObject({ version: 2 });
+        } else {
+          await expect(result).rejects.toThrow();
+        }
+        for (const retries of [-1, 256, 1.5]) {
+          await expect(table.add([{ id: 2n }], { retries })).rejects.toThrow(
+            "retries must be an integer between 0 and 255",
+          );
+        }
+      },
+      {
+        clientConfig: {
+          retryConfig: {
+            retries: 3,
+            statuses: [429, 504],
+            backoffFactor: 0,
+            backoffJitter: 0,
+          },
+        },
+      },
+    );
+    expect(attempts).toBe(scenario.attempts);
+  });
+
+  it.each(
+    [409, 429, 502, 503, 504].flatMap((status) =>
+      [undefined, 0, 2].flatMap((retries) =>
+        [[], ["analytics", "features"]].map((namespacePath) => ({
+          status,
+          retries,
+          namespacePath,
+        })),
+      ),
+    ),
+  )("applies per-call merge retries: %j", async (scenario) => {
+    let attempts = 0;
+    const identifier = [...scenario.namespacePath, "items"].join("$");
+    const succeeds =
+      [409, 429].includes(scenario.status) && scenario.retries !== 0;
+    await withMockDatabase(
+      (req, res) => {
+        const url = new URL(req.url ?? "", "http://localhost");
+        if (url.pathname === `/v1/table/${identifier}/describe/`) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          try {
+            expect(url.pathname).toBe(`/v1/table/${identifier}/merge_insert/`);
+            expect(url.searchParams.get("use_index")).toBe("false");
+            expect(req.headers["x-request-timeout-ms"]).toBe("10000");
+            // Rust compresses the batches; Arrow JS can inspect the schema without a codec.
+            const reader = RecordBatchReader.from(Buffer.concat(chunks)).open();
+            expect(reader.schema.fields.map((field) => field.name)).toEqual([
+              "id",
+            ]);
+          } finally {
+            attempts++;
+            res
+              .writeHead(attempts === 1 ? scenario.status : 200)
+              .end('{"version":2}');
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items", scenario.namespacePath);
+        const merge = table
+          .mergeInsert("id")
+          .whenNotMatchedInsertAll()
+          .useIndex(false);
+        const result = merge.execute([{ id: 1n }], {
+          timeoutMs: 10_000,
+          retries: scenario.retries,
+        });
+        if (succeeds) {
+          await expect(result).resolves.toMatchObject({ version: 2 });
+        } else {
+          await expect(result).rejects.toThrow();
+        }
+      },
+      {
+        clientConfig: {
+          retryConfig: {
+            retries: 3,
+            statuses: [409, 429, 502, 503, 504],
+            backoffFactor: 0,
+            backoffJitter: 0,
+          },
+        },
+      },
+    );
+    expect(attempts).toBe(succeeds ? 2 : 1);
+  });
+
+  it("isolates merge retry overrides across reused builders and reads", async () => {
+    let attempts = 0;
+    let readAttempts = 0;
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url?.endsWith("/describe/")) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int64" }, nullable: true },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        req.resume();
+        req.on("end", () => {
+          if (req.url?.endsWith("/count_rows/")) {
+            readAttempts++;
+            res.writeHead(readAttempts % 2 ? 429 : 200).end("1");
+          } else {
+            attempts++;
+            res
+              .writeHead([1, 2, 4, 6].includes(attempts) ? 429 : 200)
+              .end('{"version":2}');
+            expect(req.url).toContain("/merge_insert/");
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+        const merge = table.mergeInsert("id").whenNotMatchedInsertAll();
+        for (const retries of [
+          -1,
+          256,
+          1.5,
+          Number.NaN,
+          Number.POSITIVE_INFINITY,
+        ]) {
+          await expect(
+            merge.execute([{ id: 1n }], { retries }),
+          ).rejects.toThrow("retries must be an integer between 0 and 255");
+        }
+        expect(attempts).toBe(0);
+        await expect(
+          merge.execute([{ id: 1n }], { retries: 0 }),
+        ).rejects.toThrow();
+        expect(attempts).toBe(1);
+        await expect(merge.execute([{ id: 1n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          merge.execute([{ id: 1n }], { retries: 255 }),
+        ).resolves.toMatchObject({ version: 2 });
+        expect(attempts).toBe(5);
+        await expect(table.countRows()).resolves.toBe(1);
+        expect(readAttempts).toBe(2);
+        await expect(
+          table
+            .mergeInsert("id")
+            .whenNotMatchedInsertAll()
+            .execute([{ id: 1n }]),
+        ).resolves.toMatchObject({ version: 2 });
+        expect(attempts).toBe(7);
+      },
+      {
+        clientConfig: {
+          retryConfig: { retries: 3, backoffFactor: 0, backoffJitter: 0 },
+        },
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -644,6 +860,437 @@ describe("remote connection", () => {
     expect(bodies).toEqual([
       JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
       {},
+    ]);
+  });
+
+  it("passes a pinned version and decodes Function scheduler status", async () => {
+    const queries: Record<string, string>[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (url.pathname.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 42,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/v1/table/docs/function_columns/status") {
+          queries.push(Object.fromEntries(url.searchParams.entries()));
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            `[{
+              "column":"embedding",
+              "binding_id":"fb_01",
+              "function":{
+                "name":"embed",
+                "object_id":"embed",
+                "location":"objects/embed",
+                "version":"7",
+                "manifest_digest":"sha256:abc"
+              },
+              "table_version":42,
+              "rows":4,
+              "fresh":2,
+              "stale":2,
+              "never_computed":0,
+              "failed":0,
+              "last_refresh_job":{
+                "job_id":"job-cancelled",
+                "state":"cancelled",
+                "automatic":true,
+                "completed_at_millis":1790000002000
+              },
+              "last_failure_job":{
+                "job_id":"job-failed",
+                "state":"failed",
+                "automatic":true,
+                "completed_at_millis":1790000001000,
+                "failure":{
+                  "phase":"finalize",
+                  "message":"worker timed out",
+                  "traceback":"Traceback: timeout",
+                  "retryable":true,
+                  "sql_job_id":"sql-job-7"
+                }
+              },
+              "auto_refresh":{
+                "enabled":true,
+                "interval_seconds":60,
+                "active_job_id":"job-queued",
+                "state":"queued",
+                "failure_streak":1,
+                "next_run_at_millis":null,
+                "next_run_at_reason":"job_queued_not_started"
+              }
+            }]`,
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        await table.checkout(42);
+        const status = await table.functionColumnStatus("embedding");
+        expect(status.tableVersion).toBe(42n);
+        expect(status.autoRefresh.state).toBe("queued");
+        expect(status.autoRefresh.activeJobId).toBe("job-queued");
+        expect(status.autoRefresh.failureStreak).toBe(1);
+        expect(status.autoRefresh.nextRunAtReason).toBe(
+          "job_queued_not_started",
+        );
+        expect(status.lastRefreshJob?.state).toBe("cancelled");
+        expect(status.lastRefreshJob?.failure).toBeUndefined();
+        expect(status.lastFailureJob?.jobId).toBe("job-failed");
+        expect(status.lastFailureJob?.failure).toEqual({
+          phase: "finalize",
+          message: "worker timed out",
+          traceback: "Traceback: timeout",
+          retryable: true,
+          sqlJobId: "sql-job-7",
+        });
+      },
+    );
+    expect(queries).toEqual([{ column: "embedding", version: "42" }]);
+  });
+
+  it("forwards refresh options to the backfill request", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/backfill_column") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res
+              .writeHead(202, { "Content-Type": "application/json" })
+              .end('{"job_id": "j-9"}');
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.refreshColumnAsync("embedding", {
+          where: "id % 2 = 0",
+          batchSize: 16,
+          publicationIntervalRows: 60,
+          maxConcurrency: 3,
+          gpuClass: "a10g",
+          gpuCount: 2,
+          errorPolicy: "skip",
+          maxFailedFraction: 0.01,
+          maxFailedRows: 50,
+          rowTimeoutSeconds: 30,
+          initTimeoutSeconds: 120,
+          maxExecutorProcessesPerWorker: 2,
+        });
+        expect(job.id).toBe("j-9");
+        await table.refreshColumnAsync("embedding");
+        await table.refreshColumnAsync("embedding", {
+          publicationIntervalRows: undefined,
+        });
+        for (const publicationIntervalRows of [
+          1,
+          2 ** 32 + 1,
+          Number.MAX_SAFE_INTEGER,
+        ]) {
+          await table.refreshColumnAsync("embedding", {
+            publicationIntervalRows,
+          });
+        }
+        await table.refreshColumnAsync("embedding", {
+          resourceBudget: {
+            cpuMillis: 8_000,
+            memoryBytes: 16 * 1024 ** 3,
+          },
+        });
+        await expect(
+          table.refreshColumnAsync("embedding", {
+            maxConcurrency: true as unknown as number,
+          }),
+        ).rejects.toThrow();
+        for (const publicationIntervalRows of [true, "60", 60n]) {
+          await expect(
+            table.refreshColumnAsync("embedding", {
+              publicationIntervalRows:
+                publicationIntervalRows as unknown as number,
+            }),
+          ).rejects.toThrow();
+        }
+        // Invalid options reject before any request is sent.
+        for (const [options, message] of [
+          [{ maxFailedRows: -1 }, "maxFailedRows"],
+          [{ errorPolicy: "retry" }, "errorPolicy"],
+          [{ where: " " }, "where"],
+          [{ maxFailedFraction: 2 }, "max_failed_fraction"],
+          [{ rowTimeoutSeconds: 0 }, "row_timeout_seconds"],
+          [{ publicationIntervalRows: 0 }, "publicationIntervalRows"],
+          [{ publicationIntervalRows: -1 }, "publicationIntervalRows"],
+          [{ publicationIntervalRows: 1.5 }, "publicationIntervalRows"],
+          [{ publicationIntervalRows: Number.NaN }, "publicationIntervalRows"],
+          [
+            { publicationIntervalRows: Number.POSITIVE_INFINITY },
+            "publicationIntervalRows",
+          ],
+          [
+            { publicationIntervalRows: Number.NEGATIVE_INFINITY },
+            "publicationIntervalRows",
+          ],
+          [
+            { publicationIntervalRows: Number.MAX_SAFE_INTEGER + 1 },
+            "publicationIntervalRows",
+          ],
+          [{ maxConcurrency: 1.5 }, "maxConcurrency"],
+          [{ maxConcurrency: 0 }, "maxConcurrency"],
+          [{ maxConcurrency: -1 }, "maxConcurrency"],
+          [{ maxConcurrency: 2 ** 32 }, "maxConcurrency"],
+          [{ maxConcurrency: Number.NaN }, "maxConcurrency"],
+          [{ maxConcurrency: Number.POSITIVE_INFINITY }, "maxConcurrency"],
+          [{ numWorkers: 0 }, "num_workers"],
+          [{ gpuCount: 0 }, "gpu_count"],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+              },
+              gpuCount: 1,
+            },
+            "gpu_count cannot be combined with resource_budget",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 0,
+                memoryBytes: 1_024,
+              },
+            },
+            "resourceBudget.cpuMillis",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: 1.5,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: -1,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: 2 ** 32,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: Number.NaN,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              resourceBudget: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                gpuCount: Number.POSITIVE_INFINITY,
+              },
+            },
+            "resourceBudget.gpuCount",
+          ],
+          [
+            {
+              supervisorResources: {
+                cpuMillis: 0,
+                memoryBytes: 1_024,
+                ephemeralStorageBytes: 2_048,
+              },
+            },
+            "supervisorResources.cpuMillis",
+          ],
+          [
+            {
+              supervisorResources: {
+                cpuMillis: 1_000,
+                memoryBytes: 1_024,
+                ephemeralStorageBytes: 0,
+              },
+            },
+            "supervisorResources.ephemeralStorageBytes",
+          ],
+          [
+            {
+              planningWorkers: {
+                resources: {
+                  cpuMillis: 1_000,
+                  memoryBytes: 1_024,
+                  ephemeralStorageBytes: 2_048,
+                },
+                maxWorkers: 0,
+                rowsPerWorker: 100,
+                fragmentsPerWorker: 1,
+              },
+            },
+            "planningWorkers.maxWorkers",
+          ],
+          [{ retryPolicy: { maxAttempts: 0 } }, "retry_policy.max_attempts"],
+        ] as const) {
+          await expect(
+            table.refreshColumnAsync("embedding", options),
+          ).rejects.toThrow(message);
+        }
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse(
+        `{"column": "embedding", "where": "id % 2 = 0", "batch_size": 16,
+          "publication_interval_rows": 60,
+          "max_concurrency": 3, "gpu_class": "a10g", "gpu_count": 2,
+          "error_policy": "skip",
+          "max_failed_fraction": 0.01, "max_failed_rows": 50,
+          "row_timeout_seconds": 30, "init_timeout_seconds": 120,
+          "max_executor_processes_per_worker": 2}`,
+      ),
+      { column: "embedding" },
+      { column: "embedding" },
+      JSON.parse('{"column": "embedding", "publication_interval_rows": 1}'),
+      JSON.parse(
+        '{"column": "embedding", "publication_interval_rows": 4294967297}',
+      ),
+      JSON.parse(
+        '{"column": "embedding", "publication_interval_rows": 9007199254740991}',
+      ),
+      JSON.parse(
+        `{"column": "embedding",
+          "resource_budget": {
+            "cpu_millis": 8000,
+            "memory_bytes": 17179869184,
+            "gpu_count": 0
+          }}`,
+      ),
+    ]);
+  });
+
+  it("forwards structured Function refresh options and Node retry policy", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/backfill_column") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res
+              .writeHead(202, { "Content-Type": "application/json" })
+              .end('{"job_id": "j-structured"}');
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.refreshColumnAsync("embedding", {
+          supervisorResources: {
+            cpuMillis: 2_000,
+            memoryBytes: 4 * 1024 ** 3,
+            ephemeralStorageBytes: 10 * 1024 ** 3,
+          },
+          planningWorkers: {
+            resources: {
+              cpuMillis: 1_000,
+              memoryBytes: 2 * 1024 ** 3,
+              ephemeralStorageBytes: 5 * 1024 ** 3,
+            },
+            maxWorkers: 4,
+            rowsPerWorker: 100_000,
+            fragmentsPerWorker: 8,
+          },
+          retryPolicy: { transient: true },
+        });
+        expect(job.id).toBe("j-structured");
+      },
+    );
+    expect(bodies).toEqual([
+      {
+        column: "embedding",
+        ["supervisor_resources"]: {
+          ["cpu_millis"]: 2_000,
+          ["memory_bytes"]: 4 * 1024 ** 3,
+          ["ephemeral_storage_bytes"]: 10 * 1024 ** 3,
+        },
+        ["planning_workers"]: {
+          resources: {
+            ["cpu_millis"]: 1_000,
+            ["memory_bytes"]: 2 * 1024 ** 3,
+            ["ephemeral_storage_bytes"]: 5 * 1024 ** 3,
+          },
+          ["max_workers"]: 4,
+          ["rows_per_worker"]: 100_000,
+          ["fragments_per_worker"]: 8,
+        },
+        ["retry_policy"]: {
+          ["max_attempts"]: 3,
+          ["initial_backoff_seconds"]: 0.2,
+          ["max_backoff_seconds"]: 30,
+          ["exception_types"]: [],
+          ["message_pattern"]: null,
+          ["error_codes"]: [],
+          transient: true,
+          ["honor_retry_after"]: true,
+        },
+      },
     ]);
   });
 
@@ -1441,7 +2088,9 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-1", "table": "t1", ' +
                     '"job_type": "create_index", "state": "in_progress", ' +
-                    '"created_at_millis": 1000}], "page_token": "next"}',
+                    '"created_at_millis": 1000, ' +
+                    '"progress": {"rows_planned": 4, "rows_computed": 2}, ' +
+                    '"phase": "running", "paused": false}], "page_token": "next"}',
                 );
             } else {
               res
@@ -1472,6 +2121,9 @@ describe("remote connection jobs surface", () => {
               .end(
                 '{"job_id": "job-1", "job_type": "create_index", ' +
                   '"job_state": "FAILED", "creation_ms": 1000, ' +
+                  '"progress": {"rows_planned": 4, "rows_computed": 2, ' +
+                  '"vendor_extension": "kept"}, ' +
+                  '"phase": "running", ' +
                   '"spec": {"column": "vec"}, "failure": {"phase": "execute", ' +
                   '"message": "worker died", "retryable": true}}',
               );
@@ -1518,6 +2170,19 @@ describe("remote connection jobs surface", () => {
         expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].progress).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_type: "create_index",
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          creation_ms: 1000,
+          paused: false,
+          phase: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_planned: 4,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 2,
+        });
 
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
@@ -1546,6 +2211,21 @@ describe("remote connection jobs surface", () => {
         expect(job.spec).toEqual({ column: "vec" });
         expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
+        expect(await job.progress()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_type: "create_index",
+          state: "failed",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          creation_ms: 1000,
+          paused: false,
+          phase: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_planned: 4,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 2,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          vendor_extension: "kept",
+        });
 
         // The handle reaches its own events, supplying its job id.
         const jobEvents = await job.events({
@@ -1583,6 +2263,239 @@ describe("remote connection jobs surface", () => {
 
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
+      },
+    );
+  });
+
+  it("observes structured progress through the existing wait poller", async () => {
+    const now = Date.now();
+    const unknownFleet = {
+      desired: 2,
+      launched: 1,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      pending_workers: 1,
+      ready: 0,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      requested_gpus: 1,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      ready_gpus: 0,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      resource_classes: ["a10g"],
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      first_launched_at_millis: now - 4000,
+    };
+    const knownFleet = {
+      ...unknownFleet,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      warm_reused: true,
+      // biome-ignore lint/style/useNamingConvention: server wire format
+      wait_reason: "Job queued, waiting for GPU capacity in class 'a10g'",
+    };
+    const progress = (
+      rowsComputed: number,
+      rowsRemaining: number,
+      sampleOffset: number,
+      workerFleet: typeof knownFleet | typeof unknownFleet,
+    ) =>
+      JSON.stringify({
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_planned: 100,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_computed: rowsComputed,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_skipped: 0,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        rows_remaining: rowsRemaining,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        fragments_planned: 4,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        execution_epoch: 7,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        sample_at_millis: now - sampleOffset,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        worker_fleet: workerFleet,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        queue_reason: "Waiting for Function worker capacity",
+      });
+    const descriptions = [
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(
+        20,
+        80,
+        3000,
+        unknownFleet,
+      )}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(
+        20,
+        80,
+        2000,
+        knownFleet,
+      )}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"queue_reason":"Waiting for Function worker capacity","progress":${progress(
+        40,
+        60,
+        1000,
+        unknownFleet,
+      )}}`,
+      `{"job_id":"job-wait","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{},"progress":${progress(
+        60,
+        0,
+        0,
+        unknownFleet,
+      )}}`,
+    ];
+    let describeCount = 0;
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          describeCount++;
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-wait");
+        const first = await job.progress();
+        expect(first).toMatchObject({
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 20,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_remaining: 80,
+        });
+        expect(first?.worker_fleet).toMatchObject(knownFleet);
+        expect(
+          (first?.worker_fleet as Record<string, unknown> | null | undefined)
+            ?.warm_reused,
+        ).toBe(true);
+        expect(first?.queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
+        expect(first).not.toHaveProperty("estimated_remaining_time_millis");
+
+        const observed: JobProgress[] = [];
+        await job.wait((progress) => observed.push(progress));
+
+        expect(observed).toHaveLength(2);
+        expect(observed[0]).toMatchObject({
+          state: "running",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_computed: 40,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          estimated_remaining_time_millis: 3000,
+        });
+        expect(observed[0].worker_fleet).toEqual(unknownFleet);
+        expect(observed[0].worker_fleet).not.toHaveProperty("warm_reused");
+        expect(observed[0].queue_reason).toBe(
+          "Waiting for Function worker capacity",
+        );
+        expect(observed[1]).toMatchObject({
+          state: "finished",
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          rows_remaining: 0,
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          estimated_remaining_time_millis: 0,
+        });
+      },
+    );
+
+    expect(describeCount).toBe(4);
+  });
+
+  it("does not derive ETA across a zero-rate, epoch, or pause boundary", async () => {
+    const now = Date.now();
+    const descriptions = [
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${
+        now - 5000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":20,"rows_skipped":0,"rows_remaining":80,"fragments_planned":4,"execution_epoch":1,"sample_at_millis":${
+        now - 4000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":40,"rows_skipped":0,"rows_remaining":60,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 3000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"phase":"initializing","progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 2000
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"paused_at_millis":5000,"progress":{"rows_planned":100,"rows_computed":60,"rows_skipped":0,"rows_remaining":40,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 1500
+      }}}`,
+      `{"job_id":"job-eta","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":100,"rows_computed":80,"rows_skipped":0,"rows_remaining":20,"fragments_planned":4,"execution_epoch":2,"sample_at_millis":${
+        now - 1000
+      }}}`,
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-eta");
+        for (let i = 0; i < 5; i++) {
+          const progress = await job.progress();
+          expect(progress).not.toHaveProperty(
+            "estimated_remaining_time_millis",
+          );
+        }
+      },
+    );
+  });
+
+  it("keeps a thrown progress observer from escaping wait", async () => {
+    const descriptions = [
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"IN_PROGRESS","creation_ms":1000,"progress":{"rows_planned":4,"rows_computed":2}}',
+      '{"job_id":"job-throw","job_type":"refresh_column","job_state":"DONE","creation_ms":1000,"result":{}}',
+    ];
+
+    await withMockDatabase(
+      (req, res) => {
+        if (req.url === "/v1/jobs/describe") {
+          const description = descriptions.shift();
+          if (description === undefined) {
+            res.writeHead(500).end("unexpected describe");
+            return;
+          }
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(description);
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const job = await db.openJob("job-throw");
+        const warn = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
+        try {
+          await expect(
+            job.wait(() => {
+              throw new Error("observer failed");
+            }),
+          ).resolves.toBeUndefined();
+          expect(warn).toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
       },
     );
   });
@@ -1693,6 +2606,7 @@ describe("lazy resource listings", () => {
             if (kind === "jobs") {
               expect(url.pathname).toBe("/v1/jobs/list");
               expect(request.body).toEqual({
+                database: "dev",
                 // biome-ignore lint/style/useNamingConvention: server wire format
                 page_token: token,
                 limit: 2,
@@ -1747,4 +2661,484 @@ describe("lazy resource listings", () => {
       );
     });
   }
+});
+
+describe("remote compaction job results", () => {
+  test.each([true, false])(
+    "reopens typed compaction result (counts=%s)",
+    async (counts) => {
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          const result = JSON.parse(`{
+            "partial_commit": false,
+            "rows_succeeded": 12,
+            "rows_failed": 0,
+            "completion_percentage": 100
+          }`);
+          if (counts) {
+            Object.assign(
+              result,
+              JSON.parse(`{
+              "files_added": 1,
+              "files_removed": 3,
+              "fragments_added": 1,
+              "fragments_removed": 3
+            }`),
+            );
+          }
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            `{"job_id":"compacting-job","job_type":"compact","job_state":"DONE","result":${JSON.stringify(result)}}`,
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CompactionResult>(
+              "compacting-job",
+            );
+          const result = await job.wait();
+          expect(result.rowsSucceeded).toBe(12);
+          expect(result.moreWork).toBe(false);
+          expect(result.fragmentsRemoved).toBe(counts ? 3 : null);
+        },
+      );
+    },
+  );
+});
+
+describe("data prewarm typed results", () => {
+  test.each([null, {}])(
+    "rejects a missing typed outcome (%p)",
+    async (result) => {
+      await withMockDatabase(
+        (_request, response) => {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            `{"job_id":"warming-job","job_type":"prewarm_page_cache","job_state":"DONE","result":${JSON.stringify(result)}}`,
+          );
+        },
+        async (db) => {
+          const job = await db.openJob("warming-job");
+          await expect(job.wait()).rejects.toThrow();
+        },
+      );
+    },
+  );
+
+  test.each([true, false])(
+    "reopens a result (counters=%s)",
+    async (counters) => {
+      await withMockDatabase(
+        (_request, response) => {
+          const result = JSON.parse(
+            counters
+              ? '{"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4}'
+              : '{"table_version":42}',
+          );
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "warming-job",
+              ["job_type"]: "prewarm_page_cache",
+              ["job_state"]: "DONE",
+              progress: null,
+              ["operation_progress"]: {
+                phase: "reading",
+                ["executors_completed"]: 2,
+              },
+              result,
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").PrewarmDataResult>(
+              "warming-job",
+            );
+          const result = await job.wait();
+          expect(result.tableVersion).toBe(42);
+          expect(result.executorsCompleted).toBe(counters ? 2 : null);
+          expect(result.bytesRead).toBeNull();
+          expect((await job.progress())?.executors_completed).toBe(2);
+        },
+      );
+    },
+  );
+});
+
+describe("job wait deadlines", () => {
+  function response(kind: string, done: boolean) {
+    const result =
+      kind === "compact"
+        ? '{"partial_commit":false,"rows_succeeded":12,"rows_failed":0,"completion_percentage":100}'
+        : kind === "prewarm_page_cache"
+          ? '{"table_version":42,"executors_targeted":2,"executors_completed":2}'
+          : "null";
+    return `{"job_id":"bounded-job","job_type":"${kind}","job_state":"${done ? "DONE" : "IN_PROGRESS"}","result":${done ? result : "null"}}`;
+  }
+
+  test.each(["compact", "prewarm_page_cache", "create_index"])(
+    "%s stops polling at timeout, resumes, and reopens",
+    async (kind) => {
+      let done = false;
+      let describes = 0;
+      const progress: JobProgress[] = [];
+      await withMockDatabase(
+        (request, res) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          describes++;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(response(kind, done));
+        },
+        async (db) => {
+          const fallback = setTimeout(() => {
+            done = true;
+          }, 1000);
+          try {
+            const job = await db.openJob("bounded-job");
+            await expect(
+              job.wait({ timeoutMs: 50, onProgress: (p) => progress.push(p) }),
+            ).rejects.toThrow(/bounded-job.*continues/);
+            expect(job.state).toBe("running");
+            await new Promise((resolve) => setImmediate(resolve));
+            const requestsAtTimeout = describes;
+            const updatesAtTimeout = progress.length;
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            expect(describes).toBe(requestsAtTimeout);
+            expect(progress).toHaveLength(updatesAtTimeout);
+            done = true;
+            const result = await job.wait({
+              timeoutMs: 1000,
+              onProgress: (p) => progress.push(p),
+            });
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(progress.some((p) => p.state === "finished")).toBe(true);
+            expect(job.state).toBe("finished");
+            expect(result).toEqual(
+              kind === "compact"
+                ? expect.objectContaining({ rowsSucceeded: 12 })
+                : kind === "prewarm_page_cache"
+                  ? expect.objectContaining({ tableVersion: 42 })
+                  : undefined,
+            );
+            // Existing callback-only and argument-free calls remain supported.
+            expect(await job.wait((p) => progress.push(p))).toEqual(result);
+            expect(await job.wait()).toEqual(result);
+            const reopened = await db.openJob("bounded-job");
+            expect(await reopened.wait({ timeoutMs: 1000 })).toEqual(result);
+          } finally {
+            clearTimeout(fallback);
+          }
+        },
+      );
+    },
+  );
+
+  it("bounds a pending HTTP response and permits a later wait", async () => {
+    let slow = false;
+    let requests = 0;
+    await withMockDatabase(
+      (request, res) => {
+        expect(request.url).toBe("/v1/jobs/describe");
+        requests++;
+        const send = () => {
+          if (!res.destroyed) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(response("prewarm_page_cache", slow));
+          }
+        };
+        if (slow) setTimeout(send, 300);
+        else send();
+      },
+      async (db) => {
+        const job = await db.openJob("bounded-job");
+        slow = true;
+        await expect(job.wait({ timeoutMs: 50 })).rejects.toThrow("continues");
+        expect(job.state).toBe("running");
+        const stoppedAt = requests;
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        expect(requests).toBe(stoppedAt);
+        const result = await job.wait({ timeoutMs: 1000 });
+        expect(result).toEqual(expect.objectContaining({ tableVersion: 42 }));
+      },
+    );
+  });
+
+  it("accepts zero timeout and validates options before polling", async () => {
+    let requests = 0;
+    let done = false;
+    await withMockDatabase(
+      (_request, res) => {
+        requests++;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(response("compact", done));
+      },
+      async (db) => {
+        const fallback = setTimeout(() => {
+          done = true;
+        }, 1000);
+        try {
+          const job = await db.openJob("bounded-job");
+          for (const timeoutMs of [
+            -1,
+            1.5,
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            Number.MAX_SAFE_INTEGER + 1,
+            "10",
+            true,
+          ]) {
+            await expect(
+              job.wait({ timeoutMs: timeoutMs as number }),
+            ).rejects.toThrow("nonnegative safe integer");
+          }
+          await expect(job.wait({ timeout: 10 } as never)).rejects.toThrow(
+            "Unknown job wait option",
+          );
+          await expect(job.wait({ onProgress: 7 } as never)).rejects.toThrow(
+            "onProgress must be a function",
+          );
+          await expect(job.wait(10 as never)).rejects.toThrow("options object");
+          expect(requests).toBe(1);
+          await expect(job.wait({ timeoutMs: 0 })).rejects.toThrow("Timeout");
+        } finally {
+          clearTimeout(fallback);
+        }
+      },
+    );
+  });
+
+  test.each(["FAILED", "CANCELLED"])(
+    "preserves a %s outcome when a timeout is configured",
+    async (state) => {
+      await withMockDatabase(
+        (_request, res) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            `{"job_id":"bounded-job","job_type":"compact","job_state":"${state}"}`,
+          );
+        },
+        async (db) => {
+          const job = await db.openJob("bounded-job");
+          await expect(job.wait({ timeoutMs: 1000 })).rejects.toThrow(
+            state === "FAILED" ? /failed/i : /cancelled/i,
+          );
+        },
+      );
+    },
+  );
+});
+
+describe("table overrides", () => {
+  it.each([[], ["analytics", "features"]])(
+    "reads, recursively merges, and resets in namespace %j",
+    async (...namespacePath: string[]) => {
+      const requests: { method?: string; url: string; body?: unknown }[] = [];
+      const current = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: {
+          compaction: {
+            enabled: true,
+            // biome-ignore lint/style/useNamingConvention: server wire format
+            target_rows_per_fragment: 1000,
+          },
+          cleanup: { enabled: false },
+        },
+        custom: { keep: true, replace: [1, 2], clear: "value" },
+      };
+      const patch = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: { compaction: { enabled: false } },
+        custom: { replace: [3], clear: null, label: "測試" },
+      };
+      const merged = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: {
+          compaction: {
+            enabled: false,
+            // biome-ignore lint/style/useNamingConvention: server wire format
+            target_rows_per_fragment: 1000,
+          },
+          cleanup: { enabled: false },
+        },
+        custom: { keep: true, replace: [3], clear: null, label: "測試" },
+      };
+      await withMockDatabase(
+        (req, res) => {
+          const url = req.url ?? "";
+          if (url.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => {
+            const body = chunks.length
+              ? JSON.parse(Buffer.concat(chunks).toString())
+              : undefined;
+            requests.push({ method: req.method, url, body });
+            res
+              .writeHead(200)
+              .end(
+                JSON.stringify(
+                  req.method === "GET"
+                    ? current
+                    : req.method === "PUT"
+                      ? body.overrides
+                      : {},
+                ),
+              );
+          });
+        },
+        async (db) => {
+          const table = await db.openTable("test", namespacePath);
+          await expect(table.getTableOverrides()).resolves.toEqual(current);
+          await expect(table.updateTableOverrides(patch)).resolves.toEqual(
+            merged,
+          );
+          // The native conversion and merge must not mutate the caller's object.
+          expect(patch.job_types.compaction).toEqual({ enabled: false });
+          expect(patch.custom.replace).toEqual([3]);
+          await expect(table.resetTableOverrides()).resolves.toEqual({});
+        },
+      );
+      expect(requests.map((request) => request.method)).toEqual([
+        "GET",
+        "GET",
+        "PUT",
+        "POST",
+      ]);
+      for (const request of requests) {
+        const url = new URL(request.url, "http://localhost");
+        expect(url.pathname).toBe(
+          request.method === "POST"
+            ? "/admin/table/overrides/reset"
+            : "/admin/table/overrides",
+        );
+        if (request.method === "PUT") {
+          expect(request.body).toEqual({
+            db: "dev",
+            namespace: namespacePath,
+            table: "test",
+            overrides: merged,
+          });
+        } else {
+          expect(url.searchParams.get("db")).toBe("dev");
+          expect(url.searchParams.get("table")).toBe("test");
+          expect(url.searchParams.getAll("namespace")).toEqual(namespacePath);
+        }
+      }
+    },
+  );
+
+  it.each([{}, { custom: { keep: true } }])(
+    "only reads the snapshot %j for an empty update",
+    async (current) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          methods.push(req.method ?? "");
+          res
+            .writeHead(req.method === "GET" ? 200 : 400)
+            .end(JSON.stringify(current));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(table.updateTableOverrides({})).resolves.toEqual(
+            current,
+          );
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
+  it.each([null, [], true, 1, "bad"])(
+    "rejects a non-object update %j before reading overrides",
+    async (value) => {
+      const requests: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          requests.push(req.url ?? "");
+          res
+            .writeHead(200)
+            .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(
+            table.updateTableOverrides(
+              value as unknown as Record<string, unknown>,
+            ),
+          ).rejects.toThrow(/must be a JSON object/);
+        },
+      );
+      expect(requests).toEqual(["/v1/table/test/describe/"]);
+    },
+  );
+
+  it.each([403, 404])(
+    "propagates GET failure %i without a PUT",
+    async (status) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+          } else {
+            methods.push(req.method ?? "");
+            res.writeHead(status).end("overrides unavailable");
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(
+            table.updateTableOverrides({ custom: true }),
+          ).rejects.toThrow(/overrides unavailable/);
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
+  it("rejects writes on historical and closed handles before HTTP", async () => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        res
+          .writeHead(200)
+          .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+      },
+      async (db) => {
+        const table = await db.openTable("test");
+        await table.checkout(1);
+        requests.length = 0;
+        await expect(
+          table.updateTableOverrides({ custom: true }),
+        ).rejects.toThrow(/fixed at version 1/);
+        await expect(table.resetTableOverrides()).rejects.toThrow(
+          /fixed at version 1/,
+        );
+        table.close();
+        await expect(table.getTableOverrides()).rejects.toThrow(/closed/);
+        await expect(
+          table.updateTableOverrides({ custom: true }),
+        ).rejects.toThrow(/closed/);
+        await expect(table.resetTableOverrides()).rejects.toThrow(/closed/);
+      },
+    );
+    expect(requests).toEqual([]);
+  });
 });

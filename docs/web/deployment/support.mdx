@@ -1,12 +1,12 @@
 ---
 title: "Support"
 sidebarTitle: "Support"
-description: "Where to get help: community Discord for LanceDB Embedded (open source), dedicated support for LanceDB Enterprise."
+description: "Where to get help: community Discord and email for LanceDB Embedded, dedicated support for LanceDB Enterprise."
 icon: circle-question
 keywords: ["support", "help", "discord", "community"]
 ---
 
-## LanceDB Embedded (open source) {#oss}
+## LanceDB Embedded {#oss}
 
 For a quick question, the
 [Discord community](https://discord.gg/AUEWnJ7Txb) has channels for
@@ -19,14 +19,13 @@ Use GitHub for discussions and issues that others can search and follow:
 | [GitHub Discussions](https://github.com/lancedb/lancedb/discussions) | Open-ended questions, design questions, "what's the right way to do X" |
 | [GitHub Issues](https://github.com/lancedb/lancedb/issues) | A specific bug, or a feature request |
 
-## LanceDB Enterprise {#enterprise}
+For anything the community can't resolve, email
+[support@lancedb.com](mailto:support@lancedb.com).
 
-<Badge color="red">Enterprise</Badge> Contact your support team directly at
-[support@lancedb.com](mailto:support@lancedb.com) for dedicated assistance.
+### What to include {#what-to-include}
 
-## What to include {#what-to-include}
-
-A faster answer usually depends on the same handful of details:
+A faster answer usually depends on the same handful of details, whether you
+post in Discord or email:
 
 | | |
 | --- | --- |
@@ -34,3 +33,27 @@ A faster answer usually depends on the same handful of details:
 | Connection type | embedded path, or a `db://` deployment |
 | The exact error | full traceback or error message, not a paraphrase |
 | A minimal repro | the smallest table schema and call that reproduces it |
+
+## LanceDB Enterprise {#enterprise}
+
+Talk to your account executive, file a support ticket, or reach the LanceDB
+support and engineering team directly for dedicated assistance.
+
+### Python blob queries raise `NotImplementedError` {#blob-query-bytes}
+
+If a Blob v2 query works in `"descriptions"` mode but fails in `"bytes"` mode,
+check that the Python SDK and every serving node support snapshot-bound reads.
+Enterprise 1.12.0 supports separate row-ID fetches. For query-bound reads,
+upgrade the serving path before enabling the feature in clients.
+
+- On the query response, the proxy must preserve `x-lancedb-query-version`
+  and `x-lancedb-query-snapshot`. The legacy `x-lancedb-version` watermark
+  or Arrow metadata alone cannot identify the snapshot that produced the rows.
+- On each payload request, forward the selected version and the
+  `x-lancedb-query-snapshot` header. The server checks the identity against
+  the dataset it opens and echoes it in the response. The proxy must preserve
+  that echo so the SDK can verify it before returning bytes.
+
+If the version was deleted or the table was recreated, repeat the query to
+select a current snapshot. To finish reading the original selection, retain
+its table version until the last batch has been read.

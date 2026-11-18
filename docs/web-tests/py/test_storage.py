@@ -43,18 +43,26 @@ def fake_connect(monkeypatch):
 
 def test_storage_snippets(fake_connect):
     # --8<-- [start:storage_connect_s3]
+    import lancedb
+
     db = lancedb.connect("s3://bucket/path")
     # --8<-- [end:storage_connect_s3]
 
     # --8<-- [start:storage_connect_gcs]
+    import lancedb
+
     db = lancedb.connect("gs://bucket/path")
     # --8<-- [end:storage_connect_gcs]
 
     # --8<-- [start:storage_connect_azure]
+    import lancedb
+
     db = lancedb.connect("az://bucket/path")
     # --8<-- [end:storage_connect_azure]
 
     # --8<-- [start:storage_connect_timeout]
+    import lancedb
+
     db = lancedb.connect(
         "s3://bucket/path",
         storage_options={"timeout": "60s"},
@@ -70,12 +78,16 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_table_timeout]
 
     # --8<-- [start:storage_s3_ddb]
+    import lancedb
+
     db = lancedb.connect(
         "s3+ddb://bucket/path?ddbTableName=my-dynamodb-table",
     )
     # --8<-- [end:storage_s3_ddb]
 
     # --8<-- [start:storage_s3_ddb_local]
+    import lancedb
+
     db = lancedb.connect(
         "s3+ddb://bucket/path?ddbTableName=my-dynamodb-table",
         storage_options={
@@ -87,6 +99,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_s3_ddb_local]
 
     # --8<-- [start:storage_s3_sse_kms]
+    import lancedb
+
     db = lancedb.connect(
         "s3://bucket/path",
         storage_options={
@@ -97,6 +111,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_s3_sse_kms]
 
     # --8<-- [start:storage_azure_sas]
+    import lancedb
+
     db = lancedb.connect(
         "az://my-container/my-database",
         storage_options={
@@ -107,6 +123,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_azure_sas]
 
     # --8<-- [start:storage_s3_minio]
+    import lancedb
+
     db = lancedb.connect(
         "s3://bucket/path",
         storage_options={
@@ -117,6 +135,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_s3_minio]
 
     # --8<-- [start:storage_s3_express]
+    import lancedb
+
     db = lancedb.connect(
         "s3://my-bucket--use1-az4--x-s3/path",
         storage_options={
@@ -127,6 +147,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_s3_express]
 
     # --8<-- [start:storage_gcs_service_account]
+    import lancedb
+
     db = lancedb.connect(
         "gs://my-bucket/my-database",
         storage_options={
@@ -136,6 +158,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_gcs_service_account]
 
     # --8<-- [start:storage_azure_account]
+    import lancedb
+
     db = lancedb.connect(
         "az://my-container/my-database",
         storage_options={
@@ -146,6 +170,8 @@ def test_storage_snippets(fake_connect):
     # --8<-- [end:storage_azure_account]
 
     # --8<-- [start:storage_tigris_connect]
+    import lancedb
+
     db = lancedb.connect(
         "s3://your-bucket/path",
         storage_options={

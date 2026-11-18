@@ -3,13 +3,13 @@
 
 
 def test_create_table_from_dicts():
-    # --8<-- [start:create_table_from_dicts]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_from_dicts]
         data = [
             {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
             {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1},
@@ -24,13 +24,13 @@ def test_create_table_from_dicts():
 
 
 def test_create_table_conflict_handling():
-    # --8<-- [start:create_table_conflict_handling]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_conflict_handling]
         data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7}]
         db.create_table("conflict_table", data)
         # Idempotent open: reuse the existing table if it exists.
@@ -45,13 +45,13 @@ def test_create_table_conflict_handling():
 
 
 def test_create_table_custom_schema():
-    # --8<-- [start:create_table_custom_schema]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_custom_schema]
         import pyarrow as pa
 
         custom_schema = pa.schema(
@@ -76,13 +76,13 @@ def test_create_table_custom_schema():
 
 
 def test_create_table_from_pandas():
-    # --8<-- [start:create_table_from_pandas]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_from_pandas]
         import pandas as pd
 
         data = pd.DataFrame(
@@ -98,13 +98,13 @@ def test_create_table_from_pandas():
 
 
 def test_create_table_from_polars():
-    # --8<-- [start:create_table_from_polars]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_from_polars]
         import polars as pl
 
         data = pl.DataFrame(
@@ -122,13 +122,13 @@ def test_create_table_from_polars():
 
 
 def test_create_table_from_arrow():
-    # --8<-- [start:create_table_from_arrow]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_from_arrow]
         import numpy as np
         import pyarrow as pa
 
@@ -158,13 +158,13 @@ def test_create_table_from_arrow():
 
 
 def test_create_table_from_pydantic():
-    # --8<-- [start:create_table_from_pydantic]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_from_pydantic]
         from lancedb.pydantic import LanceModel, Vector
 
         class Content(LanceModel):
@@ -186,13 +186,13 @@ def test_create_table_from_pydantic():
 
 
 def test_create_table_nested_schema():
-    # --8<-- [start:create_table_nested_schema]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_nested_schema]
         from lancedb.pydantic import LanceModel, Vector
         from pydantic import BaseModel
 
@@ -213,13 +213,13 @@ def test_create_table_nested_schema():
 
 
 def test_create_empty_table():
-    # --8<-- [start:create_empty_table]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_empty_table]
         import pyarrow as pa
 
         schema = pa.schema(
@@ -237,13 +237,13 @@ def test_create_empty_table():
 
 
 def test_create_empty_table_pydantic():
-    # --8<-- [start:create_empty_table_pydantic]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_empty_table_pydantic]
         from lancedb.pydantic import LanceModel, Vector
 
         class Item(LanceModel):
@@ -261,13 +261,13 @@ def test_create_empty_table_pydantic():
 
 
 def test_open_existing_table():
-    # --8<-- [start:open_existing_table]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:open_existing_table]
         # Create a table first
         data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7}]
         db.create_table("test_table", data, mode="overwrite")
@@ -284,13 +284,13 @@ def test_open_existing_table():
 
 
 def test_drop_table():
-    # --8<-- [start:drop_table]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:drop_table]
         # Create a table first
         data = [{"vector": [1.1, 1.2], "lat": 45.5}]
         db.create_table("my_table", data, mode="overwrite")
@@ -300,40 +300,35 @@ def test_drop_table():
     # --8<-- [end:drop_table]
 
 
-def test_add_from_dataset():
+def test_add_from_dataset(tmp_db, tmp_path, monkeypatch):
+    db = tmp_db
+    monkeypatch.chdir(tmp_path)
+
     # --8<-- [start:add_from_dataset]
-    from tempfile import TemporaryDirectory
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
-    import lancedb
+    data_path = "input.parquet"
+    pq.write_table(pa.table({"id": [1, 2], "name": ["Alice", "Bob"]}), data_path)
+    import pyarrow.dataset as ds
 
-    with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
-        db = lancedb.connect(uri)
-        from pathlib import Path
+    dataset = ds.dataset(data_path, format="parquet")
+    table = db.create_table("my_table", schema=dataset.schema, mode="overwrite")
+    table.add(dataset)
 
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
-        data_path = str(Path(uri) / "input.parquet")
-        pq.write_table(pa.table({"id": [1, 2], "name": ["Alice", "Bob"]}), data_path)
-        import pyarrow.dataset as ds
-
-        dataset = ds.dataset(data_path, format="parquet")
-        table = db.create_table("my_table", schema=dataset.schema, mode="overwrite")
-        table.add(dataset)
-
-        print("Rows:", table.count_rows())
-        # --8<-- [end:add_from_dataset]
-        assert table.count_rows() == 2
+    print("Rows:", table.count_rows())
+    # --8<-- [end:add_from_dataset]
+    assert table.count_rows() == 2
 
 
 def test_create_table_from_iterator():
-    # --8<-- [start:create_table_from_iterator]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:create_table_from_iterator]
         import pyarrow as pa
 
         schema = pa.schema(
@@ -367,13 +362,13 @@ def test_create_table_from_iterator():
 
 
 def test_update_operation():
-    # --8<-- [start:update_operation]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:update_operation]
         import pyarrow as pa
 
         table = db.create_table(
@@ -396,13 +391,13 @@ def test_update_operation():
 
 
 def test_update_using_sql():
-    # --8<-- [start:update_using_sql]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:update_using_sql]
         import pyarrow as pa
 
         table = db.create_table(
@@ -425,13 +420,13 @@ def test_update_using_sql():
 
 
 def test_merge_matched_update_only():
-    # --8<-- [start:merge_matched_update_only]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:merge_matched_update_only]
         import pyarrow as pa
 
         table = db.create_table(
@@ -462,13 +457,13 @@ def test_merge_matched_update_only():
 
 
 def test_insert_if_not_exists():
-    # --8<-- [start:insert_if_not_exists]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:insert_if_not_exists]
         import pyarrow as pa
 
         table = db.create_table(
@@ -499,13 +494,13 @@ def test_insert_if_not_exists():
 
 
 def test_merge_update_insert():
-    # --8<-- [start:merge_update_insert]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:merge_update_insert]
         import pyarrow as pa
 
         table = db.create_table(
@@ -542,13 +537,13 @@ def test_merge_update_insert():
 
 
 def test_merge_delete_missing_by_source():
-    # --8<-- [start:merge_delete_missing_by_source]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:merge_delete_missing_by_source]
         import pyarrow as pa
 
         table = db.create_table(
@@ -586,13 +581,13 @@ def test_merge_delete_missing_by_source():
 
 
 def test_merge_partial_columns():
-    # --8<-- [start:merge_partial_columns]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:merge_partial_columns]
         import pyarrow as pa
 
         table = db.create_table(
@@ -670,13 +665,13 @@ def test_write_workflow():
 
 
 def test_append_rows():
-    # --8<-- [start:append_rows]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:append_rows]
         table = db.create_table("users", [{"id": 1, "name": "Alice"}])
         table.add([{"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}])
         rows = sorted(table.search().to_list(), key=lambda row: row["id"])
@@ -687,13 +682,13 @@ def test_append_rows():
 
 
 def test_delete_rows():
-    # --8<-- [start:delete_rows]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:delete_rows]
         table = db.create_table(
             "users",
             [
@@ -713,7 +708,6 @@ def test_delete_rows():
 
 
 def test_add_progress():
-    # --8<-- [start:add_progress]
     from tempfile import TemporaryDirectory
 
     import lancedb
@@ -723,6 +717,7 @@ def test_add_progress():
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
+        # --8<-- [start:add_progress]
         table = db.create_table("users", [{"id": 1, "name": "Alice"}])
         table.add(
             [{"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}],

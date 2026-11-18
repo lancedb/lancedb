@@ -55,14 +55,11 @@ values, and set the size of your vectors.
 
 ## Create a table with data {#create-a-table-with-data}
 
-The Python input examples below are complete programs. Install `lancedb` and
-any additional libraries imported by the example, save one as a Python file,
-and run it. Each uses its own temporary local database.
-
-The TypeScript and Rust blocks illustrate the corresponding input formats.
-For a complete connection-to-result program in either language, expand
-[the write workflow](#complete-example). Table names follow the
-[naming rules](/basics/naming).
+The Python, TypeScript and Rust blocks below illustrate the corresponding
+input formats; each assumes a `db` connection already open, as in
+[Connect to LanceDB](/basics/catalog). For a complete connection-to-result
+program, expand [the write workflow](#complete-example). Table names
+follow the [naming rules](/basics/naming).
 
 ### From list of objects {#from-list-of-objects}
 
@@ -349,7 +346,7 @@ Use the `drop_table()` method on the database to remove a table.
 
 Dropping a table removes the table object. Deleting rows keeps the table and
 changes its contents; retained versions and cleanup are described in
-[Cleanup](/maintenance/cleanup).
+[Garbage Collection](/maintenance/cleanup).
 On a local database, dropping a table that does not exist raises an error; in
 Python, pass `ignore_missing=True` to suppress it. A deployment may report
 success instead, depending on how it stores its catalog, so do not rely on the
@@ -369,7 +366,7 @@ prints the result, and removes its temporary data when finished.
   `python ingestion.py`.
 - **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
   and run `node ingestion.mts` with Node.js 22.18 or later.
-- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+- **Rust:** download the [complete Rust project](https://raw.githubusercontent.com/lancedb/lancedb/2af85bea8999c8cd23ec01ff62ba110c54652c10/docs/web/static/code/ingestion-rust.zip),
   extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
   manifest and a lockfile for the example's dependencies. The code is shown below.
 

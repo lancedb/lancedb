@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
+import { decodeCompactionResult } from "./compaction";
 import { JobFailureInfo, Job as NativeJob } from "./native";
+import { decodePrewarmDataResult } from "./prewarm";
 
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
@@ -10,6 +12,85 @@ export interface JobEventsOptions {
   limit?: number;
   /** SQL-like filter over the event columns. */
   filter?: string;
+}
+
+/**
+ * A forward-compatible structured progress snapshot for a server-side job.
+ *
+ * Fields are optional because older servers and different job types report
+ * different counters. A missing counter is unknown; it is not zero.
+ */
+export interface JobProgress {
+  /** Lifecycle state, including states from newer servers. */
+  state?: string;
+  /** Coarse server-derived phase, including phases from newer servers. */
+  phase?: string | null;
+  /** Whether an operator has parked the job. */
+  paused?: boolean;
+  /**
+   * Planned, computed, skipped, remaining, and failed row counters, when the
+   * server reports them.
+   */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_computed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_skipped?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_remaining?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_failed?: number | null;
+  /** Maintenance work observations; rewritten rows are not committed rows. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_rewritten?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_targeted?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_partial?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_active?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_failed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  fragments_selected?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  bytes_read?: number | null;
+  /** Execution identity and sample time used for client-side ETA derivation. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  execution_epoch?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  sample_at_millis?: number | null;
+  /** Best-effort remaining milliseconds, present only for a reliable sample. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  estimated_remaining_time_millis?: number;
+  /** Retain job-type-specific and newer-server fields without interpretation. */
+  [field: string]: unknown;
+}
+
+/** Callback for progress snapshots observed while waiting for a job. */
+export type JobProgressCallback = (progress: JobProgress) => void;
+
+/** Client-side controls for waiting without cancelling the underlying job. */
+export interface JobWaitOptions {
+  /**
+   * Maximum wait in milliseconds, including status requests and polling backoff.
+   * Must be a nonnegative safe integer. Omit to wait indefinitely; zero allows
+   * only an immediately ready result.
+   */
+  timeoutMs?: number;
+  /** Observe progress using the same poller that waits for completion. */
+  onProgress?: JobProgressCallback;
 }
 
 /**
@@ -29,11 +110,20 @@ export interface JobEventsOptions {
  *
  * @hideconstructor
  */
-export class Job {
+export class Job<T = void> {
   private readonly inner: NativeJob;
 
-  constructor(inner: NativeJob) {
+  private readonly resultDecoder?: (value: unknown) => T;
+
+  constructor(inner: NativeJob, resultDecoder?: (value: unknown) => T) {
     this.inner = inner;
+    this.resultDecoder =
+      resultDecoder ??
+      (inner.jobType === "prewarm_page_cache"
+        ? (decodePrewarmDataResult as (value: unknown) => T)
+        : inner.jobType === "compact"
+          ? (decodeCompactionResult as (value: unknown) => T)
+          : undefined);
   }
 
   /**
@@ -98,9 +188,85 @@ export class Job {
     return this.inner.status();
   }
 
-  /** Wait until the operation reaches a terminal state. */
-  async wait(): Promise<void> {
-    return this.inner.wait();
+  /**
+   * Fetch a structured progress snapshot.
+   *
+   * Registry jobs include lifecycle and queue metadata even when their job
+   * type does not report counters. The returned object is forward-compatible
+   * with newer servers and job types. In-process operations return null.
+   */
+  async progress(): Promise<JobProgress | null> {
+    const progress = await this.inner.progress();
+    return progress === null ? null : this.enrichProgress(progress);
+  }
+
+  /**
+   * Wait until the operation reaches a terminal state.
+   *
+   * The optional callback observes the same snapshots fetched by the backend
+   * poller that drives completion; it does not start another poller. Without a
+   * callback, this preserves the original wait behavior. The callback is a
+   * synchronous observer: its return value is ignored and not awaited. If it
+   * throws, the error is logged with `console.warn` and waiting continues; a
+   * callback exception does not reject `wait`.
+   *
+   * Pass an options object to set a client-side timeout. Expiry rejects with an
+   * error and stops this wait, including pending status requests and backoff.
+   * The operation continues; use the same handle to wait again. Registry jobs
+   * can also be reopened with `Connection.openJob`; query IDs cannot.
+   *
+   * @example
+   * ```ts
+   * const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+   * ```
+   */
+  async wait(
+    optionsOrProgress?: JobWaitOptions | JobProgressCallback,
+  ): Promise<T> {
+    const options: JobWaitOptions =
+      typeof optionsOrProgress === "function"
+        ? { onProgress: optionsOrProgress }
+        : (optionsOrProgress ?? {});
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError(
+        "wait expects an options object or a progress callback",
+      );
+    }
+    for (const key of Object.keys(options)) {
+      if (key !== "timeoutMs" && key !== "onProgress") {
+        throw new TypeError(`Unknown job wait option: ${key}`);
+      }
+    }
+    const { timeoutMs, onProgress: progressCallback } = options;
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0)
+    ) {
+      throw new RangeError("timeoutMs must be a nonnegative safe integer");
+    }
+    if (
+      progressCallback !== undefined &&
+      typeof progressCallback !== "function"
+    ) {
+      throw new TypeError("onProgress must be a function");
+    }
+    const callback =
+      progressCallback === undefined
+        ? undefined
+        : (progress: Record<string, unknown>) => {
+            try {
+              progressCallback(this.enrichProgress(progress));
+            } catch (error) {
+              console.warn("Job progress callback threw:", error);
+            }
+          };
+    if (this.resultDecoder !== undefined) {
+      return this.resultDecoder(
+        await this.inner.waitResult(callback, timeoutMs),
+      );
+    }
+    await this.inner.wait(callback, timeoutMs);
+    return undefined as T;
   }
 
   /** Request cancellation. Cancelling a finished operation is a no-op. */
@@ -136,6 +302,17 @@ export class Job {
       return new ArrowTable();
     }
     return tableFromIPC(buf);
+  }
+
+  private lastProgress: JobProgress | null = null;
+
+  private enrichProgress(progress: Record<string, unknown>): JobProgress {
+    const enriched = withProgressEta(
+      this.lastProgress,
+      progress as JobProgress,
+    );
+    this.lastProgress = enriched;
+    return enriched;
   }
 
   /**
@@ -179,6 +356,108 @@ export class Job {
 }
 
 const REPR_INDENT = "    ";
+
+const ETA_MAX_SAMPLE_INTERVAL_MILLIS = 10 * 60 * 1_000;
+
+function withProgressEta(
+  previous: JobProgress | null,
+  current: JobProgress,
+): JobProgress {
+  const snapshot = { ...current };
+  const estimate = progressEta(previous, current);
+  if (estimate !== null) {
+    snapshot.estimated_remaining_time_millis = estimate;
+  }
+  return snapshot;
+}
+
+function progressEta(
+  previous: JobProgress | null,
+  current: JobProgress,
+): number | null {
+  if (
+    previous === null ||
+    (current.state !== "running" && current.state !== "finished")
+  ) {
+    return null;
+  }
+  const remaining = integerValue(current.rows_remaining);
+  if (current.state === "finished") {
+    return remaining === 0 ? 0 : null;
+  }
+  if (
+    current.paused === true ||
+    previous.paused === true ||
+    isTransitionalPhase(current.phase) ||
+    isTransitionalPhase(previous.phase)
+  ) {
+    return null;
+  }
+  const epoch = integerValue(current.execution_epoch);
+  const previousEpoch = integerValue(previous.execution_epoch);
+  if (epoch === null || previousEpoch !== epoch) {
+    return null;
+  }
+  const sampleAt = integerValue(current.sample_at_millis);
+  const previousAt = integerValue(previous.sample_at_millis);
+  if (sampleAt === null || previousAt === null) {
+    return null;
+  }
+  const elapsed = sampleAt - previousAt;
+  if (
+    elapsed <= 0 ||
+    elapsed > ETA_MAX_SAMPLE_INTERVAL_MILLIS ||
+    Date.now() - sampleAt > ETA_MAX_SAMPLE_INTERVAL_MILLIS
+  ) {
+    return null;
+  }
+  const planned = integerValue(current.rows_planned);
+  const currentRemaining = integerValue(current.rows_remaining);
+  const previousRemaining = integerValue(previous.rows_remaining);
+  if (
+    planned === null ||
+    currentRemaining === null ||
+    previousRemaining === null
+  ) {
+    return null;
+  }
+  if (currentRemaining === 0) {
+    return 0;
+  }
+  if (planned !== previous.rows_planned) {
+    return null;
+  }
+  if (current.fragments_planned !== previous.fragments_planned) {
+    return null;
+  }
+  const currentComputed = integerValue(current.rows_computed);
+  const previousComputed = integerValue(previous.rows_computed);
+  if (currentComputed === null || previousComputed === null) {
+    return null;
+  }
+  const currentAccounted =
+    currentComputed + (integerValue(current.rows_skipped) ?? 0);
+  const previousAccounted =
+    previousComputed + (integerValue(previous.rows_skipped) ?? 0);
+  const advanced = currentAccounted - previousAccounted;
+  if (advanced <= 0 || currentRemaining > previousRemaining) {
+    return null;
+  }
+  return Math.floor((currentRemaining * elapsed) / advanced);
+}
+
+function integerValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function isTransitionalPhase(phase: unknown): boolean {
+  return (
+    phase === "queued" ||
+    phase === "starting" ||
+    phase === "initializing" ||
+    phase === "paused"
+  );
+}
 
 // biome-ignore lint/suspicious/noExplicitAny: shape varies by job type
 function indentJson(value: any): string {

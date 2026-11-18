@@ -25,7 +25,11 @@ Functions, and scalar versus batch calling, if you have not registered one
 before.
 
 A function that splits text into fixed-size passages turns a `documents`
-table into one row per passage:
+table into one row per passage. Registration details, environment and
+dependency declarations, and how a version stays immutable once rows are
+filled from it, are the same for a chunker as for any other Function --
+register it from Python, or the same function from SQL with
+[`CREATE FUNCTION`](/sql/ddl/function#create):
 
 **Source: `documents`**
 
@@ -36,9 +40,9 @@ table into one row per passage:
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-from lancedb.functions import udf
+from lancedb.functions import function
 
-@udf(
+@function(
     output_schema=pa.list_(
         pa.struct([
             pa.field("chunk_index", pa.int64(), nullable=False),
@@ -55,36 +59,37 @@ def split_into_passages(text: str) -> list[dict]:
 
 version = db.create_function_async(split_into_passages).wait()
 ```
-</CodeGroup>
 
-Registration details, environment and dependency declarations, and how a
-version stays immutable once rows are filled from it, are the same for a
-chunker as for any other Function. The same function can be registered from
-SQL with `CREATE FUNCTION`:
-
-<CodeGroup>
-```sql SQL
+```sql SQL icon="database"
 CREATE FUNCTION split_into_passages(text utf8)
 RETURNS list<struct<chunk_index: int64, chunk_text: utf8>>
 LANGUAGE python
-AS 'def split_into_passages(text): size = 200; return [{"chunk_index": i, "chunk_text": text[i:i+size]} for i in range(0, len(text), size)]'
+AS '
+def split_into_passages(text):
+    size = 200
+    return [
+        {"chunk_index": i, "chunk_text": text[i:i+size]}
+        for i in range(0, len(text), size)
+    ]
+'
 ```
 </CodeGroup>
 
 ## Explode it in a query {#explode}
 
-Call the function in the `FROM` clause, after the source table, with an
-alias: a Function there yields one row per element of the list it returns,
-with every other column repeated. Reference the function's output fields
-through the alias:
+Wrap the function call in `UNNEST` in the `SELECT` list, with an alias: it
+yields one row per element of the list the function returns, with every
+other selected column repeated. Reference the exploded struct's fields
+through that alias in a query over this one:
 
 <CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("""
-    SELECT doc_id, title, p.chunk_index, p.chunk_text
-    FROM documents, split_into_passages(text) AS p
-""")
-print(reader.read_all().to_pylist())
+```sql SQL icon="database"
+WITH exploded AS (
+    SELECT doc_id, title, UNNEST(split_into_passages(text)) AS p
+    FROM documents
+)
+SELECT doc_id, title, p.chunk_index, p.chunk_text
+FROM exploded
 ```
 </CodeGroup>
 
@@ -112,7 +117,7 @@ A chunker that samples one timestamp per second needs no blob access at all
 
 <CodeGroup>
 ```python Python icon="python"
-@udf(
+@function(
     output_schema=pa.list_(
         pa.struct([
             pa.field("frame_index", pa.int64(), nullable=False),
@@ -134,11 +139,10 @@ rather than loading the whole clip -- and returns one JPEG per call:
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from datetime import timedelta
 from lancedb import BlobReader
 
-@udf(
+@function(
     name="extract_frame",
     gpu=True,
     pip=["av==13.1.0", "pillow==11.0.0"],
@@ -159,11 +163,13 @@ Compose both in one query: explode `videos` into one row per sampled
 timestamp, then call `extract_frame` on each row to produce its image:
 
 <CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("""
-    SELECT video_id, f.frame_index, f.ts, extract_frame(video, f.ts) AS jpeg
-    FROM videos, sample_frame_timestamps(duration_seconds) AS f
-""")
+```sql SQL icon="database"
+WITH sampled AS (
+    SELECT video_id, video, UNNEST(sample_frame_timestamps(duration_seconds)) AS f
+    FROM videos
+)
+SELECT video_id, f.frame_index, f.ts, extract_frame(video, f.ts) AS jpeg
+FROM sampled
 ```
 </CodeGroup>
 
@@ -179,10 +185,14 @@ to keep a real table that stays current as the source changes, instead of
 recomputing the explosion on every query:
 
 <CodeGroup>
-```sql SQL
+```sql SQL icon="database"
 CREATE MATERIALIZED VIEW chunks AS
+WITH exploded AS (
+    SELECT doc_id, title, UNNEST(split_into_passages(text)) AS p
+    FROM documents
+)
 SELECT doc_id, title, p.chunk_index, p.chunk_text
-FROM documents, split_into_passages(text) AS p
+FROM exploded
 ```
 </CodeGroup>
 
@@ -196,15 +206,16 @@ FROM documents, split_into_passages(text) AS p
 The view refreshes like any other materialized view: new source rows are
 chunked and inserted, deleted source rows drop their children, and an
 updated row's old children are replaced by freshly chunked ones on the next
-[refresh](/feature-engineering/refresh-column). A single Function call or
-`UNNEST(column)` is the only lateral source a materialized view can carry --
-not both, and not combined with `GROUP BY` -- so keep aggregation or further
-curation in a second step over the chunked table.
+[refresh](/feature-engineering/refresh-column). A single `UNNEST(...)` --
+whether unnesting a Function's list output directly, as above, or an
+existing list column -- is the only lateral expansion a materialized view
+can carry, and it can't be combined with `GROUP BY`, so keep aggregation or
+further curation in a second step over the chunked table.
 
 ## Chunk, then curate {#next}
 
 A freshly chunked table is a normal table: [dedupe](/curation/dedupe) it to
-collapse near-identical chunks, [sample](/curation/sampling) it for a quick
+collapse near-identical chunks, [sample](/curation/statistical-sampling) it for a quick
 look, or [profile it](/curation/aggregate) to check how many chunks each
 source row produced. Continue with
 [choosing a curation task](/curation#questions).

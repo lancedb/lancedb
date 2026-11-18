@@ -46,7 +46,7 @@ export const PyVectorIndexBinaryAddData = "table.add(data)\n";
 
 export const PyVectorIndexBinaryBuildIndex = "table.create_index(\n    metric=\"hamming\",\n    vector_column_name=\"vector\",\n    index_type=\"IVF_FLAT\",\n)\n";
 
-export const PyVectorIndexBinarySchema = "table = tmp_db.create_table(table_name, schema=schema, mode=\"overwrite\")\n";
+export const PyVectorIndexBinarySchema = "table = db.create_table(table_name, schema=schema, mode=\"overwrite\")\n";
 
 export const PyVectorIndexBinarySearch = "query = np.random.randint(0, 2, size=ndim)\nquery = np.packbits(query)\ndf = table.search(query).metric(\"hamming\").limit(10).to_pandas()\ndf.vector = df.vector.apply(np.unpackbits)\n";
 

@@ -4,7 +4,7 @@
 
 [@lancedb/lancedb](../globals.md) / Job
 
-# Class: Job
+# Class: Job&lt;T&gt;
 
 A handle to an operation that may still be running.
 
@@ -19,6 +19,10 @@ extra round trip on every call:
   rest of the record.
 - Registry details are null until one of those runs. Query handles report
   jobType "query" immediately.
+
+## Type Parameters
+
+• **T** = `void`
 
 ## Accessors
 
@@ -171,6 +175,24 @@ per fragment. `filter` is a SQL-like expression over the `state`,
 
 ***
 
+### progress()
+
+```ts
+progress(): Promise<null | JobProgress>
+```
+
+Fetch a structured progress snapshot.
+
+Registry jobs include lifecycle and queue metadata even when their job
+type does not report counters. The returned object is forward-compatible
+with newer servers and job types. In-process operations return null.
+
+#### Returns
+
+`Promise`&lt;`null` \| [`JobProgress`](../interfaces/JobProgress.md)&gt;
+
+***
+
 ### refresh()
 
 ```ts
@@ -223,11 +245,33 @@ printing it.
 ### wait()
 
 ```ts
-wait(): Promise<void>
+wait(optionsOrProgress?): Promise<T>
 ```
 
 Wait until the operation reaches a terminal state.
 
+The optional callback observes the same snapshots fetched by the backend
+poller that drives completion; it does not start another poller. Without a
+callback, this preserves the original wait behavior. The callback is a
+synchronous observer: its return value is ignored and not awaited. If it
+throws, the error is logged with `console.warn` and waiting continues; a
+callback exception does not reject `wait`.
+
+Pass an options object to set a client-side timeout. Expiry rejects with an
+error and stops this wait, including pending status requests and backoff.
+The operation continues; use the same handle to wait again. Registry jobs
+can also be reopened with `Connection.openJob`; query IDs cannot.
+
+#### Parameters
+
+* **optionsOrProgress?**: [`JobWaitOptions`](../interfaces/JobWaitOptions.md) \| [`JobProgressCallback`](../type-aliases/JobProgressCallback.md)
+
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;`T`&gt;
+
+#### Example
+
+```ts
+const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+```

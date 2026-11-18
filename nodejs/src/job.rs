@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatch;
-use lancedb::job::JobEventsRequest;
+use lancedb::job::{JobEventsRequest, JobWaitOptions};
 use napi::bindgen_prelude::Buffer;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
 
+type JobProgressFn =
+    ThreadsafeFunction<serde_json::Value, (), serde_json::Value, napi::Status, false>;
+
 /// A handle to an operation that may still be running.
 #[napi]
 pub struct Job {
-    inner: Arc<lancedb::Job>,
+    inner: Arc<lancedb::Job<std::result::Result<Option<serde_json::Value>, String>>>,
 }
 
 impl Job {
@@ -22,7 +26,19 @@ impl Job {
         T: Clone + Send + Sync + 'static,
     {
         Self {
-            inner: Arc::new(inner.map(|_| ())),
+            inner: Arc::new(inner.map(|_| Ok(None))),
+        }
+    }
+    pub(crate) fn new_typed<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + serde::Serialize + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_value(result)
+                    .map(Some)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
         }
     }
 }
@@ -47,10 +63,72 @@ impl Job {
         self.inner.status().await.default_error()
     }
 
-    /// Wait until the operation reaches a terminal state.
-    #[napi(catch_unwind)]
-    pub async fn wait(&self) -> napi::Result<()> {
-        self.inner.wait().await.default_error()
+    /// The current structured progress snapshot, or null for an in-process
+    /// operation. Registry snapshots include lifecycle and queue metadata even
+    /// when the job type or server does not report counters.
+    #[napi(
+        catch_unwind,
+        ts_return_type = "Promise<Record<string, unknown> | null>"
+    )]
+    pub async fn progress(&self) -> napi::Result<Option<serde_json::Value>> {
+        self.inner.progress().await.default_error()
+    }
+
+    /// Wait until the operation reaches a terminal state. When a callback is
+    /// supplied, observe the same progress snapshots fetched by the existing
+    /// backend poller without starting another polling loop.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
+    )]
+    pub async fn wait(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
+    ) -> napi::Result<()> {
+        self.wait_result(progress_callback, timeout_ms)
+            .await
+            .map(|_| ())
+    }
+
+    /// The typed terminal value used by result-returning SDK operations.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
+    )]
+    pub async fn wait_result(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
+    ) -> napi::Result<Option<serde_json::Value>> {
+        let mut options = JobWaitOptions::new();
+        if let Some(timeout_ms) = timeout_ms {
+            const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+            if !timeout_ms.is_finite()
+                || timeout_ms.fract() != 0.0
+                || !(0.0..=MAX_SAFE_INTEGER).contains(&timeout_ms)
+            {
+                return Err(napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "timeoutMs must be a nonnegative safe integer",
+                ));
+            }
+            options = options.timeout(Duration::from_millis(timeout_ms as u64));
+        }
+        if let Some(progress_callback) = progress_callback {
+            options = options.progress(move |description| {
+                progress_callback.call(
+                    description.progress_snapshot(),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+            });
+        }
+        let result = self
+            .inner
+            .wait_with_options(options)
+            .await
+            .default_error()?;
+        result.map_err(napi::Error::from_reason)
     }
 
     /// Request cancellation. Cancelling a finished operation is a no-op.
@@ -106,11 +184,7 @@ impl Job {
     /// Why the job failed, when it failed and the server reports a reason.
     #[napi(getter)]
     pub fn failure(&self) -> Option<JobFailureInfo> {
-        self.inner.failure().map(|failure| JobFailureInfo {
-            phase: failure.phase,
-            message: failure.message,
-            retryable: failure.retryable,
-        })
+        self.inner.failure().map(Into::into)
     }
 
     /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.
@@ -159,24 +233,49 @@ pub struct JobInfo {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub created_at_millis: i64,
+    /// Structured lifecycle, queue, pause, and job-type-specific progress.
+    #[napi(ts_type = "Record<string, unknown>")]
+    pub progress: serde_json::Value,
+    /// Whether an operator has parked this job.
+    pub paused: bool,
 }
 
 impl From<lancedb::database::JobInfo> for JobInfo {
     fn from(info: lancedb::database::JobInfo) -> Self {
+        let progress = info.progress_snapshot();
         Self {
             job_id: info.job_id,
             table: info.table,
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
+            progress,
+            paused: info.paused,
         }
     }
 }
 
 /// The server's account of why a job failed.
 #[napi(object)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     pub phase: Option<String>,
     pub message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
+    pub traceback: Option<String>,
     pub retryable: Option<bool>,
+    /// Isolated SQL job that raised this failure, when supplied by the server.
+    pub sql_job_id: Option<String>,
+}
+
+impl From<lancedb::error::JobFailure> for JobFailureInfo {
+    fn from(failure: lancedb::error::JobFailure) -> Self {
+        Self {
+            phase: failure.phase,
+            message: failure.message,
+            traceback: failure.traceback,
+            retryable: failure.retryable,
+            sql_job_id: failure.sql_job_id,
+        }
+    }
 }

@@ -29,8 +29,6 @@ and Rust. Load the key from an environment variable or secret manager.
 <CodeGroup>
 ```python Python icon="python"
 import os
-import lancedb
-
 db = lancedb.connect(
     uri="db://your-database-uri",
     api_key=os.environ["LANCEDB_API_KEY"],
@@ -109,7 +107,6 @@ Rust, and `oauthConfig` in TypeScript.
 <CodeGroup>
 ```python Python icon="python"
 import os
-import lancedb
 from lancedb.remote import OAuthConfig, OAuthFlowType
 
 # Client Credentials (service-to-service)
@@ -247,7 +244,6 @@ request a refresh token from your provider (often by including
 
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
 from lancedb.remote import OAuthConfig, OAuthFlowType, TokenCacheOptions
 
 # Use DEVICE_CODE for a CLI without a local browser or callback server.

@@ -1,0 +1,128 @@
+---
+title: "Selective Sampling"
+sidebarTitle: "Selective Sampling"
+description: "Fetch specific rows by row ID, row address or offset instead of drawing a random fraction."
+icon: crosshairs
+keywords: ["sampling", "row id", "row address", "offset", "take", "rowid", "rowaddr", "rowoffset"]
+availability:
+  embedded: available
+  enterprise: available
+---
+
+Selective sampling fetches specific, already-known rows -- by row ID, row
+address or offset -- rather than drawing a random fraction of the table.
+Use it to re-fetch rows a previous query identified, resume from a saved
+position, or pull a batch by index for a data loader. For a random subset
+instead, see [Statistical Sampling](/curation/statistical-sampling).
+
+LanceDB exposes three ways to address a row:
+
+| Identifier | Stability | Typical source |
+| --- | --- | --- |
+| Row ID (`_rowid`) | Stable across compaction, with [stable row IDs](/basics/guarantees) enabled | A previous query's result, or `function_errors()` |
+| Row address (`_rowaddr`) | Changes on compaction; encodes `(fragment_id << 32) \| row_offset` | A previous query's result, when you need the physical location |
+| Offset | Table-wide position; **not** stable -- a row's offset shifts when an earlier row is deleted | `range(len(table))`, since every valid offset is known in advance |
+
+## From Python {#python}
+
+The SDK takes a list of row IDs or offsets directly, without going through
+SQL:
+
+<CodeGroup>
+```python Python icon="python"
+# By row ID -- from a previous search or scan that selected "_rowid"
+rows = tbl.take_row_ids([1001, 1002, 1005]).to_arrow()
+
+# By offset -- the full range is always [0, len(tbl))
+rows = tbl.take_offsets([0, 1, 2]).to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+// By row ID -- from a previous search or scan that selected "_rowid"
+const rowsById = await tbl.takeRowIds([1001n, 1002n, 1005n]).toArray();
+
+// By offset -- the full range is always [0, tbl.countRows())
+const rowsByOffset = await tbl.takeOffsets([0, 1, 2]).toArray();
+```
+
+```rust
+use lancedb::query::ExecutableQuery;
+
+// By row ID -- from a previous search or scan that selected "_rowid"
+let rows_by_id = tbl.take_row_ids(vec![1001, 1002, 1005]).execute().await?;
+
+// By offset -- the full range is always [0, tbl.count_rows().await?)
+let rows_by_offset = tbl.take_offsets(vec![0, 1, 2]).execute().await?;
+```
+</CodeGroup>
+
+Both methods return a query builder; call `.to_arrow()`, `.to_list()` or
+similar to execute it.
+
+<Note>
+The guarantees for row IDs below apply to SDK releases containing
+[the ordering fix in #4826](https://github.com/lancedb/lancedb/pull/4826).
+Earlier releases may collapse repeated IDs and return rows in a different
+order.
+</Note>
+
+`take_row_ids` returns matching rows in the order of the input IDs and
+preserves repeated IDs in both LanceDB Embedded and LanceDB Enterprise. For example,
+`take_row_ids([1005, 1001, 1005])` returns row 1005, row 1001, then row 1005
+again if both IDs exist. Missing or deleted IDs are omitted. This supports
+sampling with replacement. In Rust, an explicit nonempty
+`QueryBase::order_by` list overrides the requested order; limits and offsets
+apply after restoring repeated rows.
+
+`take_offsets` also preserves repeated offsets, but does not guarantee
+input order. It tracks `_rowoffset` internally to restore repeated rows
+and drops that column from the output unless you explicitly `select` it.
+Add `_rowoffset` to your selection when you need to align a `take_offsets`
+result with the input offsets.
+
+<Note>
+Ordered takes by row ID collect all matching batches, combine them into one
+batch and reorder the rows before returning output batches. Even
+`to_batches(max_batch_length=1)` only limits the returned batch size; it
+does not bound working memory. For large requests or rows with large
+column values, split the input IDs into smaller requests and use
+`.select(...)` to fetch only the columns you need.
+</Note>
+
+Offsets are mostly useful for sampling: the valid range is always
+`[0, len(table))`, so you can draw a random sample of offsets without
+reading the table first. Row IDs require you to already have them, from an
+earlier query's `_rowid` column -- but unlike offsets, a row ID keeps
+addressing the same logical row even after compaction, as long as the
+table has stable row IDs enabled.
+
+## From SQL {#sql}
+
+The same three identifiers are available as
+[pseudo-columns](/sql/data-types#pseudo-columns) -- select or filter on
+them like any other column:
+
+<CodeGroup>
+```sql SQL icon="database"
+-- By row ID
+SELECT * FROM documents WHERE _rowid IN (1001, 1002, 1005);
+
+-- By row address
+SELECT * FROM documents WHERE _rowaddr IN (4294967296, 4294967297);
+
+-- Including the identifier in the result, to save for a later take
+SELECT _rowid, * FROM documents WHERE score > 0.9;
+```
+</CodeGroup>
+
+There is no dedicated Python method for taking by row address -- use
+`.where("_rowaddr IN (...)")` on the SDK query builder, or the SQL form
+above, since the expression language is the same either way.
+
+## Related guides {#reference}
+
+[Query plans](/basics/sql#query-plans) show whether a row-ID or offset
+filter reads the whole table or seeks directly to the requested rows. See
+[Statistical Sampling](/curation/statistical-sampling) for a random
+fraction instead of specific rows, and [Permutation](/training/permutation)
+for shuffled, batched reads through the Python SDK.

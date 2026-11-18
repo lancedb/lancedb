@@ -146,6 +146,25 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                         f"{command!r} not found in {commands!r}",
                     )
 
+                with (workdir / "Cargo.toml").open("a") as manifest:
+                    manifest.write('lance-arrow = "1.0.0"\n')
+                for inherited in (
+                    "lance-arrow = { workspace = true }",
+                    "lance-arrow.workspace = true",
+                ):
+                    inherited_manifest = f"[dependencies]\n{inherited}\n"
+                    core_manifest.write_text(inherited_manifest)
+                    result = subprocess.run(
+                        [sys.executable, str(SCRIPT), version],
+                        cwd=workdir,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(core_manifest.read_text(), inherited_manifest)
+
     def _write_fake_executables(self, fake_bin: Path) -> None:
         cargo = fake_bin / "cargo"
         cargo.write_text(

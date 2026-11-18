@@ -14,7 +14,7 @@ creates both under names unique to its run, never replaces an existing object,
 and drops only what it created.
 
 The other tests run locally and check the client side of the same code: what
-`@udf` sends for registration, how a registered version binds a column, where a
+`@function` sends for registration, how a registered version binds a column, where a
 local connection stops, and when the Enterprise test connects. They do not run
 a Function remotely.
 """
@@ -32,18 +32,18 @@ from lancedb import col
 from lancedb.functions import FunctionApplication, FunctionVersion
 
 # --8<-- [start:function_define]
-from lancedb import udf
+from lancedb import function
 
 
-@udf
+@function
 def double(value: float) -> float:
     return value * 2
 
 
 # --8<-- [end:function_define]
 
-# The definition the walkthrough registers. The Enterprise test registers a copy
-# of it under a name that only its run uses.
+# The definitions the walkthrough registers. The Enterprise test registers a
+# copy of each under a name that only its run uses.
 WALKTHROUGH_DOUBLE = double
 
 
@@ -52,7 +52,7 @@ def describe(value: float):
 
 
 # --8<-- [start:function_class_define]
-@udf(pip=["sentence-transformers"])
+@function(pip=["sentence-transformers"])
 class embed:
     def __init__(self, model: str = "all-MiniLM-L6-v2"):
         # Runs on the worker, once per instance: only the worker needs the package.
@@ -68,6 +68,8 @@ class embed:
 
 
 # --8<-- [end:function_class_define]
+
+WALKTHROUGH_EMBED = embed
 
 
 # A Function version as the service returns it after registration: the SDK's
@@ -144,7 +146,7 @@ def test_function_output_nullability():
         pa.field("half", pa.float64(), nullable=False),
         pa.field("note", pa.string(), nullable=True),
     ]
-    struct = udf(input_schema=inputs, output_schema=pa.schema(fields))(describe)
+    struct = function(input_schema=inputs, output_schema=pa.schema(fields))(describe)
     output = struct.registration_request.signature.output
     assert output.kind == "named_struct"
     assert [(field.name, field.nullable) for field in output.fields] == [
@@ -152,13 +154,27 @@ def test_function_output_nullability():
         ("note", True),
     ]
 
-    # A scalar output, and a struct declared as one nullable field, may not be.
-    for nullable in (
-        pa.field("result", pa.float64(), nullable=True),
-        pa.field("result", pa.struct(fields), nullable=True),
-    ):
-        with pytest.raises(ValueError, match="non-nullable"):
-            udf(input_schema=inputs, output_schema=nullable)(describe)
+    # A scalar output may be nullable.
+    @function(input_schema=inputs)
+    def maybe_double(value: float) -> float | None:
+        return None if value == 0 else value * 2
+
+    output = maybe_double.registration_request.signature.output
+    assert (output.kind, output.arrow_type, output.nullable) == (
+        "scalar",
+        "float64",
+        True,
+    )
+    assert json.loads(maybe_double.registration_request.signature.to_canonical_json())[
+        "output"
+    ] == {"kind": "scalar", "arrow_type": "float64", "nullable": True}
+
+    # A struct declared as one nullable field may not be.
+    with pytest.raises(ValueError, match="non-nullable"):
+        function(
+            input_schema=inputs,
+            output_schema=pa.field("result", pa.struct(fields), nullable=True),
+        )(describe)
 
 
 def test_function_registration_is_remote(tmp_path):
@@ -240,7 +256,10 @@ def test_function_enterprise(monkeypatch):
     # this run creates both under names only it uses, and drops only those.
     run = uuid.uuid4().hex[:12]
     table_name = f"function_demo_{run}"
-    double = udf(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    double = function(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    embed = function(name=f"embed_{run}", pip=["sentence-transformers"])(
+        WALKTHROUGH_EMBED.__wrapped__
+    )
     create_table = db.create_table
 
     def create_run_table(name, *args, **kwargs):
@@ -251,6 +270,7 @@ def test_function_enterprise(monkeypatch):
 
     table = None
     version = None
+    embedder = None
     try:
         # --8<-- [start:function_create_table]
         import pyarrow as pa
@@ -294,11 +314,18 @@ def test_function_enterprise(monkeypatch):
             (2.0, 4.0),
             (3.0, 6.0),
         ]
+
+        # --8<-- [start:function_class_register]
+        embedder = db.create_function_async(embed).wait()
+        # --8<-- [end:function_class_register]
+        assert embedder.name == f"embed_{run}"
     finally:
         if table is not None:
             db.drop_table(table_name)
         if version is not None:
             db.drop_function(version.name, version=version.version)
+        if embedder is not None:
+            db.drop_function(embedder.name, version=embedder.version)
 
 
 class ReachedConnection(Exception):

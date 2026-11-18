@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from lancedb.server_info import ServerInfo
+
 from dataclasses import replace
 from datetime import timedelta
 import json
@@ -37,8 +39,8 @@ import pyarrow as pa
 
 from ..common import DATA
 from lancedb.listing import Listing, NamespaceListing, TableListing
-from ..db import DBConnection, LOOP
-from ..functions import FunctionVersion, UdfDefinition
+from ..db import DBConnection, LOOP, _normalize_function_version
+from ..functions import FunctionVersion, FunctionDefinition
 from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
@@ -214,6 +216,7 @@ class RemoteDBConnection(DBConnection):
         client_config,
         oauth_config,
         sql_host_override,
+        storage_options,
     ):
         config = (
             ClientConfig(**client_config)
@@ -233,7 +236,7 @@ class RemoteDBConnection(DBConnection):
         result.region = "us-east-1"
         result.host_override = endpoint
         result.sql_host_override = sql_host_override
-        result.storage_options = None
+        result.storage_options = storage_options
         result.client_config = replace(config, extra_headers=headers)
         result._catalog_oauth = oauth_config is not None
         result._conn = inner
@@ -430,7 +433,11 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> TableListing:
-        """List a page of tables in this database.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -468,7 +475,9 @@ class RemoteDBConnection(DBConnection):
         """List the names of all tables in the database.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
 
         Parameters
         ----------
@@ -488,7 +497,8 @@ class RemoteDBConnection(DBConnection):
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -566,6 +576,7 @@ class RemoteDBConnection(DBConnection):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> Table:
         """Clone a table from a source table.
 
@@ -585,6 +596,8 @@ class RemoteDBConnection(DBConnection):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -602,6 +615,7 @@ class RemoteDBConnection(DBConnection):
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
+                exist_ok=exist_ok,
             )
         )
         return RemoteTable(
@@ -782,12 +796,14 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
@@ -797,10 +813,12 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -818,12 +836,14 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
@@ -831,10 +851,12 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
@@ -959,6 +981,13 @@ class RemoteDBConnection(DBConnection):
         return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
+    def server_info(self) -> ServerInfo:
+        """Read the responding server's build information. See
+        [DBConnection.server_info][lancedb.db.DBConnection.server_info].
+        """
+        return LOOP.run(self._conn.server_info())
+
+    @override
     def list_gpu_classes(self) -> List[GpuClass]:
         """List configured Function GPU classes. See
         [DBConnection.list_gpu_classes][lancedb.db.DBConnection.list_gpu_classes].
@@ -968,14 +997,20 @@ class RemoteDBConnection(DBConnection):
     @override
     def create_function_async(
         self,
-        definition: UdfDefinition,
+        definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
-                definition, secrets=secrets, namespace_path=namespace_path
+                definition,
+                secrets=secrets,
+                exist_ok=exist_ok,
+                namespace_path=namespace_path,
+                refresh_lock=refresh_lock,
             )
         )
         return Job(job)
@@ -985,9 +1020,10 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        version: str,
+        version: Optional[Union[int, str]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
+        version = _normalize_function_version(version)
         return LOOP.run(
             self._conn.get_function(
                 name, version=version, namespace_path=namespace_path
@@ -1024,11 +1060,14 @@ class RemoteDBConnection(DBConnection):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> bool:
-        return LOOP.run(
-            self._conn.drop_function(
+        dropped, drop_warnings = LOOP.run(
+            self._conn._drop_function_with_warnings(
                 name, version=version, namespace_path=namespace_path
             )
         )
+        for warning in drop_warnings:
+            warnings.warn(warning, UserWarning, stacklevel=2)
+        return dropped
 
     @override
     def drop_function_async(
@@ -1062,6 +1101,7 @@ class RemoteDBConnection(DBConnection):
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -1079,6 +1119,7 @@ class RemoteDBConnection(DBConnection):
                 azure_client_secret_secret=azure_client_secret_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
             )
         )
@@ -1117,9 +1158,18 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
-        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+        LOOP.run(
+            self._conn.create_secret(
+                name, value, exist_ok=exist_ok, namespace_path=namespace_path
+            )
+        )
 
     @override
     def alter_secret(
@@ -1163,10 +1213,17 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         return LOOP.run(
-            self._conn.create_view(name, query, namespace_path=namespace_path)
+            self._conn.create_view(
+                name, query, exist_ok=exist_ok, namespace_path=namespace_path
+            )
         )
 
     @override
@@ -1267,16 +1324,52 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> Listing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = jobs[:5]
         """
         return Listing(
-            self._conn.list_jobs(page_token=page_token, page_limit=page_limit)
+            self._conn.list_jobs(
+                page_token=page_token,
+                page_limit=page_limit,
+                table=table,
+                namespace_path=namespace_path,
+                state=state,
+                job_type=job_type,
+                job_types=job_types,
+                created_at_gte_millis=created_at_gte_millis,
+                created_at_lt_millis=created_at_lt_millis,
+            )
         )
 
     @override

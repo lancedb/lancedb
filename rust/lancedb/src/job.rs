@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
@@ -23,6 +24,48 @@ use crate::error::{Error, JobFailure, Result};
 /// poller. Keeping this callback on the poller avoids a second lifecycle or
 /// retry loop just to render progress.
 pub type JobProgressCallback = Arc<Mutex<dyn FnMut(&JobDescription) + Send>>;
+
+/// Client-side controls for waiting on a job. A timeout stops this wait without
+/// cancelling the operation; keep the handle to wait again.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct JobWaitOptions {
+    /// Maximum time to wait, including HTTP requests and polling backoff.
+    /// `None` waits indefinitely. Zero only permits an immediately ready result.
+    pub timeout: Option<Duration>,
+    progress: Option<JobProgressCallback>,
+}
+
+impl std::fmt::Debug for JobWaitOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobWaitOptions")
+            .field("timeout", &self.timeout)
+            .field("progress", &self.progress.is_some())
+            .finish()
+    }
+}
+
+impl JobWaitOptions {
+    /// Wait indefinitely without a progress callback.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bound this wait without cancelling the underlying job.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Observe the backend's existing poller. The callback should return promptly.
+    pub fn progress<F>(mut self, progress: F) -> Self
+    where
+        F: FnMut(&JobDescription) + Send + 'static,
+    {
+        self.progress = Some(Arc::new(Mutex::new(progress)));
+        self
+    }
+}
 
 /// Which of a job's events [`Job::events`] returns.
 ///
@@ -85,6 +128,20 @@ pub(crate) trait JobHandle: Send + Sync {
     async fn describe(&self) -> Result<JobDescription> {
         job_detail_not_supported("describing a job")
     }
+    /// Chrome Trace Event JSON for a server-side Function job.
+    async fn timeline(&self) -> Result<Value> {
+        job_detail_not_supported("job timeline export")
+    }
+
+    async fn stack(&self, _worker_id: &str) -> Result<Value> {
+        job_detail_not_supported("worker stack capture")
+    }
+
+    /// A printable report of recorded Function job metrics.
+    async fn stats(&self) -> Result<Option<String>> {
+        job_detail_not_supported("job statistics")
+    }
+
     /// The job's recorded lifecycle events.
     async fn events(&self, _request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         job_detail_not_supported("job event history")
@@ -116,6 +173,11 @@ impl TerminalResult {
 
     pub(crate) fn value(&self) -> Option<&Value> {
         self.value.as_ref()
+    }
+
+    pub(crate) fn with_value(mut self, value: Value) -> Self {
+        self.value = Some(value);
+        self
     }
 
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
@@ -266,6 +328,42 @@ impl Job<()> {
             cache.description = Some(description);
         }
         job
+    }
+
+    /// Decode this job's terminal payload as `T` when waiting.
+    ///
+    /// Use this after [`crate::Connection::open_job`] when the job's result
+    /// type is known. The job identity and cached description are preserved.
+    /// Missing or incompatible payloads are reported by [`Job::wait`].
+    /// A job that completed before its handle was created has only a unit
+    /// result; converting it fails immediately if `T` cannot decode JSON null.
+    ///
+    /// ```no_run
+    /// # async fn reopen(
+    /// #     db: &lancedb::Connection, id: &str,
+    /// # ) -> lancedb::Result<lancedb::function::RefreshColumnResult> {
+    /// let job = db.open_job(id).await?
+    ///     .into_typed::<lancedb::function::RefreshColumnResult>()?;
+    /// job.wait().await
+    /// # }
+    /// ```
+    pub fn into_typed<T>(self) -> Result<Job<T>>
+    where
+        T: Clone + DeserializeOwned + Send + Sync + 'static,
+    {
+        let inner = match self.inner {
+            JobInner::Handle { handle, .. } => JobInner::Handle {
+                handle,
+                decode: Arc::new(TerminalResult::decode::<T>),
+            },
+            JobInner::Completed(()) => {
+                JobInner::Completed(TerminalResult::local(Value::Null).decode::<T>()?)
+            }
+        };
+        Ok(Job {
+            inner,
+            cache: self.cache,
+        })
     }
 }
 
@@ -463,6 +561,79 @@ where
         }
     }
 
+    /// Fetch a recorded Function job timeline as Chrome Trace Event JSON.
+    ///
+    /// The snapshot opens in Perfetto or Chrome tracing. It contains retained
+    /// split and positioned phase spans; batch statistics remain arguments,
+    /// because individual batch timestamps are not recorded. Running jobs return
+    /// a partial recording without waiting for completion. Requires server support;
+    /// in-process operations and SQL query handles do not support this operation.
+    ///
+    /// ```no_run
+    /// # async fn export(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// let trace = job.timeline().await?;
+    /// std::fs::write("job.trace.json", trace.to_string())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn timeline(&self) -> Result<Value> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.timeline().await,
+            JobInner::Completed(_) => job_detail_not_supported("job timeline export"),
+        }
+    }
+
+    /// Capture Python thread stacks from a running Function worker.
+    ///
+    /// Requires a server supporting stack inspection and system operate privilege.
+    /// The JSON response reports capture availability per session, timestamps and
+    /// truncation. Stacks exclude source text, locals and native frames. A server
+    /// may reuse a recent capture to bound sampling overhead. Unsupported local
+    /// operations return [`crate::Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # async fn inspect(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// let evidence = job.stack("worker-id").await?;
+    /// println!("{evidence}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn stack(&self, worker_id: impl AsRef<str>) -> Result<Value> {
+        let worker_id = worker_id.as_ref();
+        if worker_id.is_empty() || worker_id.len() > 256 {
+            return Err(Error::InvalidInput {
+                message: "worker_id must contain 1 to 256 bytes".into(),
+            });
+        }
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.stack(worker_id).await,
+            JobInner::Completed(_) => job_detail_not_supported("worker stack capture"),
+        }
+    }
+
+    /// Fetch a printable run report for a server-side Function job.
+    ///
+    /// The server report includes recorded phase timings, finishing-supervisor
+    /// slot occupancy, all-attempt split execution and batch latency, and
+    /// accepted-row throughput. Returns `None` for running jobs or when no recorded
+    /// profile is available, without waiting for completion. Requires server
+    /// support; local operations and SQL query handles do not support reports.
+    ///
+    /// ```no_run
+    /// # async fn report(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(report) = job.stats().await? {
+    ///     println!("{report}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn stats(&self) -> Result<Option<String>> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.stats().await,
+            JobInner::Completed(_) => job_detail_not_supported("job statistics"),
+        }
+    }
+
     /// Waits until the operation reaches a terminal state.
     ///
     /// Returns the endpoint's typed result. Unit-result jobs return `()`.
@@ -470,7 +641,7 @@ where
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
     pub async fn wait(&self) -> Result<T> {
-        self.wait_with_progress_opt(None).await
+        self.wait_with_options(JobWaitOptions::default()).await
     }
 
     /// Wait for the operation while observing progress from the backend's
@@ -481,8 +652,56 @@ where
     where
         F: FnMut(&JobDescription) + Send + 'static,
     {
-        self.wait_with_progress_opt(Some(Arc::new(Mutex::new(progress))))
+        self.wait_with_options(JobWaitOptions::new().progress(progress))
             .await
+    }
+
+    /// Wait with a client-side deadline and an optional progress callback.
+    ///
+    /// Returns [`Error::Timeout`] when the deadline expires, including while a
+    /// status request or polling backoff is pending. This drops the wait future;
+    /// it does not cancel the operation or mark it failed. The same handle can
+    /// wait again. Registry jobs can also be reopened by ID; query IDs remain
+    /// connection-scoped and cannot be reopened as registry jobs.
+    ///
+    /// ```no_run
+    /// # async fn example(job: &lancedb::Job) -> lancedb::Result<()> {
+    /// use std::time::Duration;
+    /// use lancedb::job::JobWaitOptions;
+    /// job.wait_with_options(JobWaitOptions::new()
+    ///     .timeout(Duration::from_secs(60))
+    ///     .progress(|description| println!("{}", description.state)))
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn wait_with_options(&self, options: JobWaitOptions) -> Result<T> {
+        let Some(timeout) = options.timeout else {
+            return self.wait_with_progress_opt(options.progress).await;
+        };
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| Error::InvalidInput {
+                message: "job wait timeout is too large".to_string(),
+            })?;
+        tokio::time::timeout_at(deadline, self.wait_with_progress_opt(options.progress))
+            .await
+            .map_err(|_| {
+                let operation = self
+                    .id()
+                    .map(|id| format!("job {id:?}"))
+                    .unwrap_or_else(|| "operation".to_string());
+                let resume = if self.id().is_some() && self.job_type().as_deref() != Some("query") {
+                    "continue waiting on this handle or reattach with Connection::open_job"
+                } else {
+                    "keep this handle to continue waiting"
+                };
+                Error::Timeout {
+                    message: format!(
+                        "{operation} still running after {timeout:?}; the operation continues; {resume}"
+                    ),
+                }
+            })?
     }
 
     async fn wait_with_progress_opt(&self, progress: Option<JobProgressCallback>) -> Result<T> {
@@ -575,10 +794,13 @@ impl Outcome {
     fn into_result(self) -> Result<TerminalResult> {
         match self {
             Self::Succeeded(result) => Ok(result),
-            Self::Failed(source) => Err(Error::JobFailed {
-                job_id: None,
-                failure: JobFailure::from_source(source),
-            }),
+            Self::Failed(source) => {
+                let (job_id, failure) = match source.as_ref() {
+                    Error::JobFailed { job_id, failure } => (job_id.clone(), failure.clone()),
+                    _ => (None, Box::new(JobFailure::from_source(source))),
+                };
+                Err(Error::JobFailed { job_id, failure })
+            }
             Self::Cancelled => Err(Error::JobCancelled { job_id: None }),
         }
     }
@@ -707,10 +929,111 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn wait_timeout_preserves_local_task_and_typed_result() {
+        let job = Job::spawned(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(41_u64)
+        }))
+        .map(|value| value + 1);
+        let error = job
+            .wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(10)))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Timeout { .. }));
+        assert!(error.to_string().contains("keep this handle"));
+        assert!(!error.to_string().contains("Connection::open_job"));
+        assert_eq!(job.state(), None);
+        assert_eq!(job.status().await.unwrap(), "running");
+        assert_eq!(
+            job.wait_with_options(JobWaitOptions::new()).await.unwrap(),
+            42
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_timeout_keeps_query_handle_without_requesting_cancellation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let observed = cancellations.clone();
+        let id = Uuid::new_v4();
+        let job = Job::from_query_task(
+            id,
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(42_u64)
+            }),
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+        );
+        let error = job
+            .wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(10)))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Timeout { .. }));
+        assert!(error.to_string().contains(&id.to_string()));
+        assert!(!error.to_string().contains("Connection::open_job"));
+        assert_eq!(cancellations.load(Ordering::SeqCst), 0);
+        assert_eq!(job.wait().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn wait_options_handle_zero_and_unrepresentable_deadlines() {
+        let job = Job::new_done();
+        job.wait_with_options(JobWaitOptions::new().timeout(Duration::ZERO))
+            .await
+            .unwrap();
+        assert!(matches!(
+            job.wait_with_options(JobWaitOptions::new().timeout(Duration::MAX))
+                .await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_options_preserve_operation_errors() {
+        let failed = Job::<u64>::spawned(tokio::spawn(async {
+            Err(Error::Runtime {
+                message: "original failure".into(),
+            })
+        }));
+        let error = failed
+            .wait_with_options(JobWaitOptions::new().timeout(Duration::from_secs(1)))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::JobFailed { .. }));
+        assert!(error.to_string().contains("original failure"));
+        let cancelled = Job::<u64>::spawned(tokio::spawn(pending()));
+        cancelled.cancel().await.unwrap();
+        assert!(matches!(
+            cancelled
+                .wait_with_options(JobWaitOptions::new().timeout(Duration::from_secs(1)))
+                .await,
+            Err(Error::JobCancelled { .. })
+        ));
+    }
+
     #[test]
     fn local_typed_result_decode_errors_are_runtime_errors() {
         assert!(matches!(
             TerminalResult::local(Value::Null).decode::<u64>(),
+            Err(Error::Runtime { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn completed_unit_job_can_be_retyped_as_unit() {
+        let job = Job::new_done().into_typed::<()>().unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+    }
+
+    #[test]
+    fn completed_unit_job_rejects_an_incompatible_result_type() {
+        assert!(matches!(
+            Job::new_done().into_typed::<u64>(),
             Err(Error::Runtime { .. })
         ));
     }

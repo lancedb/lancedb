@@ -20,7 +20,8 @@ to what is new.
 `curation_batches` gets a batch of new documents appended periodically, with
 no updates or deletes between appends:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE curation_batches (doc_id BIGINT, source VARCHAR, text VARCHAR);
 INSERT INTO curation_batches VALUES
     (1, 'web', 'A cat on a chair'),
@@ -31,15 +32,18 @@ INSERT INTO curation_batches VALUES
     (4, 'books', 'A cat by a window');
 -- the table is now at a later version, for example 7
 ```
+</CodeGroup>
 
 ## Read only what is new {#read-new}
 
 `CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)` reads the rows
 appended after version 5 -- documents 3 and 4 -- without rescanning 1 and 2:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 SELECT * FROM curation_batches CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)
 ```
+</CodeGroup>
 
 Record the table's version after each curation run, then start the next
 run's `CHANGES` from it. See [Versioning](/management/table#versioning) for
@@ -52,12 +56,14 @@ the rest of this page: chunk, dedupe, or join only the new rows, instead of
 the whole table. Materializing the result keeps a running, append-only table
 of work already done:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 INSERT INTO curated_batches
 SELECT doc_id, source, text
 FROM curation_batches CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)
 WHERE source = 'books'
 ```
+</CodeGroup>
 
 A [chunker Function](/curation/chunking) or a [`dedupe`](/sql/dql/dedupe)
 call works the same way: put the `CHANGES` relation where the source table
@@ -70,10 +76,12 @@ other than a pure append happened to the table between the starting version
 and the current one -- an update, a delete, a merge -- the query is refused
 rather than silently returning an incomplete or wrong result:
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 -- refused if any row in curation_batches was updated or deleted after version 5
 SELECT * FROM curation_batches CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 5)
 ```
+</CodeGroup>
 
 When that happens, either re-run from a later starting version that is
 itself after the non-append write, or read the table in full instead of

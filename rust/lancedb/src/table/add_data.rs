@@ -65,6 +65,7 @@ pub struct AddDataBuilder {
     pub(crate) progress_callback: Option<ProgressCallback>,
     pub(crate) write_parallelism: Option<usize>,
     pub(crate) allow_external_blob_outside_bases: bool,
+    pub(crate) retries: Option<u8>,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -93,7 +94,16 @@ impl AddDataBuilder {
             progress_callback: None,
             write_parallelism: None,
             allow_external_blob_outside_bases: false,
+            retries: None,
         }
+    }
+
+    /// Override the remote retry budget for this call. `0` disables retries,
+    /// including retries of idempotent multipart parts. Ambiguous commits are
+    /// never replayed, regardless of this setting. Ignored by embedded tables.
+    pub fn retries(mut self, retries: u8) -> Self {
+        self.retries = Some(retries);
+        self
     }
 
     pub fn mode(mut self, mode: AddDataMode) -> Self {
@@ -217,6 +227,7 @@ impl AddDataBuilder {
             mode: self.mode,
             tracker,
             allow_external_blob_outside_bases: self.allow_external_blob_outside_bases,
+            retries: self.retries,
         })
     }
 }
@@ -231,6 +242,7 @@ pub struct PreprocessingOutput {
     pub mode: AddDataMode,
     pub tracker: Option<Arc<WriteProgressTracker>>,
     pub allow_external_blob_outside_bases: bool,
+    pub retries: Option<u8>,
 }
 
 /// Check that the input schema is valid for insert.

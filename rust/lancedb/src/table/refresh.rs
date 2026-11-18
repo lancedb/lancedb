@@ -55,31 +55,384 @@ use crate::function::validate_gpu_class_name;
 use crate::job::Job;
 use crate::{Error, Result};
 
+/// Aggregate worker resources for one Enterprise Function refresh.
+///
+/// CPU is in millicores (1000 = one core) and memory is in bytes. These
+/// values cap the Function workers together; they are not per-worker
+/// allocations. The default GPU budget is zero, which describes a CPU-only
+/// Function. This option is rejected by LanceDB Embedded refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionWorkerResourceBudget {
+    pub cpu_millis: u64,
+    pub memory_bytes: u64,
+    /// Aggregate GPU budget across the refresh. Zero is CPU-only.
+    #[serde(default)]
+    pub gpu_count: u32,
+}
+
+impl FunctionWorkerResourceBudget {
+    /// Create a CPU-only aggregate budget.
+    pub fn new(cpu_millis: u64, memory_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            gpu_count: 0,
+        }
+    }
+
+    /// Set the aggregate GPU budget.
+    pub fn with_gpu_count(mut self, gpu_count: u32) -> Self {
+        self.gpu_count = gpu_count;
+        self
+    }
+
+    /// Require every per-tier resource limit to request at least one unit.
+    pub fn validate(&self) -> Result<()> {
+        if self.cpu_millis == 0 {
+            return Err(Error::InvalidInput {
+                message: "resource_budget.cpu_millis must be greater than zero".into(),
+            });
+        }
+        if self.memory_bytes == 0 {
+            return Err(Error::InvalidInput {
+                message: "resource_budget.memory_bytes must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+///
+/// This sizes the supervisor or planning worker pod for a registered
+/// Function refresh. LanceDB Embedded rejects it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: u64,
+    /// Memory limit in bytes.
+    pub memory_bytes: u64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: u64,
+}
+
+impl FunctionRefreshPodResources {
+    /// Create positive CPU, memory, and ephemeral-storage limits.
+    pub fn new(cpu_millis: u64, memory_bytes: u64, ephemeral_storage_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            ephemeral_storage_bytes,
+        }
+    }
+
+    fn validate(&self, prefix: &str) -> Result<()> {
+        for (name, value) in [
+            ("cpu_millis", self.cpu_millis),
+            ("memory_bytes", self.memory_bytes),
+            ("ephemeral_storage_bytes", self.ephemeral_storage_bytes),
+        ] {
+            if value == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!("{prefix}.{name} must be greater than zero"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resources and sizing policy for the CPU-only planning fleet of one
+/// registered Function refresh.
+///
+/// `resources` describes one planning worker pod. The remaining fields bound
+/// how many workers may run and how much work each worker receives. LanceDB
+/// Embedded rejects this option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: usize,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: u64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: u64,
+}
+
+impl FunctionRefreshPlanningConfig {
+    /// Create a planning configuration; every value must be positive.
+    pub fn new(
+        resources: FunctionRefreshPodResources,
+        max_workers: usize,
+        rows_per_worker: u64,
+        fragments_per_worker: u64,
+    ) -> Self {
+        Self {
+            resources,
+            max_workers,
+            rows_per_worker,
+            fragments_per_worker,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.resources.validate("planning_workers.resources")?;
+        if self.max_workers == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.max_workers must be greater than zero".into(),
+            });
+        }
+        if self.rows_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.rows_per_worker must be greater than zero".into(),
+            });
+        }
+        if self.fragments_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.fragments_per_worker must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Options for refreshing a computed column.
-#[derive(Debug, Clone, Default)]
+///
+/// Serializes to the Enterprise backfill request body, one key per set
+/// option; the SQL `REFRESH COLUMN ... WHERE ... WITH (...)` form takes the
+/// same names.
+#[derive(Debug, Clone, Default, Serialize)]
 #[non_exhaustive]
 pub struct RefreshColumnOptions {
+    /// Select exactly the current failed rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_errors: Option<bool>,
+    /// Restrict retry selection to this job. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_job_id: Option<String>,
+    /// Restrict retry selection to this exception class. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_error_type: Option<String>,
+    /// Explicitly release and retry quarantined rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_quarantined: Option<bool>,
+    /// Upgrade the bound Function to this exact version. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_version: Option<String>,
+    /// Rows recomputed by a Function upgrade. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recompute: Option<crate::function::FunctionRecompute>,
+    /// Only refresh the rows matching this SQL filter. Enterprise only.
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub where_clause: Option<String>,
+    /// Override the Function's default user-code retry policy. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<crate::function::FunctionRetryPolicy>,
+    /// Action after user-code failure or retry exhaustion. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_policy: Option<crate::function::FunctionErrorPolicy>,
+    /// Under a skip policy, fail the job once more than this share of rows
+    /// has failed, 0 to 1. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_fraction: Option<f64>,
+    /// Under a skip policy, fail the job once more than this many rows have
+    /// failed. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_rows: Option<u64>,
+    /// Deadline for one Function call, in seconds. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_timeout_seconds: Option<f64>,
+    /// Deadline for Function initialization, in seconds. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_timeout_seconds: Option<f64>,
+    /// Worker count for an expression column in LanceDB Enterprise;
+    /// registered Function columns reject it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_workers: Option<usize>,
+    /// At most this many executor processes per Function worker. Enterprise
+    /// only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_executor_processes_per_worker: Option<u32>,
     /// Maximum rows per Function call in LanceDB Enterprise.
     ///
     /// Must be greater than zero. `None` uses the server default. This has no
     /// effect on expression-backed columns in LanceDB Embedded.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution. Must be greater than zero. `None` uses the
+    /// registration default, or disabled when the Function declares none.
+    /// This is not an account quota and does not change `resource_budget`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<u32>,
+    /// Opt-in row-count threshold for publishing completed Function outputs.
+    ///
+    /// Must be greater than zero. `None` keeps whole-fragment publication.
+    /// Actual publication boundaries can be larger than this threshold because
+    /// they also depend on completed work and Function batching. LanceDB Embedded
+    /// rejects this option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_interval_rows: Option<u64>,
+    /// Complete aggregate CPU, memory, and GPU budget for a registered
+    /// Function refresh. Cannot be combined with `gpu_count`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    /// CPU, memory, and ephemeral-storage limits for the Function refresh
+    /// supervisor pod. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing limits for the Function refresh planning fleet.
+    /// Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
     /// when the Function does not declare one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_class: Option<String>,
     /// Positive aggregate GPU budget for Function workers in LanceDB
     /// Enterprise.
     ///
     /// `None` leaves the server's configured budget unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_count: Option<u32>,
 }
 
 impl RefreshColumnOptions {
+    /// Retry only current failures, using the server's row identities.
+    pub fn retry_errors(mut self, enabled: bool) -> Self {
+        self.retry_errors = Some(enabled);
+        self
+    }
+
+    /// Restrict a failed-row retry to one recorded job.
+    pub fn retry_job_id(mut self, job_id: impl Into<String>) -> Self {
+        self.retry_job_id = Some(job_id.into());
+        self
+    }
+
+    /// Restrict a failed-row retry to one exception class.
+    pub fn retry_error_type(mut self, error_type: impl Into<String>) -> Self {
+        self.retry_error_type = Some(error_type.into());
+        self
+    }
+
+    /// Release quarantine when explicitly retrying failures.
+    pub fn include_quarantined(mut self, include: bool) -> Self {
+        self.include_quarantined = Some(include);
+        self
+    }
+
+    /// Change the Function version and select the upgrade's recomputation policy.
+    pub fn upgrade(
+        mut self,
+        version: impl Into<String>,
+        recompute: crate::function::FunctionRecompute,
+    ) -> Self {
+        self.function_version = Some(version.into());
+        self.recompute = Some(recompute);
+        self
+    }
+    /// Only refresh the rows matching `filter`.
+    pub fn where_clause(mut self, filter: impl Into<String>) -> Self {
+        self.where_clause = Some(filter.into());
+        self
+    }
+
+    /// Fail the job once more than `fraction` of its rows has failed.
+    pub fn max_failed_fraction(mut self, fraction: f64) -> Self {
+        self.max_failed_fraction = Some(fraction);
+        self
+    }
+
+    /// Fail the job once more than `rows` rows have failed.
+    pub fn max_failed_rows(mut self, rows: u64) -> Self {
+        self.max_failed_rows = Some(rows);
+        self
+    }
+
+    /// Give each Function call at most `seconds` to return.
+    pub fn row_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.row_timeout_seconds = Some(seconds);
+        self
+    }
+
+    /// Give Function initialization at most `seconds` to complete.
+    pub fn init_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.init_timeout_seconds = Some(seconds);
+        self
+    }
+
+    /// Request `num_workers` workers for an expression column refresh.
+    pub fn num_workers(mut self, num_workers: usize) -> Self {
+        self.num_workers = Some(num_workers);
+        self
+    }
+
+    /// Cap executor processes per Function worker at `processes`.
+    pub fn max_executor_processes_per_worker(mut self, processes: u32) -> Self {
+        self.max_executor_processes_per_worker = Some(processes);
+        self
+    }
+
+    /// Override retries of failed Function calls for this refresh.
+    pub fn retry_policy(mut self, policy: crate::function::FunctionRetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
+    /// Select fail or skip after the retry policy is exhausted.
+    pub fn error_policy(mut self, policy: crate::function::FunctionErrorPolicy) -> Self {
+        self.error_policy = Some(policy);
+        self
+    }
     /// Limit each Function call to at most `batch_size` rows.
     pub fn batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub fn max_concurrency(mut self, max_concurrency: u32) -> Self {
+        self.max_concurrency = Some(max_concurrency);
+        self
+    }
+
+    /// Use `rows` as the opt-in publication threshold for completed Function
+    /// outputs. The actual publication boundary can be larger than this value.
+    pub fn publication_interval_rows(mut self, rows: u64) -> Self {
+        self.publication_interval_rows = Some(rows);
+        self
+    }
+
+    /// Set the aggregate worker resource budget for a Function refresh.
+    ///
+    /// Use [`FunctionWorkerResourceBudget::new`] for a CPU-only budget, or
+    /// [`FunctionWorkerResourceBudget::with_gpu_count`] to include GPUs.
+    pub fn resource_budget(mut self, budget: FunctionWorkerResourceBudget) -> Self {
+        self.resource_budget = Some(budget);
+        self
+    }
+
+    /// Set the Function refresh supervisor pod resources.
+    pub fn supervisor_resources(mut self, resources: FunctionRefreshPodResources) -> Self {
+        self.supervisor_resources = Some(resources);
+        self
+    }
+
+    /// Set the Function refresh planning fleet resources and sizing.
+    pub fn planning_workers(mut self, planning: FunctionRefreshPlanningConfig) -> Self {
+        self.planning_workers = Some(planning);
         self
     }
 
@@ -95,12 +448,135 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// The first set option a LanceDB Embedded refresh cannot honor, if any.
+    pub fn enterprise_only_option(&self) -> Option<&'static str> {
+        [
+            ("retry_errors", self.retry_errors.is_some()),
+            ("retry_job_id", self.retry_job_id.is_some()),
+            ("retry_error_type", self.retry_error_type.is_some()),
+            ("include_quarantined", self.include_quarantined.is_some()),
+            ("function_version", self.function_version.is_some()),
+            ("recompute", self.recompute.is_some()),
+            ("where", self.where_clause.is_some()),
+            ("retry_policy", self.retry_policy.is_some()),
+            ("error_policy", self.error_policy.is_some()),
+            ("max_failed_fraction", self.max_failed_fraction.is_some()),
+            ("max_failed_rows", self.max_failed_rows.is_some()),
+            ("row_timeout_seconds", self.row_timeout_seconds.is_some()),
+            ("init_timeout_seconds", self.init_timeout_seconds.is_some()),
+            ("num_workers", self.num_workers.is_some()),
+            (
+                "max_executor_processes_per_worker",
+                self.max_executor_processes_per_worker.is_some(),
+            ),
+            ("max_concurrency", self.max_concurrency.is_some()),
+            (
+                "publication_interval_rows",
+                self.publication_interval_rows.is_some(),
+            ),
+            ("resource_budget", self.resource_budget.is_some()),
+            ("supervisor_resources", self.supervisor_resources.is_some()),
+            ("planning_workers", self.planning_workers.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(name, set)| set.then_some(name))
+    }
+
     /// Validate client-side constraints before any request is sent.
     pub fn validate(&self) -> Result<()> {
+        let retry = self.retry_errors == Some(true);
+        if (retry || self.function_version.is_some()) && self.where_clause.is_some() {
+            return Err(Error::InvalidInput {
+                message: "retry_errors and Function upgrades cannot be combined with where".into(),
+            });
+        }
+        if !retry
+            && (self.retry_job_id.is_some()
+                || self.retry_error_type.is_some()
+                || self.include_quarantined == Some(true))
+        {
+            return Err(Error::InvalidInput {
+                message: "retry filters require retry_errors=true".into(),
+            });
+        }
+        if self
+            .function_version
+            .as_ref()
+            .is_some_and(|version| version.is_empty())
+            || (self.recompute.is_some() && self.function_version.is_none())
+        {
+            return Err(Error::InvalidInput {
+                message: "recompute requires a nonempty function_version".into(),
+            });
+        }
+        if self
+            .where_clause
+            .as_deref()
+            .is_some_and(|f| f.trim().is_empty())
+        {
+            return Err(Error::InvalidInput {
+                message: "where must not be empty".into(),
+            });
+        }
+        if let Some(policy) = &self.retry_policy {
+            policy.validate()?;
+        }
+        if self
+            .max_failed_fraction
+            .is_some_and(|f| !f.is_finite() || !(0.0..=1.0).contains(&f))
+        {
+            return Err(Error::InvalidInput {
+                message: "max_failed_fraction must be a finite number between 0 and 1".into(),
+            });
+        }
+        for (name, seconds) in [
+            ("row_timeout_seconds", self.row_timeout_seconds),
+            ("init_timeout_seconds", self.init_timeout_seconds),
+        ] {
+            if seconds.is_some_and(|s| !s.is_finite() || s <= 0.0) {
+                return Err(Error::InvalidInput {
+                    message: format!("{name} must be a positive finite number"),
+                });
+            }
+        }
+        if self.num_workers == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "num_workers must be greater than zero".into(),
+            });
+        }
+        if self.max_executor_processes_per_worker == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_executor_processes_per_worker must be greater than zero".into(),
+            });
+        }
         if self.batch_size == Some(0) {
             return Err(Error::InvalidInput {
                 message: "batch_size must be greater than zero".into(),
             });
+        }
+        if self.max_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_concurrency must be greater than zero".into(),
+            });
+        }
+        if self.publication_interval_rows == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "publication_interval_rows must be greater than zero".into(),
+            });
+        }
+        if self.resource_budget.is_some() && self.gpu_count.is_some() {
+            return Err(Error::InvalidInput {
+                message: "gpu_count cannot be combined with resource_budget".into(),
+            });
+        }
+        if let Some(budget) = &self.resource_budget {
+            budget.validate()?;
+        }
+        if let Some(resources) = &self.supervisor_resources {
+            resources.validate("supervisor_resources")?;
+        }
+        if let Some(planning) = &self.planning_workers {
+            planning.validate()?;
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;
@@ -157,6 +633,7 @@ async fn execute_refresh_column_with_source(
         schema.clone(),
         column,
         &expression,
+        dataset.session().datafusion_session(),
     )?);
     ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
@@ -192,7 +669,9 @@ async fn execute_refresh_column_with_source(
         // A recompute rewrites every live row, so it is staged without the
         // probe and counted as it fills; a null fill probes first, since a
         // fragment with nothing to gain is not worth a write.
-        let recompute = staleness.is_dirty(fragment_id);
+        // Expression refreshes replace a whole column file, so any row-level
+        // dirty state makes this fragment a whole-fragment recompute here.
+        let recompute = staleness.needs_recompute(fragment_id);
         let whole = recompute || {
             let (gained, unfilled) =
                 count_fragment_gains(&dataset, &fragment, &bound, column).await?;
@@ -257,7 +736,10 @@ async fn execute_refresh_column_with_source(
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
-        Operation::DataReplacement { replacements },
+        Operation::DataReplacement {
+            replacements,
+            data_change: true,
+        },
         Some(source_version),
         None,
         None,
@@ -337,7 +819,12 @@ async fn ensure_inputs_filled(
                 ),
             });
         };
-        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let input_bound = super::computed_columns::bind(
+            schema.clone(),
+            input,
+            expression,
+            dataset.session().datafusion_session(),
+        )?;
         let mut unfilled = 0u64;
         for fragment in dataset.get_fragments() {
             unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input)
@@ -376,11 +863,14 @@ pub(crate) async fn execute_refresh_column_async(
         let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
         Ok(crate::function::RefreshColumnResult {
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
             rows_assigned: execution.result.rows_filled,
             rows_failed: 0,
             rows_remaining: 0,
             source_version: execution.source_version,
             published_version: execution.published_version,
+            plan: None,
         })
     })))
 }

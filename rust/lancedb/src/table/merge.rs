@@ -75,6 +75,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) retries: Option<u8>,
     pub(crate) use_index: bool,
     pub(crate) use_rte: Option<bool>,
     pub(crate) validate_single_shard: bool,
@@ -91,10 +92,19 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
+            retries: None,
             use_index: true,
             use_rte: None,
             validate_single_shard: true,
         }
+    }
+
+    /// Override the remote transport retry budget for this operation. `0`
+    /// disables retries. Ambiguous write results are never replayed. This is
+    /// independent of local transaction conflict retries.
+    pub fn retries(&mut self, retries: u8) -> &mut Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Rows that exist in both the source table (new data) and
@@ -239,11 +249,13 @@ impl MergeInsertBuilder {
         Ok(())
     }
 
-    /// The existing columns a matched row takes from `source`: every source
-    /// column but the join keys, which a match leaves equal. An insert-only
-    /// merge rewrites none; its new rows get Function outputs from the next
-    /// refresh, as appended rows do.
-    pub(crate) fn function_guarded_columns(&self, source: &Fields) -> Vec<String> {
+    /// The source columns a matched row writes: every column but the join
+    /// keys, which a match leaves equal. Function inputs stay writable; the
+    /// merge records their changed signatures so the next refresh recomputes
+    /// the affected rows. Computed outputs and assignment columns remain
+    /// protected by the direct-write guard. An insert-only merge writes none;
+    /// its new rows get Function outputs from the next refresh.
+    pub(crate) fn matched_source_columns(&self, source: &Fields) -> Vec<String> {
         if !self.when_matched_update_all {
             return Vec::new();
         }
@@ -341,10 +353,10 @@ pub(crate) async fn execute_merge_insert(
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
     let schema = table.schema().await?;
-    super::computed_columns::ensure_not_function_bound(
+    let matched_columns = params.matched_source_columns(new_data.schema().fields());
+    super::computed_columns::ensure_not_written(
         schema.as_ref(),
-        "merge_insert",
-        params.function_guarded_columns(new_data.schema().fields()),
+        matched_columns.iter().map(String::as_str),
     )?;
     // Normalize blob layouts and JSON extension metadata just as on append.
     // Keep arrow.json text labelled until Lance encodes it as JSONB.
@@ -385,6 +397,8 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
+    let source_schema = source.schema();
+    let on = params.on.clone();
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -432,8 +446,21 @@ pub(crate) async fn execute_merge_insert(
         Either::Right(job.execute(source).map_err(|e| e.into()))
     };
     let (new_dataset, stats) = future.await?;
+    let mut new_dataset = new_dataset.as_ref().clone();
+    if let Err(error) = super::freshness::preserve_function_freshness(
+        &mut new_dataset,
+        super::freshness::FunctionWrite::Merge {
+            source_schema: &source_schema,
+            on: &on,
+            num_inserted_rows: stats.num_inserted_rows,
+        },
+    )
+    .await
+    {
+        log::warn!("merge committed but Function freshness could not be preserved: {error}");
+    }
     let version = new_dataset.manifest().version;
-    table.dataset.update(new_dataset.as_ref().clone());
+    table.dataset.update(new_dataset);
     Ok(MergeResult {
         version,
         num_updated_rows: stats.num_updated_rows,
@@ -945,10 +972,11 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 2);
     }
 
-    /// A matched row takes every non-key source column, so the merge is
-    /// refused only when one of those is a binding's input or output.
+    /// A matched row takes every non-key source column. Function inputs are
+    /// writable and become stale for the next refresh; computed outputs stay
+    /// protected, and a mixed input/output source is rejected before commit.
     #[tokio::test]
-    async fn merge_update_on_a_function_table_refuses_only_bound_columns() {
+    async fn merge_update_allows_function_inputs_but_protects_outputs() {
         let table = crate::table::computed_columns::test_support::bound_table_from(
             arrow_array::record_batch!(
                 ("id", Int32, [1]),
@@ -973,18 +1001,47 @@ mod tests {
 
         let mut merge = table.merge_insert(&["id"]);
         merge.when_matched_update_all(None);
-        let err = merge
+        let result = merge
             .execute(reader(
                 arrow_array::record_batch!(("id", Int32, [1]), ("title", Utf8, ["z"])).unwrap(),
             ))
             .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, crate::Error::InvalidInput { message }
-                if message.contains("merge_insert of 'title'")
-                    && message.contains("a Function binding reads or writes it")),
-            "{err:?}"
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(
+            table
+                .count_rows(Some("title = 'z' AND search_text = 'a b'".into()))
+                .await
+                .unwrap(),
+            1
         );
+
+        let version = table.version().await.unwrap();
+        for source in [
+            arrow_array::record_batch!(("id", Int32, [1]), ("search_text", Utf8, ["uncomputed"]))
+                .unwrap(),
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("title", Utf8, ["must not commit"]),
+                ("search_text", Utf8, ["uncomputed"])
+            )
+            .unwrap(),
+        ] {
+            let mut merge = table.merge_insert(&["id"]);
+            merge.when_matched_update_all(None);
+            let err = merge.execute(reader(source)).await.unwrap_err();
+            assert!(
+                matches!(&err, crate::Error::InvalidInput { message }
+                    if message.contains("is computed")
+                        && message.contains("cannot be written directly")),
+                "{err:?}"
+            );
+            assert_eq!(table.version().await.unwrap(), version);
+            assert_eq!(
+                table.count_rows(Some("title = 'z'".into())).await.unwrap(),
+                1
+            );
+        }
     }
 }
 
@@ -2190,7 +2247,7 @@ mod lsm_tests {
         }
         fn insert_batches(
             &self,
-            batches: &[lance::dataset::mem_wal::write::StoredBatch],
+            batches: &[lance::dataset::mem_wal::memtable::batch_store::StoredBatch],
         ) -> lance_core::Result<()> {
             self.0.insert_batches(batches)
         }

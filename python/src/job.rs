@@ -152,6 +152,25 @@ impl Job {
         self.inner.description().map(JobDescription::from)
     }
 
+    pub fn timeline(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.timeline().await.infer_error()?.to_string())
+        })
+    }
+
+    pub fn stack(self_: PyRef<'_, Self>, worker_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.stack(worker_id).await.infer_error()?.to_string())
+        })
+    }
+
+    pub fn stats(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move { inner.stats().await.infer_error() })
+    }
+
     #[pyo3(signature = (*, limit=None, filter=None))]
     pub fn events(
         self_: PyRef<'_, Self>,
@@ -228,11 +247,26 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 
 /// The server's account of why a job failed.
 #[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
+    traceback: Option<String>,
     retryable: Option<bool>,
+    sql_job_id: Option<String>,
+}
+
+impl From<lancedb::error::JobFailure> for JobFailureInfo {
+    fn from(failure: lancedb::error::JobFailure) -> Self {
+        Self {
+            phase: failure.phase,
+            message: failure.message,
+            traceback: failure.traceback,
+            retryable: failure.retryable,
+            sql_job_id: failure.sql_job_id,
+        }
+    }
 }
 
 #[pymethods]
@@ -251,7 +285,14 @@ impl JobFailureInfo {
             Some(false) => "False",
             None => "None",
         };
-        format!("JobFailureInfo(phase={phase}, message={message}, retryable={retryable})")
+        let sql_job_id = self
+            .sql_job_id
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        format!(
+            "JobFailureInfo(phase={phase}, message={message}, retryable={retryable}, \
+             sql_job_id={sql_job_id})"
+        )
     }
 }
 
@@ -331,11 +372,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 .filter(|result| !result.is_null())
                 .map(|result| result.to_string()),
             _progress_json: Some(progress_json),
-            failure: description.failure.map(|failure| JobFailureInfo {
-                phase: failure.phase,
-                message: failure.message,
-                retryable: failure.retryable,
-            }),
+            failure: description.failure.map(Into::into),
         }
     }
 }
