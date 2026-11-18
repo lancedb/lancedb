@@ -481,19 +481,41 @@ scaler.close()
 ### Function packaging restrictions
 
 The decorator snapshots the Function's source and referenced globals into a new
-module. It conservatively rejects imports of `sys`, `builtins`, `importlib`,
-`inspect`, `gc`, `ctypes`, and `types`, including submodules such as `ctypes.util`
-and `importlib.metadata`. This applies to imports inside function or class bodies
-and references to module-level aliases. Even ordinary uses such as `sys.version`
-and `ctypes.util.find_library` are blocked: these modules can reach names outside
-the reconstructed Function namespace. References to `globals`, `locals`, `vars`,
-`eval`, `exec`, `compile`, and `__import__` are rejected as dynamic namespace access.
-These restrictions also apply to the deprecated `@udf` alias.
+module. It supports three statically recognizable diagnostic operations:
+`sys.stderr`, `sys.version_info`, and `importlib.metadata.version`. Direct
+imports, `from` imports, and aliases are treated the same way, whether the
+import appears inside a function or class body or at module level.
 
-For legitimate uses, move the code into an importable helper module and ship it
-with `code=`, or install its package with `pip=` or `conda=`. Imported helpers keep
-their own namespace; the packager does not scan their bodies. Helpers defined in
-`__main__` are copied by source and have the same restrictions as the Function.
+Other imports of `sys`, `builtins`, `importlib`, `inspect`, `gc`, `ctypes`, and
+`types`, including submodules such as `ctypes.util` and `importlib.resources`,
+remain blocked. This applies to imports inside function or class bodies and
+references to module-level aliases. Even ordinary uses such as `sys.version`
+and `ctypes.util.find_library` are blocked: these modules can reach names
+outside the reconstructed Function namespace. References to `globals`, `locals`,
+`vars`, `eval`, `exec`, `compile`, and `__import__` are rejected as dynamic
+namespace access. These restrictions also apply to the deprecated `@udf` alias.
+
+For example, a diagnostic Function can report its Python version and NumPy
+version without a helper module:
+
+```python
+import importlib.metadata
+import sys
+
+from lancedb import function
+
+
+@function(pip=["numpy"])
+def report(value: int) -> str:
+    print("diagnostic", file=sys.stderr)
+    return f"numpy {importlib.metadata.version('numpy')} on {sys.version_info}"
+```
+
+For other restricted uses, move the code into an importable helper module and
+ship it with `code=`, or install its package with `pip=` or `conda=`. Imported
+helpers keep their own namespace; the packager does not scan their bodies.
+Helpers defined in `__main__` are copied by source and have the same
+restrictions as the Function.
 
 For example, put this helper in `native_diagnostics/__init__.py`:
 

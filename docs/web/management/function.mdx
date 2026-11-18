@@ -767,6 +767,25 @@ seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
 `builtins`. Closures and a non-standard `__builtins__` are rejected outright.
 </Warning>
 
+Three statically recognizable diagnostic operations are supported: `sys.stderr`,
+`sys.version_info`, and `importlib.metadata.version`. Direct imports, `from`
+imports, and aliases work the same way. Any other use of `sys`, `builtins`,
+`importlib`, `inspect`, `gc`, `ctypes`, or `types` is rejected; move it into an
+importable helper module.
+
+```python
+import importlib.metadata
+import sys
+
+from lancedb import function
+
+
+@function(pip=["numpy"])
+def report(value: int) -> str:
+    print("diagnostic", file=sys.stderr)
+    return f"numpy {importlib.metadata.version('numpy')} on {sys.version_info}"
+```
+
 In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.

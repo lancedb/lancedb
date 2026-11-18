@@ -16,6 +16,7 @@ import builtins
 import base64
 import functools
 import hashlib
+import importlib.metadata
 import importlib.util
 import inspect
 import symtable
@@ -2114,6 +2115,17 @@ def _python_extension_type(data_type: pa.DataType) -> Optional[pa.ExtensionType]
 _DYNAMIC_NAMESPACE_ACCESS = frozenset(
     {"globals", "locals", "vars", "eval", "exec", "compile", "__import__"}
 )
+# Static diagnostic operations the packager can reconstruct. Anything else that
+# reaches through a namespace-access module remains unrepresentable.
+_APPROVED_NAMESPACE_ATTRIBUTES = {
+    "sys": frozenset({"stderr", "version_info"}),
+    "importlib.metadata": frozenset({"version"}),
+}
+_APPROVED_NAMESPACE_OPERATIONS = (
+    "sys.stderr",
+    "sys.version_info",
+    "importlib.metadata.version",
+)
 # Modules that hand out namespaces (`sys.modules`, `builtins`, importers,
 # introspection). The artifact's module namespace holds only the names it was
 # packaged with, so reaching around it cannot be represented.
@@ -2128,28 +2140,169 @@ _NAMESPACE_HELPER_HINT = (
 )
 
 
+_APPROVED_NAMESPACE_HINT = (
+    "The supported diagnostic operations are "
+    + ", ".join(_APPROVED_NAMESPACE_OPERATIONS)
+    + ". "
+)
+
+
+def _namespace_operation_error(operations: Sequence[str]) -> ValueError:
+    label = operations[0] if len(operations) == 1 else list(operations)
+    return ValueError(
+        f"@function cannot package namespace operation {label!r}. "
+        "The artifact's module namespace holds only the names it was packaged "
+        "with, so references that reach around it cannot be represented. "
+        + _APPROVED_NAMESPACE_HINT
+        + _NAMESPACE_HELPER_HINT
+    )
+
+
 def _namespace_import_error(modules: Sequence[str]) -> ValueError:
     return ValueError(
         f"@function cannot package imports from namespace-access modules: {modules!r}. "
         f"Imports of {', '.join(sorted(_NAMESPACE_MODULES))} (including submodules) "
         "are blocked because they can access names outside the packaged "
-        "Function's reconstructed module namespace. " + _NAMESPACE_HELPER_HINT
+        "Function's reconstructed module namespace. "
+        + _APPROVED_NAMESPACE_HINT
+        + _NAMESPACE_HELPER_HINT
     )
 
 
-def _namespace_imports(definition: Union[ast.FunctionDef, ast.ClassDef]) -> list[str]:
-    found: set[str] = set()
+def _namespace_import_bindings(
+    definition: Union[ast.FunctionDef, ast.ClassDef],
+) -> tuple[dict[str, frozenset[str]], list[str], list[str]]:
+    """Return approved diagnostic bindings and rejected imports.
+
+    A binding maps the local name an import creates to the attribute paths
+    that may be read through it. Rejected modules and operations are kept
+    separate so each error names the relevant rule.
+    """
+    bindings: dict[str, frozenset[str]] = {}
+    blocked_modules: set[str] = set()
+    blocked_operations: set[str] = set()
     for node in ast.walk(definition):
         if isinstance(node, ast.Import):
-            found.update(
-                alias.name
-                for alias in node.names
-                if alias.name.split(".")[0] in _NAMESPACE_MODULES
-            )
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module.split(".")[0] in _NAMESPACE_MODULES:
-                found.add(node.module)
-    return sorted(found)
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root not in _NAMESPACE_MODULES:
+                    continue
+                attributes = _APPROVED_NAMESPACE_ATTRIBUTES.get(alias.name)
+                if attributes is None:
+                    blocked_modules.add(alias.name)
+                    continue
+                if alias.asname:
+                    name = alias.asname
+                    bases = frozenset(f"{name}.{attribute}" for attribute in attributes)
+                else:
+                    name = root
+                    module = alias.name if "." in alias.name else name
+                    bases = frozenset(
+                        f"{module}.{attribute}" for attribute in attributes
+                    )
+                bindings[name] = bindings.get(name, frozenset()) | bases
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+            and node.module.split(".")[0] in _NAMESPACE_MODULES
+        ):
+            if node.module == "importlib":
+                for alias in node.names:
+                    if alias.name == "metadata":
+                        name = alias.asname or "metadata"
+                        bindings[name] = bindings.get(name, frozenset()) | frozenset(
+                            {f"{name}.version"}
+                        )
+                    else:
+                        blocked_modules.add("importlib")
+                continue
+            attributes = _APPROVED_NAMESPACE_ATTRIBUTES.get(node.module)
+            if attributes is None:
+                blocked_modules.add(node.module)
+                continue
+            for alias in node.names:
+                if alias.name in attributes:
+                    name = alias.asname or alias.name
+                    bindings[name] = bindings.get(name, frozenset()) | frozenset({name})
+                else:
+                    blocked_operations.add(f"{node.module}.{alias.name}")
+    return bindings, sorted(blocked_modules), sorted(blocked_operations)
+
+
+def _namespace_binding_errors(
+    definition: Union[ast.FunctionDef, ast.ClassDef],
+    bindings: Mapping[str, frozenset[str]],
+) -> list[str]:
+    """Operations that read a diagnostic binding outside its approved paths."""
+    if not bindings:
+        return []
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(definition):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    invalid: set[str] = set()
+    for node in ast.walk(definition):
+        if not isinstance(node, ast.Name):
+            continue
+        allowed = bindings.get(node.id)
+        if allowed is None:
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            invalid.add(node.id)
+            continue
+        path = node.id
+        current: ast.AST = node
+        while True:
+            parent = parents.get(current)
+            if isinstance(parent, ast.Attribute) and parent.value is current:
+                path = f"{path}.{parent.attr}"
+                current = parent
+                continue
+            break
+        if not any(path == base or path.startswith(f"{base}.") for base in allowed):
+            invalid.add(path)
+            continue
+        if any(part.startswith("__") for part in path.split(".")[1:]):
+            invalid.add(path)
+    return sorted(invalid)
+
+
+def _approved_global_namespace_binding(
+    definition: Optional[Union[ast.FunctionDef, ast.ClassDef]],
+    name: str,
+    value: Any,
+) -> Optional[str]:
+    """The artifact import for an approved diagnostic global, if any."""
+    if definition is None:
+        return None
+    if isinstance(value, types.ModuleType):
+        if value is sys:
+            bases = frozenset({f"{name}.stderr", f"{name}.version_info"})
+            line = f"import sys as {name}"
+        elif value is importlib.metadata:
+            bases = frozenset({f"{name}.version"})
+            line = f"import importlib.metadata as {name}"
+        elif value is importlib and name == "importlib":
+            bases = frozenset({"importlib.metadata.version"})
+            line = "import importlib.metadata"
+        else:
+            return None
+    elif value is sys.stderr:
+        bases = frozenset({name})
+        line = f"from sys import stderr as {name}"
+    elif value is sys.version_info:
+        bases = frozenset({name})
+        line = f"from sys import version_info as {name}"
+    elif value is importlib.metadata.version:
+        bases = frozenset({name})
+        line = f"from importlib.metadata import version as {name}"
+    else:
+        return None
+    invalid = _namespace_binding_errors(definition, {name: bases})
+    if invalid:
+        raise _namespace_operation_error(invalid)
+    return line
 
 
 def _module_references(module_source: str) -> set[str]:
@@ -2462,14 +2615,21 @@ class _SourcePackager:
                 "Function's reconstructed module namespace. Reference dependencies "
                 "explicitly. " + _NAMESPACE_HELPER_HINT
             )
-        namespace_imports = _namespace_imports(definition)
-        if namespace_imports:
-            raise _namespace_import_error(namespace_imports)
+        namespace_bindings, blocked_modules, blocked_operations = (
+            _namespace_import_bindings(definition)
+        )
+        if blocked_modules:
+            raise _namespace_import_error(blocked_modules)
+        if blocked_operations:
+            raise _namespace_operation_error(blocked_operations)
+        invalid_operations = _namespace_binding_errors(definition, namespace_bindings)
+        if invalid_operations:
+            raise _namespace_operation_error(invalid_operations)
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
         if reader_name is not None:
-            self._bind(reader_name, BlobReader)
+            self._bind(reader_name, BlobReader, definition=definition)
         unresolved = []
         for name in sorted(references):
             if name == target.__name__:
@@ -2481,7 +2641,7 @@ class _SourcePackager:
                     )
                 continue
             if name in namespace:
-                self._bind(name, namespace[name])
+                self._bind(name, namespace[name], definition=definition)
             elif not hasattr(builtins, name):
                 unresolved.append(name)
         if unresolved:
@@ -2536,7 +2696,13 @@ class _SourcePackager:
                 "name to different values"
             )
 
-    def _bind(self, name: str, value: Any) -> None:
+    def _bind(
+        self,
+        name: str,
+        value: Any,
+        *,
+        definition: Optional[Union[ast.FunctionDef, ast.ClassDef]] = None,
+    ) -> None:
         if _packaged_by_source(value):
             if value.__name__ != name:
                 raise ValueError(
@@ -2547,14 +2713,23 @@ class _SourcePackager:
                 self._definitions.append(self._definition(value, entry=False))
             self._claim(name, ("definition", id(value)))
             return
-        line = self._global_source(name, value)
+        line = self._global_source(name, value, definition=definition)
         self._claim(name, line)
         self._imports[name] = line
 
-    def _global_source(self, name: str, value: Any) -> str:
+    def _global_source(
+        self,
+        name: str,
+        value: Any,
+        *,
+        definition: Optional[Union[ast.FunctionDef, ast.ClassDef]] = None,
+    ) -> str:
         """One module-level line that rebinds `name` to `value` in the artifact:
         an import for modules and importable classes/functions, a captured
         copy otherwise."""
+        approved = _approved_global_namespace_binding(definition, name, value)
+        if approved is not None:
+            return approved
         if value is BlobReader:
             return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
@@ -3440,20 +3615,25 @@ def function(
     values, such as instances of your own classes, inside the function or
     class body as well.
 
-    **Namespace restrictions.** The packaged source cannot import ``sys``,
+    **Namespace restrictions.** The packaged source may use three static
+    diagnostic operations: ``sys.stderr``, ``sys.version_info``, and
+    ``importlib.metadata.version``. Direct imports, ``from`` imports, and
+    aliases are treated the same way, whether the import appears inside the
+    function or class body or at module level. Any other import of ``sys``,
     ``builtins``, ``importlib``, ``inspect``, ``gc``, ``ctypes``, or ``types``,
-    including submodules such as ``ctypes.util`` and ``importlib.metadata``.
-    Referencing a module-level alias for one of these modules is also rejected.
-    References to ``globals``, ``locals``, ``vars``, ``eval``, ``exec``,
-    ``compile``, or ``__import__`` are rejected as dynamic namespace access.
-    These restrictions are conservative: even ordinary uses such as
-    ``ctypes.util.find_library`` or ``sys.version`` are blocked because these
-    modules can reach names outside the reconstructed Function namespace.
-    Move such code into an importable helper module supplied with ``code=``,
-    ``pip=``, or ``conda=``, then import and call the helper from the Function.
-    Helpers imported normally keep their own module namespace; these checks do
-    not scan their bodies. A helper defined in ``__main__`` is packaged by source
-    and is subject to the same checks.
+    including submodules such as ``ctypes.util``, ``importlib.resources``, and
+    ``importlib.import_module``, is rejected. Referencing a module-level alias
+    for an unapproved module or operation is also rejected. References to
+    ``globals``, ``locals``, ``vars``, ``eval``, ``exec``, ``compile``, or
+    ``__import__`` are rejected as dynamic namespace access. These
+    restrictions are conservative: even ordinary uses such as
+    ``ctypes.util.find_library`` or ``sys.version`` remain blocked because
+    these modules can reach names outside the reconstructed Function
+    namespace. Move such code into an importable helper module supplied with
+    ``code=``, ``pip=``, or ``conda=``, then import and call the helper from
+    the Function. Helpers imported normally keep their own module namespace;
+    these checks do not scan their bodies. A helper defined in ``__main__`` is
+    packaged by source and is subject to the same checks.
 
     Changing any packaged source, including a module in ``code``, produces a
     new Function version; the environment built from ``pip`` or ``conda`` is

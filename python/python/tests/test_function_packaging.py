@@ -727,7 +727,6 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
 @pytest.mark.parametrize(
     "module_name",
     [
-        "sys",
         "builtins",
         "importlib",
         "inspect",
@@ -735,7 +734,6 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
         "ctypes",
         "types",
         "ctypes.util",
-        "importlib.metadata",
     ],
 )
 @pytest.mark.parametrize("import_style", ["import", "from", "global"])
@@ -770,6 +768,146 @@ def test_namespace_module_errors_explain_the_rule_and_remedy(
     assert "importable helper module" in message
     assert "code=, pip=, or conda=" in message
     assert "dynamic namespace access" not in message
+
+
+@pytest.mark.parametrize("module_level", [False, True], ids=["body", "module"])
+@pytest.mark.parametrize(
+    ("import_statement", "expression"),
+    [
+        ("import sys", "sys.stderr"),
+        ("import sys as diagnostic", "diagnostic.stderr"),
+        ("from sys import stderr", "stderr"),
+        ("from sys import stderr as error_stream", "error_stream"),
+        ("import sys", "sys.version_info"),
+        ("import sys as diagnostic", "diagnostic.version_info"),
+        ("from sys import version_info", "version_info"),
+        ("from sys import version_info as python_version", "python_version"),
+        ("import importlib.metadata", "importlib.metadata.version('pytest')"),
+        ("import importlib.metadata as diagnostic", "diagnostic.version('pytest')"),
+        ("from importlib import metadata", "metadata.version('pytest')"),
+        (
+            "from importlib import metadata as diagnostic",
+            "diagnostic.version('pytest')",
+        ),
+        ("from importlib.metadata import version", "version('pytest')"),
+        (
+            "from importlib.metadata import version as diagnostic",
+            "diagnostic('pytest')",
+        ),
+    ],
+)
+def test_diagnostic_namespace_operations_package_and_run(
+    helper_package, module_level, import_statement, expression
+):
+    if module_level:
+        source = (
+            f"{import_statement}\n\n"
+            "def probe(value: str) -> str:\n"
+            f"    return str({expression}) + value\n"
+        )
+    else:
+        source = (
+            "def probe(value: str) -> str:\n"
+            f"    {import_statement}\n"
+            f"    return str({expression}) + value\n"
+        )
+    module = helper_package("fx_diagnostic_operation", {"__init__.py": source})
+
+    packaged = artifact(function(module.probe)).decode()
+    namespace = {}
+    exec(compile(packaged, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!").endswith("!")
+
+
+@pytest.mark.parametrize(
+    ("body", "operation"),
+    [
+        ("import sys\nreturn str(sys.modules)", "sys.modules"),
+        ("import sys as s\nreturn str(s.path)", "s.path"),
+        ("import sys\nreturn str(sys.version)", "sys.version"),
+        ("import sys\nreturn str(sys.stdout)", "sys.stdout"),
+        ("import sys\nreturn str(getattr(sys, 'stderr'))", "sys"),
+        ("import sys\nstream = sys\nreturn str(stream)", "sys"),
+        ("import sys\nsys = object()\nreturn str(sys)", "sys"),
+        ("from sys import path\nreturn str(path)", "sys.path"),
+        (
+            "import importlib.metadata\n"
+            "return importlib.metadata.distribution('pytest').version",
+            "importlib.metadata.distribution",
+        ),
+        (
+            "import importlib.metadata as m\nreturn m.distribution('pytest').version",
+            "m.distribution",
+        ),
+        (
+            "from importlib.metadata import distribution\n"
+            "return distribution('pytest').version",
+            "importlib.metadata.distribution",
+        ),
+        (
+            "from importlib.metadata import version\nreturn str(version.__globals__)",
+            "version.__globals__",
+        ),
+        (
+            "import importlib\nreturn str(importlib.import_module('os'))",
+            "importlib",
+        ),
+        (
+            "from importlib import import_module\nreturn str(import_module('os'))",
+            "importlib",
+        ),
+        (
+            "import importlib.resources\nreturn str(importlib.resources.files('x'))",
+            "importlib.resources",
+        ),
+        ("import inspect\nreturn str(inspect.currentframe())", "inspect"),
+        (
+            "from ctypes import util\nreturn str(util.find_library('c'))",
+            "ctypes",
+        ),
+        ("import gc\nreturn str(gc.get_objects())", "gc"),
+        ("import builtins\nreturn str(builtins)", "builtins"),
+        ("import types\nreturn str(types.SimpleNamespace())", "types"),
+    ],
+)
+def test_unsupported_namespace_operations_are_rejected(helper_package, body, operation):
+    source = "def blocked(value: str) -> str:\n" + textwrap.indent(body, "    ")
+    module = helper_package(
+        "fx_unsupported_namespace_operation", {"__init__.py": source}
+    )
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert repr(operation) in message
+    assert "supported diagnostic operations" in message
+
+
+@pytest.mark.parametrize(
+    ("preamble", "body", "operation"),
+    [
+        (
+            "import sys as diagnostic",
+            "return str(diagnostic.modules)",
+            "diagnostic.modules",
+        ),
+        (
+            "import importlib.metadata as diagnostic",
+            "return diagnostic.distribution('pytest').version",
+            "diagnostic.distribution",
+        ),
+        ("from sys import stderr", "return str(stderr.__class__)", "stderr.__class__"),
+    ],
+)
+def test_module_level_diagnostic_alias_rejects_unsupported_use(
+    helper_package, preamble, body, operation
+):
+    source = f"{preamble}\n\ndef blocked(value: str) -> str:\n    {body}\n"
+    module = helper_package("fx_diagnostic_alias", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    assert repr(operation) in str(error.value)
 
 
 @pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
