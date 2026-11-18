@@ -141,6 +141,19 @@ import {
     PyQueryToPandasKwargs as QueryToPandasKwargs,
 } from '/snippets/blob_pylance.mdx';
 
+import {
+    PyPhotoFiles,
+    PyPhotoConnectEmbedded,
+    PyPhotoConnectEnterprise,
+    PyPhotoIngest,
+    PyPhotoFetch,
+    PyPhotoBytes,
+    PyPhotoRanges,
+    PyPhotoCopyEmbedded,
+    PyPhotoCopySql,
+    PyPhotoVerify,
+} from '/snippets/photo_tutorial.mdx';
+
 A table stores data in rows and columns and keeps a history of committed
 versions. Queries read table data, writes update it, and indexes accelerate
 searches over its columns.{/* Draft until branching reaches early access: restore "Branches let you make changes separately from the
@@ -393,60 +406,183 @@ Blob v2 GA supports standard tables. Tables with Realtime or MemWAL enabled
 are outside the GA support scope.
 */}
 
-Suppose your Enterprise database has a `photos` table with an integer `id` and a
-Blob v2 column named `image`. Set `LANCEDB_URI`, `LANCEDB_API_KEY`, and
-`LANCEDB_HOST_OVERRIDE` to your database URI, API key, and HTTPS endpoint.
-See [Connect to LanceDB Enterprise](/basics/catalog#enterprise).
+#### From image files to a filtered table {#photo-tutorial}
 
-An SDK query normally returns a descriptor with the blob's location and size.
-Pass `blob_mode="bytes"` to get the actual image in the same query. Each result
-contains Python `bytes`, or `None` for a null image.
+Start in an empty working directory and an empty database. This Python tutorial
+creates `photos` with `id`, `label`, and Blob v2 `image` columns, saves one
+matching image, and copies that row into a fresh `photo_subset` table. It uses
+ordinary tables, with Realtime Engine disabled. Avoid other writers while
+running the examples.
 
-```python
-import os
-import lancedb
+Install a Python SDK that provides `lancedb.blob`. For preview builds, use the
+[installation instructions](/quickstart#python-pre-release-builds). The examples
+need `lancedb` and `pyarrow`; generating the images uses only Python's standard
+library.
 
-db = lancedb.connect(
-    os.environ["LANCEDB_URI"],
-    api_key=os.environ["LANCEDB_API_KEY"],
-    host_override=os.environ["LANCEDB_HOST_OVERRIDE"],
-)
-rows = (
-    db.open_table("photos").search()
-    .where("id < 100")
-    .select(["id", "image"])
-    .limit(10)
-    .to_list(blob_mode="bytes")
-)
-for row in rows:
-    image = row["image"]
-    print(row["id"], len(image) if image is not None else None)
-```
+##### 1. Create two image files {#photo-files}
 
-Use this mode with a Python SDK and Enterprise deployment that support
-snapshot-bound blob reads. The bytes come from the same table version as the
-filtered rows. Keep that version available until the read finishes. On
-Enterprise 1.12.0, or when you already have row IDs, use `fetch_blobs()`.
-Keep the source unchanged between selecting the IDs and fetching their bytes.
-Inside a LanceDB Function, a parameter annotated with `lancedb.BlobReader`
-lets the function seek and read the input on demand.
-[Fetch blobs by row ID](#multimodal-read-blobs) · [Troubleshoot Enterprise blob reads](/deployment/support#blob-query-bytes)
+Generate tiny red and blue PNG images with known pixel contents. Open these
+files in an image viewer. To use your own photos later, replace the file paths
+and the expected bytes in the checks.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoFiles}
+    </CodeBlock>
+</CodeGroup>
+
+##### 2. Choose a connection {#photo-connection}
+
+For LanceDB Embedded, create a local database:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoConnectEmbedded}
+    </CodeBlock>
+</CodeGroup>
+
+For LanceDB Enterprise, use an empty development database where you can create
+ordinary tables. Get the API and Flight SQL endpoints from your administrator;
+set these environment variables using the
+[Enterprise connection instructions](/basics/catalog#enterprise) and
+[SQL connection settings](/basics/sql#sql-is-remote). Choose this connection
+instead of the Embedded connection to run the SQL copy later:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoConnectEnterprise}
+    </CodeBlock>
+</CodeGroup>
+
+##### 3. Define the schema and insert the images {#photo-ingest}
+
+The explicit schema makes `image` a Blob v2 field. The table metadata opts into
+ordinary Blob storage. Table creation fails if `photos` already exists; use a
+new database for another run.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoIngest}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning>
+If table creation or ingestion loses its response, check whether `photos`
+exists and inspect its IDs and image bytes before repeating the write. An
+ambiguous result can mean the write committed. Repeating `add` can duplicate
+rows. See [write recovery](/ingestion/insert#performance) and
+[large upload recovery](/ingestion/insert#bulk-ingests-into-a-remote-table).
+</Warning>
+
+##### 4. Filter metadata, save an image, and check its contents {#photo-read}
+
+First select at most ten matching rows without loading their images. Fetch only
+those rows' bytes, save the red image, and compare the complete saved file with
+the original. This row-ID path works with Enterprise 1.12.0:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoFetch}
+    </CodeBlock>
+</CodeGroup>
+
+`id` is the application's photo ID; `_rowid` is the table's row identifier used
+by `fetch_blobs`. Keep the source unchanged between the metadata query and the
+fetch. Row IDs alone do not bind the fetch to the query's snapshot. Stable row
+IDs across compaction do not protect against an overwrite or a same-name table
+replacement.
+
+With a Python SDK and Enterprise deployment that support **snapshot-bound blob
+reads**, request the bytes in the query instead:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoBytes}
+    </CodeBlock>
+</CodeGroup>
+
+The bytes then come from the same table version as the filtered rows. Keep that
+version available until the read finishes. Enterprise 1.12.0 users should use
+the row-ID example above; support for snapshot-bound reads depends on both the
+SDK and the serving deployment. See
+[troubleshoot Enterprise blob reads](/deployment/support#blob-query-bytes).
+LanceDB Embedded also supports this query mode; use a reader checked out to a
+fixed version if concurrent writers can overwrite the source.
+
+##### Choose a read method for larger media {#photo-read-method}
+
+| Task | Method |
+| --- | --- |
+| Save a small, bounded set of complete images | `fetch_blobs`, or query with `blob_mode="bytes"` on a supporting deployment |
+| Read a header or part of a large video | `fetch_blob_files`, then `read_range` or `read_ranges` |
+| Seek through a video in server-side processing | A LanceDB Function parameter annotated with `lancedb.BlobReader` |
+| Copy rows inside Enterprise | SQL `INSERT INTO ... SELECT`, without downloading images to the client |
+
+A row limit bounds the number of images, not their total size. Avoid fetching
+whole videos just to inspect their headers. Here is a range read against the
+same red PNG; it verifies the eight-byte PNG signature:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoRanges}
+    </CodeBlock>
+</CodeGroup>
+
+For multiple slices, see [range reads](#multimodal-read-blobs). For a seekable
+video reader inside a Function, see
+[read a blob incrementally](/curation/create-function#incremental).
 
 #### Copy a subset of blob rows {#multimodal-copy-subset}
 
-To copy images within the same Enterprise database, run the filter on the
-server. This example appends matching rows to an existing `photo_subset`
-table with the same `id` and blob `image` columns.
+Continue with the same `photos`, selecting the same red image. Choose one copy
+path below, then run the shared verification. Neither path overwrites an
+existing `photo_subset`.
 
-```sql
-INSERT INTO photo_subset (id, image)
-SELECT id, image FROM photos WHERE id < 100;
-```
+##### Enterprise SQL {#photo-copy-sql}
 
-In Enterprise 1.12.0, selecting a Blob v2 column directly in SQL returns the
-payload as `large_binary`. Use `blob_descriptor(image)` when you want storage
-metadata. For a copy, select `image` itself.
-[SQL blob descriptors](/sql/dql/blob-descriptor)
+On the Enterprise connection, create a fresh destination with a Blob column,
+then copy matching rows on the server. `execute_query` submits one statement
+per call; consume each result before continuing:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoCopySql}
+    </CodeBlock>
+</CodeGroup>
+
+Enterprise 1.12.0 supports this SQL copy. Selecting a Blob v2 column directly
+in SQL returns the payload as `large_binary`. Select `image` itself for the
+copy; use [`blob_descriptor(image)`](/sql/dql/blob-descriptor) to inspect storage
+metadata instead.
+
+`lancedb.blob("image")` is a Python schema helper, not a SQL value constructor.
+SQL has no `blob(local_path)` constructor to upload a client-side image file.
+Ingest file bytes with the SDK as above, then use SQL to copy stored rows.
+If the copy response is lost, inspect `photo_subset` before repeating the
+`INSERT`; the same [write recovery rules](/ingestion/insert#performance) apply.
+
+##### LanceDB Embedded {#photo-copy-embedded}
+
+SQL requires Enterprise. With the Embedded connection, materialize this small
+selection and give the destination the explicit Blob schema:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoCopyEmbedded}
+    </CodeBlock>
+</CodeGroup>
+
+##### Verify the destination {#photo-copy-verify}
+
+Reopen `photo_subset`, check its row count and application ID, and compare its
+image bytes with the original local file. The destination has its own row IDs,
+so query them again instead of reusing the source's `_rowid` values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoVerify}
+    </CodeBlock>
+</CodeGroup>
 
 #### Blob storage layouts {#blob-storage-layouts}
 
