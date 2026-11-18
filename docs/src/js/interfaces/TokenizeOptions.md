@@ -10,6 +10,16 @@ Options for tokenizing a full-text search query without a table index.
 
 ## Properties
 
+### analyzer?
+
+```ts
+optional analyzer: "code" | "text";
+```
+
+The analyzer family to use. See [FtsOptions.analyzer](FtsOptions.md#analyzer).
+
+***
+
 ### asciiFolding?
 
 ```ts
@@ -42,6 +52,16 @@ This option only affects tokenization when `removeStopWords` is true.
 
 `undefined` keeps the built-in language list. An empty array explicitly
 replaces it with no stop words.
+
+***
+
+### indexOperators?
+
+```ts
+optional indexOperators: boolean;
+```
+
+Emit code operators such as `::`, `->` and `!=`.
 
 ***
 
@@ -105,6 +125,16 @@ Whether to only emit token prefixes for the n-gram tokenizer.
 
 ***
 
+### preserveOriginal?
+
+```ts
+optional preserveOriginal: boolean;
+```
+
+Also emit the complete identifier next to its subwords.
+
+***
+
 ### removeStopWords?
 
 ```ts
@@ -112,6 +142,26 @@ optional removeStopWords: boolean;
 ```
 
 Whether to remove stop words.
+
+***
+
+### splitIdentifiers?
+
+```ts
+optional splitIdentifiers: boolean;
+```
+
+Split code identifiers into subwords. See [FtsOptions.splitIdentifiers](FtsOptions.md#splitidentifiers).
+
+***
+
+### splitOnNumerics?
+
+```ts
+optional splitOnNumerics: boolean;
+```
+
+Split identifier subwords at letter and number boundaries.
 
 ***
 

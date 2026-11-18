@@ -10,6 +10,24 @@ Options to create a full text search index
 
 ## Properties
 
+### analyzer?
+
+```ts
+optional analyzer: "code" | "text";
+```
+
+The analyzer family to use.
+
+"code" selects the code analyzer, which is the same as
+`baseTokenizer: "code"`. "text" selects a text-family analyzer with the
+selected `baseTokenizer`. When it is not set, the analyzer is inferred
+from `baseTokenizer`.
+
+"code" cannot be combined with a `baseTokenizer` other than "simple" or
+"code", and "text" cannot be combined with `baseTokenizer: "code"`.
+
+***
+
 ### asciiFolding?
 
 ```ts
@@ -70,6 +88,18 @@ This option only affects tokenization when `removeStopWords` is true.
 
 `undefined` keeps the built-in language list. An empty array explicitly
 replaces it with no stop words.
+
+***
+
+### indexOperators?
+
+```ts
+optional indexOperators: boolean;
+```
+
+Index code operators such as `::`, `->` and `!=`.
+
+The code analyzer default is false.
 
 ***
 
@@ -135,6 +165,19 @@ whether to only index the prefix of the token for ngram tokenizer
 
 ***
 
+### preserveOriginal?
+
+```ts
+optional preserveOriginal: boolean;
+```
+
+Also index the complete identifier next to its subwords.
+
+The code analyzer default is true, but this only takes effect when
+`splitIdentifiers` is true.
+
+***
+
 ### removeStopWords?
 
 ```ts
@@ -142,6 +185,39 @@ optional removeStopWords: boolean;
 ```
 
 whether to remove stop words
+
+***
+
+### splitIdentifiers?
+
+```ts
+optional splitIdentifiers: boolean;
+```
+
+Split code identifiers such as `camelCase` and `snake_case` into subwords.
+
+Setting this to true requires the code analyzer. The default is false, so
+`analyzer: "code"` alone keeps identifiers whole.
+
+Note: with the default `preserveOriginal`, partial-identifier AND and
+phrase queries on JSON columns can miss matches
+(https://github.com/lance-format/lance/issues/9674). Spell phrase queries
+with the same identifier boundaries as the indexed text
+(https://github.com/lance-format/lance/issues/9658).
+
+***
+
+### splitOnNumerics?
+
+```ts
+optional splitOnNumerics: boolean;
+```
+
+Split identifier subwords at letter and number boundaries, for example
+`utf8` into `utf` and `8`.
+
+The code analyzer default is true, but this only takes effect when
+`splitIdentifiers` is true.
 
 ***
 

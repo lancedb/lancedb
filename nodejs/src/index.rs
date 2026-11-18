@@ -33,6 +33,82 @@ impl Index {
     }
 }
 
+/// Code-analyzer options shared by `Index.fts` and `tokenize`.
+struct CodeAnalyzerOptions {
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
+}
+
+impl CodeAnalyzerOptions {
+    /// Check the options against the requested base tokenizer and return the
+    /// base tokenizer to use, if any. `analyzer: "code"` selects the code
+    /// tokenizer when `baseTokenizer` is unset or `"simple"`.
+    fn resolve_base_tokenizer(
+        &self,
+        base_tokenizer: Option<String>,
+    ) -> napi::Result<Option<String>> {
+        let uses_code = match self.analyzer.as_deref() {
+            None | Some("text") => base_tokenizer.as_deref() == Some("code"),
+            Some("code") => true,
+            Some(other) => {
+                return Err(napi::Error::from_reason(format!(
+                    "analyzer must be 'text' or 'code', got '{other}'"
+                )));
+            }
+        };
+        match (self.analyzer.as_deref(), base_tokenizer.as_deref()) {
+            (Some("text"), Some("code")) => {
+                return Err(napi::Error::from_reason(
+                    "baseTokenizer 'code' requires analyzer 'code'",
+                ));
+            }
+            (Some("code"), Some(tokenizer)) if tokenizer != "code" && tokenizer != "simple" => {
+                return Err(napi::Error::from_reason(format!(
+                    "analyzer 'code' requires baseTokenizer 'code', got '{tokenizer}'"
+                )));
+            }
+            _ => {}
+        }
+        let flags = [
+            self.split_identifiers,
+            self.split_on_numerics,
+            self.preserve_original,
+            self.index_operators,
+        ];
+        if !uses_code && flags.into_iter().flatten().any(|flag| flag) {
+            return Err(napi::Error::from_reason(
+                "splitIdentifiers, splitOnNumerics, preserveOriginal and indexOperators \
+                 require analyzer 'code'",
+            ));
+        }
+        Ok(if uses_code {
+            Some("code".to_string())
+        } else {
+            base_tokenizer
+        })
+    }
+
+    /// Apply the explicit flags on top of the tokenizer defaults.
+    fn apply(&self, mut opts: FtsIndexBuilder) -> FtsIndexBuilder {
+        if let Some(value) = self.split_identifiers {
+            opts = opts.split_identifiers(value);
+        }
+        if let Some(value) = self.split_on_numerics {
+            opts = opts.split_on_numerics(value);
+        }
+        if let Some(value) = self.preserve_original {
+            opts = opts.preserve_original(value);
+        }
+        if let Some(value) = self.index_operators {
+            opts = opts.index_operators(value);
+        }
+        opts
+    }
+}
+
 #[napi(catch_unwind)]
 #[allow(dead_code, clippy::too_many_arguments)]
 pub fn tokenize(
@@ -48,9 +124,21 @@ pub fn tokenize(
     ngram_min_length: Option<u32>,
     ngram_max_length: Option<u32>,
     prefix_only: Option<bool>,
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
 ) -> napi::Result<Vec<FtsToken>> {
     let mut opts = FtsIndexBuilder::default();
-    if let Some(base_tokenizer) = base_tokenizer {
+    let code_options = CodeAnalyzerOptions {
+        analyzer,
+        split_identifiers,
+        split_on_numerics,
+        preserve_original,
+        index_operators,
+    };
+    if let Some(base_tokenizer) = code_options.resolve_base_tokenizer(base_tokenizer)? {
         opts = opts.base_tokenizer(base_tokenizer);
     }
     if let Some(language) = language {
@@ -86,6 +174,7 @@ pub fn tokenize(
     if let Some(prefix_only) = prefix_only {
         opts = opts.ngram_prefix_only(prefix_only);
     }
+    opts = code_options.apply(opts);
 
     Ok(lancedb_tokenize(&query, &opts)
         .default_error()?
@@ -242,14 +331,27 @@ impl Index {
         ngram_max_length: Option<u32>,
         prefix_only: Option<bool>,
         block_size: Option<u32>,
+        analyzer: Option<String>,
+        split_identifiers: Option<bool>,
+        split_on_numerics: Option<bool>,
+        preserve_original: Option<bool>,
+        index_operators: Option<bool>,
     ) -> napi::Result<Self> {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
             opts = opts.with_position(with_position);
         }
-        if let Some(base_tokenizer) = base_tokenizer {
+        let code_options = CodeAnalyzerOptions {
+            analyzer,
+            split_identifiers,
+            split_on_numerics,
+            preserve_original,
+            index_operators,
+        };
+        if let Some(base_tokenizer) = code_options.resolve_base_tokenizer(base_tokenizer)? {
             opts = opts.base_tokenizer(base_tokenizer);
         }
+        opts = code_options.apply(opts);
         if let Some(language) = language {
             opts = opts.language(&language).map_err(|_| {
                 napi::Error::from_reason(format!(
