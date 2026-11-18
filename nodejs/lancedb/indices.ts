@@ -581,6 +581,28 @@ export type BaseTokenizer =
   | `lindera/${string}`;
 
 /**
+ * Options to create a Bloom filter index.
+ */
+export interface BloomFilterOptions {
+  /**
+   * The number of rows covered by each Bloom filter. Must be a positive safe integer.
+   *
+   * Defaults to 8192, unless overridden by Lance's
+   * `LANCE_BLOOMFILTER_DEFAULT_NUMBER_OF_ITEMS` environment variable.
+   */
+  numberOfItems?: number;
+
+  /**
+   * The desired false-positive probability. Must be finite and strictly between zero and one.
+   * Lower values use more space.
+   *
+   * Defaults to 0.00057, unless overridden by Lance's
+   * `LANCE_BLOOMFILTER_DEFAULT_PROBABILITY` environment variable.
+   */
+  probability?: number;
+}
+
+/**
  * Options to create a full text search index
  */
 export interface FtsOptions {
@@ -832,6 +854,49 @@ export class Index {
    */
   static fm() {
     return new Index(LanceDbIndex.fm());
+  }
+
+  /**
+   * Create a ZoneMap index.
+   *
+   * This index stores min/max summaries for ranges of rows and skips ranges that
+   * cannot match a filter. It works best for numeric or temporal columns whose
+   * values are correlated with row order, such as timestamps or sequential IDs.
+   *
+   * For strings, binary data, and supported types wider than eight bytes, this
+   * index enables per-fragment write seeds and activates a table capability.
+   * Upgrade all readers and writers before creating such an index: older clients
+   * cannot access the resulting snapshots. Dropping the index or restoring an
+   * older version does not remove the capability from subsequent snapshots.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("timestamp", { config: Index.zoneMap() });
+   * ```
+   */
+  static zoneMap() {
+    return new Index(LanceDbIndex.zoneMap());
+  }
+
+  /**
+   * Create a Bloom filter index.
+   *
+   * Bloom filters accelerate equality and membership filters by skipping groups
+   * of rows that cannot match. Candidate rows are checked to remove false
+   * positives. This index uses less space than a btree or bitmap index, but does
+   * not accelerate range filters. Unset options use Lance's defaults.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("id", {
+   *   config: Index.bloomFilter({ numberOfItems: 4096, probability: 0.01 }),
+   * });
+   * ```
+   */
+  static bloomFilter(options?: BloomFilterOptions) {
+    return new Index(
+      LanceDbIndex.bloomFilter(options?.numberOfItems, options?.probability),
+    );
   }
 
   /**
