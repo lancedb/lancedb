@@ -3158,9 +3158,35 @@ impl Table {
     /// or binary data may not be practical to prewarm.  This feature is intended
     /// for workloads that issue many queries against the same columns.
     ///
-    /// If `columns` is `None`, all columns are prewarmed.
-    pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
-        self.inner.prewarm_data(columns).await
+    /// Accepts the same [`PrewarmDataOptions`] as [`Self::prewarm_data_async`]
+    /// and [`Self::explain_prewarm_data`], including filters and per-executor
+    /// concurrency. Existing `None` and `Some(Vec<String>)` column selectors
+    /// remain supported. Omitted or empty columns select all fields.
+    ///
+    /// ```no_run
+    /// # async fn warm(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::PrewarmDataOptions;
+    /// table.prewarm_data(PrewarmDataOptions::new()
+    ///     .columns(["video"])
+    ///     .filter("quality > 0.7")
+    ///     .concurrency(4)).await?;
+    /// // Existing column-only calls retain their behaviour.
+    /// table.prewarm_data(Some(vec!["video".to_owned()])).await?;
+    /// table.prewarm_data(None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn prewarm_data(&self, options: impl Into<PrewarmDataOptions>) -> Result<()> {
+        let options = options.into();
+        if options.filter.is_none() && options.concurrency.is_none() {
+            // Keep the established column-only hook for custom table implementations.
+            let columns = (!options.columns.is_empty()).then_some(options.columns);
+            self.inner.prewarm_data(columns).await
+        } else {
+            // Confirm submission, then discard the durable handle without polling.
+            self.inner.prewarm_data_async(options).await?;
+            Ok(())
+        }
     }
 
     /// Submit a durable data-cache prewarm job through SQL and return when accepted.

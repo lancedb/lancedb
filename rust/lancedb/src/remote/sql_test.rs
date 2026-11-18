@@ -4490,6 +4490,15 @@ async fn remote_optimize_branch_options_are_not_dropped() {
     shutdown.send(()).unwrap();
 }
 
+/// Exercise the public facade without permitting unrelated database requests.
+fn public_remote_table(inner: impl crate::table::BaseTable + 'static) -> crate::Table {
+    let database =
+        RemoteDatabase::new_mock(|request: reqwest::Request| -> http::Response<String> {
+            panic!("unexpected database request: {}", request.url());
+        });
+    crate::Table::new(Arc::new(inner), Arc::new(database))
+}
+
 fn prewarm_result() -> RecordBatch {
     RecordBatch::try_from_iter([
         (
@@ -4586,7 +4595,7 @@ async fn remote_prewarm_data_returns_the_durable_job_without_polling() {
 }
 
 #[tokio::test]
-async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
+async fn remote_public_prewarm_preserves_column_selectors() {
     for columns in [None, Some(vec![]), Some(vec!["payload".into()])] {
         let service = TestSqlService {
             adaptive: true,
@@ -4609,7 +4618,12 @@ async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
             Default::default(),
             Some(sql),
         );
-        table.prewarm_data(columns.clone()).await.unwrap();
+        let table = public_remote_table(table);
+        if columns.is_none() {
+            table.prewarm_data(None).await.unwrap();
+        } else {
+            table.prewarm_data(columns.clone()).await.unwrap();
+        }
         let projection = if columns.as_ref().is_some_and(|c| !c.is_empty()) {
             "\"payload\""
         } else {
@@ -4955,4 +4969,268 @@ async fn remote_prewarm_preview_uses_sql_without_any_http_jobs() {
         );
         shutdown.send(()).unwrap();
     }
+}
+
+#[tokio::test]
+async fn remote_public_prewarm_accepts_shared_options_without_polling() {
+    use crate::table::PrewarmDataOptions;
+    for (options, tail) in [
+        (
+            PrewarmDataOptions::new()
+                .columns(["payload"])
+                .filter("id >= 10")
+                .concurrency(4),
+            ", concurrency = 4) AS SELECT \"payload\" FROM \"clips\" WHERE id >= 10",
+        ),
+        (
+            PrewarmDataOptions::new().filter("id >= 10"),
+            ") AS SELECT * FROM \"clips\" WHERE id >= 10",
+        ),
+        (
+            PrewarmDataOptions::new()
+                .columns(["payload"])
+                .concurrency(2),
+            ", concurrency = 2) AS SELECT \"payload\" FROM \"clips\"",
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let remote = RemoteTable::new_with_sql_client(
+            client_with_handler(|request| -> http::Response<String> {
+                panic!("convenience prewarm must not use HTTP: {}", request.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec!["team".into(), "inner".into()],
+            "team$inner$clips".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("o'brien".into()));
+        let table = public_remote_table(remote);
+        table.prewarm_data(options).await.unwrap();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("PREWARM WITH (branch = 'o''brien'{tail}")]
+        );
+        let headers = headers.lock().unwrap();
+        assert!(!headers.is_empty());
+        assert!(
+            headers
+                .iter()
+                .all(|h| h.database == "analytics" && h.namespace_path == "team$inner")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_public_prewarm_rejects_invalid_options_before_submission() {
+    use crate::table::PrewarmDataOptions;
+    let service = TestSqlService {
+        adaptive: true,
+        result: prewarm_result(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = public_remote_table(RemoteTable::new_with_sql_client(
+        client_with_handler(|request| -> http::Response<String> {
+            panic!("invalid prewarm must not use HTTP: {}", request.url());
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    ));
+    for options in [
+        PrewarmDataOptions::new().concurrency(0),
+        PrewarmDataOptions::new().filter(" "),
+        PrewarmDataOptions::new().filter("id > 0; DROP TABLE clips"),
+    ] {
+        assert!(matches!(
+            table.prewarm_data(options).await.unwrap_err(),
+            Error::InvalidInput { .. }
+        ));
+    }
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_public_optimize_options_preserve_submission_contract() {
+    use crate::table::{OptimizeOptions, OptimizeOverrides};
+    enum Input {
+        Options(OptimizeOptions),
+        Overrides(OptimizeOverrides),
+    }
+    let default_target = OptimizeOptions::default().target_rows_per_fragment;
+    let tuned_suffix = ", target_rows_per_fragment = 100, max_source_rows = 500, \
+                        io_buffer_size = 0, batch_size = 16";
+    for (input, suffix) in [
+        (Input::Options(OptimizeOptions::default()), String::new()),
+        (
+            Input::Overrides(OptimizeOverrides::default()),
+            String::new(),
+        ),
+        (
+            Input::Options(OptimizeOptions {
+                target_rows_per_fragment: 100,
+                max_source_rows: Some(500),
+                io_buffer_size: Some(0),
+                batch_size: Some(16),
+                ..Default::default()
+            }),
+            tuned_suffix.into(),
+        ),
+        (
+            Input::Overrides(OptimizeOverrides {
+                target_rows_per_fragment: Some(100),
+                max_source_rows: Some(500),
+                io_buffer_size: Some(0),
+                batch_size: Some(16),
+            }),
+            tuned_suffix.into(),
+        ),
+        (
+            Input::Overrides(OptimizeOverrides {
+                target_rows_per_fragment: Some(default_target),
+                io_buffer_size: Some(0),
+                ..Default::default()
+            }),
+            format!(", target_rows_per_fragment = {default_target}, io_buffer_size = 0"),
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: RecordBatch::try_from_iter([(
+                "job_id",
+                Arc::new(StringArray::from(vec!["public-compaction-job"])) as ArrayRef,
+            )])
+            .unwrap(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["job_id"], "public-compaction-job");
+            observed.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({
+                    "job_id": "public-compaction-job", "job_type": "compact", "job_state": "DONE",
+                    "result": {
+                        "partial_commit": false, "rows_succeeded": 12, "rows_failed": 0,
+                        "completion_percentage": 100.0, "files_added": 1, "files_removed": 3,
+                        "fragments_added": 1, "fragments_removed": 3
+                    }
+                }).to_string())
+                .unwrap()
+        });
+        let remote = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec!["team".into(), "reports".into()],
+            "team$reports$events".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("o'brien".into()));
+        let table = public_remote_table(remote);
+        let job = match input {
+            Input::Options(options) => table.optimize_async(options).await.unwrap(),
+            Input::Overrides(options) => table.optimize_async(options).await.unwrap(),
+        };
+        assert_eq!(job.id(), Some("public-compaction-job"));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+        let expected =
+            format!("OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien'{suffix})");
+        assert_eq!(*statements.lock().unwrap(), [expected.clone()]);
+        let result = job.wait().await.unwrap();
+        assert_eq!(result.rows_succeeded, 12);
+        assert_eq!(result.fragments_removed, Some(3));
+        assert!(polls.load(Ordering::SeqCst) > 0);
+        assert_eq!(*statements.lock().unwrap(), [expected]);
+        let headers = headers.lock().unwrap();
+        assert!(!headers.is_empty());
+        assert!(
+            headers
+                .iter()
+                .all(|h| h.database == "analytics" && h.namespace_path == "team$reports")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_public_optimize_rejects_unsupported_requests_before_submission() {
+    use crate::table::{IndexOptimizeOptions, OptimizeAction, OptimizeOptions, OptimizeOverrides};
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = public_remote_table(RemoteTable::new_with_sql_client(
+        client_with_handler(|request| -> http::Response<String> {
+            panic!("invalid optimize must not use HTTP: {}", request.url());
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        Some(sql),
+    ));
+    for action in [
+        OptimizeAction::All,
+        OptimizeAction::Prune {
+            older_than: Some(chrono::Duration::days(1)),
+            delete_unverified: None,
+            error_if_tagged_old_versions: None,
+        },
+        OptimizeAction::Index(IndexOptimizeOptions::default()),
+    ] {
+        assert!(matches!(
+            table.optimize_async(action).await.unwrap_err(),
+            Error::NotSupported { .. }
+        ));
+    }
+    assert!(matches!(
+        table
+            .optimize_async(OptimizeOptions {
+                max_source_bytes: Some(1024),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err(),
+        Error::NotSupported { .. }
+    ));
+    assert!(matches!(
+        table
+            .optimize_async(OptimizeOverrides {
+                max_source_rows: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err(),
+        Error::InvalidInput { .. }
+    ));
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
 }
