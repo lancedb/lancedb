@@ -14,7 +14,7 @@ the [tiered index cache](/enterprise/tiered-index-cache), and
 [on-demand data prewarm](#on-demand-data-prewarm) fills the
 [data page cache](/enterprise/data-page-cache) through a durable job.
 
-For startup index prewarm, you configure which tables to warm. Each plan
+For startup index prewarm, you configure which tables to warm. Each
 executor loads those tables' indexes before it joins the fleet. The executor
 does not accept queries until startup prewarming finishes.
 
@@ -32,7 +32,7 @@ an idempotent hint that loads a built index into memory ahead of a query.
 }}}%%
 flowchart LR
     List[("Configured list<br/>of tables to prewarm")]
-    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads the configured<br/>tables' indexes into cache"]
+    Start["Executor starts<br/>(not ready — no queries served)"] --> Warm["Loads the configured<br/>tables' indexes into cache"]
     List -.-> Warm
     Warm --> Ready["Ready — joins the fleet,<br/>starts serving queries"]
     classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
@@ -52,7 +52,7 @@ flowchart LR
 }}}%%
 flowchart LR
     List[("Configured list<br/>of tables to prewarm")]
-    Start["Plan executor starts<br/>(not ready — no queries served)"] --> Warm["Loads the configured<br/>tables' indexes into cache"]
+    Start["Executor starts<br/>(not ready — no queries served)"] --> Warm["Loads the configured<br/>tables' indexes into cache"]
     List -.-> Warm
     Warm --> Ready["Ready — joins the fleet,<br/>starts serving queries"]
     classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
@@ -91,7 +91,8 @@ The table handle determines the database, namespace, and branch in every SDK.
 from datetime import timedelta
 
 job = table.prewarm_data_async(
-    ["video"], filter="quality > 0.7", concurrency=4
+    ["video"], filter="quality > $minimum",
+    parameters={"minimum": 0.7}, concurrency=4
 )
 print(job.id)
 result = job.wait(timeout=timedelta(minutes=10), progress=print)
@@ -105,7 +106,8 @@ db.open_job(job.id).wait()
 ```typescript
 const job = await table.prewarmDataAsync({
   columns: ["video"],
-  filter: "quality > 0.7",
+  filter: "quality > $1",
+  parameters: [0.7],
   concurrency: 4,
 });
 console.log(job.id);
@@ -121,14 +123,20 @@ if (job.id !== null) {
 <Tab title="Rust">
 ```rust
 use std::time::Duration;
+use std::sync::Arc;
+use arrow_array::{ArrayRef, Float64Array, RecordBatch};
 use lancedb::job::JobWaitOptions;
 use lancedb::table::{PrewarmDataOptions, PrewarmDataResult};
 
+let parameters = RecordBatch::try_from_iter([
+    ("minimum", Arc::new(Float64Array::from(vec![0.7])) as ArrayRef),
+])?;
 let job = table
     .prewarm_data_async(
         PrewarmDataOptions::new()
             .columns(["video"])
-            .filter("quality > 0.7")
+            .filter("quality > $minimum")
+            .parameters(parameters)
             .concurrency(4),
     )
     .await?;
@@ -150,8 +158,22 @@ The method returns when the job is accepted. Waiting finishes when warming
 reaches a terminal state; a timeout does not cancel the job. Use
 `job.refresh()` and `job.spec["table_version"]` to inspect the captured source
 version. In Python's asynchronous API, await submission and `job.wait()`.
-Node exposes `table.prewarmDataAsync({ columns, filter, concurrency })` with
-the same lifecycle.
+The TypeScript SDK exposes
+`table.prewarmDataAsync({ columns, filter, parameters, concurrency })` with the
+same lifecycle.
+
+Pass `parameters` alongside a filter to bind positional `$1`/`$2` or named
+`$name` values. Python accepts a sequence, mapping, or one-row Arrow batch/table;
+TypeScript accepts a scalar array, named object, or one-row Arrow batch/table.
+Rust accepts a one-row Arrow `RecordBatch`. Values travel separately from SQL
+text, and table/column identifiers, branch, and concurrency retain their existing
+interfaces. Existing literal filters continue to work without parameters.
+
+Bound filters require an Enterprise server that supports parameterized PREWARM.
+The server accepts up to 1,024 scalar parameters and 64 KiB of encoded Arrow IPC.
+Missing, unused, malformed, oversized, and unsupported bindings fail before job
+creation. TypeScript encodes safe integer numbers and bigint as Int64 and
+fractional numbers as Float64; use Arrow input when an explicit type is needed.
 
 Waiting returns a typed `PrewarmDataResult`: the pinned source version,
 selected fragment count, targeted/completed executor counts, and partial
@@ -197,7 +219,7 @@ it creates no warming job and does not use the job-monitoring APIs.
 from lancedb.prewarm import PrewarmDataPlan
 
 plan: PrewarmDataPlan = table.explain_prewarm_data(
-    ["payload"], filter="id >= 1000", concurrency=4
+    ["payload"], filter="id >= $minimum", parameters={"minimum": 1000}, concurrency=4
 )
 print(plan.table_version)
 print(plan.pruning.mode)
@@ -214,7 +236,8 @@ import type { PrewarmDataPlan } from "@lancedb/lancedb";
 
 const plan: PrewarmDataPlan = await table.explainPrewarmData({
   columns: ["payload"],
-  filter: "id >= 1000",
+  filter: "id >= $minimum",
+  parameters: { minimum: 1000 },
   concurrency: 4,
 });
 console.log(plan.tableVersion);
@@ -225,13 +248,19 @@ console.log(plan.pruning.selectedRowRanges, plan.pruning.fallbackReason);
 </Tab>
 <Tab title="Rust">
 ```rust
+use std::sync::Arc;
+use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use lancedb::table::{PrewarmDataOptions, PrewarmDataPlan};
 
+let parameters = RecordBatch::try_from_iter([
+    ("minimum", Arc::new(Int64Array::from(vec![1000])) as ArrayRef),
+])?;
 let plan: PrewarmDataPlan = table
     .explain_prewarm_data(
         PrewarmDataOptions::new()
             .columns(["payload"])
-            .filter("id >= 1000")
+            .filter("id >= $minimum")
+            .parameters(parameters)
             .concurrency(4),
     )
     .await?;
@@ -255,15 +284,25 @@ when reported. Pruning modes may expand in future server versions. A preview doe
 resolves and plans its own source version. Unsupported servers fail explicitly
 without falling back to text parsing or REST.
 
+Python's SQL interface also accepts bindings for a preview without submitting a
+warming job:
+
+```python
+plan = db.execute_query(
+    "EXPLAIN PREWARM AS SELECT video FROM clips WHERE quality > $minimum",
+    parameters={"minimum": 0.7},
+).read_all()
+```
+
 The filter is a single SQL predicate used for conservative metadata pruning.
 Unknown or unavailable metadata keeps data eligible for warming. Omitted
 columns warm all fields; concurrency must be a positive integer. Historical
 version checkouts are unsupported: use the latest version of the selected
 branch. The server never needs to scan rows merely to evaluate the predicate.
 
-`prewarm_data(columns, filter=..., concurrency=...)` and
-`prewarmData({ columns, filter, concurrency })` accept the same options as the
-job-returning methods but return after acceptance without retaining the handle.
+`prewarm_data(columns, filter=..., parameters=..., concurrency=...)` and
+`prewarmData({ columns, filter, parameters, concurrency })` accept the same
+options as the job-returning methods but return after acceptance without retaining the handle.
 The existing TypeScript `prewarmData(columns)` array form remains supported.
 These methods require SQL PREWARM support and Flight SQL connectivity.
 Unsupported servers fail without a REST fallback or silently
@@ -280,6 +319,6 @@ already-cached data is safe. Index prewarm keeps its existing behavior.
     The deserialized-index cache populated by startup index prewarm.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/index#architecture">
-    Where plan executors and query nodes sit in the serving fleet.
+    Where executors and query nodes sit in the serving fleet.
   </Card>
 </CardGroup>

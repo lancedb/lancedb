@@ -24,6 +24,7 @@ from typing import (
 import warnings
 
 from lancedb import __version__
+from lancedb.sql import QueryParameters
 from lancedb._blob import BlobFile
 
 from lancedb._lancedb import (
@@ -1452,6 +1453,7 @@ class RemoteTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> None:
         """Prewarm data for the table.
 
@@ -1474,6 +1476,9 @@ class RemoteTable(Table):
             The columns to prewarm. If None, all columns are prewarmed.
         filter: str, optional
             A single SQL predicate for conservative metadata pruning.
+        parameters: sequence, mapping, or one-row Arrow batch/table, optional
+            Scalar values for ``$1``/``$name`` placeholders in ``filter``.
+            Values are sent separately from SQL; requires server support.
         concurrency: int, optional
             Positive per-executor warming concurrency; omitted uses the server default.
 
@@ -1483,7 +1488,9 @@ class RemoteTable(Table):
         ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
         return LOOP.run(
-            self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+            self._table.prewarm_data(
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
         )
 
     def explain_prewarm_data(
@@ -1492,6 +1499,7 @@ class RemoteTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview prewarm without submitting a warming job.
 
@@ -1500,7 +1508,7 @@ class RemoteTable(Table):
         """
         return LOOP.run(
             self._table.explain_prewarm_data(
-                columns, filter=filter, concurrency=concurrency
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
             )
         )
 
@@ -1510,11 +1518,15 @@ class RemoteTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> Job[PrewarmDataResult]:
         return Job(
             LOOP.run(
                 self._table.prewarm_data_async(
-                    columns, filter=filter, concurrency=concurrency
+                    columns,
+                    filter=filter,
+                    concurrency=concurrency,
+                    parameters=parameters,
                 )
             )
         )

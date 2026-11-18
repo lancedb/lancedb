@@ -4745,6 +4745,9 @@ describe.each(arrowVersions)(
         "only supported on remote tables",
       );
       await expect(
+        table.explainPrewarmData({ filter: "id > $1", parameters: [1] }),
+      ).rejects.toThrow("only supported on remote tables");
+      await expect(
         table.explainPrewarmData({ unsupported: true } as never),
       ).rejects.toThrow("Unsupported data prewarm option");
       for (const concurrency of [
@@ -4770,8 +4773,9 @@ describe.each(arrowVersions)(
       await expect(
         table.prewarmDataAsync({
           columns: ["id"],
-          filter: "id > 0",
+          filter: "id > $1",
           concurrency: 2,
+          parameters: [1],
         }),
       ).rejects.toThrow("only supported on remote tables");
       await expect(

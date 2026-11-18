@@ -1895,17 +1895,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None))]
+    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None))]
     pub fn prewarm_data_async<'py>(
         self_: PyRef<'py, Self>,
         columns: Option<Vec<String>>,
         filter: Option<String>,
         concurrency: Option<&Bound<'py, PyAny>>,
+        parameters: Option<PyArrowType<arrow::record_batch::RecordBatch>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let mut options =
             lancedb::table::PrewarmDataOptions::new().columns(columns.unwrap_or_default());
         options.filter = filter;
+        options.parameters = parameters.map(|parameters| parameters.0);
         options.concurrency = positive_u32_integer(concurrency, "concurrency")?;
         future_into_py(self_.py(), async move {
             let job = inner.prewarm_data_async(options).await.infer_error()?;
@@ -1913,17 +1915,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None))]
+    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None))]
     pub fn explain_prewarm_data<'py>(
         self_: PyRef<'py, Self>,
         columns: Option<Vec<String>>,
         filter: Option<String>,
         concurrency: Option<&Bound<'py, PyAny>>,
+        parameters: Option<PyArrowType<arrow::record_batch::RecordBatch>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let mut options =
             lancedb::table::PrewarmDataOptions::new().columns(columns.unwrap_or_default());
         options.filter = filter;
+        options.parameters = parameters.map(|parameters| parameters.0);
         options.concurrency = positive_u32_integer(concurrency, "concurrency")?;
         future_into_py(self_.py(), async move {
             let plan = inner.explain_prewarm_data(options).await.infer_error()?;

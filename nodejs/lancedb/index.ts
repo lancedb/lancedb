@@ -673,3 +673,5 @@ export type {
   PrewarmDataResult,
   PrewarmPruningSummary,
 } from "./prewarm";
+
+export type { QueryParameters, QueryParameterValue } from "./sql";

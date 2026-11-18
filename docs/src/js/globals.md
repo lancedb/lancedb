@@ -191,6 +191,8 @@
 - [JobProgressCallback](type-aliases/JobProgressCallback.md)
 - [MaterializedViewSelect](type-aliases/MaterializedViewSelect.md)
 - [MultiVector](type-aliases/MultiVector.md)
+- [QueryParameterValue](type-aliases/QueryParameterValue.md)
+- [QueryParameters](type-aliases/QueryParameters.md)
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)

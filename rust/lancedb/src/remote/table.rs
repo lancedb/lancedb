@@ -4789,7 +4789,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .execute_prewarm(crate::database::ExecuteQueryRequest {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
-                parameters: None,
+                parameters: options.parameters,
             })
             .await
             .map_err(prewarm::map_error)?;
@@ -4828,7 +4828,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .execute_prewarm(crate::database::ExecuteQueryRequest {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
-                parameters: None,
+                parameters: options.parameters,
             })
             .await
             .map_err(prewarm::map_explain_error)?;

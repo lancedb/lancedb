@@ -71,6 +71,7 @@ import {
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
+import { QueryParameters, toParameterBuffer } from "./sql";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 export {
@@ -179,6 +180,8 @@ export interface PrewarmDataOptions {
   columns?: string[];
   /** A single SQL predicate for conservative metadata pruning. */
   filter?: string;
+  /** Typed positional or named filter values, sent separately from SQL. */
+  parameters?: QueryParameters;
   /** Positive per-executor concurrency, at most 4294967295. */
   concurrency?: number;
 }
@@ -624,7 +627,8 @@ export abstract class Table {
    *
    * @example
    * const job = await table.prewarmDataAsync({
-   *   columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+   *   columns: ["video"], filter: "quality > $minimum",
+   *   parameters: { minimum: 0.7 }, concurrency: 4,
    * });
    * await job.wait();
    */
@@ -643,7 +647,9 @@ export abstract class Table {
    * with an unsupported-operation error.
    *
    * @example
-   * const plan = await table.explainPrewarmData({columns: ["video"], filter: "quality > 0.7"});
+   * const plan = await table.explainPrewarmData({
+   *   columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+   * });
    * console.log(plan.pruning.selectedFragments);
    */
   async explainPrewarmData(
@@ -1668,9 +1674,10 @@ export class LocalTable extends Table {
   async prewarmDataAsync(
     options?: PrewarmDataOptions,
   ): Promise<Job<PrewarmDataResult>> {
-    validatePrewarmDataOptions(options);
     return new Job(
-      await this.inner.prewarmDataAsync(options),
+      await this.inner.prewarmDataAsync(
+        await toNativePrewarmDataOptions(options),
+      ),
       decodePrewarmDataResult,
     );
   }
@@ -1678,8 +1685,11 @@ export class LocalTable extends Table {
   async explainPrewarmData(
     options?: PrewarmDataOptions,
   ): Promise<PrewarmDataPlan> {
-    validatePrewarmDataOptions(options);
-    return decodePrewarmDataPlan(await this.inner.explainPrewarmData(options));
+    return decodePrewarmDataPlan(
+      await this.inner.explainPrewarmData(
+        await toNativePrewarmDataOptions(options),
+      ),
+    );
   }
 
   async waitForIndex(
@@ -2399,9 +2409,22 @@ function validateCompactionOptions(options?: CompactionOptions): void {
   }
 }
 
+async function toNativePrewarmDataOptions(options?: PrewarmDataOptions) {
+  validatePrewarmDataOptions(options);
+  return options === undefined
+    ? undefined
+    : {
+        ...options,
+        parameters:
+          options.parameters === undefined
+            ? undefined
+            : await toParameterBuffer(options.parameters),
+      };
+}
+
 function validatePrewarmDataOptions(options?: PrewarmDataOptions): void {
   for (const key of Object.keys(options ?? {})) {
-    if (!["columns", "filter", "concurrency"].includes(key)) {
+    if (!["columns", "filter", "concurrency", "parameters"].includes(key)) {
       throw new Error(`Unsupported data prewarm option: ${key}`);
     }
   }

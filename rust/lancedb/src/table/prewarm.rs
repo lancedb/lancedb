@@ -3,20 +3,38 @@
 
 //! Options, previews, and results for data-cache prewarm.
 
-/// Data prewarm settings for [`super::Table::prewarm_data_async`].
+/// Data prewarm settings for [`super::Table::prewarm_data_async`] and
+/// [`super::Table::explain_prewarm_data`].
 ///
 /// The table handle supplies the database, namespace, and branch. Omitted
 /// columns warm all fields. The filter selects conservative metadata ranges;
 /// it does not execute a row-filter scan or change the source data.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct PrewarmDataOptions {
     /// Lance field paths, including nested paths such as `attrs.score`.
     pub columns: Vec<String>,
     /// An optional SQL predicate for metadata pruning.
     pub filter: Option<String>,
+    /// One row of typed filter values. Column i binds `$<i + 1>` and a
+    /// nonnumeric column name also binds `$name`. Requires server support.
+    pub parameters: Option<arrow_array::RecordBatch>,
     /// Positive per-executor warming concurrency. Omit for the server default.
     pub concurrency: Option<u32>,
+}
+
+impl std::fmt::Debug for PrewarmDataOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrewarmDataOptions")
+            .field("columns", &self.columns)
+            .field("filter", &self.filter)
+            .field("concurrency", &self.concurrency)
+            .field(
+                "parameter_count",
+                &self.parameters.as_ref().map(|batch| batch.num_columns()),
+            )
+            .finish()
+    }
 }
 
 impl PrewarmDataOptions {
@@ -34,6 +52,25 @@ impl PrewarmDataOptions {
     /// Restrict warming using a single SQL predicate for metadata pruning.
     pub fn filter(mut self, filter: impl Into<String>) -> Self {
         self.filter = Some(filter.into());
+        self
+    }
+
+    /// Bind scalar filter values without interpolating them into SQL text.
+    ///
+    /// ```
+    /// # use lancedb::table::PrewarmDataOptions;
+    /// # use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+    /// # use std::sync::Arc;
+    /// let values = RecordBatch::try_from_iter(vec![(
+    ///     "minimum", Arc::new(Int64Array::from(vec![100])) as ArrayRef,
+    /// )]).unwrap();
+    /// let options = PrewarmDataOptions::new()
+    ///     .columns(["payload"])
+    ///     .filter("id >= $minimum")
+    ///     .parameters(values);
+    /// ```
+    pub fn parameters(mut self, parameters: arrow_array::RecordBatch) -> Self {
+        self.parameters = Some(parameters);
         self
     }
 

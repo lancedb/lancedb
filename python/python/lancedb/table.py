@@ -47,6 +47,7 @@ from ._blob import (
 )
 from .types import BlobMode
 from lancedb.arrow import peek_reader
+from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
@@ -2019,6 +2020,7 @@ class Table(ABC):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> None:
         """Submit remote data prewarm and return after acceptance.
 
@@ -2037,7 +2039,9 @@ class Table(ABC):
         >>> table.prewarm_data(  # doctest: +SKIP
         ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+        self.prewarm_data_async(
+            columns, filter=filter, concurrency=concurrency, parameters=parameters
+        )
 
     def explain_prewarm_data(
         self,
@@ -2045,13 +2049,15 @@ class Table(ABC):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview data prewarm without creating a warming job.
 
-        Accepts the same columns, filter, and concurrency as ``prewarm_data_async``
-        and uses the table handle's namespace and branch. Requires LanceDB
-        Enterprise with structured SQL previews, table Select, and database/namespace
-        Usage. Historical-version and Embedded handles are unsupported.
+        Accepts the same columns, filter, parameters, and concurrency as
+        ``prewarm_data_async`` and uses the table handle's namespace and branch.
+        Requires LanceDB Enterprise with structured SQL previews, table Select,
+        and database/namespace Usage. Historical-version and Embedded handles
+        are unsupported.
 
         Returns the source version, readable plan, and conservative pruning summary.
         Unknown metrics remain None; selected ranges are not exact matching rows.
@@ -2060,7 +2066,7 @@ class Table(ABC):
         Examples
         --------
         >>> plan = table.explain_prewarm_data(  # doctest: +SKIP
-        ...     ["video"], filter="quality > 0.7")
+        ...     ["video"], filter="quality > $minimum", parameters={"minimum": 0.7})
         >>> print(plan.pruning.selected_fragments)  # doctest: +SKIP
         """
         raise NotImplementedError(
@@ -2073,6 +2079,7 @@ class Table(ABC):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> Job[PrewarmDataResult]:
         """Submit a remote data-cache prewarm and return its durable job.
 
@@ -2080,6 +2087,8 @@ class Table(ABC):
         The table handle supplies the branch and namespace. ``columns`` uses
         Lance field paths; an omitted/empty list warms all columns. ``filter``
         is one SQL predicate for conservative metadata pruning, not a row scan.
+        ``parameters`` binds ``$1``/``$name`` values using a sequence, mapping,
+        or one-row Arrow batch/table. Values are sent separately from SQL.
         ``concurrency`` is a positive per-executor integer. Historical-version
         handles are unsupported; call ``checkout_latest()`` first.
 
@@ -2097,7 +2106,8 @@ class Table(ABC):
         Examples
         --------
         >>> job = table.prewarm_data_async(  # doctest: +SKIP
-        ...     ["video"], filter="quality > 0.7", concurrency=4)
+        ...     ["video"], filter="quality > $min", parameters={"min": 0.7},
+        ...     concurrency=4)
         >>> job.wait()  # doctest: +SKIP
         """
         raise NotImplementedError(
@@ -4977,6 +4987,7 @@ class LanceTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> None:
         """
         Prewarm data for the table.
@@ -5000,6 +5011,9 @@ class LanceTable(Table):
             The columns to prewarm. If None, all columns are prewarmed.
         filter: str, optional
             A single SQL predicate for conservative metadata pruning.
+        parameters: sequence, mapping, or one-row Arrow batch/table, optional
+            Scalar values for ``$1``/``$name`` placeholders in ``filter``.
+            Values are sent separately from SQL; requires server support.
         concurrency: int, optional
             Positive per-executor warming concurrency; omitted uses the server default.
 
@@ -5009,7 +5023,9 @@ class LanceTable(Table):
         ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
         return LOOP.run(
-            self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+            self._table.prewarm_data(
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
         )
 
     def explain_prewarm_data(
@@ -5018,6 +5034,7 @@ class LanceTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview prewarm without submitting a warming job.
 
@@ -5026,7 +5043,7 @@ class LanceTable(Table):
         """
         return LOOP.run(
             self._table.explain_prewarm_data(
-                columns, filter=filter, concurrency=concurrency
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
             )
         )
 
@@ -5036,11 +5053,15 @@ class LanceTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> Job[PrewarmDataResult]:
         return Job(
             LOOP.run(
                 self._table.prewarm_data_async(
-                    columns, filter=filter, concurrency=concurrency
+                    columns,
+                    filter=filter,
+                    concurrency=concurrency,
+                    parameters=parameters,
                 )
             )
         )
@@ -7532,6 +7553,7 @@ class AsyncTable:
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> None:
         """
         Prewarm data for the table.
@@ -7555,6 +7577,9 @@ class AsyncTable:
             The columns to prewarm. If None, all columns are prewarmed.
         filter: str, optional
             A single SQL predicate for conservative metadata pruning.
+        parameters: sequence, mapping, or one-row Arrow batch/table, optional
+            Scalar values for ``$1``/``$name`` placeholders in ``filter``.
+            Values are sent separately from SQL; requires server support.
         concurrency: int, optional
             Positive per-executor warming concurrency; omitted uses the server default.
 
@@ -7563,7 +7588,9 @@ class AsyncTable:
         >>> await table.prewarm_data(  # doctest: +SKIP
         ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        await self.prewarm_data_async(columns, filter=filter, concurrency=concurrency)
+        await self.prewarm_data_async(
+            columns, filter=filter, concurrency=concurrency, parameters=parameters
+        )
 
     async def explain_prewarm_data(
         self,
@@ -7571,6 +7598,7 @@ class AsyncTable:
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview prewarm without submitting a warming job.
 
@@ -7579,7 +7607,10 @@ class AsyncTable:
         """
         return PrewarmDataPlan.from_json(
             await self._inner.explain_prewarm_data(
-                columns, filter=filter, concurrency=concurrency
+                columns,
+                filter=filter,
+                concurrency=concurrency,
+                parameters=to_parameter_batch(parameters),
             )
         )
 
@@ -7589,6 +7620,7 @@ class AsyncTable:
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncJob[PrewarmDataResult]:
         """Submit data prewarm and return a durable handle after acceptance.
 
@@ -7604,7 +7636,10 @@ class AsyncTable:
         """
         return _typed_job(
             await self._inner.prewarm_data_async(
-                columns, filter=filter, concurrency=concurrency
+                columns,
+                filter=filter,
+                concurrency=concurrency,
+                parameters=to_parameter_batch(parameters),
             ),
             PrewarmDataResult.from_json,
         )
