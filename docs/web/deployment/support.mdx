@@ -38,3 +38,22 @@ post in Discord or email:
 
 Talk to your account executive, file a support ticket, or reach the LanceDB
 support and engineering team directly for dedicated assistance.
+
+### Python blob queries raise `NotImplementedError` {#blob-query-bytes}
+
+If a Blob v2 query works in `"descriptions"` mode but fails in `"bytes"` mode,
+check that the Python SDK and every serving node support snapshot-bound reads.
+Enterprise 1.12.0 supports separate row-ID fetches. For query-bound reads,
+upgrade the serving path before enabling the feature in clients.
+
+- On the query response, the proxy must preserve `x-lancedb-query-version`
+  and `x-lancedb-query-snapshot`. The legacy `x-lancedb-version` watermark
+  or Arrow metadata alone cannot identify the snapshot that produced the rows.
+- On each payload request, forward the selected version and the
+  `x-lancedb-query-snapshot` header. The server checks the identity against
+  the dataset it opens and echoes it in the response. The proxy must preserve
+  that echo so the SDK can verify it before returning bytes.
+
+If the version was deleted or the table was recreated, repeat the query to
+select a current snapshot. To finish reading the original selection, retain
+its table version until the last batch has been read.
