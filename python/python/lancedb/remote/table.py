@@ -50,6 +50,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.prewarm_run import PrewarmRun
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -1509,6 +1510,26 @@ class RemoteTable(Table):
         return LOOP.run(
             self._table.explain_prewarm_data(
                 columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
+        )
+
+    def open_prewarm_run(
+        self,
+        run_key: str,
+        *,
+        version: int,
+        world_size: int,
+        columns: Optional[List[str]] = None,
+    ) -> PrewarmRun:
+        """Open a prewarm run for a training job reading this table.
+
+        See [Table.open_prewarm_run][lancedb.table.Table.open_prewarm_run].
+        """
+        return PrewarmRun(
+            LOOP.run(
+                self._table.open_prewarm_run(
+                    run_key, version=version, world_size=world_size, columns=columns
+                )
             )
         )
 

@@ -50,6 +50,7 @@ from lancedb.arrow import peek_reader
 from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.prewarm_run import AsyncPrewarmRun, PrewarmRun
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult
 from .dependencies import (
@@ -2074,6 +2075,43 @@ class Table(ABC):
         raise NotImplementedError(
             "data prewarm previews are only supported on remote tables"
         )
+
+    def open_prewarm_run(
+        self,
+        run_key: str,
+        *,
+        version: int,
+        world_size: int,
+        columns: Optional[List[str]] = None,
+    ) -> PrewarmRun:
+        """Open a prewarm run for a training job reading this table.
+
+        A prewarm run warms the data a training job reads a wave at a time,
+        ahead of the reads. Every rank calls this with the same arguments and
+        gets the same run, then joins it with its own rank. Only supported by
+        LanceDB Enterprise.
+
+        Parameters
+        ----------
+        run_key: str
+            Identifies one training attempt. Every rank of the attempt must
+            pass the same key, and a restarted attempt a new one: a key whose
+            run has ended never opens a second run.
+        version: int
+            The table version the run reads. The run holds it until it ends.
+        world_size: int
+            Number of ranks. Fixed for the life of the run.
+        columns: list of str, optional
+            Columns to warm. If None, all columns are warmed.
+
+        Examples
+        --------
+        >>> run = table.open_prewarm_run(  # doctest: +SKIP
+        ...     "job-1234-attempt-0-epoch-0", version=42, world_size=8)
+        >>> rank = run.join(0)  # doctest: +SKIP
+        >>> rank.wait_ready(0, timeout=600)  # doctest: +SKIP
+        """
+        raise NotImplementedError("prewarm runs are only supported on remote tables")
 
     def prewarm_data_async(
         self,
@@ -7595,6 +7633,24 @@ class AsyncTable:
         """
         await self.prewarm_data_async(
             columns, filter=filter, concurrency=concurrency, parameters=parameters
+        )
+
+    async def open_prewarm_run(
+        self,
+        run_key: str,
+        *,
+        version: int,
+        world_size: int,
+        columns: Optional[List[str]] = None,
+    ) -> AsyncPrewarmRun:
+        """Open a prewarm run for a training job reading this table.
+
+        See [Table.open_prewarm_run][lancedb.table.Table.open_prewarm_run].
+        """
+        return AsyncPrewarmRun(
+            await self._inner.open_prewarm_run(
+                run_key, version=version, world_size=world_size, columns=columns
+            )
         )
 
     async def explain_prewarm_data(

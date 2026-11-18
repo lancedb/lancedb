@@ -1915,6 +1915,27 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (run_key, *, version, world_size, columns=None))]
+    pub fn open_prewarm_run(
+        self_: PyRef<'_, Self>,
+        run_key: String,
+        version: u64,
+        world_size: u32,
+        columns: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let options = lancedb::prewarm_run::PrewarmRunOptions {
+            run_key,
+            version,
+            columns: columns.unwrap_or_default(),
+            world_size,
+        };
+        future_into_py(self_.py(), async move {
+            let run = inner.open_prewarm_run(options).await.infer_error()?;
+            Ok(crate::prewarm_run::PrewarmRun::new(run))
+        })
+    }
+
     #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None))]
     pub fn explain_prewarm_data<'py>(
         self_: PyRef<'py, Self>,

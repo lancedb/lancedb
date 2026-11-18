@@ -36,6 +36,7 @@ pub mod namespace;
 pub mod oauth;
 pub mod otel;
 pub mod permutation;
+pub mod prewarm_run;
 pub mod query;
 pub mod runtime;
 pub mod session;
@@ -100,6 +101,8 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::oauth::PyOAuthSession>()?;
     m.add_class::<crate::oauth::PySessionStatus>()?;
     m.add_class::<crate::oauth::PySessionLogout>()?;
+    m.add_class::<crate::prewarm_run::PrewarmRun>()?;
+    m.add_class::<crate::prewarm_run::PrewarmRunRank>()?;
     m.add_class::<crate::job::Job>()?;
     m.add_class::<crate::job::JobInfo>()?;
     m.add_class::<crate::job::JobDescription>()?;

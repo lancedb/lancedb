@@ -237,6 +237,13 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                         .getattr(intern!(py, "JobCancelledError"))?;
                     Err(PyErr::from_value(cls.call1((err.to_string(),))?))
                 }),
+                LanceError::PrewarmRun { run_id, code, .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "PrewarmRunError"))?;
+                    let error = cls.call1((err.to_string(), run_id.clone(), code.clone()))?;
+                    Err(PyErr::from_value(error))
+                }),
                 LanceError::JobNotFound { .. } => Python::attach(|py| {
                     let cls = py
                         .import(intern!(py, "lancedb.exceptions"))?
