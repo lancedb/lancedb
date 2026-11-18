@@ -219,7 +219,7 @@ it creates no warming job and does not use the job-monitoring APIs.
 from lancedb.prewarm import PrewarmDataPlan
 
 plan: PrewarmDataPlan = table.explain_prewarm_data(
-    ["payload"], filter="id >= 1000", concurrency=4
+    ["payload"], filter="id >= $minimum", parameters={"minimum": 1000}, concurrency=4
 )
 print(plan.table_version)
 print(plan.pruning.mode)
@@ -236,7 +236,8 @@ import type { PrewarmDataPlan } from "@lancedb/lancedb";
 
 const plan: PrewarmDataPlan = await table.explainPrewarmData({
   columns: ["payload"],
-  filter: "id >= 1000",
+  filter: "id >= $minimum",
+  parameters: { minimum: 1000 },
   concurrency: 4,
 });
 console.log(plan.tableVersion);
@@ -247,13 +248,19 @@ console.log(plan.pruning.selectedRowRanges, plan.pruning.fallbackReason);
 </Tab>
 <Tab title="Rust">
 ```rust
+use std::sync::Arc;
+use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use lancedb::table::{PrewarmDataOptions, PrewarmDataPlan};
 
+let parameters = RecordBatch::try_from_iter([
+    ("minimum", Arc::new(Int64Array::from(vec![1000])) as ArrayRef),
+])?;
 let plan: PrewarmDataPlan = table
     .explain_prewarm_data(
         PrewarmDataOptions::new()
             .columns(["payload"])
-            .filter("id >= 1000")
+            .filter("id >= $minimum")
+            .parameters(parameters)
             .concurrency(4),
     )
     .await?;

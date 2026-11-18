@@ -651,6 +651,7 @@ class Table:
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[pa.RecordBatch] = None,
     ) -> str: ...
     async def prewarm_data_async(
         self,

@@ -647,7 +647,9 @@ export abstract class Table {
    * with an unsupported-operation error.
    *
    * @example
-   * const plan = await table.explainPrewarmData({columns: ["video"], filter: "quality > 0.7"});
+   * const plan = await table.explainPrewarmData({
+   *   columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+   * });
    * console.log(plan.pruning.selectedFragments);
    */
   async explainPrewarmData(
@@ -1672,18 +1674,9 @@ export class LocalTable extends Table {
   async prewarmDataAsync(
     options?: PrewarmDataOptions,
   ): Promise<Job<PrewarmDataResult>> {
-    validatePrewarmDataOptions(options);
     return new Job(
       await this.inner.prewarmDataAsync(
-        options === undefined
-          ? undefined
-          : {
-              ...options,
-              parameters:
-                options.parameters === undefined
-                  ? undefined
-                  : await toParameterBuffer(options.parameters),
-            },
+        await toNativePrewarmDataOptions(options),
       ),
       decodePrewarmDataResult,
     );
@@ -1692,8 +1685,11 @@ export class LocalTable extends Table {
   async explainPrewarmData(
     options?: PrewarmDataOptions,
   ): Promise<PrewarmDataPlan> {
-    validatePrewarmDataOptions(options);
-    return decodePrewarmDataPlan(await this.inner.explainPrewarmData(options));
+    return decodePrewarmDataPlan(
+      await this.inner.explainPrewarmData(
+        await toNativePrewarmDataOptions(options),
+      ),
+    );
   }
 
   async waitForIndex(
@@ -2411,6 +2407,19 @@ function validateCompactionOptions(options?: CompactionOptions): void {
       throw new Error(`Unsupported compaction option: ${key}`);
     }
   }
+}
+
+async function toNativePrewarmDataOptions(options?: PrewarmDataOptions) {
+  validatePrewarmDataOptions(options);
+  return options === undefined
+    ? undefined
+    : {
+        ...options,
+        parameters:
+          options.parameters === undefined
+            ? undefined
+            : await toParameterBuffer(options.parameters),
+      };
 }
 
 function validatePrewarmDataOptions(options?: PrewarmDataOptions): void {

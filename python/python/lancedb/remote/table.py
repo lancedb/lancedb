@@ -1499,6 +1499,7 @@ class RemoteTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview prewarm without submitting a warming job.
 
@@ -1507,7 +1508,7 @@ class RemoteTable(Table):
         """
         return LOOP.run(
             self._table.explain_prewarm_data(
-                columns, filter=filter, concurrency=concurrency
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
             )
         )
 

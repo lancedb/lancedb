@@ -2049,13 +2049,15 @@ class Table(ABC):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview data prewarm without creating a warming job.
 
-        Accepts the same columns, filter, and concurrency as ``prewarm_data_async``
-        and uses the table handle's namespace and branch. Requires LanceDB
-        Enterprise with structured SQL previews, table Select, and database/namespace
-        Usage. Historical-version and Embedded handles are unsupported.
+        Accepts the same columns, filter, parameters, and concurrency as
+        ``prewarm_data_async`` and uses the table handle's namespace and branch.
+        Requires LanceDB Enterprise with structured SQL previews, table Select,
+        and database/namespace Usage. Historical-version and Embedded handles
+        are unsupported.
 
         Returns the source version, readable plan, and conservative pruning summary.
         Unknown metrics remain None; selected ranges are not exact matching rows.
@@ -2064,7 +2066,7 @@ class Table(ABC):
         Examples
         --------
         >>> plan = table.explain_prewarm_data(  # doctest: +SKIP
-        ...     ["video"], filter="quality > 0.7")
+        ...     ["video"], filter="quality > $minimum", parameters={"minimum": 0.7})
         >>> print(plan.pruning.selected_fragments)  # doctest: +SKIP
         """
         raise NotImplementedError(
@@ -5032,6 +5034,7 @@ class LanceTable(Table):
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview prewarm without submitting a warming job.
 
@@ -5040,7 +5043,7 @@ class LanceTable(Table):
         """
         return LOOP.run(
             self._table.explain_prewarm_data(
-                columns, filter=filter, concurrency=concurrency
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
             )
         )
 
@@ -7595,6 +7598,7 @@ class AsyncTable:
         *,
         filter: Optional[str] = None,
         concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> PrewarmDataPlan:
         """Preview prewarm without submitting a warming job.
 
@@ -7603,7 +7607,10 @@ class AsyncTable:
         """
         return PrewarmDataPlan.from_json(
             await self._inner.explain_prewarm_data(
-                columns, filter=filter, concurrency=concurrency
+                columns,
+                filter=filter,
+                concurrency=concurrency,
+                parameters=to_parameter_batch(parameters),
             )
         )
 

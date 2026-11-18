@@ -3,7 +3,8 @@
 
 //! Options, previews, and results for data-cache prewarm.
 
-/// Data prewarm settings for [`super::Table::prewarm_data_async`].
+/// Data prewarm settings for [`super::Table::prewarm_data_async`] and
+/// [`super::Table::explain_prewarm_data`].
 ///
 /// The table handle supplies the database, namespace, and branch. Omitted
 /// columns warm all fields. The filter selects conservative metadata ranges;

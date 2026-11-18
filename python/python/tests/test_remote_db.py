@@ -8240,9 +8240,11 @@ def test_remote_data_prewarm_validates_before_submission(options, method):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "method", ["prewarm_data", "prewarm_data_async", "explain_prewarm_data"]
+)
 @pytest.mark.parametrize("named", [False, True])
-async def test_prewarm_bound_parameters_reach_flight(asynchronous, legacy, named):
+async def test_prewarm_bound_parameters_reach_flight(asynchronous, method, named):
     flight = pytest.importorskip("pyarrow.flight")
     attack = "training' OR TRUE; DROP TABLE items; --"
 
@@ -8253,9 +8255,35 @@ async def test_prewarm_bound_parameters_reach_flight(asynchronous, legacy, named
 
         def do_exchange(self, context, descriptor, reader, writer):
             self.calls.append((descriptor.command, reader.read_all()))
-            result = pa.table(
-                {"job_id": ["bound-job"], "table_version": pa.array([42], pa.uint64())}
-            )
+            if method == "explain_prewarm_data":
+                result = pa.table(
+                    {
+                        "plan_type": ["logical_plan"],
+                        "plan": [
+                            json.dumps(
+                                {
+                                    "format_version": 1,
+                                    "table_version": 42,
+                                    "plan": "metadata preview",
+                                    "pruning": {
+                                        "mode": "zonemap_ranges",
+                                        "input_fragments": 3,
+                                        "selected_fragments": 1,
+                                        "pruned_fragments": 2,
+                                        "selected_row_ranges": 2,
+                                    },
+                                }
+                            )
+                        ],
+                    }
+                )
+            else:
+                result = pa.table(
+                    {
+                        "job_id": ["bound-job"],
+                        "table_version": pa.array([42], pa.uint64()),
+                    }
+                )
             writer.begin(result.schema)
             writer.write_table(result)
             writer.close()
@@ -8264,7 +8292,6 @@ async def test_prewarm_bound_parameters_reach_flight(asynchronous, legacy, named
     with _mock_remote_sql_connection(server, _create_table_handler) as kwargs:
         parameters = {"min": 8, "tag": attack} if named else [8, attack]
         predicate = "id >= $min AND tag = $tag" if named else "id >= $1 AND tag = $2"
-        method = "prewarm_data" if legacy else "prewarm_data_async"
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
@@ -8277,12 +8304,17 @@ async def test_prewarm_bound_parameters_reach_flight(asynchronous, legacy, named
             result = getattr(table, method)(
                 ["payload"], filter=predicate, parameters=parameters
             )
-        if legacy:
+        if method == "prewarm_data":
             assert result is None
+        elif method == "explain_prewarm_data":
+            assert result.table_version == 42
+            assert result.pruning.selected_fragments == 1
         else:
             assert result.id == "bound-job"
     ((command, received),) = server.calls
     assert b"PREWARM" in command and predicate.encode() in command
+    if method == "explain_prewarm_data":
+        assert b"EXPLAIN (FORMAT JSON) PREWARM" in command
     assert attack.encode() not in command
     assert received.column(0).to_pylist() == [8]
     assert received.column(1).to_pylist() == [attack]

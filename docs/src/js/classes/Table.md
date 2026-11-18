@@ -679,7 +679,9 @@ with an unsupported-operation error.
 #### Example
 
 ```ts
-const plan = await table.explainPrewarmData({columns: ["video"], filter: "quality > 0.7"});
+const plan = await table.explainPrewarmData({
+  columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+});
 console.log(plan.pruning.selectedFragments);
 ```
 
