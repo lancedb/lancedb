@@ -450,6 +450,7 @@
               "curation/create-function",
               "curation/chunking",
               "curation/statistical-sampling",
+              "curation/semantic-sampling",
               "curation/selective-sampling",
               "curation/aggregate",
               "curation/join",
