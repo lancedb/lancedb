@@ -186,6 +186,18 @@ impl PrewarmRun {
         self.version
     }
 
+    /// A reader for `rank` that waits on and re-warms waves without joining
+    /// or sending heartbeats. For processes that read on behalf of a rank
+    /// another process has joined, such as DataLoader workers. While the
+    /// server has dropped the rank, its calls retry until the joined process
+    /// joins again or their deadline passes.
+    pub fn reader(&self, rank: u32) -> PrewarmRunReader {
+        PrewarmRunReader {
+            run: self.clone(),
+            rank,
+        }
+    }
+
     /// Join the run as `rank` and start sending heartbeats. Joining again
     /// with the same rank is harmless.
     pub async fn join(&self, rank: u32) -> Result<PrewarmRunRank> {
@@ -223,22 +235,138 @@ impl RankShared {
         self.view.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Run a rank call, joining again once if the server dropped this rank.
+    fn member(&self) -> Member<'_> {
+        Member {
+            run: &self.run,
+            rank: self.rank,
+            joined: Some(self),
+        }
+    }
+}
+
+/// A rank's calls, from either its joined handle or a reader.
+struct Member<'a> {
+    run: &'a PrewarmRun,
+    rank: u32,
+    /// The joined rank, which joins again when the server dropped it. A
+    /// reader leaves that to the joined process and retries meanwhile.
+    joined: Option<&'a RankShared>,
+}
+
+impl Member<'_> {
     async fn call<T: DeserializeOwned>(
         &self,
         name: &str,
         body: Value,
         deadline: Instant,
     ) -> Result<T> {
-        match call(&self.run, name, body.clone(), deadline).await {
-            Err(Error::PrewarmRun { code, .. }) if code == error_codes::NOT_JOINED => {
-                let view: RunView =
-                    call(&self.run, "join", json!({ "rank": self.rank }), deadline).await?;
-                self.record(view);
-                call(&self.run, name, body, deadline).await
+        let mut backoff = INITIAL_RETRY_BACKOFF;
+        loop {
+            match call(self.run, name, body.clone(), deadline).await {
+                Err(Error::PrewarmRun { code, .. }) if code == error_codes::NOT_JOINED => {
+                    if let Some(shared) = self.joined {
+                        let view: RunView =
+                            call(self.run, "join", json!({ "rank": self.rank }), deadline).await?;
+                        shared.record(view);
+                        return call(self.run, name, body, deadline).await;
+                    }
+                    if Instant::now() + backoff >= deadline {
+                        return Err(Error::Timeout {
+                            message: format!(
+                                "prewarm run {}: rank {} was not joined before `{name}`'s \
+                                 deadline",
+                                self.run.run_id, self.rank
+                            ),
+                        });
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_RETRY_BACKOFF);
+                }
+                result => return result,
             }
-            result => result,
         }
+    }
+
+    async fn wait_ready(&self, wave: u64, timeout: Duration) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Reply {
+            status: WaveStatus,
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Timeout {
+                    message: format!(
+                        "prewarm run {}: wave {wave} was not warm within {timeout:?}",
+                        self.run.run_id
+                    ),
+                });
+            }
+            let wait_ms = remaining.min(MAX_WAVE_STATUS_WAIT).as_millis() as u64;
+            let body = json!({ "rank": self.rank, "wave": wave, "wait_ms": wait_ms });
+            let reply: Reply = self.call("wave_status", body, deadline).await?;
+            match reply.status {
+                WaveStatus::Ready => return Ok(()),
+                WaveStatus::Consumed => {
+                    return Err(Error::PrewarmRun {
+                        run_id: self.run.run_id.to_string(),
+                        code: error_codes::WAVE_CONSUMED.to_string(),
+                        message: format!(
+                            "wave {wave} is behind every live rank; rank {} was dropped \
+                             from the run or fell behind",
+                            self.rank
+                        ),
+                    });
+                }
+                WaveStatus::NotAnnounced | WaveStatus::Pending | WaveStatus::Warming => {}
+            }
+        }
+    }
+
+    async fn rewarm(&self, wave: u64, ranges: Vec<RowRange>) -> Result<()> {
+        let deadline = Instant::now() + DEFAULT_RUN_CALL_TIMEOUT;
+        let body = json!({ "rank": self.rank, "wave": wave, "ranges": ranges });
+        let _: Value = self.call("rewarm", body, deadline).await?;
+        Ok(())
+    }
+}
+
+/// Reads on behalf of a rank another process joined: waits on waves and
+/// re-warms misses, with no heartbeat. See [`PrewarmRun::reader`].
+#[derive(Clone, Debug)]
+pub struct PrewarmRunReader {
+    run: PrewarmRun,
+    rank: u32,
+}
+
+impl PrewarmRunReader {
+    pub fn run(&self) -> &PrewarmRun {
+        &self.run
+    }
+
+    pub fn rank(&self) -> u32 {
+        self.rank
+    }
+
+    fn member(&self) -> Member<'_> {
+        Member {
+            run: &self.run,
+            rank: self.rank,
+            joined: None,
+        }
+    }
+
+    /// Wait until `wave` is warm, or `timeout` passes. Unlike
+    /// [`PrewarmRunRank::wait_ready`], this does not report the wave as being
+    /// read; the joined process does that with [`PrewarmRunRank::report_wave`].
+    pub async fn wait_ready(&self, wave: u64, timeout: Duration) -> Result<()> {
+        self.member().wait_ready(wave, timeout).await
+    }
+
+    /// See [`PrewarmRunRank::rewarm`].
+    pub async fn rewarm(&self, wave: u64, ranges: Vec<RowRange>) -> Result<()> {
+        self.member().rewarm(wave, ranges).await
     }
 }
 
@@ -275,57 +403,32 @@ impl PrewarmRunRank {
         }
         let deadline = Instant::now() + DEFAULT_RUN_CALL_TIMEOUT;
         let body = json!({ "rank": self.shared.rank, "waves": waves });
-        let reply: Reply = self.shared.call("announce", body, deadline).await?;
+        let reply: Reply = self
+            .shared
+            .member()
+            .call("announce", body, deadline)
+            .await?;
         Ok(reply.highest_announced)
     }
 
     /// Wait until `wave` is warm, or `timeout` passes. Marks `wave` as the
     /// one this rank is reading, so the server lets earlier waves go.
     pub async fn wait_ready(&self, wave: u64, timeout: Duration) -> Result<()> {
-        #[derive(Deserialize)]
-        struct Reply {
-            status: WaveStatus,
-        }
-        let deadline = Instant::now() + timeout;
+        self.report_wave(wave);
+        self.shared.member().wait_ready(wave, timeout).await
+    }
+
+    /// Report that this rank is reading `wave`, for readers in other
+    /// processes. Heartbeats carry the highest wave reported; a lower one is
+    /// ignored.
+    pub fn report_wave(&self, wave: u64) {
         self.shared.current_wave.fetch_max(wave, Ordering::Relaxed);
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::Timeout {
-                    message: format!(
-                        "prewarm run {}: wave {wave} was not warm within {timeout:?}",
-                        self.shared.run.run_id
-                    ),
-                });
-            }
-            let wait_ms = remaining.min(MAX_WAVE_STATUS_WAIT).as_millis() as u64;
-            let body = json!({ "rank": self.shared.rank, "wave": wave, "wait_ms": wait_ms });
-            let reply: Reply = self.shared.call("wave_status", body, deadline).await?;
-            match reply.status {
-                WaveStatus::Ready => return Ok(()),
-                WaveStatus::Consumed => {
-                    return Err(Error::PrewarmRun {
-                        run_id: self.shared.run.run_id.to_string(),
-                        code: error_codes::WAVE_CONSUMED.to_string(),
-                        message: format!(
-                            "wave {wave} is behind every live rank; rank {} was dropped \
-                             from the run or fell behind",
-                            self.shared.rank
-                        ),
-                    });
-                }
-                WaveStatus::NotAnnounced | WaveStatus::Pending | WaveStatus::Warming => {}
-            }
-        }
     }
 
     /// Ask the server to warm `ranges` of `wave` again after a read found
     /// them missing. Follow with [`PrewarmRunRank::wait_ready`].
     pub async fn rewarm(&self, wave: u64, ranges: Vec<RowRange>) -> Result<()> {
-        let deadline = Instant::now() + DEFAULT_RUN_CALL_TIMEOUT;
-        let body = json!({ "rank": self.shared.rank, "wave": wave, "ranges": ranges });
-        let _: Value = self.shared.call("rewarm", body, deadline).await?;
-        Ok(())
+        self.shared.member().rewarm(wave, ranges).await
     }
 
     /// Stop heartbeats and leave the run. A run that has already ended
@@ -373,7 +476,11 @@ async fn heartbeat_loop(shared: Arc<RankShared>) {
         });
         // A missed beat is retried on the next tick, so one interval bounds it.
         let deadline = Instant::now() + interval;
-        match shared.call::<RunView>("heartbeat", body, deadline).await {
+        match shared
+            .member()
+            .call::<RunView>("heartbeat", body, deadline)
+            .await
+        {
             Ok(view) => {
                 let open = view.status == RunStatus::Open;
                 shared.record(view);

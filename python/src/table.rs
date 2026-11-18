@@ -1915,6 +1915,18 @@ impl Table {
         })
     }
 
+    pub fn attach_prewarm_run(
+        &self,
+        run_id: String,
+        version: u64,
+    ) -> PyResult<crate::prewarm_run::PrewarmRun> {
+        let run = self
+            .inner_ref()?
+            .attach_prewarm_run(&run_id, version)
+            .infer_error()?;
+        Ok(crate::prewarm_run::PrewarmRun::new(run))
+    }
+
     pub fn cache_only(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {

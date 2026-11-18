@@ -707,6 +707,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "data prewarm previews are only supported on remote tables".into(),
         })
     }
+    /// A handle to a prewarm run opened elsewhere, by its id.
+    fn attach_prewarm_run(
+        &self,
+        _run_id: &str,
+        _version: u64,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        Err(Error::NotSupported {
+            message: "prewarm runs are only supported on remote tables".into(),
+        })
+    }
     /// A handle to the same table version whose queries read only from the
     /// server's cache.
     async fn cache_only(&self) -> Result<Arc<dyn BaseTable>> {
@@ -3277,6 +3287,30 @@ impl Table {
         options: crate::prewarm_run::PrewarmRunOptions,
     ) -> Result<crate::prewarm_run::PrewarmRun> {
         self.inner.open_prewarm_run(options).await
+    }
+
+    /// A handle to a prewarm run another process opened, by its id and
+    /// version. Makes no server call.
+    ///
+    /// Processes that read for a rank use this with
+    /// [`PrewarmRun::reader`](crate::prewarm_run::PrewarmRun::reader), since a
+    /// joined rank's heartbeat cannot move between processes.
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use lancedb::Table;
+    /// # async fn read(table: &Table, run_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// let reader = table.attach_prewarm_run(run_id, 42)?.reader(3);
+    /// reader.wait_ready(0, Duration::from_secs(600)).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn attach_prewarm_run(
+        &self,
+        run_id: impl AsRef<str>,
+        version: u64,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        self.inner.attach_prewarm_run(run_id.as_ref(), version)
     }
 
     /// A handle to this table whose queries read only what LanceDB

@@ -2113,6 +2113,16 @@ class Table(ABC):
         """
         raise NotImplementedError("prewarm runs are only supported on remote tables")
 
+    def attach_prewarm_run(self, run_id: str, version: int) -> PrewarmRun:
+        """A handle to a prewarm run another process opened, by its id and version.
+
+        Makes no server call. Processes that read for a rank, such as DataLoader
+        workers, use this with
+        [PrewarmRun.reader][lancedb.prewarm_run.PrewarmRun.reader], since a joined
+        rank's heartbeat cannot move between processes.
+        """
+        raise NotImplementedError("prewarm runs are only supported on remote tables")
+
     def cache_only(self) -> "Table":
         """A handle to this table whose queries read only from the cache.
 
@@ -7648,6 +7658,13 @@ class AsyncTable:
         await self.prewarm_data_async(
             columns, filter=filter, concurrency=concurrency, parameters=parameters
         )
+
+    def attach_prewarm_run(self, run_id: str, version: int) -> AsyncPrewarmRun:
+        """A handle to a prewarm run another process opened. Makes no server call.
+
+        See [Table.attach_prewarm_run][lancedb.table.Table.attach_prewarm_run].
+        """
+        return AsyncPrewarmRun(self._inner.attach_prewarm_run(run_id, version))
 
     async def cache_only(self) -> "AsyncTable":
         """A handle to this table whose queries read only from the cache.

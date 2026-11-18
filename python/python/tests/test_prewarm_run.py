@@ -212,3 +212,29 @@ def test_cache_only_needs_a_checked_out_version():
     with mock_lancedb_connection(cache_only_handler([])) as db:
         with pytest.raises(ValueError, match="fixed version"):
             db.open_table("test").cache_only()
+
+
+def test_attached_reader_waits_without_joining():
+    handler, seen = make_handler(REPLIES)
+    with mock_lancedb_connection(handler) as db:
+        reader = db.open_table("test").attach_prewarm_run("run-1", 42).reader(1)
+        assert reader.rank == 1
+        reader.wait_ready(0, timeout=60)
+        reader.rewarm(0, [RowRange(3, 2, 4)])
+    calls = [call for call, _ in seen]
+    assert "open" not in calls and "join" not in calls
+    assert (
+        "rewarm",
+        {"rank": 1, "wave": 0, "ranges": [{"fragment_id": 3, "start": 2, "end": 4}]},
+    ) in seen
+
+
+@pytest.mark.asyncio
+async def test_attached_reader_async():
+    handler, seen = make_handler(REPLIES)
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        run = table.attach_prewarm_run("run-1", 42)
+        assert (run.run_id, run.version) == ("run-1", 42)
+        await run.reader(2).wait_ready(0, timeout=60)
+    assert [call for call, _ in seen] == ["wave_status"]

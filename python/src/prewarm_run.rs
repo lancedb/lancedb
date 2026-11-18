@@ -50,6 +50,12 @@ impl PrewarmRun {
         self.inner.version()
     }
 
+    pub fn reader(&self, rank: u32) -> PrewarmRunReader {
+        PrewarmRunReader {
+            inner: self.inner.reader(rank),
+        }
+    }
+
     pub fn join(self_: PyRef<'_, Self>, rank: u32) -> PyResult<Bound<'_, PyAny>> {
         let run = self_.inner.clone();
         future_into_py(self_.py(), async move {
@@ -109,6 +115,10 @@ impl PrewarmRunRank {
         })
     }
 
+    pub fn report_wave(&self, wave: u64) {
+        self.inner.report_wave(wave);
+    }
+
     pub fn rewarm(
         self_: PyRef<'_, Self>,
         wave: u64,
@@ -124,5 +134,43 @@ impl PrewarmRunRank {
     pub fn close(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move { inner.close().await.infer_error() })
+    }
+}
+
+#[pyclass]
+pub struct PrewarmRunReader {
+    inner: lancedb::prewarm_run::PrewarmRunReader,
+}
+
+#[pymethods]
+impl PrewarmRunReader {
+    #[getter]
+    pub fn rank(&self) -> u32 {
+        self.inner.rank()
+    }
+
+    pub fn wait_ready(
+        self_: PyRef<'_, Self>,
+        wave: u64,
+        timeout_s: f64,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let timeout = Duration::try_from_secs_f64(timeout_s)
+            .map_err(|error| PyValueError::new_err(format!("invalid timeout: {error}")))?;
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.wait_ready(wave, timeout).await.infer_error()
+        })
+    }
+
+    pub fn rewarm(
+        self_: PyRef<'_, Self>,
+        wave: u64,
+        ranges: Vec<PyRowRange>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        let ranges = row_ranges(ranges);
+        future_into_py(self_.py(), async move {
+            inner.rewarm(wave, ranges).await.infer_error()
+        })
     }
 }

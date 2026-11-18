@@ -4870,6 +4870,19 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         prewarm_run::open(&self.client, &self.identifier, body, &options).await
     }
 
+    fn attach_prewarm_run(
+        &self,
+        run_id: &str,
+        version: u64,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        Ok(prewarm_run::attach(
+            &self.client,
+            &self.identifier,
+            run_id.to_string(),
+            version,
+        ))
+    }
+
     async fn cache_only(&self) -> Result<Arc<dyn BaseTable>> {
         let Some(version) = *self.version.read().await else {
             return Err(Error::InvalidInput {

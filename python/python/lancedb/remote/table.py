@@ -1520,6 +1520,13 @@ class RemoteTable(Table):
             )
         )
 
+    def attach_prewarm_run(self, run_id: str, version: int) -> PrewarmRun:
+        """A handle to a prewarm run another process opened. Makes no server call.
+
+        See [Table.attach_prewarm_run][lancedb.table.Table.attach_prewarm_run].
+        """
+        return PrewarmRun(self._table.attach_prewarm_run(run_id, version))
+
     def cache_only(self) -> "RemoteTable":
         """A handle to this table whose queries read only from the cache.
 

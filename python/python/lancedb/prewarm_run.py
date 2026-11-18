@@ -109,6 +109,11 @@ class AsyncPrewarmRunRank:
         """
         await self._inner.wait_ready(wave, _seconds(timeout))
 
+    def report_wave(self, wave: int) -> None:
+        """Report that this rank is reading ``wave``, for readers in other
+        processes. Heartbeats carry the highest wave reported."""
+        self._inner.report_wave(wave)
+
     async def rewarm(self, wave: int, ranges: Iterable[Sequence[int]]) -> None:
         """Warm ``ranges`` of ``wave`` again after a read found them missing.
 
@@ -119,6 +124,29 @@ class AsyncPrewarmRunRank:
     async def close(self) -> None:
         """Stop heartbeats and leave the run. A run that ended counts as closed."""
         await self._inner.close()
+
+
+class AsyncPrewarmRunReader:
+    """Reads for a rank another process joined: waits on waves and re-warms
+    misses, without heartbeats. For DataLoader workers; the rank's main
+    process reports the waves they read with
+    [report_wave][lancedb.prewarm_run.AsyncPrewarmRunRank.report_wave].
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+
+    @property
+    def rank(self) -> int:
+        return self._inner.rank
+
+    async def wait_ready(self, wave: int, timeout: Timeout) -> None:
+        """Wait until ``wave`` is warm. Does not report the wave as being read."""
+        await self._inner.wait_ready(wave, _seconds(timeout))
+
+    async def rewarm(self, wave: int, ranges: Iterable[Sequence[int]]) -> None:
+        """Warm ``ranges`` of ``wave`` again after a read found them missing."""
+        await self._inner.rewarm(wave, _ranges(ranges))
 
 
 class AsyncPrewarmRun:
@@ -136,6 +164,10 @@ class AsyncPrewarmRun:
     def version(self) -> int:
         """The table version the run reads."""
         return self._inner.version
+
+    def reader(self, rank: int) -> AsyncPrewarmRunReader:
+        """A reader for ``rank``, which another process has joined."""
+        return AsyncPrewarmRunReader(self._inner.reader(rank))
 
     async def join(self, rank: int) -> AsyncPrewarmRunRank:
         """Join as ``rank`` and start sending heartbeats. Joining again is
@@ -165,6 +197,10 @@ class PrewarmRunRank:
         """See `AsyncPrewarmRunRank.wait_ready`."""
         LOOP.run(self._inner.wait_ready(wave, timeout))
 
+    def report_wave(self, wave: int) -> None:
+        """See `AsyncPrewarmRunRank.report_wave`."""
+        self._inner.report_wave(wave)
+
     def rewarm(self, wave: int, ranges: Iterable[Sequence[int]]) -> None:
         """See `AsyncPrewarmRunRank.rewarm`."""
         LOOP.run(self._inner.rewarm(wave, ranges))
@@ -172,6 +208,25 @@ class PrewarmRunRank:
     def close(self) -> None:
         """See `AsyncPrewarmRunRank.close`."""
         LOOP.run(self._inner.close())
+
+
+class PrewarmRunReader:
+    """Synchronous counterpart of `AsyncPrewarmRunReader`."""
+
+    def __init__(self, inner: AsyncPrewarmRunReader):
+        self._inner = inner
+
+    @property
+    def rank(self) -> int:
+        return self._inner.rank
+
+    def wait_ready(self, wave: int, timeout: Timeout) -> None:
+        """See `AsyncPrewarmRunReader.wait_ready`."""
+        LOOP.run(self._inner.wait_ready(wave, timeout))
+
+    def rewarm(self, wave: int, ranges: Iterable[Sequence[int]]) -> None:
+        """See `AsyncPrewarmRunReader.rewarm`."""
+        LOOP.run(self._inner.rewarm(wave, ranges))
 
 
 class PrewarmRun:
@@ -187,6 +242,10 @@ class PrewarmRun:
     @property
     def version(self) -> int:
         return self._inner.version
+
+    def reader(self, rank: int) -> PrewarmRunReader:
+        """See `AsyncPrewarmRun.reader`."""
+        return PrewarmRunReader(self._inner.reader(rank))
 
     def join(self, rank: int) -> PrewarmRunRank:
         """See `AsyncPrewarmRun.join`."""

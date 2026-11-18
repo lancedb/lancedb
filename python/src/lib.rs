@@ -103,6 +103,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::oauth::PySessionLogout>()?;
     m.add_class::<crate::prewarm_run::PrewarmRun>()?;
     m.add_class::<crate::prewarm_run::PrewarmRunRank>()?;
+    m.add_class::<crate::prewarm_run::PrewarmRunReader>()?;
     m.add_class::<crate::job::Job>()?;
     m.add_class::<crate::job::JobInfo>()?;
     m.add_class::<crate::job::JobDescription>()?;

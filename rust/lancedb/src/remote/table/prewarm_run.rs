@@ -61,6 +61,20 @@ pub(super) struct RemotePrewarmRunTransport<S: HttpSend> {
     identifier: String,
 }
 
+/// A handle to a run opened elsewhere, without contacting the server.
+pub(super) fn attach<S: HttpSend>(
+    client: &RestfulLanceDbClient<S>,
+    identifier: &str,
+    run_id: String,
+    version: u64,
+) -> PrewarmRun {
+    let transport = RemotePrewarmRunTransport {
+        client: client.clone(),
+        identifier: identifier.to_string(),
+    };
+    PrewarmRun::new(Arc::new(transport), run_id, version)
+}
+
 /// Open a run with `POST /v1/table/{id}/prewarm_run/`.
 pub(super) async fn open<S: HttpSend>(
     client: &RestfulLanceDbClient<S>,
@@ -88,15 +102,7 @@ pub(super) async fn open<S: HttpSend>(
             request_id,
             status_code: Some(status),
         })?;
-        let transport = RemotePrewarmRunTransport {
-            client: client.clone(),
-            identifier: identifier.to_string(),
-        };
-        return Ok(PrewarmRun::new(
-            Arc::new(transport),
-            reply.run_id,
-            reply.version,
-        ));
+        return Ok(attach(client, identifier, reply.run_id, reply.version));
     }
     let text = response.text().await.unwrap_or_default();
     let body = serde_json::from_str::<ErrorBody>(&text).ok();
@@ -593,5 +599,60 @@ mod tests {
         let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
         let error = table.cache_only().await.err().unwrap();
         assert!(matches!(error, Error::InvalidInput { .. }), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_reader_waits_without_joining() {
+        // No join or open is scripted: attaching and reading must not call them.
+        let script = Script::default()
+            .reply(
+                "wave_status",
+                200,
+                json!({ "wave": 2, "status": "warming" }),
+            )
+            .reply("wave_status", 200, json!({ "wave": 2, "status": "ready" }))
+            .reply("rewarm", 200, json!({}));
+        let table = script.table();
+        let reader = table.attach_prewarm_run("run-1", 42).unwrap().reader(3);
+        reader.wait_ready(2, Duration::from_secs(60)).await.unwrap();
+        let range = RowRange {
+            fragment_id: 1,
+            start: 0,
+            end: 4,
+        };
+        reader.rewarm(2, vec![range]).await.unwrap();
+        assert_eq!(script.calls("wave_status")[0]["rank"], 3);
+        assert_eq!(script.calls("rewarm").len(), 1);
+        assert!(script.calls("join").is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_retries_while_its_rank_is_dropped() {
+        let script = Script::default()
+            .reply("wave_status", 409, error(error_codes::NOT_JOINED))
+            .reply("wave_status", 409, error(error_codes::NOT_JOINED))
+            .reply("wave_status", 200, json!({ "wave": 0, "status": "ready" }));
+        let table = script.table();
+        let reader = table.attach_prewarm_run("run-1", 42).unwrap().reader(1);
+        reader.wait_ready(0, Duration::from_secs(60)).await.unwrap();
+        assert_eq!(script.calls("wave_status").len(), 3);
+        assert!(script.calls("join").is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reported_waves_reach_the_heartbeat() {
+        let script = Script::default()
+            .reply("open", 200, json!({ "run_id": "run-1", "version": 42 }))
+            .reply("join", 200, view(1_000))
+            .reply("heartbeat", 200, view(1_000));
+        let run = script.table().open_prewarm_run(options()).await.unwrap();
+        let rank = run.join(0).await.unwrap();
+        rank.report_wave(5);
+        rank.report_wave(3);
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(
+            script.calls("heartbeat"),
+            vec![json!({ "rank": 0, "current_wave": 5 })]
+        );
     }
 }
