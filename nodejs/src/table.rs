@@ -342,6 +342,23 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn explain_prewarm_data(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let plan = self
+            .inner_ref()?
+            .explain_prewarm_data(options)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn wait_for_index(&self, index_names: Vec<String>, timeout_s: i64) -> Result<()> {
         let timeout = std::time::Duration::from_secs(timeout_s.try_into().unwrap());
         let index_names: Vec<&str> = index_names.iter().map(|s| s.as_str()).collect();

@@ -48,7 +48,7 @@ from lancedb.index import (
     Bitmap,
     LabelList,
 )
-from lancedb.prewarm import PrewarmDataResult
+from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -1484,6 +1484,24 @@ class RemoteTable(Table):
         """
         return LOOP.run(
             self._table.prewarm_data(columns, filter=filter, concurrency=concurrency)
+        )
+
+    def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> PrewarmDataPlan:
+        """Preview prewarm without submitting a warming job.
+
+        See [Table.explain_prewarm_data][lancedb.table.Table.explain_prewarm_data]
+        for options, permissions, snapshot semantics, and limitations.
+        """
+        return LOOP.run(
+            self._table.explain_prewarm_data(
+                columns, filter=filter, concurrency=concurrency
+            )
         )
 
     def prewarm_data_async(

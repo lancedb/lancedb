@@ -653,6 +653,38 @@ await table.enableRTE({
 
 ***
 
+### explainPrewarmData()
+
+```ts
+explainPrewarmData(_options?): Promise<PrewarmDataPlan>
+```
+
+Preview prewarm with the same options as [prewarmDataAsync](Table.md#prewarmdataasync), without
+submitting a warming job. Requires LanceDB Enterprise with structured SQL
+previews, table Select and database/namespace Usage. Reads metadata and
+returns the source version, readable plan, and conservative pruning summary.
+A later submission plans its own snapshot. Historical and Embedded handles
+are unsupported. Unknown measurements remain null.
+Custom table implementations can override this method; its default rejects
+with an unsupported-operation error.
+
+#### Parameters
+
+* **\_options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`PrewarmDataPlan`](../interfaces/PrewarmDataPlan.md)&gt;
+
+#### Example
+
+```ts
+const plan = await table.explainPrewarmData({columns: ["video"], filter: "quality > 0.7"});
+console.log(plan.pruning.selectedFragments);
+```
+
+***
+
 ### fetchBlobFiles()
 
 ```ts

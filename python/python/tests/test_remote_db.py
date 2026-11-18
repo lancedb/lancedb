@@ -8214,7 +8214,9 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, mod
         {"concurrency": 1.5},
     ],
 )
-@pytest.mark.parametrize("method", ["prewarm_data", "prewarm_data_async"])
+@pytest.mark.parametrize(
+    "method", ["prewarm_data", "prewarm_data_async", "explain_prewarm_data"]
+)
 def test_remote_data_prewarm_validates_before_submission(options, method):
     flight = pytest.importorskip("pyarrow.flight")
 
@@ -8441,3 +8443,125 @@ def test_remote_compaction_rejects_boolean_budgets_without_submitting(
         with pytest.raises(ValueError, match="must be an integer, not a bool"):
             getattr(table, method)(compaction_options={option: value})
     assert server.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "mode,selected,ranges,reason",
+    [
+        ("unfiltered", 3, None, None),
+        ("constant", 0, 0, None),
+        ("zonemap_ranges", 1, 2, None),
+        ("full_warm_fallback", 3, None, "no metadata proof"),
+        ("future_mode", 2, None, None),
+    ],
+)
+async def test_remote_data_prewarm_preview(
+    asynchronous, mode, selected, ranges, reason
+):
+    from lancedb.prewarm import PrewarmDataPlan, PrewarmPruningSummary
+
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class PreviewServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            payload = {
+                "format_version": 1,
+                "table_version": 42,
+                "plan": "metadata preview",
+                "pruning": {
+                    "mode": mode,
+                    "input_fragments": 3,
+                    "selected_fragments": selected,
+                    "pruned_fragments": 3 - selected,
+                    "selected_row_ranges": ranges,
+                    "fallback_reason": reason,
+                },
+            }
+            return flight.RecordBatchStream(
+                pa.table({"plan_type": ["logical_plan"], "plan": [json.dumps(payload)]})
+            )
+
+    server = PreviewServer()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            plan = await table.explain_prewarm_data(
+                ["attrs.score"], filter="id > 0", concurrency=4
+            )
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            plan = table.explain_prewarm_data(
+                ["attrs.score"], filter="id > 0", concurrency=4
+            )
+    assert isinstance(plan, PrewarmDataPlan)
+    assert isinstance(plan.pruning, PrewarmPruningSummary)
+    assert plan.table_version == 42
+    assert plan.pruning.mode == mode
+    assert plan.pruning.selected_fragments == selected
+    assert plan.pruning.selected_row_ranges == ranges
+    assert plan.pruning.fallback_reason == reason
+    assert len(server.tickets) == 1
+    assert b"EXPLAIN (FORMAT JSON) PREWARM" in server.tickets[0]
+    assert b'"attrs"."score"' in server.tickets[0]
+    assert b"concurrency = 4" in server.tickets[0]
+    assert b"id > 0" in server.tickets[0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "legacy display text",
+        '{"format_version":2,"table_version":42,"plan":"future","pruning":{}}',
+        '{"format_version":1,"table_version":42,"plan":"missing pruning"}',
+    ],
+)
+def test_remote_prewarm_preview_rejects_incompatible_payload_without_retry(payload):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class PreviewServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(pa.table({"plan": [payload]}))
+
+    server = PreviewServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(Exception, match="valid structured preview"):
+            table.explain_prewarm_data()
+    assert len(server.tickets) == 1
+
+
+def test_remote_prewarm_preview_reports_old_server_format_support():
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class OldServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            raise flight.FlightInternalError(
+                "Invalid explain format. Expected 'indent', 'tree', 'pgjson' "
+                "or 'graphviz'. Got 'JSON'"
+            )
+
+    server = OldServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(
+            NotImplementedError, match=r"EXPLAIN \(FORMAT JSON\) PREWARM"
+        ):
+            table.explain_prewarm_data()
+    assert len(server.tickets) == 1

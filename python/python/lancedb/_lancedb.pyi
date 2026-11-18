@@ -645,6 +645,13 @@ class Table:
     async def restore(self, version: Optional[Union[int, str]] = None): ...
     async def prewarm_index(self, index_name: str) -> None: ...
     async def prewarm_data(self, columns: Optional[List[str]] = None) -> None: ...
+    async def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+    ) -> str: ...
     async def prewarm_data_async(
         self,
         columns: Optional[List[str]] = None,

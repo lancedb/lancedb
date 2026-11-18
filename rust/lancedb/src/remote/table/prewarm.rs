@@ -103,6 +103,77 @@ pub(super) fn receipt(batches: &[RecordBatch]) -> Result<(String, u64)> {
     Ok((id.value(0).into(), version.value(0)))
 }
 
+/// Decode the versioned JSON payload without depending on the display text.
+pub(super) fn plan(batches: &[RecordBatch]) -> Result<crate::table::PrewarmDataPlan> {
+    let invalid = || {
+        Error::Runtime {
+        message: "EXPLAIN PREWARM did not return a valid structured preview; a server supporting EXPLAIN (FORMAT JSON) PREWARM is required".into(),
+    }
+    };
+    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
+        return Err(invalid());
+    }
+    let batch = batches
+        .iter()
+        .find(|batch| batch.num_rows() == 1)
+        .ok_or_else(invalid)?;
+    let payload = batch
+        .column_by_name("plan")
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(invalid)?;
+    if payload.is_null(0) {
+        return Err(invalid());
+    }
+    #[derive(serde::Deserialize)]
+    struct Preview {
+        format_version: u32,
+        #[serde(flatten)]
+        plan: crate::table::PrewarmDataPlan,
+    }
+    let preview: Preview = serde_json::from_str(payload.value(0)).map_err(|_| invalid())?;
+    if preview.format_version != 1 {
+        return Err(invalid());
+    }
+    Ok(preview.plan)
+}
+
+pub(super) fn map_explain_error(error: Error) -> Error {
+    fn unsupported_format(error: &Error) -> bool {
+        match error {
+            Error::Sql {
+                message, grpc_code, ..
+            } => {
+                let diagnostic = message.to_ascii_lowercase();
+                // Older servers hand this EXPLAIN to DataFusion, which rejects
+                // JSON as a configuration error (sometimes gRPC Internal).
+                (*grpc_code == tonic::Code::Internal as i32
+                    || *grpc_code == tonic::Code::InvalidArgument as i32)
+                    && diagnostic.contains("invalid explain format.")
+                    && diagnostic.contains("got 'json'")
+            }
+            Error::JobFailed { failure, .. } => {
+                failure.source.as_deref().is_some_and(unsupported_format)
+            }
+            _ => false,
+        }
+    }
+    let error = if unsupported_format(&error) {
+        Error::NotSupported {
+            message: error.to_string(),
+        }
+    } else {
+        map_error(error)
+    };
+    match error {
+        Error::NotSupported { message } => Error::NotSupported {
+            message: format!(
+                "Data prewarm previews require a server supporting EXPLAIN (FORMAT JSON) PREWARM; upgrade the server. Preview will not fall back to text or REST. Server diagnostic: {message}"
+            ),
+        },
+        other => other,
+    }
+}
+
 pub(super) fn map_error(error: Error) -> Error {
     fn unsupported(error: &Error) -> Option<&Error> {
         match error {
@@ -142,6 +213,85 @@ mod tests {
     use super::*;
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
+
+    #[test]
+    fn preview_maps_old_explain_format_errors_without_masking_auth_or_filters() {
+        for (code, message, unsupported) in [
+            (
+                tonic::Code::Internal,
+                "Invalid or Unsupported Configuration: Invalid explain format. Expected 'indent', 'tree', 'pgjson' or 'graphviz'. Got 'JSON'",
+                true,
+            ),
+            (
+                tonic::Code::InvalidArgument,
+                "Invalid explain format. Got 'JSON'",
+                true,
+            ),
+            (
+                tonic::Code::PermissionDenied,
+                "Invalid explain format. Got 'JSON'",
+                false,
+            ),
+            (
+                tonic::Code::InvalidArgument,
+                "invalid filter expression",
+                false,
+            ),
+        ] {
+            let error = map_explain_error(Error::Sql {
+                message: message.into(),
+                request_id: "preview-request".into(),
+                grpc_code: code as i32,
+                metadata: Default::default(),
+            });
+            assert_eq!(
+                matches!(error, Error::NotSupported { .. }),
+                unsupported,
+                "{error}"
+            );
+            assert!(error.to_string().contains(message));
+            assert!(error.to_string().contains("preview-request"));
+            if unsupported {
+                assert!(error.to_string().contains("EXPLAIN (FORMAT JSON) PREWARM"));
+            }
+        }
+    }
+
+    #[test]
+    fn preview_requires_one_versioned_typed_payload() {
+        let valid = serde_json::json!({
+            "format_version": 1, "table_version": 42, "plan": "display only",
+            "pruning": {"mode":"future_mode", "input_fragments":3,
+                "selected_fragments":0, "pruned_fragments":3, "selected_row_ranges":0},
+            "future_field": true,
+        });
+        let batch = |value: &serde_json::Value| {
+            RecordBatch::try_from_iter([(
+                "plan",
+                Arc::new(StringArray::from(vec![value.to_string()])) as arrow_array::ArrayRef,
+            )])
+            .unwrap()
+        };
+        let result = plan(&[batch(&valid)]).unwrap();
+        assert_eq!(result.table_version, 42);
+        assert_eq!(result.pruning.mode, "future_mode");
+        assert_eq!(result.pruning.selected_row_ranges, Some(0));
+        assert_eq!(result.pruning.fallback_reason, None);
+        for mutation in ["version", "missing", "negative", "text"] {
+            let mut value = valid.clone();
+            match mutation {
+                "version" => value["format_version"] = 2.into(),
+                "missing" => {
+                    value.as_object_mut().unwrap().remove("pruning");
+                }
+                "negative" => value["pruning"]["selected_fragments"] = (-1).into(),
+                _ => value = "legacy display text".into(),
+            }
+            assert!(plan(&[batch(&value)]).is_err(), "{mutation}");
+        }
+        assert!(plan(&[]).is_err());
+        assert!(plan(&[batch(&valid), batch(&valid)]).is_err());
+    }
 
     #[test]
     fn quotes_paths_branch_and_filter_without_changing_options() {

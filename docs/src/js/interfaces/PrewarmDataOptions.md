@@ -6,7 +6,7 @@
 
 # Interface: PrewarmDataOptions
 
-Settings for submitting a durable remote data-cache prewarm job.
+Settings for data-cache prewarm submissions and metadata previews.
 
 ## Properties
 

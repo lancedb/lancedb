@@ -33,3 +33,46 @@ export function decodePrewarmDataResult(value: unknown): PrewarmDataResult {
     bytesRead: result.bytes_read ?? null,
   };
 }
+
+/** Metadata-only snapshot preview; no warming job is submitted. */
+export interface PrewarmDataPlan {
+  /** Snapshot used for this preview. A later submission plans its own snapshot. */
+  tableVersion: number;
+  /** Readable display text. Use pruning for structured facts. */
+  plan: string;
+  pruning: PrewarmPruningSummary;
+}
+
+/** Conservative metadata proof, rather than exact matching rows. */
+export interface PrewarmPruningSummary {
+  /** Server-reported proof mode; future servers may add modes. */
+  mode: string;
+  inputFragments: number;
+  selectedFragments: number;
+  prunedFragments: number;
+  /** Candidate physical intervals, or null when unknown. */
+  selectedRowRanges: number | null;
+  fallbackReason: string | null;
+}
+
+/** @internal */
+export function decodePrewarmDataPlan(value: unknown): PrewarmDataPlan {
+  // Rust validates the versioned response before handing it to JavaScript.
+  const result = value as {
+    [key: string]: unknown;
+    pruning: Record<string, number | string | null>;
+  };
+  return {
+    tableVersion: result.table_version as number,
+    plan: result.plan as string,
+    pruning: {
+      mode: result.pruning.mode as string,
+      inputFragments: result.pruning.input_fragments as number,
+      selectedFragments: result.pruning.selected_fragments as number,
+      prunedFragments: result.pruning.pruned_fragments as number,
+      selectedRowRanges:
+        (result.pruning.selected_row_ranges as number | null) ?? null,
+      fallbackReason: (result.pruning.fallback_reason as string | null) ?? null,
+    },
+  };
+}

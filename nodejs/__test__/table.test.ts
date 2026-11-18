@@ -4738,6 +4738,29 @@ describe.each(arrowVersions)(
       }
     });
 
+    test("explainPrewarmData validates options and rejects Embedded tables", async () => {
+      const db = await connect(tmp.dirSync().name);
+      const table = await db.createTable("preview", [{ id: 1 }]);
+      await expect(table.explainPrewarmData()).rejects.toThrow(
+        "only supported on remote tables",
+      );
+      await expect(
+        table.explainPrewarmData({ unsupported: true } as never),
+      ).rejects.toThrow("Unsupported data prewarm option");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        2 ** 32,
+      ]) {
+        await expect(table.explainPrewarmData({ concurrency })).rejects.toThrow(
+          "concurrency",
+        );
+      }
+    });
+
     test("prewarmDataAsync validates options and rejects local tables", async () => {
       const db = await connect(tmpDir.name);
       const table = await db.createTable("prewarm_job", [{ id: 1 }]);

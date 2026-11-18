@@ -4806,6 +4806,44 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         ))))
     }
 
+    async fn explain_prewarm_data(
+        &self,
+        options: crate::table::PrewarmDataOptions,
+    ) -> Result<crate::table::PrewarmDataPlan> {
+        if let Some(version) = *self.version.read().await {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "SQL PREWARM does not support historical version {version}; use checkout_latest() to preview the current branch"
+                ),
+            });
+        }
+        let statement = format!(
+            "EXPLAIN (FORMAT JSON) {}",
+            prewarm::statement(&self.name, self.branch.as_deref(), &options)?
+        );
+        let client = self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "data prewarm previews require a Flight SQL endpoint supporting EXPLAIN (FORMAT JSON) PREWARM".into(),
+        })?;
+        let query = client
+            .execute_prewarm(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(prewarm::map_explain_error)?;
+        let mut reader = query.reader().await.map_err(prewarm::map_explain_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader
+            .try_next()
+            .await
+            .map_err(prewarm::map_explain_error)?
+        {
+            batches.push(batch);
+        }
+        prewarm::plan(&batches)
+    }
+
     async fn table_definition(&self) -> Result<TableDefinition> {
         let schema = self.schema().await?;
         TableDefinition::try_from_rich_schema(schema)

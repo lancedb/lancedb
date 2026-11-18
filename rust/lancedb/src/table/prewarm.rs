@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Options for submitting a durable data-cache prewarm job.
+//! Options, previews, and results for data-cache prewarm.
 
 /// Data prewarm settings for [`super::Table::prewarm_data_async`].
 ///
@@ -42,6 +42,40 @@ impl PrewarmDataOptions {
         self.concurrency = Some(concurrency);
         self
     }
+}
+
+/// Metadata-only preview of a data-cache prewarm on one table snapshot.
+///
+/// No warming job is submitted. A later submission chooses its own snapshot and
+/// may produce a different plan if the table or index metadata has changed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PrewarmDataPlan {
+    /// Source snapshot used to produce this preview.
+    pub table_version: u64,
+    /// Human-readable plan, intended for display rather than parsing.
+    pub plan: String,
+    /// Conservative metadata pruning, not exact row-filter matches.
+    pub pruning: PrewarmPruningSummary,
+}
+
+/// Conservative pruning facts for a PREWARM preview.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PrewarmPruningSummary {
+    /// Proof mode, such as `unfiltered`, `constant`, `zonemap_ranges`, or
+    /// `full_warm_fallback`. Future servers may return additional modes.
+    pub mode: String,
+    /// Fragments in the source snapshot.
+    pub input_fragments: u64,
+    /// Fragments selected for warming.
+    pub selected_fragments: u64,
+    /// Fragments excluded by metadata proof.
+    pub pruned_fragments: u64,
+    /// Candidate physical intervals, when known; not an exact matching-row count.
+    pub selected_row_ranges: Option<u64>,
+    /// Why metadata could not prune, when reported.
+    pub fallback_reason: Option<String>,
 }
 
 /// Reported outcome of a remote data-prewarm job. Counts describe executor work;
@@ -108,6 +142,11 @@ mod tests {
             .prewarm_data_async(PrewarmDataOptions::new().filter("id > 0"))
             .await
             .unwrap_err();
+        let preview_error = table
+            .explain_prewarm_data(Default::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(preview_error, crate::Error::NotSupported { .. }));
         assert!(matches!(error, crate::Error::NotSupported { .. }));
         assert!(
             error
