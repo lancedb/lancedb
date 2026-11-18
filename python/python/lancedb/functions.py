@@ -2284,6 +2284,7 @@ def _approved_global_namespace_binding(
             bases = frozenset({f"{name}.version"})
             line = f"import importlib.metadata as {name}"
         elif value is importlib and name == "importlib":
+            # ``import importlib.metadata`` binds the top-level package name.
             bases = frozenset({"importlib.metadata.version"})
             line = "import importlib.metadata"
         else:
