@@ -835,6 +835,24 @@ export class Index {
   }
 
   /**
+   * Create an NGram index.
+   *
+   * An `NGram` index is a scalar index on a UTF-8 string column that accelerates
+   * substring filters such as `contains(col, 'needle')`, along with some `LIKE`
+   * and regular-expression predicates. It tokenizes values into overlapping
+   * character trigrams and narrows a scan to the rows that share the query's
+   * trigrams; the exact predicate is then evaluated on those candidates, so the
+   * results are identical with or without the index.
+   *
+   * Unlike the `fm` index, which matches arbitrary byte substrings, `NGram` is
+   * trigram based, so a query shorter than the trigram length cannot be served
+   * by the index.
+   */
+  static ngram() {
+    return new Index(LanceDbIndex.ngram());
+  }
+
+  /**
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full
