@@ -282,6 +282,59 @@ need preserving; read the current object and retain unrelated fields when
 editing an existing policy. Use the same namespace and branch for policy reads,
 writes, and compaction submission.
 
+The Python, TypeScript, and Rust SDKs can update selected fields while retaining
+unrelated overrides from the current read snapshot. For an existing Enterprise
+`table` handle:
+
+<CodeGroup>
+```python Python
+table.update_table_overrides(
+    job_types={
+        "compaction": {
+            "target_rows_per_fragment": 100000,
+            "max_source_rows": 1000000,
+        }
+    }
+)
+```
+```typescript TypeScript
+await table.updateTableOverrides({
+  job_types: {
+    compaction: {
+      target_rows_per_fragment: 100000,
+      max_source_rows: 1000000,
+    },
+  },
+});
+```
+```rust Rust
+table
+    .update_table_overrides(serde_json::json!({
+        "job_types": {
+            "compaction": {
+                "target_rows_per_fragment": 100000,
+                "max_source_rows": 1000000
+            }
+        }
+    }))
+    .await?;
+```
+</CodeGroup>
+
+Override keys use the server's `snake_case` names in every SDK. These examples
+retain other compaction settings, such as `enabled`, and settings for other job
+types from the read snapshot. An empty update only reads the current overrides;
+use `reset_table_overrides()` / `resetTableOverrides()` to clear all overrides.
+
+SDK updates perform **GET → recursive merge in the client → full PUT**. This
+read–modify–write is not atomic: concurrent edits can be overwritten, even to
+unrelated fields. Coordinate override writers when concurrent edits must be
+preserved. CLI `set` and REST PUT replace the object without merging.
+
+These methods require a compatible Enterprise deployment. For namespaced tables,
+confirm that the deployment supports table-override reads and resets within
+namespaces before relying on these APIs.
+
 Each manual field resolves as **invocation option → table tuning →
 deployment/built-in default**. Automatic jobs resolve **table tuning →
 deployment/built-in default**. The fragment target has a shared deployment

@@ -2929,3 +2929,216 @@ describe("job wait deadlines", () => {
     },
   );
 });
+
+describe("table overrides", () => {
+  it.each([[], ["analytics", "features"]])(
+    "reads, recursively merges, and resets in namespace %j",
+    async (...namespacePath: string[]) => {
+      const requests: { method?: string; url: string; body?: unknown }[] = [];
+      const current = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: {
+          compaction: {
+            enabled: true,
+            // biome-ignore lint/style/useNamingConvention: server wire format
+            target_rows_per_fragment: 1000,
+          },
+          cleanup: { enabled: false },
+        },
+        custom: { keep: true, replace: [1, 2], clear: "value" },
+      };
+      const patch = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: { compaction: { enabled: false } },
+        custom: { replace: [3], clear: null, label: "測試" },
+      };
+      const merged = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: {
+          compaction: {
+            enabled: false,
+            // biome-ignore lint/style/useNamingConvention: server wire format
+            target_rows_per_fragment: 1000,
+          },
+          cleanup: { enabled: false },
+        },
+        custom: { keep: true, replace: [3], clear: null, label: "測試" },
+      };
+      await withMockDatabase(
+        (req, res) => {
+          const url = req.url ?? "";
+          if (url.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => {
+            const body = chunks.length
+              ? JSON.parse(Buffer.concat(chunks).toString())
+              : undefined;
+            requests.push({ method: req.method, url, body });
+            res
+              .writeHead(200)
+              .end(
+                JSON.stringify(
+                  req.method === "GET"
+                    ? current
+                    : req.method === "PUT"
+                      ? body.overrides
+                      : {},
+                ),
+              );
+          });
+        },
+        async (db) => {
+          const table = await db.openTable("test", namespacePath);
+          await expect(table.getTableOverrides()).resolves.toEqual(current);
+          await expect(table.updateTableOverrides(patch)).resolves.toEqual(
+            merged,
+          );
+          // The native conversion and merge must not mutate the caller's object.
+          expect(patch.job_types.compaction).toEqual({ enabled: false });
+          expect(patch.custom.replace).toEqual([3]);
+          await expect(table.resetTableOverrides()).resolves.toEqual({});
+        },
+      );
+      expect(requests.map((request) => request.method)).toEqual([
+        "GET",
+        "GET",
+        "PUT",
+        "POST",
+      ]);
+      for (const request of requests) {
+        const url = new URL(request.url, "http://localhost");
+        expect(url.pathname).toBe(
+          request.method === "POST"
+            ? "/admin/table/overrides/reset"
+            : "/admin/table/overrides",
+        );
+        if (request.method === "PUT") {
+          expect(request.body).toEqual({
+            db: "dev",
+            namespace: namespacePath,
+            table: "test",
+            overrides: merged,
+          });
+        } else {
+          expect(url.searchParams.get("db")).toBe("dev");
+          expect(url.searchParams.get("table")).toBe("test");
+          expect(url.searchParams.getAll("namespace")).toEqual(namespacePath);
+        }
+      }
+    },
+  );
+
+  it.each([{}, { custom: { keep: true } }])(
+    "only reads the snapshot %j for an empty update",
+    async (current) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          methods.push(req.method ?? "");
+          res
+            .writeHead(req.method === "GET" ? 200 : 400)
+            .end(JSON.stringify(current));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(table.updateTableOverrides({})).resolves.toEqual(
+            current,
+          );
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
+  it.each([null, [], true, 1, "bad"])(
+    "rejects a non-object update %j before reading overrides",
+    async (value) => {
+      const requests: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          requests.push(req.url ?? "");
+          res
+            .writeHead(200)
+            .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(
+            table.updateTableOverrides(
+              value as unknown as Record<string, unknown>,
+            ),
+          ).rejects.toThrow(/must be a JSON object/);
+        },
+      );
+      expect(requests).toEqual(["/v1/table/test/describe/"]);
+    },
+  );
+
+  it.each([403, 404])(
+    "propagates GET failure %i without a PUT",
+    async (status) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+          } else {
+            methods.push(req.method ?? "");
+            res.writeHead(status).end("overrides unavailable");
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(
+            table.updateTableOverrides({ custom: true }),
+          ).rejects.toThrow(/overrides unavailable/);
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
+  it("rejects writes on historical and closed handles before HTTP", async () => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        res
+          .writeHead(200)
+          .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+      },
+      async (db) => {
+        const table = await db.openTable("test");
+        await table.checkout(1);
+        requests.length = 0;
+        await expect(
+          table.updateTableOverrides({ custom: true }),
+        ).rejects.toThrow(/fixed at version 1/);
+        await expect(table.resetTableOverrides()).rejects.toThrow(
+          /fixed at version 1/,
+        );
+        table.close();
+        await expect(table.getTableOverrides()).rejects.toThrow(/closed/);
+        await expect(
+          table.updateTableOverrides({ custom: true }),
+        ).rejects.toThrow(/closed/);
+        await expect(table.resetTableOverrides()).rejects.toThrow(/closed/);
+      },
+    );
+    expect(requests).toEqual([]);
+  });
+});

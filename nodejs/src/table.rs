@@ -821,6 +821,37 @@ impl Table {
         Ok(spec.map(RTEWriteSpec::from))
     }
 
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn get_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .get_table_overrides()
+            .await
+            .default_error()
+    }
+
+    #[napi(
+        catch_unwind,
+        ts_args_type = "overrides: Record<string, unknown>",
+        ts_return_type = "Promise<Record<string, unknown>>"
+    )]
+    pub async fn update_table_overrides(
+        &self,
+        overrides: serde_json::Value,
+    ) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .update_table_overrides(overrides)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn reset_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .reset_table_overrides()
+            .await
+            .default_error()
+    }
+
     #[napi(catch_unwind, js_name = "closeRTEWriters")]
     pub async fn close_rte_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_rte_writers().await.default_error()

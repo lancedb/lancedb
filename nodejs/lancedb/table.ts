@@ -1107,6 +1107,56 @@ export abstract class Table {
    */
   abstract getRTESpec(): Promise<RTEWriteSpec | undefined>;
   /**
+   * Read the stored overrides for a remote Enterprise table.
+   *
+   * Overrides configure background behavior such as automatic compaction,
+   * cleanup, and reindex execution. Keys use the server's snake_case names.
+   * Returns an empty object when no overrides are set. Local tables are unsupported.
+   * Custom table implementations inherit a default rejection unless they override
+   * this method.
+   */
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("getTableOverrides is not supported on this table type");
+  }
+
+  /**
+   * Recursively merge overrides into a remote Enterprise table's stored overrides.
+   *
+   * Fetches the current overrides, merges nested objects locally, then sends the
+   * complete replacement using REST PUT. Other values replace existing values;
+   * unrelated fields from the read snapshot are preserved. This read-modify-write
+   * is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+   * Coordinate writers when concurrent edits must be preserved. An empty update
+   * only reads and returns the current overrides.
+   *
+   * Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+   * without merging. Use {@link Table.resetTableOverrides} to clear all overrides.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
+   *
+   * @example
+   * ```ts
+   * await table.updateTableOverrides({
+   *   job_types: { compaction: { enabled: false } },
+   * });
+   * ```
+   */
+  async updateTableOverrides(
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    overrides: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    throw new Error("updateTableOverrides is not supported on this table type");
+  }
+
+  /**
+   * Clear a remote Enterprise table's overrides and return an empty object.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
+   */
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("resetTableOverrides is not supported on this table type");
+  }
+  /**
    * Drain and close any cached RTE shard writers held for this table.
    *
    * When an {@link RTEWriteSpec} is installed, `mergeInsert` opens RTE
@@ -1914,6 +1964,20 @@ export class LocalTable extends Table {
     return ((await this.inner.getRTESpec()) ?? undefined) as
       | RTEWriteSpec
       | undefined;
+  }
+
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    return await this.inner.getTableOverrides();
+  }
+
+  async updateTableOverrides(
+    overrides: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return await this.inner.updateTableOverrides(overrides);
+  }
+
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    return await this.inner.resetTableOverrides();
   }
 
   async closeRTEWriters(): Promise<void> {
