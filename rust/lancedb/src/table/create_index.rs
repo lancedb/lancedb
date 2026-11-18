@@ -573,7 +573,7 @@ mod tests {
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     };
     use crate::query::{ExecutableQuery, QueryBase};
-    use crate::table::optimize::{CompactionOptions, OptimizeAction};
+    use crate::table::optimize::{OptimizeAction, OptimizeDataOptions};
     use lance_index::scalar::FullTextSearchQuery;
     use lance_index::scalar::inverted::query::{FtsQuery, MatchQuery};
 
@@ -2559,8 +2559,8 @@ mod tests {
             .unwrap();
 
         table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions {
                     target_rows_per_fragment: 2_000,
                     defer_index_remap: true,
                     ..Default::default()

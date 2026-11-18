@@ -2701,7 +2701,7 @@ mod tests {
     )]
     async fn indexes_and_optimize_still_apply_to_a_view() {
         use crate::index::Index;
-        use crate::table::{CompactionOptions, OptimizeAction};
+        use crate::table::{OptimizeAction, OptimizeDataOptions};
 
         let conn = connect("memory://").execute().await.unwrap();
         let source = conn
@@ -2721,8 +2721,8 @@ mod tests {
             .unwrap();
         assert_eq!(view.table().list_indices().await.unwrap().len(), 1);
         view.table()
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions::default(),
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await

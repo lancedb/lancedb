@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Results of durable remote compaction jobs."""
+"""Results of durable remote Optimize jobs."""
 
 from dataclasses import dataclass, fields
 import json
@@ -9,8 +9,8 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
-class CompactionResult:
-    """Actual committed outcome of one remote compaction invocation.
+class OptimizeResult:
+    """Actual committed outcome of one remote Optimize data rewrite.
 
     ``rows_failed`` counts planned live rows that were not committed, including
     partial progress. ``more_work`` means a bounded run left eligible work for
@@ -30,7 +30,7 @@ class CompactionResult:
     fragments_removed: Optional[int] = None
 
     @classmethod
-    def from_json(cls, raw: str) -> "CompactionResult":
+    def from_json(cls, raw: str) -> "OptimizeResult":
         """Decode a server result, ignoring additive fields from newer servers."""
         value = json.loads(raw)
         names = {field.name for field in fields(cls)}

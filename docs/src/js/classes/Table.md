@@ -1085,8 +1085,8 @@ supported. Pruning old versions and index optimization are silently
 skipped there instead of being attempted, so this call resolves
 successfully with placeholder statistics (not completed work) once the
 compaction job has been submitted; it does not wait for that job to finish.
-`compactionOptions` can tune the four per-job settings documented in
-[CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
+`dataOptions` can tune the four per-job settings documented in
+[OptimizeDataOptions](../interfaces/OptimizeDataOptions.md). Older-server errors are propagated without
 retrying with the settings removed.
 
 #### Parameters
@@ -1102,7 +1102,7 @@ retrying with the settings removed.
 ### optimizeAsync()
 
 ```ts
-optimizeAsync(_options?): Promise<Job<CompactionResult>>
+optimizeAsync(_options?): Promise<Job<OptimizeResult>>
 ```
 
 Submit remote compaction and return its durable job after acceptance.
@@ -1113,15 +1113,15 @@ historical-version handles are unsupported. Existing optimize() behavior is unch
 Waiting tracks the rewrite itself and returns actual row/file statistics.
 Missing result payloads are errors; older workers can omit file counts.
 Status, progress, events and cancellation reuse the generic HTTP job APIs.
-Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+Reopen with db.openJob<OptimizeResult>(job.id!). A wait timeout does not cancel work.
 
 #### Parameters
 
-* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+* **\_options?**: [`OptimizeDataOptions`](../interfaces/OptimizeDataOptions.md)
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;[`OptimizeResult`](../interfaces/OptimizeResult.md)&gt;&gt;
 
 #### Example
 

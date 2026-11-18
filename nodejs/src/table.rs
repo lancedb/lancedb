@@ -71,15 +71,15 @@ impl PrewarmDataOptions {
 
 /// Per-invocation file-compaction settings. All numbers must be safe integers.
 #[napi(object)]
-pub struct CompactionOptions {
+pub struct OptimizeDataOptions {
     pub target_rows_per_fragment: Option<f64>,
     pub max_source_rows: Option<f64>,
     pub io_buffer_size: Option<f64>,
     pub batch_size: Option<f64>,
 }
 
-impl CompactionOptions {
-    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
+impl OptimizeDataOptions {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::OptimizeDataOverrides> {
         const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
         fn integer(
             value: Option<f64>,
@@ -103,7 +103,7 @@ impl CompactionOptions {
             }
             Ok(Some(value as u64))
         }
-        let mut options = lancedb::table::optimize::CompactionOverrides::default();
+        let mut options = lancedb::table::optimize::OptimizeDataOverrides::default();
         if let Some(target) = integer(
             self.target_rows_per_fragment,
             "targetRowsPerFragment",
@@ -1004,10 +1004,10 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn optimize_async(
         &self,
-        options: Option<CompactionOptions>,
+        options: Option<OptimizeDataOptions>,
     ) -> napi::Result<crate::job::Job> {
         let options = options
-            .map(CompactionOptions::into_overrides)
+            .map(OptimizeDataOptions::into_overrides)
             .transpose()?
             .unwrap_or_default();
         let job = self
@@ -1023,7 +1023,7 @@ impl Table {
         &self,
         before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
-        compaction_options: Option<CompactionOptions>,
+        data_options: Option<OptimizeDataOptions>,
         action: Option<String>,
     ) -> napi::Result<OptimizeStats> {
         let rewrite_only = match action.as_deref() {
@@ -1052,8 +1052,8 @@ impl Table {
             })
             .transpose()?;
 
-        let overrides = compaction_options
-            .map(CompactionOptions::into_overrides)
+        let overrides = data_options
+            .map(OptimizeDataOptions::into_overrides)
             .transpose()?
             .unwrap_or_default();
         let stats = if rewrite_only {

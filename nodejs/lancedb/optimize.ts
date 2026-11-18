@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-/** Actual committed outcome of one remote compaction job. */
-export interface CompactionResult {
+/** Actual committed outcome of one remote Optimize data rewrite. */
+export interface OptimizeResult {
   /** A bounded run left eligible work for another invocation. */
   moreWork: boolean;
   /** Some planned groups were not committed. */
@@ -24,7 +24,7 @@ export interface CompactionResult {
 }
 
 /** @internal */
-export function decodeCompactionResult(value: unknown): CompactionResult {
+export function decodeOptimizeResult(value: unknown): OptimizeResult {
   // The Rust typed-job decoder validates the wire payload before it reaches JS.
   const result = value as Record<string, number | boolean | null>;
   return {

@@ -574,7 +574,7 @@ impl Connection {
             ))
         } else if job.job_type().as_deref() == Some("compact") {
             Ok(crate::job::Job::new_typed(
-                job.into_typed::<lancedb::table::CompactionResult>()
+                job.into_typed::<lancedb::table::OptimizeResult>()
                     .default_error()?,
             ))
         } else {

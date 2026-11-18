@@ -11,9 +11,9 @@ import {
   AutoQuery,
   type BlobInput,
   type BlobMode,
-  type CompactionOptions,
   Connection,
   MatchQuery,
+  type OptimizeDataOptions,
   PhraseQuery,
   Query,
   Table,
@@ -4122,17 +4122,17 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
 it("forwards per-job compaction options to the native binding", async () => {
   const optimize = jest.fn().mockResolvedValue({});
   const table = new LocalTable({ optimize } as never);
-  const compactionOptions = {
+  const dataOptions = {
     targetRowsPerFragment: 20,
     maxSourceRows: 25,
     ioBufferSize: 0,
     batchSize: 8,
   };
-  await table.optimize({ compactionOptions });
+  await table.optimize({ dataOptions });
   expect(optimize).toHaveBeenCalledWith(
     undefined,
     undefined,
-    compactionOptions,
+    dataOptions,
     undefined,
   );
 });
@@ -4142,11 +4142,11 @@ it("rejects unsupported JavaScript compaction options before native submission",
   const table = new LocalTable({ optimize } as never);
   await expect(
     table.optimize({
-      compactionOptions: {
+      dataOptions: {
         maxSourceBytes: 1024,
-      } as unknown as CompactionOptions,
+      } as unknown as OptimizeDataOptions,
     }),
-  ).rejects.toThrow("Unsupported compaction option: maxSourceBytes");
+  ).rejects.toThrow("Unsupported Optimize data option: maxSourceBytes");
   expect(optimize).not.toHaveBeenCalled();
 });
 
@@ -4171,7 +4171,7 @@ describe("per-job compaction options", () => {
   });
   it("bounds source work and preserves zero I/O buffering", async () => {
     const stats = await table.optimize({
-      compactionOptions: {
+      dataOptions: {
         targetRowsPerFragment: 20,
         maxSourceRows: 25,
         ioBufferSize: 0,
@@ -4186,7 +4186,7 @@ describe("per-job compaction options", () => {
     expect(defaults.compaction.fragmentsAdded).toBe(1);
     expect(await table.countRows()).toBe(80);
   });
-  const invalid: CompactionOptions[] = [
+  const invalid: OptimizeDataOptions[] = [
     { targetRowsPerFragment: 0 },
     { maxSourceRows: 0 },
     { batchSize: 0 },
@@ -4198,8 +4198,8 @@ describe("per-job compaction options", () => {
     { targetRowsPerFragment: 2 ** 32 },
     { batchSize: 2 ** 32 },
   ];
-  it.each(invalid)("rejects invalid settings %p", async (compactionOptions) => {
-    await expect(table.optimize({ compactionOptions })).rejects.toThrow(
+  it.each(invalid)("rejects invalid settings %p", async (dataOptions) => {
+    await expect(table.optimize({ dataOptions })).rejects.toThrow(
       /safe integer/,
     );
     expect(await table.countRows()).toBe(80);
@@ -6011,7 +6011,7 @@ describe("durable compaction validation", () => {
     );
     await expect(
       table.optimizeAsync({ unrecognizedLimit: 1 } as never),
-    ).rejects.toThrow("Unsupported compaction option");
+    ).rejects.toThrow("Unsupported Optimize data option");
     await expect(
       table.optimizeAsync({ targetRowsPerFragment: 0 }),
     ).rejects.toThrow("safe integer");
@@ -6098,4 +6098,13 @@ describe("Optimize action selection", () => {
     }
     expect(await table.version()).toBe(1);
   });
+});
+
+test("rejects removed compactionOptions without silently submitting defaults", async () => {
+  const optimize = jest.fn();
+  const table = new LocalTable({ optimize } as never);
+  await expect(
+    table.optimize({ compactionOptions: { maxSourceRows: 1 } } as never),
+  ).rejects.toThrow("Unsupported Optimize option: compactionOptions");
+  expect(optimize).not.toHaveBeenCalled();
 });

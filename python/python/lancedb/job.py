@@ -21,7 +21,7 @@ from lancedb.background_loop import LOOP
 from . import _lancedb
 from ._lancedb import JobDescription, JobFailureInfo, JobInfo, _append_doc_url
 from .functions import RefreshColumnResult
-from .compaction import CompactionResult
+from .optimize import OptimizeResult
 from .prewarm import PrewarmDataResult
 from .remote.errors import HttpError, RetryError
 
@@ -863,5 +863,5 @@ def _opened_job(inner: "_lancedb.Job") -> AsyncJob:
     if inner.job_type == "prewarm_page_cache":
         return _typed_job(inner, PrewarmDataResult.from_json)
     if inner.job_type == "compact":
-        return _typed_job(inner, CompactionResult.from_json)
+        return _typed_job(inner, OptimizeResult.from_json)
     return AsyncJob(inner)

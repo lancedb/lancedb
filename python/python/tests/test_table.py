@@ -5452,12 +5452,12 @@ async def test_optimize(mem_db_async: AsyncConnection):
 
 
 @pytest.mark.asyncio
-async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
+async def test_optimize_data_options(mem_db_async: AsyncConnection):
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     await table.add([{"x": 2}])
 
     stats = await table.optimize(
-        compaction_options={
+        data_options={
             "target_rows_per_fragment": 1,
             "batch_size": 1,
             "num_threads": 1,
@@ -5466,18 +5466,18 @@ async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
     assert stats.compaction.fragments_removed == 0
     assert stats.compaction.fragments_added == 0
 
-    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    stats = await table.optimize(data_options={"target_rows_per_fragment": 3})
     assert stats.compaction.fragments_removed == 2
     assert stats.compaction.fragments_added == 1
 
     with pytest.raises(ValueError, match="Invalid compaction option: unknown"):
-        await table.optimize(compaction_options={"unknown": 1})
+        await table.optimize(data_options={"unknown": 1})
 
 
-def test_optimize_compaction_options_sync(mem_db: DBConnection):
+def test_optimize_data_options_sync(mem_db: DBConnection):
     table = mem_db.create_table("test", data=[{"x": 1}])
     with pytest.raises(ValueError, match="target_rows_per_fragment must be between"):
-        table.optimize(compaction_options={"target_rows_per_fragment": 0})
+        table.optimize(data_options={"target_rows_per_fragment": 0})
 
 
 @pytest.mark.parametrize("option", ["max_source_rows", "max_source_bytes"])
@@ -5489,7 +5489,7 @@ async def test_optimize_compaction_source_limits(
     await table.add([{"x": 2}])
 
     stats = await table.optimize(
-        compaction_options={
+        data_options={
             "target_rows_per_fragment": 3,
             option: 1,
         }
@@ -5506,7 +5506,7 @@ async def test_optimize_compaction_data_storage_version(
     await table.add([{"x": 2}])
 
     stats = await table.optimize(
-        compaction_options={
+        data_options={
             "target_rows_per_fragment": 3,
             "data_storage_version": "2.2",
         }
@@ -5518,7 +5518,7 @@ async def test_optimize_compaction_data_storage_version(
     await table.add([{"x": 2}])
     with pytest.raises(ValueError, match="V1 and V2 storage versions cannot be mixed"):
         await table.optimize(
-            compaction_options={
+            data_options={
                 "target_rows_per_fragment": 3,
                 "data_storage_version": "legacy",
             }
@@ -5531,7 +5531,7 @@ async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnect
     await table.add([{"x": 2}])
 
     stats = await table.optimize(
-        compaction_options={
+        data_options={
             "target_rows_per_fragment": 3,
             "excluded_fragment_ids": [0],
         }
@@ -5539,7 +5539,7 @@ async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnect
     assert stats.compaction.fragments_removed == 0
     assert stats.compaction.fragments_added == 0
 
-    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    stats = await table.optimize(data_options={"target_rows_per_fragment": 3})
     assert stats.compaction.fragments_removed == 2
     assert stats.compaction.fragments_added == 1
 
@@ -5571,12 +5571,12 @@ async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnect
     ],
 )
 @pytest.mark.asyncio
-async def test_optimize_compaction_options_validation(
+async def test_optimize_data_options_validation(
     mem_db_async: AsyncConnection, option: str, value: Any, message: str
 ):
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     with pytest.raises(ValueError, match=message):
-        await table.optimize(compaction_options={option: value})
+        await table.optimize(data_options={option: value})
 
 
 @pytest.mark.asyncio

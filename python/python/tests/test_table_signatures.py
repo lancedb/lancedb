@@ -198,7 +198,7 @@ def test_remote_optimize_options():
         cleanup_older_than=age,
         delete_unverified=True,
         retrain=True,
-        compaction_options=None,
+        data_options=None,
         action=None,
     )
 
@@ -275,6 +275,29 @@ def test_remote_optimize_rewrite_action():
         cleanup_older_than=None,
         delete_unverified=False,
         retrain=False,
-        compaction_options=None,
+        data_options=None,
         action="rewrite_data",
     )
+
+
+@pytest.mark.parametrize("cls", [Table, LanceTable, RemoteTable])
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
+def test_optimize_public_options_names(cls, method):
+    parameters = inspect.signature(getattr(cls, method)).parameters
+    assert "data_options" in parameters
+    assert "compaction_options" not in parameters
+
+
+def test_optimize_public_types():
+    import importlib.util
+    from lancedb.optimize import OptimizeResult
+    from lancedb.table import OptimizeDataOptions
+
+    assert lancedb.OptimizeDataOptions is OptimizeDataOptions
+    assert not hasattr(lancedb, "CompactionOptions")
+    assert importlib.util.find_spec("lancedb.compaction") is None
+    result = OptimizeResult.from_json(
+        '{"partial_commit":false,"rows_succeeded":1,"rows_failed":0,'
+        '"completion_percentage":100}'
+    )
+    assert result.rows_succeeded == 1

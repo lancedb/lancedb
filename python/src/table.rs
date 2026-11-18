@@ -29,10 +29,10 @@ use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
-    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionRefreshPlanningConfig,
-    FunctionRefreshPodResources, FunctionWorkerResourceBudget, IndexRemapMode, NewColumnTransform,
-    Ref, RefreshColumnOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
+    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeDataOptions, Ref,
+    RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -487,8 +487,8 @@ fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Op
     Ok(value)
 }
 
-fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<CompactionOptions> {
-    let mut parsed = CompactionOptions::default();
+fn parse_data_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeDataOptions> {
+    let mut parsed = OptimizeDataOptions::default();
     let Some(options) = options else {
         return Ok(parsed);
     };
@@ -528,7 +528,7 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
                 let mode: Option<String> = value.extract()?;
                 parsed.compaction_mode = mode
                     .map(|mode| {
-                        CompactionMode::try_from(mode.as_str())
+                        OptimizeDataMode::try_from(mode.as_str())
                             .map_err(|err| PyValueError::new_err(err.to_string()))
                     })
                     .transpose()?;
@@ -2296,19 +2296,19 @@ impl Table {
     }
 
     /// Submit remote compaction and retain its durable job and actual result.
-    #[pyo3(signature = (compaction_options=None))]
+    #[pyo3(signature = (data_options=None))]
     pub fn optimize_async<'py>(
         self_: PyRef<'py, Self>,
-        compaction_options: Option<&Bound<'py, PyDict>>,
+        data_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let target_specified = compaction_options
+        let target_specified = data_options
             .map(|options| options.contains("target_rows_per_fragment"))
             .transpose()?
             .unwrap_or(false);
-        let options = parse_compaction_options(compaction_options)?;
+        let options = parse_data_options(data_options)?;
         let mut overrides =
-            lancedb::table::optimize::CompactionOverrides::try_from(options).infer_error()?;
+            lancedb::table::optimize::OptimizeDataOverrides::try_from(options).infer_error()?;
         if !target_specified {
             overrides.target_rows_per_fragment = None;
         }
@@ -2319,12 +2319,12 @@ impl Table {
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, compaction_options=None, action=None))]
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, data_options=None, action=None))]
     pub fn optimize<'py>(
         self_: PyRef<'py, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
-        compaction_options: Option<&Bound<'py, PyDict>>,
+        data_options: Option<&Bound<'py, PyDict>>,
         action: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let rewrite_only = match action.as_deref() {
@@ -2342,11 +2342,11 @@ impl Table {
             ));
         }
         let inner = self_.inner_ref()?.clone();
-        let target_specified = compaction_options
+        let target_specified = data_options
             .map(|options| options.contains("target_rows_per_fragment"))
             .transpose()?
             .unwrap_or(false);
-        let compaction_options = parse_compaction_options(compaction_options)?;
+        let data_options = parse_data_options(data_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
                 return Err(PyValueError::new_err(format!(
@@ -2363,19 +2363,19 @@ impl Table {
             let stats = if inner.as_native().is_some() {
                 if rewrite_only {
                     inner
-                        .optimize(lancedb::table::OptimizeAction::Compact {
-                            options: compaction_options,
+                        .optimize(lancedb::table::OptimizeAction::RewriteDataWithOptions {
+                            options: data_options,
                             remap_options: None,
                         })
                         .await
                 } else {
                     inner
-                        .optimize_full(compaction_options, older_than, None, delete_unverified)
+                        .optimize_full(data_options, older_than, None, delete_unverified)
                         .await
                 }
             } else {
                 let mut overrides =
-                    lancedb::table::optimize::CompactionOverrides::try_from(compaction_options)
+                    lancedb::table::optimize::OptimizeDataOverrides::try_from(data_options)
                         .infer_error()?;
                 if !target_specified {
                     overrides.target_rows_per_fragment = None;

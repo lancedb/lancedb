@@ -4040,7 +4040,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// `OptimizeAction::RewriteData`, or `OptimizeAction::Compact` with no custom
+    /// `OptimizeAction::RewriteData`, or `OptimizeAction::RewriteDataWithOptions` with no custom
     /// `remap_options` is supported remotely: it submits a durable
     /// compaction job through the server's `OPTIMIZE ... REWRITE DATA`
     /// SQL statement, the same atomic, single-worker, index-safe path the
@@ -4068,7 +4068,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let overrides = match action {
             OptimizeAction::RewriteData(options) => options,
-            OptimizeAction::Compact {
+            OptimizeAction::RewriteDataWithOptions {
                 options,
                 remap_options,
             } => {
@@ -4081,8 +4081,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     });
                 }
                 let target = options.target_rows_per_fragment;
-                let mut overrides = crate::table::optimize::CompactionOverrides::try_from(options)?;
-                if target == crate::table::CompactionOptions::default().target_rows_per_fragment {
+                let mut overrides =
+                    crate::table::optimize::OptimizeDataOverrides::try_from(options)?;
+                if target == crate::table::OptimizeDataOptions::default().target_rows_per_fragment {
                     overrides.target_rows_per_fragment = None;
                 }
                 overrides
@@ -4091,7 +4092,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 return Err(Error::NotSupported {
                     message: "optimize supports only data rewrites in LanceDB Enterprise; \
                               version pruning and separate index optimization are unsupported. \
-                              Use OptimizeAction::RewriteData or OptimizeAction::Compact."
+                              Use OptimizeAction::RewriteData or OptimizeAction::RewriteDataWithOptions."
                         .into(),
                 });
             }
@@ -4118,8 +4119,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     async fn optimize_async(
         &self,
-        options: crate::table::optimize::CompactionOverrides,
-    ) -> Result<Job<crate::table::CompactionResult>> {
+        options: crate::table::optimize::OptimizeDataOverrides,
+    ) -> Result<Job<crate::table::OptimizeResult>> {
         self.check_mutable().await?;
         let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
         let client = self
@@ -17869,8 +17870,8 @@ mod tests {
             panic!("unexpected REST request: {}", request.url().path())
         });
         let error = table
-            .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions::default(),
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::optimize::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -17885,8 +17886,8 @@ mod tests {
         });
 
         let error = table
-            .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions::default(),
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::optimize::OptimizeDataOptions::default(),
                 remap_options: Some(Arc::new(lance::dataset::optimize::IgnoreRemap::default())),
             })
             .await
@@ -17897,14 +17898,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_rejects_unsupported_compaction_options() {
+    async fn test_optimize_rejects_unsupported_data_options() {
         let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
             panic!("custom compaction options must be rejected before any request is sent")
         });
 
         let error = table
-            .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::optimize::OptimizeDataOptions {
                     target_rows_per_fragment: 17,
                     max_source_bytes: Some(1024),
                     ..Default::default()
@@ -17915,7 +17916,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::NotSupported { .. }));
-        assert!(error.to_string().contains("CompactionOptions"));
+        assert!(error.to_string().contains("OptimizeDataOptions"));
     }
 
     #[tokio::test]
@@ -17962,8 +17963,8 @@ mod tests {
         // main -- it does not reject the branch itself, and it does not send
         // a REST request (see `test_optimize_requires_sql`).
         let error = branch
-            .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions::default(),
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::optimize::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await

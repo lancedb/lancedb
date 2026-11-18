@@ -28,18 +28,20 @@ use log::{debug, info};
 use super::NativeTable;
 use crate::error::{Error, Result};
 pub use chrono::Duration;
-pub use lance::dataset::optimize::{CompactionMode, CompactionOptions, IndexRemapMode};
+pub use lance::dataset::optimize::{
+    CompactionMode as OptimizeDataMode, CompactionOptions as OptimizeDataOptions, IndexRemapMode,
+};
 
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
 
-/// Actual outcome of one remote compaction job, returned by its job handle.
+/// Actual outcome of one remote Optimize data rewrite, returned by its job handle.
 ///
 /// A successful bounded run can leave more work for another invocation. A
 /// partial commit reports uncommitted rows rather than inventing file counts.
 /// File/fragment counts are unknown (`None`) when an older worker omitted them.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
-pub struct CompactionResult {
+pub struct OptimizeResult {
     /// A complete bounded plan left eligible work for a later invocation.
     #[serde(default)]
     pub more_work: bool,
@@ -124,7 +126,7 @@ fn oversized_sq_partition(
 
 async fn validate_sq_index_remapping(
     dataset: &lance::Dataset,
-    options: &CompactionOptions,
+    options: &OptimizeDataOptions,
     has_custom_remapper: bool,
 ) -> Result<CompactionPlan> {
     let plan = plan_compaction(dataset, options).await?;
@@ -217,7 +219,7 @@ async fn validate_sq_index_remapping(
 /// policy, then deployment/built-in defaults. Explicit values, including a zero
 /// I/O budget, take precedence. Local tables use Lance defaults for omissions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CompactionOverrides {
+pub struct OptimizeDataOverrides {
     pub target_rows_per_fragment: Option<usize>,
     pub max_source_rows: Option<usize>,
     /// Read-ahead budget in bytes; zero disables byte-based I/O backpressure.
@@ -225,9 +227,9 @@ pub struct CompactionOverrides {
     pub batch_size: Option<usize>,
 }
 
-impl CompactionOverrides {
-    pub(crate) fn into_options(self) -> CompactionOptions {
-        let mut options = CompactionOptions::default();
+impl OptimizeDataOverrides {
+    pub(crate) fn into_options(self) -> OptimizeDataOptions {
+        let mut options = OptimizeDataOptions::default();
         if let Some(target) = self.target_rows_per_fragment {
             options.target_rows_per_fragment = target;
         }
@@ -238,18 +240,18 @@ impl CompactionOverrides {
     }
 }
 
-impl TryFrom<CompactionOptions> for CompactionOverrides {
+impl TryFrom<OptimizeDataOptions> for OptimizeDataOverrides {
     type Error = Error;
 
-    fn try_from(options: CompactionOptions) -> Result<Self> {
+    fn try_from(options: OptimizeDataOptions) -> Result<Self> {
         let mut remaining = options.clone();
-        let defaults = CompactionOptions::default();
+        let defaults = OptimizeDataOptions::default();
         remaining.target_rows_per_fragment = defaults.target_rows_per_fragment;
         remaining.max_source_rows = defaults.max_source_rows;
         remaining.io_buffer_size = defaults.io_buffer_size;
         remaining.batch_size = defaults.batch_size;
         if remaining != defaults {
-            return Err(Error::NotSupported { message: "remote CompactionOptions support only target_rows_per_fragment, max_source_rows, io_buffer_size, and batch_size; other options must retain their defaults".into() });
+            return Err(Error::NotSupported { message: "remote OptimizeDataOptions support only target_rows_per_fragment, max_source_rows, io_buffer_size, and batch_size; other options must retain their defaults".into() });
         }
         Ok(Self {
             target_rows_per_fragment: Some(options.target_rows_per_fragment),
@@ -260,8 +262,8 @@ impl TryFrom<CompactionOptions> for CompactionOverrides {
     }
 }
 
-impl From<CompactionOverrides> for OptimizeAction {
-    fn from(options: CompactionOverrides) -> Self {
+impl From<OptimizeDataOverrides> for OptimizeAction {
+    fn from(options: OptimizeDataOverrides) -> Self {
         Self::RewriteData(options)
     }
 }
@@ -277,7 +279,7 @@ pub enum OptimizeAction {
     /// Rewrite data using optional settings. Omitted values retain Enterprise
     /// table policy; Embedded uses Lance defaults. This does not prune versions
     /// or run the separate index-maintenance phase.
-    RewriteData(CompactionOverrides),
+    RewriteData(OptimizeDataOverrides),
     /// Run all optimizations with default values
     #[default]
     All,
@@ -310,7 +312,7 @@ pub enum OptimizeAction {
     /// be positive.
     /// The Lance options type cannot distinguish an omitted fragment target
     /// from its default value; that default is treated as unspecified remotely.
-    /// Use [`crate::Table::optimize`] with [`CompactionOverrides`] to explicitly
+    /// Use [`crate::Table::optimize`] with [`OptimizeDataOverrides`] to explicitly
     /// override a table target with the Lance default value.
     /// Omitted options inherit table tuning, then deployment/built-in defaults; options
     /// affect only this job, without changing ongoing table policy.
@@ -324,10 +326,10 @@ pub enum OptimizeAction {
     /// placeholder rather than the real counts a local table reports.
     ///
     /// ```
-    /// use lancedb::{Table, table::{CompactionOptions, OptimizeAction}};
+    /// use lancedb::{Table, table::{OptimizeDataOptions, OptimizeAction}};
     /// # async fn compact(table: &Table) -> lancedb::Result<()> {
-    /// table.optimize(OptimizeAction::Compact {
-    ///     options: CompactionOptions {
+    /// table.optimize(OptimizeAction::RewriteDataWithOptions {
+    ///     options: OptimizeDataOptions {
     ///         target_rows_per_fragment: 100_000,
     ///         max_source_rows: Some(1_000_000),
     ///         io_buffer_size: Some(64 * 1024 * 1024),
@@ -345,8 +347,8 @@ pub enum OptimizeAction {
     /// creating the compaction job, so a nonexistent branch fails submission.
     /// Older servers may accept submission and fail the compaction job
     /// asynchronously instead.
-    Compact {
-        options: CompactionOptions,
+    RewriteDataWithOptions {
+        options: OptimizeDataOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     },
     /// Prune old version of datasets
@@ -498,7 +500,7 @@ pub(crate) async fn cleanup_old_versions_before(
 /// This calls into [lance::dataset::optimize::compact_files_with_planner].
 pub(crate) async fn compact_files_impl(
     table: &NativeTable,
-    options: CompactionOptions,
+    options: OptimizeDataOptions,
     remap_options: Option<Arc<dyn IndexRemapperOptions>>,
 ) -> Result<CompactionMetrics> {
     table.dataset.ensure_mutable()?;
@@ -526,7 +528,7 @@ pub(crate) async fn execute_optimize(
         OptimizeAction::All => {
             // Call helper functions directly to avoid async recursion issues
             stats.compaction =
-                Some(compact_files_impl(table, CompactionOptions::default(), None).await?);
+                Some(compact_files_impl(table, OptimizeDataOptions::default(), None).await?);
             stats.prune = Some(
                 cleanup_old_versions(
                     table,
@@ -541,7 +543,7 @@ pub(crate) async fn execute_optimize(
         OptimizeAction::RewriteData(options) => {
             stats.compaction = Some(compact_files_impl(table, options.into_options(), None).await?);
         }
-        OptimizeAction::Compact {
+        OptimizeAction::RewriteDataWithOptions {
             options,
             remap_options,
         } => {
@@ -593,7 +595,7 @@ mod tests {
         vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
     };
     use crate::query::{ExecutableQuery, QueryBase};
-    use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
+    use crate::table::{OptimizeAction, OptimizeDataOptions, OptimizeStats};
     use futures::TryStreamExt;
 
     /// Regression test for https://github.com/lancedb/lancedb/issues/2866.
@@ -749,8 +751,8 @@ mod tests {
         );
 
         let stats = table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions {
                     target_rows_per_fragment: 1_000,
                     ..Default::default()
                 },
@@ -802,15 +804,15 @@ mod tests {
         // Both Optimize entry points rewrite only data and preserve history.
         let stats = if optional_overrides {
             table
-                .optimize(super::CompactionOverrides {
+                .optimize(super::OptimizeDataOverrides {
                     target_rows_per_fragment: Some(1000),
                     ..Default::default()
                 })
                 .await
         } else {
             table
-                .optimize(OptimizeAction::Compact {
-                    options: CompactionOptions {
+                .optimize(OptimizeAction::RewriteDataWithOptions {
+                    options: OptimizeDataOptions {
                         target_rows_per_fragment: 1000,
                         ..Default::default()
                     },
@@ -895,8 +897,8 @@ mod tests {
 
         let version_before = table.version().await.unwrap();
         let stats = table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions {
                     target_rows_per_fragment: 20,
                     num_threads: Some(64),
                     ..Default::default()
@@ -963,8 +965,8 @@ mod tests {
             .unwrap();
         let compact_task = tokio::spawn(async move {
             compact_table
-                .optimize(OptimizeAction::Compact {
-                    options: CompactionOptions {
+                .optimize(OptimizeAction::RewriteDataWithOptions {
+                    options: OptimizeDataOptions {
                         target_rows_per_fragment: 1_000,
                         ..Default::default()
                     },
@@ -993,8 +995,8 @@ mod tests {
 
         // A second compaction exposed the original out-of-order row-id bug.
         table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions {
                     target_rows_per_fragment: 1_000,
                     ..Default::default()
                 },
@@ -1444,8 +1446,8 @@ mod tests {
 
         // Run compaction with deferred index remap
         let stats = table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions {
                     target_rows_per_fragment: 2000,
                     defer_index_remap: true,
                     ..Default::default()
@@ -1559,8 +1561,8 @@ mod tests {
         let before = concat_batches(&before[0].schema(), &before).unwrap();
 
         let stats = table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions {
                     target_rows_per_fragment: 256,
                     defer_index_remap: true,
                     ..Default::default()
@@ -1651,8 +1653,8 @@ mod tests {
 
         // Run compaction
         table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions::default(),
+            .optimize(OptimizeAction::RewriteDataWithOptions {
+                options: OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1714,8 +1716,8 @@ mod tests {
     #[rstest]
     #[case::rewrite_data(OptimizeAction::RewriteData(Default::default()))]
     #[case::all(OptimizeAction::All)]
-    #[case::compact(OptimizeAction::Compact {
-        options: CompactionOptions::default(),
+    #[case::compact(OptimizeAction::RewriteDataWithOptions {
+        options: OptimizeDataOptions::default(),
         remap_options: None,
     })]
     #[case::prune(OptimizeAction::Prune {

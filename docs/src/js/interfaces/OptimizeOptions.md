@@ -45,10 +45,10 @@ tbl.optimize({cleanupOlderThan: new Date()});
 
 ***
 
-### compactionOptions?
+### dataOptions?
 
 ```ts
-optional compactionOptions: CompactionOptions;
+optional dataOptions: OptimizeDataOptions;
 ```
 
 Compaction settings for this invocation. Omitted remote values inherit table
@@ -59,7 +59,7 @@ not change table policy. This is not a runtime or total-memory limit.
 #### Example
 
 ```ts
-await tbl.optimize({ compactionOptions: {
+await tbl.optimize({ dataOptions: {
   targetRowsPerFragment: 1000, maxSourceRows: 5000,
   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
 } });

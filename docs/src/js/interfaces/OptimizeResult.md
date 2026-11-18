@@ -2,11 +2,11 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / CompactionResult
+[@lancedb/lancedb](../globals.md) / OptimizeResult
 
-# Interface: CompactionResult
+# Interface: OptimizeResult
 
-Actual committed outcome of one remote compaction job.
+Actual committed outcome of one remote Optimize data rewrite.
 
 ## Properties
 

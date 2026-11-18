@@ -2,9 +2,9 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / CompactionOptions
+[@lancedb/lancedb](../globals.md) / OptimizeDataOptions
 
-# Interface: CompactionOptions
+# Interface: OptimizeDataOptions
 
 Per-invocation compaction settings. Values must be safe integers.
 

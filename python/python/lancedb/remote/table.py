@@ -79,8 +79,8 @@ from ..table import (
     AsyncTable,
     BlobMode,
     Branches,
-    CompactionOptions,
-    CompactionResult,
+    OptimizeDataOptions,
+    OptimizeResult,
     IndexStatistics,
     Query,
     Table,
@@ -1101,11 +1101,9 @@ class RemoteTable(Table):
         pass
 
     def optimize_async(
-        self, *, compaction_options: Optional[CompactionOptions] = None
-    ) -> Job[CompactionResult]:
-        return Job(
-            LOOP.run(self._table.optimize_async(compaction_options=compaction_options))
-        )
+        self, *, data_options: Optional[OptimizeDataOptions] = None
+    ) -> Job[OptimizeResult]:
+        return Job(LOOP.run(self._table.optimize_async(data_options=data_options)))
 
     def optimize(
         self,
@@ -1113,7 +1111,7 @@ class RemoteTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
-        compaction_options: Optional[CompactionOptions] = None,
+        data_options: Optional[OptimizeDataOptions] = None,
         action: Optional[Literal["rewrite_data"]] = None,
     ) -> OptimizeStats:
         """Compact the table's data files via a durable, asynchronous
@@ -1133,7 +1131,7 @@ class RemoteTable(Table):
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
-                compaction_options=compaction_options,
+                data_options=data_options,
                 action=action,
             )
         )

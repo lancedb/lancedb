@@ -23,7 +23,7 @@ use lancedb::{
         OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
+    table::{AddDataMode, OptimizeAction, OptimizeDataOptions, OptimizeStats, WriteOptions},
 };
 use tempfile::tempdir;
 
@@ -1195,8 +1195,8 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
     let ids_before: Vec<u64> = pairs_before.iter().map(|(_, rowid)| *rowid).collect();
 
     table
-        .optimize(OptimizeAction::Compact {
-            options: CompactionOptions::default(),
+        .optimize(OptimizeAction::RewriteDataWithOptions {
+            options: OptimizeDataOptions::default(),
             remap_options: None,
         })
         .await?;

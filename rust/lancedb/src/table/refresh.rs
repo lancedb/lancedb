@@ -1718,8 +1718,8 @@ mod tests {
         table.refresh_column("doubled").await.unwrap();
 
         table
-            .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+            .optimize(crate::table::OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1834,8 +1834,8 @@ mod tests {
             .await
             .unwrap();
         table
-            .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+            .optimize(crate::table::OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1891,8 +1891,8 @@ mod tests {
         .unwrap();
         table.checkout_latest().await.unwrap();
         table
-            .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+            .optimize(crate::table::OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1920,8 +1920,8 @@ mod tests {
 
         append(&table, vec![5]).await;
         table
-            .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+            .optimize(crate::table::OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -2226,8 +2226,8 @@ mod tests {
 
         append(&table, vec![2_000_000]).await;
         table
-            .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+            .optimize(crate::table::OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await
@@ -2556,8 +2556,8 @@ mod tests {
             .await
             .unwrap();
         table
-            .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+            .optimize(crate::table::OptimizeAction::RewriteDataWithOptions {
+                options: crate::table::OptimizeDataOptions::default(),
                 remap_options: None,
             })
             .await

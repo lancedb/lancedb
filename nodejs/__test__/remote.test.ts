@@ -2775,7 +2775,7 @@ describe("remote compaction job results", () => {
         },
         async (db) => {
           const job =
-            await db.openJob<import("../lancedb").CompactionResult>(
+            await db.openJob<import("../lancedb").OptimizeResult>(
               "compacting-job",
             );
           const result = await job.wait();

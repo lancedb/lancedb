@@ -807,14 +807,14 @@ class Table:
         self, updates: list[dict[str, Any]]
     ) -> UpdateFieldMetadataResult: ...
     async def optimize_async(
-        self, compaction_options: Optional[Dict[str, Any]] = None
+        self, data_options: Optional[Dict[str, Any]] = None
     ) -> Job: ...
     async def optimize(
         self,
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
-        compaction_options: Optional[Dict[str, Any]] = None,
+        data_options: Optional[Dict[str, Any]] = None,
         action: Optional[str] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...

@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 pub(super) fn statement(
     table: &str,
     branch: Option<&str>,
-    options: &crate::table::optimize::CompactionOverrides,
+    options: &crate::table::optimize::OptimizeDataOverrides,
 ) -> Result<String> {
     let mut settings = compaction_sql_options(options)?;
     if let Some(branch) = branch {
@@ -48,7 +48,7 @@ pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
 }
 
 pub(super) fn compaction_sql_options(
-    options: &crate::table::optimize::CompactionOverrides,
+    options: &crate::table::optimize::OptimizeDataOverrides,
 ) -> Result<Vec<String>> {
     for (name, value) in [
         ("target_rows_per_fragment", options.target_rows_per_fragment),
@@ -129,7 +129,7 @@ pub(super) fn map_optimize_error(error: Error) -> Error {
 mod tests {
     use super::*;
     use crate::error::JobFailure;
-    use crate::table::{CompactionOptions, CompactionOverrides};
+    use crate::table::{OptimizeDataOptions, OptimizeDataOverrides};
     use std::sync::Arc;
 
     fn sql_error(code: tonic::Code, message: &str) -> Error {
@@ -248,13 +248,13 @@ mod tests {
     #[test]
     fn omissions_and_explicit_default_target_are_distinct() {
         assert!(
-            compaction_sql_options(&CompactionOverrides::default())
+            compaction_sql_options(&OptimizeDataOverrides::default())
                 .unwrap()
                 .is_empty()
         );
-        let target = CompactionOptions::default().target_rows_per_fragment;
+        let target = OptimizeDataOptions::default().target_rows_per_fragment;
         assert_eq!(
-            compaction_sql_options(&CompactionOverrides {
+            compaction_sql_options(&OptimizeDataOverrides {
                 target_rows_per_fragment: Some(target),
                 io_buffer_size: Some(0),
                 ..Default::default()
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn unsupported_settings_are_rejected() {
         assert!(matches!(
-            CompactionOverrides::try_from(CompactionOptions {
+            OptimizeDataOverrides::try_from(OptimizeDataOptions {
                 max_source_bytes: Some(1024),
                 ..Default::default()
             }),
@@ -281,15 +281,15 @@ mod tests {
     #[test]
     fn invalid_row_settings_are_rejected() {
         for options in [
-            CompactionOverrides {
+            OptimizeDataOverrides {
                 target_rows_per_fragment: Some(0),
                 ..Default::default()
             },
-            CompactionOverrides {
+            OptimizeDataOverrides {
                 max_source_rows: Some(0),
                 ..Default::default()
             },
-            CompactionOverrides {
+            OptimizeDataOverrides {
                 batch_size: Some(0),
                 ..Default::default()
             },

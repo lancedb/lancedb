@@ -65,7 +65,7 @@ boundaries).
 | `ds.to_batches(batch_size=k)` | `tbl.search().to_batches(k)` |
 | `ds.take(offsets)` | `tbl.__getitems__(offsets)` (preserves offset order) or `tbl.take_offsets(offsets).to_arrow()` (unordered) |
 | `ds.versions()`, `ds.checkout_version(v)`, `ds.restore()` | `tbl.list_versions()`, `tbl.checkout(v)`, `tbl.restore()` |
-| `ds.optimize.compact_files(...)`, `ds.cleanup_old_versions(...)` | `tbl.optimize(compaction_options=..., cleanup_older_than=...)` |
+| `ds.optimize.compact_files(...)`, `ds.cleanup_old_versions(...)` | `tbl.optimize(data_options=..., cleanup_older_than=...)` |
 
 ## Learn more {#next}
 

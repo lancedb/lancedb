@@ -78,7 +78,7 @@ use the job-returning API to wait for the actual rewrite and obtain its result.
 from datetime import timedelta
 
 job = table.optimize_async(
-    compaction_options={"target_rows_per_fragment": 1000, "batch_size": 128}
+    data_options={"target_rows_per_fragment": 1000, "batch_size": 128}
 )
 result = job.wait(timeout=timedelta(minutes=10))
 print(result.rows_succeeded, result.fragments_removed, result.fragments_added)
@@ -87,7 +87,7 @@ print(result.rows_succeeded, result.fragments_removed, result.fragments_added)
 result = db.open_job(job.id).wait()
 ```
 ```typescript TypeScript
-import type { CompactionResult } from "@lancedb/lancedb";
+import type { OptimizeResult } from "@lancedb/lancedb";
 
 const job = await table.optimizeAsync({
   targetRowsPerFragment: 1000, batchSize: 128,
@@ -96,15 +96,15 @@ const result = await job.wait({ timeoutMs: 600_000 });
 console.log(result.rowsSucceeded, result.fragmentsRemoved, result.fragmentsAdded);
 
 if (job.id !== null) {
-  await (await db.openJob<CompactionResult>(job.id)).wait();
+  await (await db.openJob<OptimizeResult>(job.id)).wait();
 }
 ```
 ```rust Rust
 use std::time::Duration;
 use lancedb::job::JobWaitOptions;
-use lancedb::table::{CompactionResult, optimize::CompactionOverrides};
+use lancedb::table::{OptimizeResult, optimize::OptimizeDataOverrides};
 
-let job = table.optimize_async(CompactionOverrides {
+let job = table.optimize_async(OptimizeDataOverrides {
     target_rows_per_fragment: Some(1000),
     batch_size: Some(128),
     ..Default::default()
@@ -115,7 +115,7 @@ let result = job.wait_with_options(
 println!("Committed {} rows", result.rows_succeeded);
 
 if let Some(id) = job.id() {
-    db.open_job(id).await?.into_typed::<CompactionResult>()?.wait().await?;
+    db.open_job(id).await?.into_typed::<OptimizeResult>()?.wait().await?;
 }
 ```
 </CodeGroup>
@@ -374,9 +374,9 @@ different budget; toggling automatic enablement alone does not reset backoff.
 
 SDKs forward supplied fields and leave inheritance to the server. An explicitly
 supplied SDK-default fragment target still overrides table tuning. Rust callers
-can use `Table::optimize(CompactionOverrides)` or
-`Table::optimize_async(CompactionOverrides)` for that distinction: the legacy
-`OptimizeAction::Compact` path treats its default-valued Lance fragment target
+can use `Table::optimize(OptimizeDataOverrides)` or
+`Table::optimize_async(OptimizeDataOverrides)` for that distinction: the legacy
+`OptimizeAction::RewriteDataWithOptions` path treats its default-valued Lance fragment target
 as unspecified because the options type has no presence bit.
 
 ## Retraining indexes {#retrain}
@@ -444,7 +444,7 @@ table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
 The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates. See [Incremental Indexing](/indexing/incremental-indexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed. Update or rebuild the index after large update batches.
 
 {/*
-Draft for the Python compaction_options release. Keep this section unpublished
+Draft for the Python data_options release. Keep this section unpublished
 until the first supported release is confirmed.
 
 ### Tune compaction for wide rows {#tune-wide-rows}
@@ -467,8 +467,8 @@ The Rust example runs compaction only. Run pruning and index optimization
 separately when needed; Python's `optimize()` includes those steps.
 
 TypeScript's `optimize()` exposes the fragment row target through
-`compactionOptions.targetRowsPerFragment` and the scanner batch size through
-`compactionOptions.batchSize`. Compaction thread count is not exposed. The tuning
+`dataOptions.targetRowsPerFragment` and the scanner batch size through
+`dataOptions.batchSize`. Compaction thread count is not exposed. The tuning
 examples above use Python and Rust tables in LanceDB Embedded.
 
 Planning remains row based. The row target bounds later passes after existing
@@ -478,7 +478,7 @@ limits output file size rather than compaction memory.
 
 The `max_source_rows` and `max_source_bytes` budgets admit whole planned tasks.
 If the first task exceeds a budget, that run performs no compaction. See the
-[CompactionOptions reference](https://lancedb.github.io/lancedb/python/python/#lancedb.table.CompactionOptions)
+[OptimizeDataOptions reference](https://lancedb.github.io/lancedb/python/python/#lancedb.table.OptimizeDataOptions)
 for all options and their limits.
 */}
 
@@ -490,25 +490,25 @@ method to wait for actual results:
 
 ```python
 # Submit and discard the handle.
-table.optimize(compaction_options={"target_rows_per_fragment": 1000})
+table.optimize(data_options={"target_rows_per_fragment": 1000})
 # Submit and retain status, cancellation, and actual results.
-job = table.optimize_async(compaction_options={"target_rows_per_fragment": 1000})
+job = table.optimize_async(data_options={"target_rows_per_fragment": 1000})
 result = job.wait()
 # Async Python: job = await table.optimize_async(); result = await job.wait()
 ```
 
 ```typescript
-await table.optimize({ compactionOptions: { targetRowsPerFragment: 1000 } });
+await table.optimize({ dataOptions: { targetRowsPerFragment: 1000 } });
 const job = await table.optimizeAsync({ targetRowsPerFragment: 1000 });
 const result = await job.wait();
 ```
 
 ```rust
-use lancedb::table::CompactionOverrides;
+use lancedb::table::OptimizeDataOverrides;
 
 async fn optimize_table(table: &lancedb::Table) -> lancedb::Result<()> {
-    table.optimize(CompactionOverrides::default()).await?;
-    let job = table.optimize_async(CompactionOverrides::default()).await?;
+    table.optimize(OptimizeDataOverrides::default()).await?;
+    let job = table.optimize_async(OptimizeDataOverrides::default()).await?;
     let result = job.wait().await?;
     println!("Committed {} rows", result.rows_succeeded);
     Ok(())
@@ -519,12 +519,37 @@ Embedded `optimize()` still waits for compaction, cleanup, and index maintenance
 returning actual statistics. Select only data rewrites with Python
 `optimize(action="rewrite_data")`, TypeScript
 `optimize({ action: "rewrite_data" })`, or Rust
-`optimize(CompactionOverrides::default())`. Rewrite-only requests preserve old
+`optimize(OptimizeDataOverrides::default())`. Rewrite-only requests preserve old
 versions and skip the separate index maintenance phase. Cleanup arguments cannot
 be combined with a rewrite-only action.
 
 The former `compact_async()` / `compactAsync()` methods are now
 `optimize_async()` / `optimizeAsync()`. Rust `compact(overrides)` becomes
 `optimize(overrides)`. Python `compact_files()` becomes
-`optimize(action="rewrite_data", compaction_options=...)`, with rewrite metrics
+`optimize(action="rewrite_data", data_options=...)`, with rewrite metrics
 under `stats.compaction`. The old names are removed without aliases.
+
+### Optimize naming migration
+
+The SDK uses Optimize names for submission and durable results, and Optimize
+Data names for the settings specific to data rewrites:
+
+| Previous name | Current name |
+| --- | --- |
+| `CompactionResult` | `OptimizeResult` |
+| `CompactionOptions` | `OptimizeDataOptions` |
+| Rust `CompactionOverrides` | `OptimizeDataOverrides` |
+| Rust `CompactionMode` | `OptimizeDataMode` |
+| Python `compaction_options=` | `data_options=` |
+| TypeScript `compactionOptions` | `dataOptions` |
+| Python `lancedb.compaction` | `lancedb.optimize` |
+| Rust `OptimizeAction::Compact` | `OptimizeAction::RewriteDataWithOptions` |
+
+These names are replaced without compatibility aliases. TypeScript rejects the
+removed `compactionOptions` property before submission; Python rejects the old
+keyword. This prevents a requested work limit from being silently ignored.
+
+`CompactionStats` and `OptimizeStats.compaction` still identify the compaction
+phase within Embedded's broader maintenance cycle. The server job type `compact`,
+table tuning key `job_types.compaction`, and realtime SSTable maintenance methods
+are unchanged.
