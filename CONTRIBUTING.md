@@ -109,12 +109,11 @@ npm i -g mint@4.2.888
 
 This previews this checkout, including your uncommitted changes. It doesn't
 include the other documentation sources or render the availability labels.
-Use the [combined preview](https://github.com/lancedb/docs#development) when
-checking Enterprise replacements or links to pages from another source.
+Maintainers can use the combined preview to check Enterprise replacements and
+links across documentation sources.
 Staging shows saved release editions, so it won't show a new source change
 just because that change merged.
 
-Follow the [style guide](https://github.com/lancedb/docs/blob/main/STYLE.md).
 [Vale](https://vale.sh) checks wording, names and punctuation using the
 [bundled LanceDB rules](.github/vale/README.md). Pull requests show suggestions
 on the lines they change. With Vale 3.24.0 installed, check a page locally with:
@@ -182,15 +181,14 @@ You don't need to hold a documentation PR until launch. Use these controls:
   comment below the table or list, not between entries.
 
 Drafts remain in the source. Use them to avoid advertising an unfinished
-feature, not to keep information confidential. See
-[Writing docs before release](https://github.com/lancedb/docs#writing-docs-before-release)
-for examples and how to preview a draft.
+feature, not to keep information confidential. A release maintainer can help
+preview a draft in the combined site.
 
 Before the intended release, remove the draft controls, restore the navigation
 and links, and check the result. Those changes must be in the source commit the
 edition uses. A later change to `main` doesn't update an edition already saved.
-For a mistake in an existing edition, fix the source and request a
-[recorded correction](https://github.com/lancedb/docs#correcting-a-saved-edition).
+For a mistake in an existing edition, fix the source and request a recorded
+correction from the release maintainers.
 
 ## Release process
 
