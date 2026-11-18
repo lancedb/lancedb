@@ -4111,7 +4111,12 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
 
   await table.optimize({ cleanupOlderThan: cutoff, deleteUnverified: true });
 
-  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true, undefined);
+  expect(optimize).toHaveBeenCalledWith(
+    cutoff.getTime(),
+    true,
+    undefined,
+    undefined,
+  );
 });
 
 it("forwards per-job compaction options to the native binding", async () => {
@@ -4128,6 +4133,7 @@ it("forwards per-job compaction options to the native binding", async () => {
     undefined,
     undefined,
     compactionOptions,
+    undefined,
   );
 });
 
@@ -6000,14 +6006,14 @@ describe("durable compaction validation", () => {
   test("rejects local tables and unknown options", async () => {
     const db = await connect(`memory://compaction-job-${Date.now()}`);
     const table = await db.createTable("test", [{ id: 1 }]);
-    await expect(table.compactAsync()).rejects.toThrow(
+    await expect(table.optimizeAsync()).rejects.toThrow(
       "only supported on remote tables",
     );
     await expect(
-      table.compactAsync({ unrecognizedLimit: 1 } as never),
+      table.optimizeAsync({ unrecognizedLimit: 1 } as never),
     ).rejects.toThrow("Unsupported compaction option");
     await expect(
-      table.compactAsync({ targetRowsPerFragment: 0 }),
+      table.optimizeAsync({ targetRowsPerFragment: 0 }),
     ).rejects.toThrow("safe integer");
   });
 });
@@ -6055,5 +6061,41 @@ describe("Enterprise table overrides", () => {
       db.close();
       tmpDir.removeCallback();
     }
+  });
+});
+
+describe("Optimize action selection", () => {
+  test("rewrites data while retaining versions and deferring index maintenance", async () => {
+    const db = await connect(`memory://optimize-action-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+    await table.createIndex("id", { config: Index.btree() });
+    await table.add([{ id: 3 }]);
+    await table.add([{ id: 4 }]);
+    const before = await table.listVersions();
+    const stats = await table.optimize({ action: "rewrite_data" });
+    expect(stats.compaction.fragmentsRemoved).toBe(4);
+    expect(stats.compaction.fragmentsAdded).toBe(2);
+    expect(stats.prune.oldVersionsRemoved).toBe(0);
+    expect((await table.listVersions()).length).toBeGreaterThan(before.length);
+    expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(2);
+    await table.optimize();
+    expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(0);
+    await table.checkout(1);
+    expect(await table.countRows()).toBe(1);
+    expect("compactAsync" in table).toBe(false);
+  });
+
+  test("rejects unknown actions and conflicting cleanup requests before changes", async () => {
+    const db = await connect(`memory://optimize-invalid-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    for (const options of [
+      { action: "unknown" },
+      { action: "rewrite_data", cleanupOlderThan: new Date() },
+      { action: "rewrite_data", deleteUnverified: true },
+    ]) {
+      await expect(table.optimize(options as never)).rejects.toThrow("action");
+    }
+    expect(await table.version()).toBe(1);
   });
 });

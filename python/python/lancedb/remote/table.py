@@ -90,6 +90,8 @@ from ..types import BaseTokenizerType, ScalarIndexType
 from ..util import infer_vector_column_name
 
 if TYPE_CHECKING:
+    from lancedb._lancedb import OptimizeStats
+
     import lance
     import polars as pl
 
@@ -1098,21 +1100,11 @@ class RemoteTable(Table):
         )
         pass
 
-    def compact_files(self, *args, **kwargs):
-        """
-        compact_files() is a no-op in LanceDB Enterprise.
-        """
-        warnings.warn(
-            "compact_files() is a no-op in LanceDB Enterprise.",
-            stacklevel=2,
-        )
-        pass
-
-    def compact_async(
+    def optimize_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
     ) -> Job[CompactionResult]:
         return Job(
-            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+            LOOP.run(self._table.optimize_async(compaction_options=compaction_options))
         )
 
     def optimize(
@@ -1122,11 +1114,12 @@ class RemoteTable(Table):
         delete_unverified: bool = False,
         retrain: bool = False,
         compaction_options: Optional[CompactionOptions] = None,
-    ):
+        action: Optional[Literal["rewrite_data"]] = None,
+    ) -> OptimizeStats:
         """Compact the table's data files via a durable, asynchronous
         Enterprise job. Pruning old versions and index optimization are not
         yet supported remotely, so this call skips them and returns
-        successfully with zeroed pruning statistics once the compaction job
+        successfully with placeholder statistics once the compaction job
         has been submitted; it does not wait for that job to finish. The
         per-job options ``target_rows_per_fragment``, ``max_source_rows``,
         ``io_buffer_size``, and ``batch_size`` are supported on compatible
@@ -1141,6 +1134,7 @@ class RemoteTable(Table):
                 delete_unverified=delete_unverified,
                 retrain=retrain,
                 compaction_options=compaction_options,
+                action=action,
             )
         )
 

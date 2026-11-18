@@ -4841,10 +4841,10 @@ def test_compact_cleanup(tmp_db: DBConnection):
     assert len(table) == 3
     assert table.version == 2
 
-    stats = table.compact_files()
+    stats = table.optimize(action="rewrite_data").compaction
     assert len(table) == 3
-    # Compact_files bump 2 versions.
-    assert table.version == 4
+    optimized_version = table.version
+    assert optimized_version > 2
     assert stats.fragments_removed > 0
     assert stats.fragments_added == 1
 
@@ -4853,10 +4853,10 @@ def test_compact_cleanup(tmp_db: DBConnection):
 
     stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
     assert stats.bytes_removed > 0
-    assert table.version == 4
+    assert table.version == optimized_version
 
-    with pytest.raises(Exception, match="Version 3 no longer exists"):
-        table.checkout(3)
+    with pytest.raises(Exception, match="Version 2 no longer exists"):
+        table.checkout(2)
 
 
 def test_count_rows(mem_db: DBConnection):
@@ -6435,3 +6435,74 @@ async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous, m
             NotImplementedError, match="only supported on remote tables"
         ):
             getattr(table, method)(filter="id > 0", concurrency=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_optimize_rewrite_only_preserves_versions_and_index(
+    tmp_path, asynchronous
+):
+    """A rewrite must retain history and leave incremental indexing to full Optimize."""
+    db = (
+        (await lancedb.connect_async(str(tmp_path)))
+        if asynchronous
+        else lancedb.connect(str(tmp_path))
+    )
+
+    async def call(obj, name, *args, **kwargs):
+        result = getattr(obj, name)(*args, **kwargs)
+        return await result if asynchronous else result
+
+    table = await call(db, "create_table", "rewrite", [{"id": 1}])
+    await call(table, "add", [{"id": 2}])
+    await call(table, "create_index", "id", config=BTree())
+    await call(table, "add", [{"id": 3}])
+    await call(table, "add", [{"id": 4}])
+    before = await call(table, "list_versions")
+    stats = await call(table, "optimize", action="rewrite_data")
+    assert stats.compaction.fragments_removed == 4
+    assert stats.compaction.fragments_added == 2
+    assert stats.prune.old_versions_removed == 0
+    assert len(await call(table, "list_versions")) > len(before)
+    index_stats = await call(table, "index_stats", "id_idx")
+    assert (
+        index_stats.num_unindexed_rows
+        if asynchronous
+        else index_stats["num_unindexed_rows"]
+    ) == 2
+    await call(table, "optimize")
+    index_stats = await call(table, "index_stats", "id_idx")
+    assert (
+        index_stats.num_unindexed_rows
+        if asynchronous
+        else index_stats["num_unindexed_rows"]
+    ) == 0
+    await call(table, "checkout", 1)
+    assert await call(table, "count_rows") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"action": "unknown"},
+        {"action": "rewrite_data", "cleanup_older_than": timedelta(days=1)},
+        {"action": "rewrite_data", "delete_unverified": True},
+    ],
+)
+async def test_optimize_action_validation(mem_db_async, kwargs):
+    table = await mem_db_async.create_table("rewrite_invalid", [{"id": 1}])
+    with pytest.raises(ValueError, match="action"):
+        await table.optimize(**kwargs)
+    assert await table.version() == 1
+
+
+@pytest.mark.asyncio
+async def test_optimize_async_requires_remote(mem_db, mem_db_async):
+    table = mem_db.create_table("local_job", [{"id": 1}])
+    with pytest.raises(NotImplementedError, match="only supported on remote tables"):
+        table.optimize_async()
+    async_table = await mem_db_async.create_table("local_job", [{"id": 1}])
+    with pytest.raises(NotImplementedError, match="only supported on remote tables"):
+        await async_table.optimize_async()
+    assert not hasattr(async_table, "compact_async")

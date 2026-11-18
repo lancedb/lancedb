@@ -4352,7 +4352,10 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
             Default::default(),
             Some(sql_client),
         );
-        table.compact(options).await.unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::RewriteData(options))
+            .await
+            .unwrap();
         assert_eq!(
             *statements.lock().unwrap(),
             [format!("OPTIMIZE \"events\" REWRITE DATA{suffix}")]
@@ -4424,7 +4427,9 @@ async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
             Some(sql_client),
         );
         let error = table
-            .compact(CompactionOverrides::default())
+            .optimize(crate::table::OptimizeAction::RewriteData(
+                CompactionOverrides::default(),
+            ))
             .await
             .unwrap_err();
         assert_eq!(
@@ -4462,10 +4467,12 @@ async fn remote_optimize_branch_options_are_not_dropped() {
     )
     .with_branch(Some("exp".into()));
     let error = table
-        .compact(crate::table::optimize::CompactionOverrides {
-            io_buffer_size: Some(0),
-            ..Default::default()
-        })
+        .optimize(crate::table::OptimizeAction::RewriteData(
+            crate::table::optimize::CompactionOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            },
+        ))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::NotSupported { .. }));
@@ -4847,7 +4854,7 @@ async fn remote_compaction_tracks_registry_job_and_real_result() {
     )
     .with_branch(Some("experiment".into()));
     let job = table
-        .compact_async(CompactionOverrides {
+        .optimize_async(CompactionOverrides {
             target_rows_per_fragment: Some(100),
             ..Default::default()
         })

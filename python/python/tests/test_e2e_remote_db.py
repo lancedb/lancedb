@@ -70,7 +70,7 @@ async def test_maintenance_job_result_and_reopen_against_server(
         version = await table.version() if asynchronous else table.version
         if operation == "compact":
             job = await call(
-                table.compact_async,
+                table.optimize_async,
                 compaction_options={
                     "target_rows_per_fragment": 100,
                     "batch_size": 128,

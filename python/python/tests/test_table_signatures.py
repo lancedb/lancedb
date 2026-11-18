@@ -25,7 +25,7 @@ import pytest
         "create_fts_index",
         "search",
         "cleanup_old_versions",
-        "compact_files",
+        "optimize_async",
         "optimize",
         "to_polars",
     ],
@@ -179,7 +179,6 @@ def test_fts_unsupported_options(sync_table, kwargs, message):
             "cleanup_old_versions",
             {"older_than": timedelta(days=1), "delete_unverified": True},
         ),
-        ("compact_files", {"target_rows_per_fragment": 1000}),
     ],
 )
 def test_remote_maintenance_options_warn(method, kwargs):
@@ -200,6 +199,7 @@ def test_remote_optimize_options():
         delete_unverified=True,
         retrain=True,
         compaction_options=None,
+        action=None,
     )
 
 
@@ -258,3 +258,23 @@ def test_index_replacement_defaults(tmp_path):
         with pytest.warns(DeprecationWarning):
             sync.create_scalar_index("id")
     assert len(list(table.list_indices())) == 1
+
+
+@pytest.mark.parametrize("cls", [Table, LanceTable, RemoteTable])
+def test_optimize_has_no_legacy_compaction_aliases(cls):
+    assert not hasattr(cls, "compact_files")
+    assert not hasattr(cls, "compact_async")
+
+
+def test_remote_optimize_rewrite_action():
+    handle = MagicMock()
+    handle.optimize = AsyncMock(return_value="accepted")
+    table = RemoteTable(handle, "test_db")
+    assert table.optimize(action="rewrite_data") == "accepted"
+    handle.optimize.assert_awaited_once_with(
+        cleanup_older_than=None,
+        delete_unverified=False,
+        retrain=False,
+        compaction_options=None,
+        action="rewrite_data",
+    )

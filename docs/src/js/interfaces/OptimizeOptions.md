@@ -8,6 +8,18 @@
 
 ## Properties
 
+### action?
+
+```ts
+optional action: "rewrite_data";
+```
+
+Run only data compaction, preserving versions and skipping separate index
+maintenance. Omit for Embedded's full maintenance cycle. Cannot be combined
+with cleanup options. Enterprise always submits data compaction only.
+
+***
+
 ### cleanupOlderThan
 
 ```ts

@@ -4040,7 +4040,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// Only `OptimizeAction::Compact` with supported `options` and no custom
+    /// `OptimizeAction::RewriteData`, or `OptimizeAction::Compact` with no custom
     /// `remap_options` is supported remotely: it submits a durable
     /// compaction job through the server's `OPTIMIZE ... REWRITE DATA`
     /// SQL statement, the same atomic, single-worker, index-safe path the
@@ -4066,43 +4066,37 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// No settings are removed and the operation is never resubmitted.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
-        let OptimizeAction::Compact {
-            options,
-            remap_options,
-        } = &action
-        else {
-            return Err(Error::NotSupported {
-                message: "optimize is only supported in LanceDB Enterprise for \
-                          OptimizeAction::Compact; version pruning and index \
-                          optimization are not yet supported remotely."
-                    .into(),
-            });
+        let overrides = match action {
+            OptimizeAction::RewriteData(options) => options,
+            OptimizeAction::Compact {
+                options,
+                remap_options,
+            } => {
+                if remap_options.is_some() {
+                    return Err(Error::NotSupported {
+                        message: "a custom index remap strategy is not supported in LanceDB \
+                                  Enterprise; omit remap_options to use the server's managed, \
+                                  index-safe compaction path."
+                            .into(),
+                    });
+                }
+                let target = options.target_rows_per_fragment;
+                let mut overrides = crate::table::optimize::CompactionOverrides::try_from(options)?;
+                if target == crate::table::CompactionOptions::default().target_rows_per_fragment {
+                    overrides.target_rows_per_fragment = None;
+                }
+                overrides
+            }
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "optimize supports only data rewrites in LanceDB Enterprise; \
+                              version pruning and separate index optimization are unsupported. \
+                              Use OptimizeAction::RewriteData or OptimizeAction::Compact."
+                        .into(),
+                });
+            }
         };
-        if remap_options.is_some() {
-            return Err(Error::NotSupported {
-                message: "a custom index remap strategy is not supported in LanceDB \
-                          Enterprise; omit remap_options to use the server's managed, \
-                          index-safe compaction path."
-                    .into(),
-            });
-        }
-        let mut overrides = crate::table::optimize::CompactionOverrides::try_from(options.clone())?;
-        // The legacy Lance options type has no presence bit for this field.
-        // Use Table::compact to explicitly send a target equal to Lance's default.
-        if options.target_rows_per_fragment
-            == crate::table::CompactionOptions::default().target_rows_per_fragment
-        {
-            overrides.target_rows_per_fragment = None;
-        }
-        self.compact(overrides).await
-    }
-
-    async fn compact(
-        &self,
-        options: crate::table::optimize::CompactionOverrides,
-    ) -> Result<OptimizeStats> {
-        self.check_mutable().await?;
-        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
+        let statement = optimize::statement(&self.name, self.branch.as_deref(), &overrides)?;
         let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
@@ -4122,7 +4116,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
-    async fn compact_async(
+    async fn optimize_async(
         &self,
         options: crate::table::optimize::CompactionOverrides,
     ) -> Result<Job<crate::table::CompactionResult>> {

@@ -305,40 +305,6 @@ It is a no-op when no writers are cached.
 
 ***
 
-### compactAsync()
-
-```ts
-compactAsync(_options?): Promise<Job<CompactionResult>>
-```
-
-Submit remote compaction and return its durable job after acceptance.
-
-Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
-a compatible remote server and table Ownership plus parent Usage. Local and
-historical-version handles are unsupported. Existing optimize() behavior is unchanged.
-Waiting tracks the rewrite itself and returns actual row/file statistics.
-Missing result payloads are errors; older workers can omit file counts.
-Status, progress, events and cancellation reuse the generic HTTP job APIs.
-Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
-
-#### Parameters
-
-* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
-
-#### Returns
-
-`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
-
-#### Example
-
-```ts
-const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
-const result = await job.wait();
-console.log(result.rowsSucceeded, result.fragmentsRemoved);
-```
-
-***
-
 ### compactRTE()
 
 ```ts
@@ -561,8 +527,8 @@ Drop one or more columns from the dataset
 
 This is a metadata-only operation and does not remove the data from the
 underlying storage. In order to remove the data, you must subsequently
-call ``compact_files`` to rewrite the data without the removed columns and
-then call ``cleanup_files`` to remove the old files.
+call `optimize({ action: "rewrite_data" })` to rewrite the data without the
+removed columns, then prune old versions using Optimize cleanup options.
 
 Local tables reject dropping source or vector columns referenced by
 `embedding_functions` schema metadata, preserving the embedding binding.
@@ -1117,8 +1083,8 @@ Modeled after ``VACUUM`` in PostgreSQL.
 On a LanceDB Enterprise (remote) table, only compaction is currently
 supported. Pruning old versions and index optimization are silently
 skipped there instead of being attempted, so this call resolves
-successfully, with zeroed pruning statistics, once the compaction job
-has been submitted; it does not wait for that job to finish.
+successfully with placeholder statistics (not completed work) once the
+compaction job has been submitted; it does not wait for that job to finish.
 `compactionOptions` can tune the four per-job settings documented in
 [CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
 retrying with the settings removed.
@@ -1130,6 +1096,40 @@ retrying with the settings removed.
 #### Returns
 
 `Promise`&lt;[`OptimizeStats`](../interfaces/OptimizeStats.md)&gt;
+
+***
+
+### optimizeAsync()
+
+```ts
+optimizeAsync(_options?): Promise<Job<CompactionResult>>
+```
+
+Submit remote compaction and return its durable job after acceptance.
+
+Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+a compatible remote server and table Ownership plus parent Usage. Local and
+historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+Waiting tracks the rewrite itself and returns actual row/file statistics.
+Missing result payloads are errors; older workers can omit file counts.
+Status, progress, events and cancellation reuse the generic HTTP job APIs.
+Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+
+#### Parameters
+
+* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.optimizeAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+console.log(result.rowsSucceeded, result.fragmentsRemoved);
+```
 
 ***
 

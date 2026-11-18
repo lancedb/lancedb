@@ -806,7 +806,7 @@ class Table:
     async def update_field_metadata(
         self, updates: list[dict[str, Any]]
     ) -> UpdateFieldMetadataResult: ...
-    async def compact_async(
+    async def optimize_async(
         self, compaction_options: Optional[Dict[str, Any]] = None
     ) -> Job: ...
     async def optimize(
@@ -815,6 +815,7 @@ class Table:
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
         compaction_options: Optional[Dict[str, Any]] = None,
+        action: Optional[str] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...

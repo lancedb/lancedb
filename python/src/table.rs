@@ -2297,7 +2297,7 @@ impl Table {
 
     /// Submit remote compaction and retain its durable job and actual result.
     #[pyo3(signature = (compaction_options=None))]
-    pub fn compact_async<'py>(
+    pub fn optimize_async<'py>(
         self_: PyRef<'py, Self>,
         compaction_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -2313,19 +2313,34 @@ impl Table {
             overrides.target_rows_per_fragment = None;
         }
         future_into_py(self_.py(), async move {
-            let job = inner.compact_async(overrides).await.infer_error()?;
+            let job = inner.optimize_async(overrides).await.infer_error()?;
             Ok(crate::job::Job::new_typed(job))
         })
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, compaction_options=None))]
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, compaction_options=None, action=None))]
     pub fn optimize<'py>(
         self_: PyRef<'py, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
         compaction_options: Option<&Bound<'py, PyDict>>,
+        action: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let rewrite_only = match action.as_deref() {
+            None => false,
+            Some("rewrite_data") => true,
+            Some(_) => {
+                return Err(PyValueError::new_err(
+                    "action must be 'rewrite_data' or None",
+                ));
+            }
+        };
+        if rewrite_only && (cleanup_since_ms.is_some() || delete_unverified == Some(true)) {
+            return Err(PyValueError::new_err(
+                "action='rewrite_data' cannot be combined with cleanup options",
+            ));
+        }
         let inner = self_.inner_ref()?.clone();
         let target_specified = compaction_options
             .map(|options| options.contains("target_rows_per_fragment"))
@@ -2346,9 +2361,18 @@ impl Table {
         };
         future_into_py(self_.py(), async move {
             let stats = if inner.as_native().is_some() {
-                inner
-                    .optimize_full(compaction_options, older_than, None, delete_unverified)
-                    .await
+                if rewrite_only {
+                    inner
+                        .optimize(lancedb::table::OptimizeAction::Compact {
+                            options: compaction_options,
+                            remap_options: None,
+                        })
+                        .await
+                } else {
+                    inner
+                        .optimize_full(compaction_options, older_than, None, delete_unverified)
+                        .await
+                }
             } else {
                 let mut overrides =
                     lancedb::table::optimize::CompactionOverrides::try_from(compaction_options)
@@ -2356,13 +2380,22 @@ impl Table {
                 if !target_specified {
                     overrides.target_rows_per_fragment = None;
                 }
-                inner
-                    .optimize_full_with_overrides(overrides, older_than, None, delete_unverified)
-                    .await
+                if rewrite_only {
+                    inner.optimize(overrides).await
+                } else {
+                    inner
+                        .optimize_full_with_overrides(
+                            overrides,
+                            older_than,
+                            None,
+                            delete_unverified,
+                        )
+                        .await
+                }
             }
             .infer_error()?;
             let compaction_stats = stats.compaction.unwrap();
-            let prune_stats = stats.prune.unwrap();
+            let prune_stats = stats.prune.unwrap_or_default();
             Ok(OptimizeStats {
                 compaction: CompactionStats {
                     files_added: compaction_stats.files_added as u64,

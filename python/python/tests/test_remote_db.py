@@ -3611,7 +3611,7 @@ def test_remote_python_only_messages():
                 f"{method}() is not supported in LanceDB Enterprise. "
                 f"Use table.search().{method}() instead."
             )
-        for method in ["compact_files", "cleanup_old_versions"]:
+        for method in ["cleanup_old_versions"]:
             with pytest.warns(UserWarning) as warning:
                 getattr(table, method)()
             assert (
@@ -8471,7 +8471,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
-            job = await table.compact_async(
+            job = await table.optimize_async(
                 compaction_options={"target_rows_per_fragment": 100}
             )
             assert job.id == "compacting-job" and not polls
@@ -8492,7 +8492,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
         else:
             db = lancedb.connect(**kwargs)
             table = db.create_table("test", [{"id": 1}])
-            job = table.compact_async(
+            job = table.optimize_async(
                 compaction_options={"target_rows_per_fragment": 100}
             )
             assert job.id == "compacting-job" and not polls
@@ -8547,11 +8547,11 @@ def test_remote_compaction_rejects_ambiguous_receipt_without_resubmission(ids):
         db = lancedb.connect(**kwargs)
         table = db.create_table("test", [{"id": 1}])
         with pytest.raises(Exception, match="inspect jobs before retrying"):
-            table.compact_async()
+            table.optimize_async()
     assert server.calls == 1
 
 
-@pytest.mark.parametrize("method", ["compact_async", "optimize"])
+@pytest.mark.parametrize("method", ["optimize_async", "optimize"])
 @pytest.mark.parametrize(
     "option",
     ["target_rows_per_fragment", "max_source_rows", "io_buffer_size", "batch_size"],

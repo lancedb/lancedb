@@ -902,21 +902,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
     /// Submit remote compaction and retain its durable job and actual outcome.
-    async fn compact_async(
+    async fn optimize_async(
         &self,
         _options: optimize::CompactionOverrides,
     ) -> Result<Job<CompactionResult>> {
         Err(Error::NotSupported {
             message: "compaction jobs are only supported on remote tables".into(),
         })
-    }
-    /// Compact with optional fields, preserving remote policy inheritance.
-    async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
-        self.optimize(OptimizeAction::Compact {
-            options: options.into_options(),
-            remap_options: None,
-        })
-        .await
     }
     /// Add columns to the table.
     async fn add_columns(
@@ -2067,31 +2059,27 @@ impl Table {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
+    /// [`OptimizeAction::RewriteData`] accepts [`optimize::CompactionOverrides`]
+    /// directly, preserving omitted options and explicit default values.
     /// [`OptimizeAction::Compact`] supports per-job `target_rows_per_fragment`,
     /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
     /// `remap_options`. Other non-default options, `All`, `Prune`, and `Index` return
     /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
     /// what a remote call submits and what it does and does not wait for.
-    pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
-        self.inner.optimize(action).await
-    }
-
-    /// Compact data files with optional tuning fields. On remote tables,
-    /// omitted fields inherit table tuning, then deployment/built-in defaults.
-    /// Returns after job submission; remote statistics are placeholders.
     ///
-    /// ```
-    /// use lancedb::{Table, table::optimize::CompactionOverrides};
-    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
-    /// table.compact(CompactionOverrides {
-    ///     io_buffer_size: Some(64 * 1024 * 1024),
+    /// ```no_run
+    /// # async fn optimize(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::CompactionOverrides;
+    /// // Rewrite only data; omitted settings retain remote table policy.
+    /// table.optimize(CompactionOverrides {
+    ///     io_buffer_size: Some(0),
     ///     ..Default::default()
     /// }).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
-        self.inner.compact(options).await
+    pub async fn optimize(&self, action: impl Into<OptimizeAction>) -> Result<OptimizeStats> {
+        self.inner.optimize(action.into()).await
     }
 
     /// Submit remote compaction and return its durable job after acceptance.
@@ -2112,17 +2100,17 @@ impl Table {
     ///
     /// ```no_run
     /// # async fn compact(table: &lancedb::Table) -> lancedb::Result<()> {
-    /// let job = table.compact_async(Default::default()).await?;
+    /// let job = table.optimize_async(Default::default()).await?;
     /// let result = job.wait().await?;
     /// println!("Committed {} rows", result.rows_succeeded);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn compact_async(
+    pub async fn optimize_async(
         &self,
         options: optimize::CompactionOverrides,
     ) -> Result<Job<CompactionResult>> {
-        self.inner.compact_async(options).await
+        self.inner.optimize_async(options).await
     }
 
     /// Language-binding entry point retaining optional compaction fields.
@@ -2147,7 +2135,7 @@ impl Table {
         if older_than.is_some() || before_timestamp.is_some() || delete_unverified == Some(true) {
             return Err(Error::NotSupported { message: "pruning is not supported in LanceDB Enterprise; omit pruning options to run compaction only".into() });
         }
-        let stats = self.compact(options).await?;
+        let stats = self.optimize(options).await?;
         Ok(OptimizeStats {
             compaction: stats.compaction,
             prune: Some(RemovalStats::default()),

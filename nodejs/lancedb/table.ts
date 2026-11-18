@@ -199,6 +199,11 @@ export interface CompactionOptions {
 }
 
 export interface OptimizeOptions {
+  /** Run only data compaction, preserving versions and skipping separate index
+   * maintenance. Omit for Embedded's full maintenance cycle. Cannot be combined
+   * with cleanup options. Enterprise always submits data compaction only. */
+  action?: "rewrite_data";
+
   /**
    * Compaction settings for this invocation. Omitted remote values inherit table
    * tuning, then deployment/built-in defaults.
@@ -1063,8 +1068,8 @@ export abstract class Table {
    *
    * This is a metadata-only operation and does not remove the data from the
    * underlying storage. In order to remove the data, you must subsequently
-   * call ``compact_files`` to rewrite the data without the removed columns and
-   * then call ``cleanup_files`` to remove the old files.
+   * call `optimize({ action: "rewrite_data" })` to rewrite the data without the
+   * removed columns, then prune old versions using Optimize cleanup options.
    *
    * Local tables reject dropping source or vector columns referenced by
    * `embedding_functions` schema metadata, preserving the embedding binding.
@@ -1353,11 +1358,11 @@ export abstract class Table {
    * Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
    *
    * @example
-   * const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+   * const job = await table.optimizeAsync({ targetRowsPerFragment: 1000 });
    * const result = await job.wait();
    * console.log(result.rowsSucceeded, result.fragmentsRemoved);
    */
-  async compactAsync(
+  async optimizeAsync(
     _options?: CompactionOptions,
   ): Promise<Job<CompactionResult>> {
     throw new Error("compaction jobs are only supported on remote tables");
@@ -1384,8 +1389,8 @@ export abstract class Table {
    * On a LanceDB Enterprise (remote) table, only compaction is currently
    * supported. Pruning old versions and index optimization are silently
    * skipped there instead of being attempted, so this call resolves
-   * successfully, with zeroed pruning statistics, once the compaction job
-   * has been submitted; it does not wait for that job to finish.
+   * successfully with placeholder statistics (not completed work) once the
+   * compaction job has been submitted; it does not wait for that job to finish.
    * `compactionOptions` can tune the four per-job settings documented in
    * {@link CompactionOptions}. Older-server errors are propagated without
    * retrying with the settings removed.
@@ -2081,22 +2086,35 @@ export class LocalTable extends Table {
     return this.inner.currentBranch() ?? null;
   }
 
-  async compactAsync(
+  async optimizeAsync(
     options?: CompactionOptions,
   ): Promise<Job<CompactionResult>> {
     validateCompactionOptions(options);
     return new Job(
-      await this.inner.compactAsync(options),
+      await this.inner.optimizeAsync(options),
       decodeCompactionResult,
     );
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
     validateCompactionOptions(options?.compactionOptions);
+    if (options?.action !== undefined && options.action !== "rewrite_data") {
+      throw new Error('action must be "rewrite_data" or undefined');
+    }
+    if (
+      options?.action === "rewrite_data" &&
+      (options.cleanupOlderThan !== undefined ||
+        options.deleteUnverified === true)
+    ) {
+      throw new Error(
+        'action="rewrite_data" cannot be combined with cleanup options',
+      );
+    }
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
       options?.compactionOptions,
+      options?.action,
     );
   }
 

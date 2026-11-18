@@ -260,6 +260,12 @@ impl TryFrom<CompactionOptions> for CompactionOverrides {
     }
 }
 
+impl From<CompactionOverrides> for OptimizeAction {
+    fn from(options: CompactionOverrides) -> Self {
+        Self::RewriteData(options)
+    }
+}
+
 /// Optimize the dataset.
 ///
 /// Similar to `VACUUM` in PostgreSQL, it offers different options to
@@ -268,6 +274,10 @@ impl TryFrom<CompactionOptions> for CompactionOverrides {
 /// By default, it optimizes everything, as [`OptimizeAction::All`].
 #[derive(Default)]
 pub enum OptimizeAction {
+    /// Rewrite data using optional settings. Omitted values retain Enterprise
+    /// table policy; Embedded uses Lance defaults. This does not prune versions
+    /// or run the separate index-maintenance phase.
+    RewriteData(CompactionOverrides),
     /// Run all optimizations with default values
     #[default]
     All,
@@ -298,9 +308,9 @@ pub enum OptimizeAction {
     /// backpressure. Use a positive size to limit I/O read-ahead; this is not a
     /// total-memory limit. Row targets, source-row budgets, and batch sizes must
     /// be positive.
-    /// The legacy Lance options type cannot distinguish an omitted fragment target
+    /// The Lance options type cannot distinguish an omitted fragment target
     /// from its default value; that default is treated as unspecified remotely.
-    /// Use [`crate::Table::compact`] with [`CompactionOverrides`] to explicitly
+    /// Use [`crate::Table::optimize`] with [`CompactionOverrides`] to explicitly
     /// override a table target with the Lance default value.
     /// Omitted options inherit table tuning, then deployment/built-in defaults; options
     /// affect only this job, without changing ongoing table policy.
@@ -528,6 +538,9 @@ pub(crate) async fn execute_optimize(
             );
             optimize_indices(table, &OptimizeOptions::default()).await?;
         }
+        OptimizeAction::RewriteData(options) => {
+            stats.compaction = Some(compact_files_impl(table, options.into_options(), None).await?);
+        }
         OptimizeAction::Compact {
             options,
             remap_options,
@@ -749,8 +762,11 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), ROWS as usize * 3);
     }
 
+    #[rstest]
+    #[case::lance_options(false)]
+    #[case::optional_overrides(true)]
     #[tokio::test]
-    async fn test_optimize_compact_simple() {
+    async fn test_optimize_compact_simple(#[case] optional_overrides: bool) {
         let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table with initial data
@@ -783,17 +799,27 @@ mod tests {
         let initial_row_count = table.count_rows(None).await.unwrap();
         assert_eq!(initial_row_count, 600);
 
-        // Run compaction
-        let stats = table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
-                    target_rows_per_fragment: 1000,
+        // Both Optimize entry points rewrite only data and preserve history.
+        let stats = if optional_overrides {
+            table
+                .optimize(super::CompactionOverrides {
+                    target_rows_per_fragment: Some(1000),
                     ..Default::default()
-                },
-                remap_options: None,
-            })
-            .await
-            .unwrap();
+                })
+                .await
+        } else {
+            table
+                .optimize(OptimizeAction::Compact {
+                    options: CompactionOptions {
+                        target_rows_per_fragment: 1000,
+                        ..Default::default()
+                    },
+                    remap_options: None,
+                })
+                .await
+        }
+        .unwrap();
+        assert!(stats.prune.is_none());
 
         // Verify compaction occurred
         assert!(stats.compaction.is_some());
@@ -826,6 +852,8 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..600).collect();
         assert_eq!(all_values, expected);
+        table.checkout(1).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 100);
     }
 
     #[tokio::test]
@@ -1684,6 +1712,7 @@ mod tests {
     }
 
     #[rstest]
+    #[case::rewrite_data(OptimizeAction::RewriteData(Default::default()))]
     #[case::all(OptimizeAction::All)]
     #[case::compact(OptimizeAction::Compact {
         options: CompactionOptions::default(),

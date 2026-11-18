@@ -67,7 +67,7 @@ even though `optimize()` bundles both in one LanceDB Embedded call.
 
 ## Track on-demand Enterprise compaction {#compaction-jobs}
 
-On compatible Enterprise deployments, `compact_async()` / `compactAsync()`
+On compatible Enterprise deployments, `optimize_async()` / `optimizeAsync()`
 submits SQL `OPTIMIZE ... REWRITE DATA` and returns a durable job handle.
 The table handle supplies the namespace and branch. The existing remote
 `optimize()` call keeps returning after submission with placeholder statistics;
@@ -77,7 +77,7 @@ use the job-returning API to wait for the actual rewrite and obtain its result.
 ```python Python
 from datetime import timedelta
 
-job = table.compact_async(
+job = table.optimize_async(
     compaction_options={"target_rows_per_fragment": 1000, "batch_size": 128}
 )
 result = job.wait(timeout=timedelta(minutes=10))
@@ -89,7 +89,7 @@ result = db.open_job(job.id).wait()
 ```typescript TypeScript
 import type { CompactionResult } from "@lancedb/lancedb";
 
-const job = await table.compactAsync({
+const job = await table.optimizeAsync({
   targetRowsPerFragment: 1000, batchSize: 128,
 });
 const result = await job.wait({ timeoutMs: 600_000 });
@@ -104,7 +104,7 @@ use std::time::Duration;
 use lancedb::job::JobWaitOptions;
 use lancedb::table::{CompactionResult, optimize::CompactionOverrides};
 
-let job = table.compact_async(CompactionOverrides {
+let job = table.optimize_async(CompactionOverrides {
     target_rows_per_fragment: Some(1000),
     batch_size: Some(128),
     ..Default::default()
@@ -374,7 +374,8 @@ different budget; toggling automatic enablement alone does not reset backoff.
 
 SDKs forward supplied fields and leave inheritance to the server. An explicitly
 supplied SDK-default fragment target still overrides table tuning. Rust callers
-should use `Table::compact_async(CompactionOverrides)` for that distinction: the legacy
+can use `Table::optimize(CompactionOverrides)` or
+`Table::optimize_async(CompactionOverrides)` for that distinction: the legacy
 `OptimizeAction::Compact` path treats its default-valued Lance fragment target
 as unspecified because the options type has no presence bit.
 
@@ -480,3 +481,50 @@ If the first task exceeds a budget, that run performs no compaction. See the
 [CompactionOptions reference](https://lancedb.github.io/lancedb/python/python/#lancedb.table.CompactionOptions)
 for all options and their limits.
 */}
+
+## Optimize submission and job handles
+
+Enterprise `optimize()` returns once the compaction request is accepted. Its
+statistics are placeholders, not completed-work metrics. Use the durable job
+method to wait for actual results:
+
+```python
+# Submit and discard the handle.
+table.optimize(compaction_options={"target_rows_per_fragment": 1000})
+# Submit and retain status, cancellation, and actual results.
+job = table.optimize_async(compaction_options={"target_rows_per_fragment": 1000})
+result = job.wait()
+# Async Python: job = await table.optimize_async(); result = await job.wait()
+```
+
+```typescript
+await table.optimize({ compactionOptions: { targetRowsPerFragment: 1000 } });
+const job = await table.optimizeAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+```
+
+```rust
+use lancedb::table::CompactionOverrides;
+
+async fn optimize_table(table: &lancedb::Table) -> lancedb::Result<()> {
+    table.optimize(CompactionOverrides::default()).await?;
+    let job = table.optimize_async(CompactionOverrides::default()).await?;
+    let result = job.wait().await?;
+    println!("Committed {} rows", result.rows_succeeded);
+    Ok(())
+}
+```
+
+Embedded `optimize()` still waits for compaction, cleanup, and index maintenance,
+returning actual statistics. Select only data rewrites with Python
+`optimize(action="rewrite_data")`, TypeScript
+`optimize({ action: "rewrite_data" })`, or Rust
+`optimize(CompactionOverrides::default())`. Rewrite-only requests preserve old
+versions and skip the separate index maintenance phase. Cleanup arguments cannot
+be combined with a rewrite-only action.
+
+The former `compact_async()` / `compactAsync()` methods are now
+`optimize_async()` / `optimizeAsync()`. Rust `compact(overrides)` becomes
+`optimize(overrides)`. Python `compact_files()` becomes
+`optimize(action="rewrite_data", compaction_options=...)`, with rewrite metrics
+under `stats.compaction`. The old names are removed without aliases.
