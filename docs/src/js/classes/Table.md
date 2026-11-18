@@ -1105,7 +1105,7 @@ retrying with the settings removed.
 optimizeAsync(_options?): Promise<Job<OptimizeResult>>
 ```
 
-Submit remote compaction and return its durable job after acceptance.
+Submit remote Optimize and return its durable job after acceptance.
 
 Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
 a compatible remote server and table Ownership plus parent Usage. Local and

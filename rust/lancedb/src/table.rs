@@ -901,13 +901,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
-    /// Submit remote compaction and retain its durable job and actual outcome.
+    /// Submit remote Optimize and retain its durable job and actual outcome.
     async fn optimize_async(
         &self,
         _options: optimize::OptimizeOverrides,
     ) -> Result<Job<OptimizeResult>> {
         Err(Error::NotSupported {
-            message: "compaction jobs are only supported on remote tables".into(),
+            message: "Optimize jobs are only supported on remote tables".into(),
         })
     }
     /// Add columns to the table.
@@ -2082,7 +2082,7 @@ impl Table {
         self.inner.optimize(action.into()).await
     }
 
-    /// Submit remote compaction and return its durable job after acceptance.
+    /// Submit remote Optimize and return its durable job after acceptance.
     ///
     /// Uses SQL `OPTIMIZE ... REWRITE DATA` with the table handle's namespace
     /// and branch. The four fields of [`optimize::OptimizeOverrides`] retain
@@ -2102,7 +2102,7 @@ impl Table {
     /// when omitted values must be distinguished from explicit SDK defaults.
     ///
     /// ```no_run
-    /// # async fn compact(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// # async fn optimize(table: &lancedb::Table) -> lancedb::Result<()> {
     /// let job = table.optimize_async(lancedb::table::OptimizeOptions::default()).await?;
     /// let result = job.wait().await?;
     /// println!("Committed {} rows", result.rows_succeeded);

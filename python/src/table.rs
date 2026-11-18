@@ -31,7 +31,7 @@ use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
-    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeOptions, Ref,
+    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeOptions, OptimizeOverrides, Ref,
     RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
@@ -487,10 +487,27 @@ fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Op
     Ok(value)
 }
 
-fn parse_data_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeOptions> {
+/// Preserve Python field presence while sharing Embedded and Enterprise parsing.
+#[derive(Default)]
+struct ParsedOptimizeOptions {
+    options: OptimizeOptions,
+    target_specified: bool,
+}
+
+impl ParsedOptimizeOptions {
+    fn into_remote_overrides(self) -> PyResult<OptimizeOverrides> {
+        let mut overrides = OptimizeOverrides::try_from(self.options).infer_error()?;
+        if !self.target_specified {
+            overrides.target_rows_per_fragment = None;
+        }
+        Ok(overrides)
+    }
+}
+
+fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<ParsedOptimizeOptions> {
     let mut parsed = OptimizeOptions::default();
     let Some(options) = options else {
-        return Ok(parsed);
+        return Ok(ParsedOptimizeOptions::default());
     };
 
     for (key, value) in options.iter() {
@@ -551,13 +568,16 @@ fn parse_data_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeO
             }
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "Invalid compaction option: {key}"
+                    "Invalid Optimize option: {key}"
                 )));
             }
         }
     }
 
-    Ok(parsed)
+    Ok(ParsedOptimizeOptions {
+        options: parsed,
+        target_specified: options.contains("target_rows_per_fragment")?,
+    })
 }
 
 /// Statistics about a compaction operation.
@@ -2295,23 +2315,14 @@ impl Table {
         })
     }
 
-    /// Submit remote compaction and retain its durable job and actual result.
+    /// Submit remote Optimize and retain its durable job and actual result.
     #[pyo3(signature = (data_options=None))]
     pub fn optimize_async<'py>(
         self_: PyRef<'py, Self>,
         data_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let target_specified = data_options
-            .map(|options| options.contains("target_rows_per_fragment"))
-            .transpose()?
-            .unwrap_or(false);
-        let options = parse_data_options(data_options)?;
-        let mut overrides =
-            lancedb::table::optimize::OptimizeOverrides::try_from(options).infer_error()?;
-        if !target_specified {
-            overrides.target_rows_per_fragment = None;
-        }
+        let overrides = parse_optimize_options(data_options)?.into_remote_overrides()?;
         future_into_py(self_.py(), async move {
             let job = inner.optimize_async(overrides).await.infer_error()?;
             Ok(crate::job::Job::new_typed(job))
@@ -2342,11 +2353,7 @@ impl Table {
             ));
         }
         let inner = self_.inner_ref()?.clone();
-        let target_specified = data_options
-            .map(|options| options.contains("target_rows_per_fragment"))
-            .transpose()?
-            .unwrap_or(false);
-        let data_options = parse_data_options(data_options)?;
+        let data_options = parse_optimize_options(data_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
                 return Err(PyValueError::new_err(format!(
@@ -2364,22 +2371,17 @@ impl Table {
                 if rewrite_only {
                     inner
                         .optimize(lancedb::table::OptimizeAction::RewriteDataWithOptions {
-                            options: data_options,
+                            options: data_options.options,
                             remap_options: None,
                         })
                         .await
                 } else {
                     inner
-                        .optimize_full(data_options, older_than, None, delete_unverified)
+                        .optimize_full(data_options.options, older_than, None, delete_unverified)
                         .await
                 }
             } else {
-                let mut overrides =
-                    lancedb::table::optimize::OptimizeOverrides::try_from(data_options)
-                        .infer_error()?;
-                if !target_specified {
-                    overrides.target_rows_per_fragment = None;
-                }
+                let overrides = data_options.into_remote_overrides()?;
                 if rewrite_only {
                     inner.optimize(overrides).await
                 } else {

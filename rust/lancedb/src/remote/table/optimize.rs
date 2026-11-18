@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Compaction options supported by the remote SQL submission protocol.
+//! Optimize options supported by the remote SQL submission protocol.
 use crate::error::{Error, Result};
 
 pub(super) fn statement(
@@ -9,7 +9,7 @@ pub(super) fn statement(
     branch: Option<&str>,
     options: &crate::table::optimize::OptimizeOverrides,
 ) -> Result<String> {
-    let mut settings = compaction_sql_options(options)?;
+    let mut settings = rewrite_sql_options(options)?;
     if let Some(branch) = branch {
         settings.insert(0, format!("branch = {}", super::quote_sql_string(branch)));
     }
@@ -28,7 +28,7 @@ pub(super) fn statement(
 pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
     use arrow_array::{Array, StringArray};
     let invalid = || {
-        Error::Runtime { message: "OPTIMIZE did not return a single nonempty job_id receipt; inspect jobs before retrying because compaction may already have been submitted".into() }
+        Error::Runtime { message: "OPTIMIZE did not return a single nonempty job_id receipt; inspect jobs before retrying because Optimize may already have been submitted".into() }
     };
     if batches.iter().map(|batch| batch.num_rows()).sum::<usize>() != 1 {
         return Err(invalid());
@@ -47,7 +47,7 @@ pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
     Ok(ids.value(0).into())
 }
 
-pub(super) fn compaction_sql_options(
+pub(super) fn rewrite_sql_options(
     options: &crate::table::optimize::OptimizeOverrides,
 ) -> Result<Vec<String>> {
     for (name, value) in [
@@ -78,8 +78,8 @@ pub(super) fn compaction_sql_options(
     Ok(result)
 }
 
-const UNSUPPORTED_OPTIMIZE: &str = "Compaction on an Enterprise table requires support for OPTIMIZE <table> REWRITE DATA. Upgrade LanceDB Enterprise to a compatible release.";
-const UNSUPPORTED_OPTIONS: &str = "The requested compaction options are not supported by this version of LanceDB Enterprise. Upgrade to a compatible release; requested options will not be removed or retried.";
+const UNSUPPORTED_OPTIMIZE: &str = "Optimize on an Enterprise table requires support for OPTIMIZE <table> REWRITE DATA. Upgrade LanceDB Enterprise to a compatible release.";
+const UNSUPPORTED_OPTIONS: &str = "The requested Optimize options are not supported by this version of LanceDB Enterprise. Upgrade to a compatible release; requested options will not be removed or retried.";
 
 /// The client generates the whole statement, so parser errors indicate a
 /// client/server syntax mismatch. Match option errors without enumerating names.
@@ -248,13 +248,13 @@ mod tests {
     #[test]
     fn omissions_and_explicit_default_target_are_distinct() {
         assert!(
-            compaction_sql_options(&OptimizeOverrides::default())
+            rewrite_sql_options(&OptimizeOverrides::default())
                 .unwrap()
                 .is_empty()
         );
         let target = OptimizeOptions::default().target_rows_per_fragment;
         assert_eq!(
-            compaction_sql_options(&OptimizeOverrides {
+            rewrite_sql_options(&OptimizeOverrides {
                 target_rows_per_fragment: Some(target),
                 io_buffer_size: Some(0),
                 ..Default::default()
@@ -295,7 +295,7 @@ mod tests {
             },
         ] {
             assert!(matches!(
-                compaction_sql_options(&options),
+                rewrite_sql_options(&options),
                 Err(Error::InvalidInput { .. })
             ));
         }
@@ -309,7 +309,7 @@ mod receipt_tests {
     use std::sync::Arc;
 
     #[test]
-    fn compaction_receipt_requires_one_unambiguous_registry_id() {
+    fn optimize_receipt_requires_one_unambiguous_registry_id() {
         let batch = |ids: Vec<Option<&str>>| {
             RecordBatch::try_from_iter([("job_id", Arc::new(StringArray::from(ids)) as ArrayRef)])
                 .unwrap()

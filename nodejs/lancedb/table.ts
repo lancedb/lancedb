@@ -1310,7 +1310,7 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
-   * Submit remote compaction and return its durable job after acceptance.
+   * Submit remote Optimize and return its durable job after acceptance.
    *
    * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
    * a compatible remote server and table Ownership plus parent Usage. Local and
@@ -1328,7 +1328,7 @@ export abstract class Table {
   async optimizeAsync(
     _options?: OptimizeOptions,
   ): Promise<Job<OptimizeResult>> {
-    throw new Error("compaction jobs are only supported on remote tables");
+    throw new Error("Optimize jobs are only supported on remote tables");
   }
 
   /**

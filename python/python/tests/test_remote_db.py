@@ -7543,6 +7543,7 @@ def test_remote_function_registration_transports_max_concurrency():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize(
     "options,sql_options",
@@ -7573,7 +7574,7 @@ def test_remote_function_registration_transports_max_concurrency():
     ],
 )
 async def test_remote_optimize_forwards_per_job_data_options(
-    asynchronous, options, sql_options
+    asynchronous, method, options, sql_options
 ):
     flight = pytest.importorskip("pyarrow.flight")
 
@@ -7584,25 +7585,26 @@ async def test_remote_optimize_forwards_per_job_data_options(
 
         def do_get(self, context, ticket):
             self.tickets.append(ticket.ticket)
-            return flight.RecordBatchStream(
-                pa.table({"ok": pa.array([], type=pa.bool_())})
-            )
+            return flight.RecordBatchStream(pa.table({"job_id": ["optimize-job"]}))
 
     server = AckServer()
     with _mock_remote_sql_connection(server) as kwargs:
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
-            stats = await table.optimize(**options)
+            stats = await getattr(table, method)(**options)
         else:
             table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
-            stats = table.optimize(**options)
+            stats = getattr(table, method)(**options)
     assert len(server.tickets) == 1
     assert b"OPTIMIZE" in server.tickets[0]
     assert all(option in server.tickets[0] for option in sql_options)
     if not sql_options:
         assert b"WITH (" not in server.tickets[0]
-    assert stats.prune.bytes_removed == 0
+    if method == "optimize":
+        assert stats.prune.bytes_removed == 0
+    else:
+        assert stats.id == "optimize-job"
 
 
 def test_remote_optimize_does_not_drop_options_after_server_rejection():
@@ -7646,9 +7648,7 @@ def test_remote_optimize_skips_prune_and_index():
 
         def do_get(self, context, ticket):
             self.tickets.append(ticket.ticket)
-            return flight.RecordBatchStream(
-                pa.table({"ok": pa.array([], type=pa.bool_())})
-            )
+            return flight.RecordBatchStream(pa.table({"job_id": ["optimize-job"]}))
 
     server = AckServer()
     with _mock_remote_table_with_sql(server) as table:
@@ -8523,8 +8523,13 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
     assert b"target_rows_per_fragment = 100" in server.tickets[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
 @pytest.mark.parametrize("ids", [[], [None], [""], ["a", "b"]])
-def test_remote_compaction_rejects_ambiguous_receipt_without_resubmission(ids):
+async def test_remote_optimize_rejects_ambiguous_receipt_without_resubmission(
+    asynchronous, method, ids
+):
     flight = pytest.importorskip("pyarrow.flight")
 
     class Server(flight.FlightServerBase):
@@ -8540,10 +8545,16 @@ def test_remote_compaction_rejects_ambiguous_receipt_without_resubmission(ids):
 
     server = Server()
     with _mock_remote_sql_connection(server) as kwargs:
-        db = lancedb.connect(**kwargs)
-        table = db.create_table("test", [{"id": 1}])
-        with pytest.raises(Exception, match="inspect jobs before retrying"):
-            table.optimize_async()
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            with pytest.raises(Exception, match="inspect jobs before retrying"):
+                await getattr(table, method)()
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            with pytest.raises(Exception, match="inspect jobs before retrying"):
+                getattr(table, method)()
     assert server.calls == 1
 
 

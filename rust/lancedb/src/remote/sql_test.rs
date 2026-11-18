@@ -2693,6 +2693,7 @@ async fn remote_drop_materialized_view_uses_a_query_job() {
 async fn remote_optimize_submits_a_compaction_job_over_sql() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2721,8 +2722,8 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
         .await
         .unwrap();
 
-    // The SQL job adapter does not expose compaction metrics, so
-    // `compaction` is a zeroed placeholder, not real numbers -- but it must
+    // Convenience submission discards the job handle and returns placeholder
+    // statistics rather than waiting for committed metrics. `compaction` must
     // be `Some`: callers (including the Python/Node bindings) unwrap it
     // unconditionally on success.
     assert_eq!(
@@ -2748,6 +2749,7 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
 async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2788,13 +2790,14 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
 /// action because `Prune` and `Index` are not supported remotely -- so a
 /// retry on that failure resubmitted another compaction job. `optimize_full`
 /// is what both the Python and Node bindings now call instead of
-/// orchestrating `Compact`, `Prune`, and `Index` themselves; on a remote
+/// orchestrating data rewrites, `Prune`, and `Index` themselves; on a remote
 /// table it must submit only the compaction job and return zeroed prune
 /// stats rather than attempting `Prune` and `Index` at all.
 #[tokio::test]
 async fn remote_optimize_full_skips_prune_and_index() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2855,6 +2858,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
 async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2911,6 +2915,7 @@ async fn remote_optimize_full_rejects_explicit_pruning_options() {
     ) {
         let service = TestSqlService {
             adaptive: true,
+            result: optimize_result(),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4264,6 +4269,7 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
     for branch in [None, Some("o'brien")] {
         let service = TestSqlService {
             adaptive: true,
+            result: optimize_result(),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4320,7 +4326,7 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
 }
 
 #[tokio::test]
-async fn remote_compact_preserves_omissions_and_explicit_default_values() {
+async fn remote_optimize_preserves_omissions_and_explicit_default_values() {
     use crate::table::{OptimizeOptions, OptimizeOverrides};
     let target = OptimizeOptions::default().target_rows_per_fragment;
     for (options, suffix) in [
@@ -4342,6 +4348,7 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
     ] {
         let service = TestSqlService {
             adaptive: true,
+            result: optimize_result(),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4497,6 +4504,14 @@ fn public_remote_table(inner: impl crate::table::BaseTable + 'static) -> crate::
             panic!("unexpected database request: {}", request.url());
         });
     crate::Table::new(Arc::new(inner), Arc::new(database))
+}
+
+fn optimize_result() -> RecordBatch {
+    RecordBatch::try_from_iter([(
+        "job_id",
+        Arc::new(StringArray::from(vec!["optimize-job"])) as ArrayRef,
+    )])
+    .unwrap()
 }
 
 fn prewarm_result() -> RecordBatch {
@@ -5233,4 +5248,93 @@ async fn remote_public_optimize_rejects_unsupported_requests_before_submission()
     ));
     assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_optimize_convenience_and_durable_validate_the_same_receipt() {
+    use crate::table::OptimizeOverrides;
+    for result in [
+        RecordBatch::try_from_iter([(
+            "other",
+            Arc::new(StringArray::from(vec!["id"])) as ArrayRef,
+        )])
+        .unwrap(),
+        RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())) as ArrayRef,
+        )])
+        .unwrap(),
+        RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec![None::<&str>])) as ArrayRef,
+        )])
+        .unwrap(),
+        RecordBatch::try_from_iter([("job_id", Arc::new(StringArray::from(vec![""])) as ArrayRef)])
+            .unwrap(),
+        RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["one", "two"])) as ArrayRef,
+        )])
+        .unwrap(),
+        optimize_result(),
+    ] {
+        let valid = result == optimize_result();
+        for (adaptive, defer) in [(false, false), (true, false), (true, true)] {
+            for durable in [false, true] {
+                let service = TestSqlService {
+                    adaptive,
+                    defer,
+                    result: result.clone(),
+                    ..Default::default()
+                };
+                let statements = service.statements.clone();
+                let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+                let table = public_remote_table(RemoteTable::new_with_sql_client(
+                    client_with_handler(|request| -> http::Response<String> {
+                        panic!(
+                            "Optimize submission must not poll or use REST: {}",
+                            request.url()
+                        );
+                    }),
+                    "analytics".into(),
+                    "events".into(),
+                    vec![],
+                    "events".into(),
+                    Default::default(),
+                    Some(sql),
+                ));
+                let submitted = if durable {
+                    table
+                        .optimize_async(OptimizeOverrides::default())
+                        .await
+                        .map(|job| {
+                            assert_eq!(job.id(), Some("optimize-job"));
+                        })
+                } else {
+                    table
+                        .optimize(OptimizeOverrides::default())
+                        .await
+                        .map(|stats| {
+                            assert_eq!(
+                                stats.compaction,
+                                Some(lance::dataset::optimize::CompactionMetrics::default())
+                            );
+                            assert!(stats.prune.is_none());
+                        })
+                };
+                if valid {
+                    submitted.unwrap();
+                } else {
+                    let error = submitted.unwrap_err();
+                    assert!(matches!(error, Error::Runtime { .. }), "{error}");
+                    assert!(error.to_string().contains("inspect jobs before retrying"));
+                }
+                assert_eq!(
+                    *statements.lock().unwrap(),
+                    ["OPTIMIZE \"events\" REWRITE DATA"]
+                );
+                shutdown.send(()).unwrap();
+            }
+        }
+    }
 }

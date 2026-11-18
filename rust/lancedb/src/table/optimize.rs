@@ -336,7 +336,7 @@ pub enum OptimizeAction {
     ///
     /// ```
     /// use lancedb::{Table, table::{OptimizeOptions, OptimizeAction}};
-    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// # async fn optimize(table: &Table) -> lancedb::Result<()> {
     /// table.optimize(OptimizeAction::RewriteDataWithOptions {
     ///     options: OptimizeOptions {
     ///         target_rows_per_fragment: 100_000,

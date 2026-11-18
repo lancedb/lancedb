@@ -3163,7 +3163,7 @@ class Table(ABC):
         """
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
-        """Submit remote compaction and return a durable job after acceptance.
+        """Submit remote Optimize and return a durable job after acceptance.
 
         Uses SQL OPTIMIZE with the table handle's branch and namespace. Supports
         the four per-job settings in
@@ -3185,7 +3185,7 @@ class Table(ABC):
         >>> result = job.wait()  # doctest: +SKIP
         >>> print(result.rows_succeeded)  # doctest: +SKIP
         """
-        raise NotImplementedError("compaction jobs are only supported on remote tables")
+        raise NotImplementedError("Optimize jobs are only supported on remote tables")
 
     @abstractmethod
     def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
@@ -9579,7 +9579,7 @@ class AsyncTable:
     async def optimize_async(
         self, **options: Unpack[OptimizeOptions]
     ) -> AsyncJob[OptimizeResult]:
-        """Submit remote compaction; await the returned job for actual results.
+        """Submit remote Optimize; await the returned job for actual results.
 
         See [Table.optimize_async][lancedb.table.Table.optimize_async] for options,
         permissions, completion semantics and compatibility requirements.

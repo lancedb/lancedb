@@ -4040,48 +4040,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// `OptimizeAction::RewriteData`, or `OptimizeAction::RewriteDataWithOptions` with no custom
-    /// `remap_options` is supported remotely: it submits a durable
-    /// compaction job through the server's `OPTIMIZE ... REWRITE DATA`
-    /// SQL statement, the same atomic, single-worker, index-safe path the
-    /// server uses for its own automatic compaction. `.wait()` below waits
-    /// for that SQL statement's own execution to finish, which only confirms
-    /// the compaction job was accepted into the server's job registry; the
-    /// compaction job itself then runs asynchronously on the server, so this
-    /// call can return well before the table is actually compacted.
-    /// `OptimizeStats::compaction` is `Some(CompactionMetrics::default())`,
-    /// a placeholder rather than `None` -- callers (including the
-    /// Python/Node bindings) unwrap it unconditionally on success -- because
-    /// the SQL job adapter does not expose per-job compaction metrics.
-    /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
-    /// remotely: there is no SQL statement yet for version pruning or index
-    /// optimization. A branch-scoped table handle submits a
-    /// `WITH (branch = '<branch>')` clause; the server resolves and validates
-    /// the selected target. Per-job
-    /// `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and
-    /// `batch_size` are forwarded in the SQL `WITH` clause. Other non-default
-    /// options are rejected before submission. Servers must support these
-    /// SQL options. Parser errors and unknown optimize option errors become
-    /// `NotSupported` with the server diagnostic after one SQL submission.
-    /// No settings are removed and the operation is never resubmitted.
+    /// Submit through the same SQL receipt-validation path as `optimize_async`,
+    /// then discard the durable handle without polling for rewrite completion.
+    /// Convenience callers retain the existing placeholder statistics; actual
+    /// committed results are available by waiting on the job-returning method.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
-        self.check_mutable().await?;
-        let overrides = action.into_remote_overrides()?;
-        let statement = optimize::statement(&self.name, self.branch.as_deref(), &overrides)?;
-        let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
-            message: "SQL is unavailable for this remote table client".to_string(),
-        })?;
-        // `OptimizeStats` carries `lance::dataset::optimize` metric types that
-        // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
-        // so the job itself only signals completion; the real (placeholder)
-        // value is built afterward.
-        sql_client
-            .submit_as_job(statement, self.namespace.clone(), || async { Ok(()) })
-            .await
-            .map_err(optimize::map_optimize_error)?
-            .wait()
-            .await
-            .map_err(optimize::map_optimize_error)?;
+        self.optimize_async(action.into_remote_overrides()?).await?;
         Ok(OptimizeStats {
             compaction: Some(lance::dataset::optimize::CompactionMetrics::default()),
             prune: None,
@@ -4097,7 +4061,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .sql_client
             .as_ref()
             .ok_or_else(|| Error::NotSupported {
-                message: "compaction jobs require a Flight SQL endpoint".into(),
+                message: "Optimize jobs require a Flight SQL endpoint".into(),
             })?;
         let query = client
             .execute(crate::database::ExecuteQueryRequest {

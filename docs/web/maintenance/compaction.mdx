@@ -531,8 +531,7 @@ under `stats.compaction`. The old names are removed without aliases.
 
 ### Optimize naming migration
 
-The SDK uses Optimize names for submission and durable results, and Optimize
-Data names for the settings specific to data rewrites:
+The SDK uses Optimize names for submission, settings, and durable results:
 
 | Previous name | Current name |
 | --- | --- |
@@ -551,7 +550,9 @@ removed `compactionOptions` and `dataOptions` properties before submission.
 Python rejects the old wrapper keywords. This prevents a requested work limit from being silently ignored.
 
 `CompactionStats` and `OptimizeStats.compaction` still identify the compaction
-phase within Embedded's broader maintenance cycle. The server job type `compact`,
+phase within Embedded's broader maintenance cycle. The algorithm-specific
+`compaction_mode` field remains in Python and Rust's underlying Lance options.
+The server job type `compact`,
 table tuning key `job_types.compaction`, and realtime SSTable maintenance methods
 are unchanged.
 
@@ -583,3 +584,9 @@ submission. Rust accepts `OptimizeOptions` directly for both submission methods,
 Its separate index-maintenance options are `IndexOptimizeOptions`.
 `OptimizeOverrides` retains omitted-versus-explicit values when inheriting remote
 policy. No `data_options` or `dataOptions` wrapper is accepted.
+
+Enterprise convenience and durable Optimize use the same SQL submission and
+job-receipt validation. A successful receipt contains exactly one nonempty
+`job_id`. A malformed receipt raises without resubmitting; inspect existing jobs
+before retrying because the server may already have accepted the work.
+Convenience calls discard the validated handle without polling for completion.
