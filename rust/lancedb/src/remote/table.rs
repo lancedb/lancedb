@@ -17810,7 +17810,12 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("SQL is unavailable"));
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("Optimize jobs require a Flight SQL endpoint")
+        );
     }
 
     #[tokio::test]
@@ -17893,9 +17898,9 @@ mod tests {
             .unwrap();
 
         // No SQL client is wired to this REST-only mock, so the branch-scoped
-        // handle hits the same "SQL is unavailable" check `optimize` runs for
-        // main -- it does not reject the branch itself, and it does not send
-        // a REST request (see `test_optimize_requires_sql`).
+        // handle hits the shared missing-endpoint check used on main; it does
+        // not reject the branch itself or send a REST request
+        // (see `test_optimize_requires_sql`).
         let error = branch
             .optimize(OptimizeAction::RewriteDataWithOptions {
                 options: crate::table::optimize::OptimizeOptions::default(),
@@ -17904,7 +17909,12 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("SQL is unavailable"));
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("Optimize jobs require a Flight SQL endpoint")
+        );
     }
 
     #[tokio::test]

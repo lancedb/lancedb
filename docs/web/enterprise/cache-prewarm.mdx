@@ -305,8 +305,25 @@ branch. The server never needs to scan rows merely to evaluate the predicate.
 options as the job-returning methods but return after acceptance without retaining the handle.
 The existing TypeScript `prewarmData(columns)` array form remains supported.
 Rust `prewarm_data()` also accepts the same `PrewarmDataOptions` as durable
-submission and Explain, including filters and concurrency:
+submission and Explain. All three convenience methods support columns, filters,
+and concurrency:
 
+<Tabs>
+<Tab title="Python">
+```python
+table.prewarm_data(["video"], filter="quality > 0.7", concurrency=4)
+```
+</Tab>
+<Tab title="TypeScript">
+```typescript
+await table.prewarmData({
+  columns: ["video"],
+  filter: "quality > 0.7",
+  concurrency: 4,
+});
+```
+</Tab>
+<Tab title="Rust">
 ```rust
 use lancedb::table::PrewarmDataOptions;
 
@@ -315,6 +332,8 @@ table.prewarm_data(PrewarmDataOptions::new()
     .filter("quality > 0.7")
     .concurrency(4)).await?;
 ```
+</Tab>
+</Tabs>
 
 Existing Rust `prewarm_data(None)` and `prewarm_data(Some(columns))` calls remain
 supported. The convenience method returns after acceptance and discards the job

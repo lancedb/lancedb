@@ -576,6 +576,18 @@ await table.optimize(options);
 const job = await table.optimizeAsync(options);
 ```
 
+```rust
+use lancedb::table::OptimizeOptions;
+
+let options = OptimizeOptions {
+    target_rows_per_fragment: 1000,
+    batch_size: Some(128),
+    ..Default::default()
+};
+table.optimize(options.clone()).await?;
+let job = table.optimize_async(options).await?;
+```
+
 Python/TypeScript Embedded convenience Optimize also accepts cleanup settings in
 the same request.
 Durable Optimize jobs reject cleanup and separate index-maintenance requests before
