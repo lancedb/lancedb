@@ -6,6 +6,7 @@ pub mod insert;
 mod ipc_stream;
 mod optimize;
 mod prewarm;
+mod prewarm_run;
 #[cfg(test)]
 mod write_tests;
 
@@ -4842,6 +4843,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             batches.push(batch);
         }
         prewarm::plan(&batches)
+    }
+
+    async fn open_prewarm_run(
+        &self,
+        options: crate::prewarm_run::PrewarmRunOptions,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        let mut body = serde_json::json!({});
+        self.apply_branch_body(&mut body);
+        prewarm_run::open(&self.client, &self.identifier, body, &options).await
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {

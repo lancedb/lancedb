@@ -414,6 +414,14 @@ pub enum Error {
     JobCancelled { job_id: Option<String> },
     #[snafu(display("Job '{job_id}' was not found{}", server_build_suffix(source.as_ref())))]
     JobNotFound { job_id: String, source: BoxError },
+    /// A prewarm run call the server refused, or a run that ended. `code`
+    /// is one of [`crate::prewarm_run::error_codes`].
+    #[snafu(display("Prewarm run {run_id}: {message}"))]
+    PrewarmRun {
+        run_id: String,
+        code: String,
+        message: String,
+    },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]

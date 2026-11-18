@@ -707,6 +707,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "data prewarm previews are only supported on remote tables".into(),
         })
     }
+    /// Open a prewarm run, or find the one already open for its `run_key`.
+    async fn open_prewarm_run(
+        &self,
+        _options: crate::prewarm_run::PrewarmRunOptions,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        Err(Error::NotSupported {
+            message: "prewarm runs are only supported on remote tables".into(),
+        })
+    }
 
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
@@ -3227,6 +3236,40 @@ impl Table {
         options: PrewarmDataOptions,
     ) -> Result<PrewarmDataPlan> {
         self.inner.explain_prewarm_data(options).await
+    }
+
+    /// Open a prewarm run for a training job reading this table, or find the
+    /// one already open for `options.run_key`.
+    ///
+    /// Every rank calls this with the same options, then joins with its own
+    /// rank. Only supported by LanceDB Enterprise; a server without run
+    /// support returns [`Error::NotSupported`].
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use lancedb::Table;
+    /// # use lancedb::prewarm_run::PrewarmRunOptions;
+    /// # async fn run(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let run = table
+    ///     .open_prewarm_run(PrewarmRunOptions {
+    ///         run_key: "job-1234-attempt-0-epoch-0".into(),
+    ///         version: 42,
+    ///         columns: vec!["image".into(), "label".into()],
+    ///         world_size: 8,
+    ///     })
+    ///     .await?;
+    /// let rank = run.join(0).await?;
+    /// rank.wait_ready(0, Duration::from_secs(600)).await?;
+    /// // ... read wave 0 ...
+    /// rank.close().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_prewarm_run(
+        &self,
+        options: crate::prewarm_run::PrewarmRunOptions,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        self.inner.open_prewarm_run(options).await
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
