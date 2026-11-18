@@ -1915,6 +1915,13 @@ impl Table {
         })
     }
 
+    pub fn cache_only(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            Ok(Self::new(inner.cache_only().await.infer_error()?))
+        })
+    }
+
     #[pyo3(signature = (run_key, *, version, world_size, columns=None))]
     pub fn open_prewarm_run(
         self_: PyRef<'_, Self>,

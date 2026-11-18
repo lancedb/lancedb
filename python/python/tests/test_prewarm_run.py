@@ -4,7 +4,7 @@
 import json
 
 import pytest
-from lancedb.exceptions import PrewarmRunError
+from lancedb.exceptions import NotResidentError, PrewarmRunError
 from lancedb.prewarm_run import RowRange
 from test_remote_db import mock_lancedb_connection, mock_lancedb_connection_async
 
@@ -147,3 +147,68 @@ def test_server_without_run_support():
     with mock_lancedb_connection(handler) as db:
         with pytest.raises(Exception, match="does not support prewarm runs"):
             db.open_table("test").open_prewarm_run("job-7", version=42, world_size=1)
+
+
+def cache_only_handler(headers):
+    """Answer cache-only queries 412 not_resident, recording the header."""
+
+    def handler(request):
+        if request.path.rstrip("/") == "/v1/table/test/describe":
+            status, body = 200, DESCRIBE
+        else:
+            assert request.path.rstrip("/") == "/v1/table/test/query"
+            header = request.headers.get("x-lancedb-cache-only")
+            headers.append(header)
+            status, body = (
+                412,
+                {
+                    "code": 0,
+                    "error": "fragment 3 is not in the cache",
+                    "error_code": "not_resident",
+                },
+            )
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    return handler
+
+
+def test_cache_only_query_raises_not_resident():
+    headers = []
+    with mock_lancedb_connection(cache_only_handler(headers)) as db:
+        table = db.open_table("test")
+        table.checkout(42)
+        cache_only = table.cache_only()
+        with pytest.raises(NotResidentError, match="not in the cache") as raised:
+            cache_only.search().limit(1).to_arrow()
+    assert raised.value.request_id
+    assert headers == ["true"]
+
+
+@pytest.mark.asyncio
+async def test_cache_only_query_raises_not_resident_async():
+    headers = []
+    async with mock_lancedb_connection_async(cache_only_handler(headers)) as db:
+        table = await db.open_table("test")
+        await table.checkout(42)
+        cache_only = await table.cache_only()
+        with pytest.raises(NotResidentError):
+            await cache_only.query().limit(1).to_arrow()
+    assert headers == ["true"]
+
+
+def test_cache_only_survives_pickling():
+    with mock_lancedb_connection(cache_only_handler([])) as db:
+        table = db.open_table("test")
+        table.checkout(42)
+        state = table.cache_only().__getstate__()
+    assert state["cache_only"] is True
+    assert state["checkout_version"] == 42
+
+
+def test_cache_only_needs_a_checked_out_version():
+    with mock_lancedb_connection(cache_only_handler([])) as db:
+        with pytest.raises(ValueError, match="fixed version"):
+            db.open_table("test").cache_only()

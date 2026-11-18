@@ -50,6 +50,8 @@ pub mod error_codes {
     pub const RUN_RELEASED: &str = "run_released";
     pub const RUN_FAILED: &str = "run_failed";
     pub const NOT_READY: &str = "not_ready";
+    /// A cache-only query needed data the cache does not hold.
+    pub const NOT_RESIDENT: &str = "not_resident";
     /// Client-side: the rank asked about a wave every live rank has passed,
     /// so it was dropped from the run or fell behind.
     pub const WAVE_CONSUMED: &str = "wave_consumed";

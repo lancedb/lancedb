@@ -2113,6 +2113,20 @@ class Table(ABC):
         """
         raise NotImplementedError("prewarm runs are only supported on remote tables")
 
+    def cache_only(self) -> "Table":
+        """A handle to this table whose queries read only from the cache.
+
+        A query that needs data LanceDB Enterprise does not hold in its cache
+        raises [NotResidentError][lancedb.exceptions.NotResidentError] instead of
+        reading storage. A training job in a prewarm run reads through this
+        handle, re-warms the rows a failed read asked for, waits for them, and
+        retries. Check out the run's version before calling this. Only queries
+        are cache-only; other calls on the handle behave as usual.
+        """
+        raise NotImplementedError(
+            "cache-only reads are only supported on remote tables"
+        )
+
     def prewarm_data_async(
         self,
         columns: Optional[List[str]] = None,
@@ -7634,6 +7648,13 @@ class AsyncTable:
         await self.prewarm_data_async(
             columns, filter=filter, concurrency=concurrency, parameters=parameters
         )
+
+    async def cache_only(self) -> "AsyncTable":
+        """A handle to this table whose queries read only from the cache.
+
+        See [Table.cache_only][lancedb.table.Table.cache_only].
+        """
+        return AsyncTable(await self._inner.cache_only())
 
     async def open_prewarm_run(
         self,

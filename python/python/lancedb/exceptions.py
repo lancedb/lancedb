@@ -107,3 +107,15 @@ class PrewarmRunError(RuntimeError):
         super().__init__(message)
         self.run_id = run_id
         self.code = code
+
+
+class NotResidentError(RuntimeError):
+    """Exception raised when a cache-only query needs data the cache does not hold.
+
+    Raised by queries on a handle from ``Table.cache_only()``. In a prewarm
+    run, re-warm the rows the query asked for, wait for them, and retry.
+    """
+
+    def __init__(self, message: str, request_id: str):
+        super().__init__(message)
+        self.request_id = request_id

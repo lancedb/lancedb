@@ -135,6 +135,8 @@ class RemoteTable(Table):
         # The branch this handle is scoped to (None == main). Persisted so a
         # fork/pickle reopen restores the branch instead of reverting to main.
         self._branch: Optional[str] = None
+        # Persisted so a fork/pickle reopen keeps queries cache-only.
+        self._cache_only = False
         self._pid = os.getpid()
 
     def _serialized_connection_state(self) -> str:
@@ -178,7 +180,10 @@ class RemoteTable(Table):
             version=self._checkout_version,
         )
 
-        self._table_handle = table._table
+        async_table = table._table
+        if self._cache_only:
+            async_table = LOOP.run(async_table.cache_only())
+        self._table_handle = async_table
         self.db_name = table.db_name
         self._pid = pid
 
@@ -190,6 +195,7 @@ class RemoteTable(Table):
             "namespace_path": self._namespace_path,
             "checkout_version": self._checkout_version,
             "branch": self._branch,
+            "cache_only": self._cache_only,
         }
 
     def __setstate__(self, state: dict) -> None:
@@ -200,6 +206,7 @@ class RemoteTable(Table):
         self._namespace_path = state["namespace_path"]
         self._checkout_version = state["checkout_version"]
         self._branch = state.get("branch")
+        self._cache_only = state.get("cache_only", False)
         self._pid = None
 
     @property
@@ -1512,6 +1519,17 @@ class RemoteTable(Table):
                 columns, filter=filter, concurrency=concurrency, parameters=parameters
             )
         )
+
+    def cache_only(self) -> "RemoteTable":
+        """A handle to this table whose queries read only from the cache.
+
+        See [Table.cache_only][lancedb.table.Table.cache_only].
+        """
+        handle = self._wrap_branch_handle(
+            LOOP.run(self._table.cache_only()), version=self._checkout_version
+        )
+        handle._cache_only = True
+        return handle
 
     def open_prewarm_run(
         self,

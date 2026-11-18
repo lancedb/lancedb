@@ -11,7 +11,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use crate::prewarm_run::{CallError, PrewarmRun, PrewarmRunOptions, PrewarmRunTransport};
+use crate::prewarm_run::{
+    CallError, PrewarmRun, PrewarmRunOptions, PrewarmRunTransport, error_codes,
+};
 use crate::remote::client::{HttpSend, RestfulLanceDbClient};
 
 /// The JSON error body the server returns for a refused call.
@@ -21,6 +23,36 @@ struct ErrorBody {
     error: Option<String>,
     #[serde(default)]
     error_code: Option<String>,
+}
+
+/// Marks a query as cache-only.
+pub(super) const CACHE_ONLY_HEADER: &str = "x-lancedb-cache-only";
+
+/// Turn a cache-only query's `412 not_resident` into [`Error::NotResident`].
+/// Any other response passes through for the usual handling.
+pub(super) async fn reject_not_resident(
+    request_id: &str,
+    response: reqwest::Response,
+) -> Result<reqwest::Response> {
+    let status = response.status();
+    if status != StatusCode::PRECONDITION_FAILED {
+        return Ok(response);
+    }
+    let text = response.text().await.unwrap_or_default();
+    match serde_json::from_str::<ErrorBody>(&text) {
+        Ok(ErrorBody {
+            error,
+            error_code: Some(code),
+        }) if code == error_codes::NOT_RESIDENT => Err(Error::NotResident {
+            message: error.unwrap_or(text),
+            request_id: request_id.to_string(),
+        }),
+        _ => Err(Error::Http {
+            source: format!("{status}: {text}").into(),
+            request_id: request_id.to_string(),
+            status_code: Some(status),
+        }),
+    }
 }
 
 #[derive(Debug)]
@@ -159,7 +191,7 @@ mod tests {
 
     use super::*;
     use crate::Table;
-    use crate::prewarm_run::{RowRange, WaveAnnouncement, error_codes};
+    use crate::prewarm_run::{RowRange, WaveAnnouncement};
 
     /// Status and body replies queued for one call.
     type Replies = VecDeque<(u16, String)>;
@@ -494,5 +526,72 @@ mod tests {
         let rank = run.join(0).await.unwrap();
         rank.close().await.unwrap();
         assert_eq!(script.calls("close"), vec![json!({ "rank": 0 })]);
+    }
+
+    /// A table whose queries answer 412 `not_resident` when cache-only and
+    /// 400 otherwise, recording each query's cache-only header.
+    fn cache_only_table(headers: Arc<Mutex<Vec<Option<String>>>>) -> Table {
+        Table::new_with_handler("my_table", move |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let describe = json!({
+                    "version": 42,
+                    "schema": {"fields": [
+                        {"name": "id", "type": {"type": "int64"}, "nullable": true}
+                    ]},
+                });
+                http::Response::builder()
+                    .status(200)
+                    .body(describe.to_string())
+                    .unwrap()
+            }
+            "/v1/table/my_table/query/" => {
+                let header = request
+                    .headers()
+                    .get(CACHE_ONLY_HEADER)
+                    .map(|value| value.to_str().unwrap().to_string());
+                let (status, body) = if header.is_some() {
+                    (412, error(error_codes::NOT_RESIDENT))
+                } else {
+                    (400, json!({ "error": "not a cache-only test" }))
+                };
+                headers.lock().unwrap().push(header);
+                http::Response::builder()
+                    .status(status)
+                    .body(body.to_string())
+                    .unwrap()
+            }
+            path => panic!("unexpected request: {path}"),
+        })
+    }
+
+    #[tokio::test]
+    async fn cache_only_queries_raise_not_resident() {
+        use crate::query::ExecutableQuery;
+
+        let headers = Arc::new(Mutex::new(Vec::new()));
+        let table = cache_only_table(headers.clone());
+        table.checkout(42).await.unwrap();
+        let cache_only = table.cache_only().await.unwrap();
+        assert_eq!(cache_only.version().await.unwrap(), 42);
+
+        let error = cache_only.query().execute().await.err().unwrap();
+        match error {
+            Error::NotResident { message, .. } => assert_eq!(message, "server says not_resident"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+        // The original handle still reads normally.
+        let error = table.query().execute().await.err().unwrap();
+        assert!(!matches!(error, Error::NotResident { .. }), "{error:?}");
+        assert_eq!(
+            *headers.lock().unwrap(),
+            vec![Some("true".to_string()), None]
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_only_needs_a_checked_out_version() {
+        let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
+        let error = table.cache_only().await.err().unwrap();
+        assert!(matches!(error, Error::InvalidInput { .. }), "{error:?}");
     }
 }

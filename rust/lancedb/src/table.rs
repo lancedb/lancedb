@@ -707,6 +707,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "data prewarm previews are only supported on remote tables".into(),
         })
     }
+    /// A handle to the same table version whose queries read only from the
+    /// server's cache.
+    async fn cache_only(&self) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "cache-only reads are only supported on remote tables".into(),
+        })
+    }
     /// Open a prewarm run, or find the one already open for its `run_key`.
     async fn open_prewarm_run(
         &self,
@@ -3270,6 +3277,23 @@ impl Table {
         options: crate::prewarm_run::PrewarmRunOptions,
     ) -> Result<crate::prewarm_run::PrewarmRun> {
         self.inner.open_prewarm_run(options).await
+    }
+
+    /// A handle to this table whose queries read only what LanceDB
+    /// Enterprise already holds in its cache.
+    ///
+    /// A query that needs data the cache does not hold fails with
+    /// [`Error::NotResident`] instead of reading storage. A training job in a
+    /// prewarm run reads through this handle, re-warms the rows a failed read
+    /// asked for, waits for them, and retries. The handle must be checked out
+    /// at the run's version. Only queries (scans, takes and searches) are
+    /// cache-only; other calls on the handle behave as usual.
+    pub async fn cache_only(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.cache_only().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns

@@ -682,6 +682,7 @@ class Table:
         concurrency: Optional[int] = None,
         parameters: Optional[pa.RecordBatch] = None,
     ) -> Job: ...
+    async def cache_only(self) -> Table: ...
     async def open_prewarm_run(
         self,
         run_key: str,

@@ -414,6 +414,9 @@ pub enum Error {
     JobCancelled { job_id: Option<String> },
     #[snafu(display("Job '{job_id}' was not found{}", server_build_suffix(source.as_ref())))]
     JobNotFound { job_id: String, source: BoxError },
+    /// A cache-only query needed data the server's cache does not hold.
+    #[snafu(display("Data is not in the cache: {message} (request_id={request_id})"))]
+    NotResident { message: String, request_id: String },
     /// A prewarm run call the server refused, or a run that ended. `code`
     /// is one of [`crate::prewarm_run::error_codes`].
     #[snafu(display("Prewarm run {run_id}: {message}"))]

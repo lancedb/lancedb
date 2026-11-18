@@ -663,6 +663,9 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     /// on the branch's own version chain rather than main's.
     branch: Option<String>,
     expected_query_snapshot: Option<String>,
+    /// Queries read only what the server's cache holds and fail with
+    /// [`Error::NotResident`] instead of reading storage.
+    cache_only: bool,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
@@ -911,6 +914,7 @@ impl<S: HttpSend> RemoteTable<S> {
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
             expected_query_snapshot: None,
+            cache_only: false,
         }
     }
 
@@ -958,6 +962,7 @@ impl<S: HttpSend> RemoteTable<S> {
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
             expected_query_snapshot: None,
+            cache_only: self.cache_only,
         }
     }
 
@@ -1717,6 +1722,9 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/query/", self.identifier))
             .header(ACCEPT, QUERY_ACCEPT);
+        if self.cache_only {
+            request = request.header(prewarm_run::CACHE_ONLY_HEADER, "true");
+        }
 
         // The timeout bounds the whole query, including reading the response, as
         // the server's own deadline for this request does. A deadline too far
@@ -1743,6 +1751,11 @@ impl<S: HttpSend> RemoteTable<S> {
             let (request_id, response) = self
                 .send_with_freshness(req, true, read_snapshot.freshness)
                 .await?;
+            let response = if self.cache_only {
+                prewarm_run::reject_not_resident(&request_id, response).await?
+            } else {
+                response
+            };
             self.read_arrow_response(&request_id, response).await
         });
         let streams = futures::future::try_join_all(futures);
@@ -2108,6 +2121,7 @@ mod test_utils {
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
                 expected_query_snapshot: None,
+                cache_only: false,
             }
         }
 
@@ -2137,6 +2151,7 @@ mod test_utils {
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
                 expected_query_snapshot: None,
+                cache_only: false,
             }
         }
 
@@ -2175,6 +2190,7 @@ mod test_utils {
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
                 expected_query_snapshot: None,
+                cache_only: false,
             }
         }
     }
@@ -4852,6 +4868,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({});
         self.apply_branch_body(&mut body);
         prewarm_run::open(&self.client, &self.identifier, body, &options).await
+    }
+
+    async fn cache_only(&self) -> Result<Arc<dyn BaseTable>> {
+        let Some(version) = *self.version.read().await else {
+            return Err(Error::InvalidInput {
+                message: "cache-only reads need a fixed version; check out the \
+                          prewarm run's version first"
+                    .into(),
+            });
+        };
+        let mut handle = self.with_branch(self.branch.clone());
+        *handle.version.write().await = Some(version);
+        *handle.location.write().await = self.location.read().await.clone();
+        handle.expected_query_snapshot = self.expected_query_snapshot.clone();
+        handle.cache_only = true;
+        Ok(Arc::new(handle))
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
