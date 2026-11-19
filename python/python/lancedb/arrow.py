@@ -16,9 +16,11 @@ class AsyncRecordBatchReader:
 
     Also allows access to the schema of the stream
 
-    Cancelling an active batch read closes its native query stream. Further reads
-    of that stream raise ``RuntimeError``; run the query again to obtain a new
-    reader.
+    After cancelling a batch read, discard this reader and run the query again
+    to obtain a new reader. For native query streams, cancellation that
+    interrupts an active read closes the stream, and further reads raise
+    ``RuntimeError``. Completion can race with cancellation, so later reads
+    may still return batches.
     """
 
     def __init__(
