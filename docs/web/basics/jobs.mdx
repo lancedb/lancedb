@@ -205,6 +205,8 @@ listing. It is a lazy iterator: iteration performs requests and can raise
 request errors. Use `list(db.list_jobs(...))` to collect all remaining results;
 there is no `.to_list()` method.
 
+{/* Draft for the SDK and Enterprise releases that provide job listing metadata.
+
 With a server and SDK that provide listing metadata, `JobInfo` also exposes
 `columns`, `function_name`, `function_version`, `completed_at_millis`,
 `duration_millis`, and `failure`. Function names include their namespace, joined
@@ -212,8 +214,9 @@ by `$`, and the version is pinned to the computed column refresh. Duration is
 creation-to-completion wall time, including queueing and pauses; running jobs
 have no completed duration. Unknown scalar values and failure summaries stay
 absent (`None` in Python/Rust, `undefined` in TypeScript), and unavailable or
-non-column-scoped `columns` are empty. A zero duration is a measured value. Failure summaries include phase, message, and retryability;
-open the job for full diagnostics.
+non-column-scoped `columns` are empty. A zero duration is a measured value.
+Failure summaries include phase, message, and retryability; open the job for
+full diagnostics.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -272,6 +275,8 @@ Use Python, Rust, or SQL for an exact namespaced table listing.
 
 SQL `SHOW JOBS` and `SHOW JOBS FOR TABLE events` expose the same metadata.
 SQL returns `columns` as a list and `failure` as nullable JSON text.
+
+*/}
 
 <Note>
 Job filters and synchronous `Listing` indexing, slicing, and `len()` require
