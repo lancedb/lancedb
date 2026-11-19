@@ -39,3 +39,52 @@ export function decodeOptimizeResult(value: unknown): OptimizeResult {
     fragmentsRemoved: (result.fragments_removed as number | null) ?? null,
   };
 }
+
+/** Effective settings after Enterprise policy resolution. */
+export interface OptimizeResolvedOptions {
+  targetRowsPerFragment: number;
+  maxSourceRows: number | null;
+  /** Zero disables byte-based I/O backpressure; null uses the worker default. */
+  ioBufferSize: number | null;
+  batchSize: number | null;
+}
+
+/** Data-rewrite preview without creating a maintenance job.
+ * Counts describe planned work, not committed results, runtime, or memory use.
+ * A later submission chooses its own snapshot and may select different work. */
+export interface OptimizePlan {
+  operation: "rewrite_data";
+  table: string;
+  namespace: string[];
+  branch: string;
+  sourceVersion: number;
+  effectiveOptions: OptimizeResolvedOptions;
+  plannedGroups: number;
+  plannedFragments: number;
+  plannedSourceRows: number;
+  moreWork: boolean;
+}
+
+/** @internal */
+export function decodeOptimizePlan(value: unknown): OptimizePlan {
+  // Rust validates the versioned SQL response before exposing it to JS.
+  const plan = value as Record<string, unknown>;
+  const options = plan.effective_options as Record<string, number | null>;
+  return {
+    operation: plan.operation as "rewrite_data",
+    table: plan.table as string,
+    namespace: plan.namespace as string[],
+    branch: plan.branch as string,
+    sourceVersion: plan.source_version as number,
+    plannedGroups: plan.planned_groups as number,
+    plannedFragments: plan.planned_fragments as number,
+    plannedSourceRows: plan.planned_source_rows as number,
+    moreWork: plan.more_work as boolean,
+    effectiveOptions: {
+      targetRowsPerFragment: options.target_rows_per_fragment as number,
+      maxSourceRows: options.max_source_rows ?? null,
+      ioBufferSize: options.io_buffer_size ?? null,
+      batchSize: options.batch_size ?? null,
+    },
+  };
+}

@@ -5,6 +5,7 @@ pub mod blobs;
 pub mod insert;
 mod ipc_stream;
 mod optimize;
+mod preview;
 mod prewarm;
 #[cfg(test)]
 mod write_tests;
@@ -674,6 +675,40 @@ impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    async fn execute_optimize_statement(
+        &self,
+        options: &crate::table::OptimizeOverrides,
+        explain: bool,
+    ) -> Result<Vec<arrow_array::RecordBatch>> {
+        self.check_mutable().await?;
+        let mut statement = optimize::statement(&self.name, self.branch.as_deref(), options)?;
+        if explain {
+            statement = format!("EXPLAIN (FORMAT JSON) {statement}");
+        }
+        let client = self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: if explain { "Optimize previews require a Flight SQL endpoint supporting EXPLAIN (FORMAT JSON) OPTIMIZE" } else { "Optimize jobs require a Flight SQL endpoint" }.into(),
+        })?;
+        let map_error = if explain {
+            optimize::map_explain_error
+        } else {
+            optimize::map_optimize_error
+        };
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(map_error)?;
+        let mut reader = query.reader().await.map_err(map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(map_error)? {
+            batches.push(batch);
+        }
+        Ok(batches)
+    }
+
     fn table_overrides_query(&self) -> Vec<(&str, &str)> {
         let mut query = Vec::with_capacity(3 + self.namespace.len());
         query.push(("db", self.db_name.as_str()));
@@ -4067,36 +4102,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         options: crate::table::optimize::OptimizeOverrides,
     ) -> Result<Job<crate::table::OptimizeResult>> {
-        self.check_mutable().await?;
-        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
-        let client = self
-            .sql_client
-            .as_ref()
-            .ok_or_else(|| Error::NotSupported {
-                message: "Optimize jobs require a Flight SQL endpoint".into(),
-            })?;
-        let query = client
-            .execute(crate::database::ExecuteQueryRequest {
-                query: statement,
-                default_namespace_path: self.namespace.clone(),
-                parameters: None,
-            })
-            .await
-            .map_err(optimize::map_optimize_error)?;
-        let mut reader = query.reader().await.map_err(optimize::map_optimize_error)?;
-        let mut batches = Vec::new();
-        while let Some(batch) = reader
-            .try_next()
-            .await
-            .map_err(optimize::map_optimize_error)?
-        {
-            batches.push(batch);
-        }
+        let batches = self.execute_optimize_statement(&options, false).await?;
         let job_id = optimize::receipt(&batches)?;
         Ok(Job::new_typed(Box::new(RemoteJob::new(
             self.client.clone(),
             job_id,
         ))))
+    }
+
+    async fn explain_optimize(
+        &self,
+        options: crate::table::OptimizeOverrides,
+    ) -> Result<crate::table::OptimizePlan> {
+        let batches = self.execute_optimize_statement(&options, true).await?;
+        optimize::plan(&batches)
     }
 
     async fn add_columns(

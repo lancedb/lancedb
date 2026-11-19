@@ -47,6 +47,24 @@ pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
     Ok(ids.value(0).into())
 }
 
+pub(super) fn plan(batches: &[arrow_array::RecordBatch]) -> Result<crate::table::OptimizePlan> {
+    let plan: crate::table::OptimizePlan = super::preview::decode(batches, "OPTIMIZE")?;
+    let options = &plan.effective_options;
+    if options.target_rows_per_fragment == 0
+        || options.max_source_rows == Some(0)
+        || options.batch_size == Some(0)
+    {
+        return Err(Error::Runtime {
+            message: "EXPLAIN OPTIMIZE returned invalid resolved options".into(),
+        });
+    }
+    Ok(plan)
+}
+
+pub(super) fn map_explain_error(error: Error) -> Error {
+    super::preview::map_error(error, "OPTIMIZE", map_optimize_error)
+}
+
 pub(super) fn rewrite_sql_options(
     options: &crate::table::optimize::OptimizeOverrides,
 ) -> Result<Vec<String>> {
@@ -334,5 +352,67 @@ mod receipt_tests {
                     .contains("inspect jobs before retrying")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use arrow_array::{ArrayRef, RecordBatch, StringArray};
+    use std::sync::Arc;
+
+    fn payload() -> serde_json::Value {
+        serde_json::json!({
+            "format_version": 1, "operation": "rewrite_data", "table": "events",
+            "namespace": ["team"], "branch": "main", "source_version": 42,
+            "effective_options": {"target_rows_per_fragment": 1000, "io_buffer_size": 0,
+                "max_source_rows": null, "batch_size": null},
+            "planned_groups": 0, "planned_fragments": 0, "planned_source_rows": 0,
+            "more_work": false, "future_field": true,
+        })
+    }
+    fn batch(value: serde_json::Value) -> RecordBatch {
+        RecordBatch::try_from_iter([(
+            "plan",
+            Arc::new(StringArray::from(vec![value.to_string()])) as ArrayRef,
+        )])
+        .unwrap()
+    }
+    #[test]
+    fn structured_preview_keeps_known_zero_and_resolved_defaults() {
+        let plan = plan(&[batch(payload())]).unwrap();
+        assert_eq!(plan.source_version, 42);
+        assert_eq!(plan.planned_source_rows, 0);
+        assert_eq!(plan.effective_options.io_buffer_size, Some(0));
+        assert_eq!(plan.effective_options.batch_size, None);
+        assert_eq!(plan.operation, crate::table::OptimizeOperation::RewriteData);
+    }
+    #[test]
+    fn previews_reject_missing_unknown_or_malformed_contracts() {
+        for (key, value) in [
+            ("format_version", serde_json::json!(2)),
+            ("operation", serde_json::json!("cleanup")),
+            ("source_version", serde_json::json!(-1)),
+            ("planned_groups", serde_json::json!("unknown")),
+            ("effective_options", serde_json::json!({})),
+        ] {
+            let mut invalid = payload();
+            invalid[key] = value;
+            assert!(plan(&[batch(invalid)]).is_err(), "{key}");
+        }
+        for key in [
+            "format_version",
+            "operation",
+            "source_version",
+            "planned_source_rows",
+            "more_work",
+        ] {
+            let mut invalid = payload();
+            invalid.as_object_mut().unwrap().remove(key);
+            assert!(plan(&[batch(invalid)]).is_err(), "{key}");
+        }
+        let one = batch(payload());
+        assert!(plan(&[]).is_err());
+        assert!(plan(&[one.clone(), one]).is_err());
     }
 }

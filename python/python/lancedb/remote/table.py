@@ -51,6 +51,7 @@ from lancedb.index import (
     Bitmap,
     LabelList,
 )
+from lancedb.optimize import OptimizePlan
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import Job
 from lancedb.functions import (
@@ -1127,6 +1128,9 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         return self.optimize_async(**(compaction_options or {}))
+
+    def explain_optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizePlan:
+        return LOOP.run(self._table.explain_optimize(**options))
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         return Job(LOOP.run(self._table.optimize_async(**options)))

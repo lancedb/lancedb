@@ -1520,6 +1520,10 @@ that accepts `python_bundle.resources`.
 Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 `conda=` for platform-specific dependencies and `models=` for large model snapshots.
 
+::: lancedb.optimize.OptimizePlan
+
+::: lancedb.optimize.OptimizeResolvedOptions
+
 ::: lancedb.optimize.OptimizeResult
 
 ::: lancedb.prewarm.PrewarmDataResult

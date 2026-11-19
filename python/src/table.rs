@@ -2316,6 +2316,19 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data_options=None))]
+    pub fn explain_optimize<'py>(
+        self_: PyRef<'py, Self>,
+        data_options: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let options = parse_optimize_options(data_options)?;
+        future_into_py(self_.py(), async move {
+            let plan = inner.explain_optimize(options).await.infer_error()?;
+            serde_json::to_string(&plan).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
     /// Submit remote Optimize and retain its durable job and actual result.
     #[pyo3(signature = (data_options=None))]
     pub fn optimize_async<'py>(

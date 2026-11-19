@@ -26,6 +26,7 @@ import pytest
         "search",
         "cleanup_old_versions",
         "optimize_async",
+        "explain_optimize",
         "optimize",
         "to_polars",
     ],
