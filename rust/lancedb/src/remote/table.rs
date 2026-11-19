@@ -3285,6 +3285,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // Translate the source ref into the `from_branch` / `from_version` the
         // `/branches/create` contract accepts (it has no `from_tag`).
         let (from_branch, from_version) = match from {
+            Ref::Version(Some(branch), _) if branch.trim().is_empty() => {
+                return Err(Error::InvalidInput {
+                    message: "from_ref must be a non-empty string".into(),
+                });
+            }
             Ref::Version(branch, version) => (normalize_branch(branch), version),
             Ref::VersionNumber(version) => (normalize_branch(self.branch.clone()), Some(version)),
             Ref::Tag(tag) => {
@@ -18632,6 +18637,26 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_create_branch_empty_source_ref_rejected_client_side() {
+        use lance::dataset::refs::Ref;
+
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected request: {}", request.url().path())
+        });
+
+        for source in ["", "  "] {
+            let err = table
+                .create_branch("exp", Ref::Version(Some(source.to_owned()), None))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidInput { message } if message == "from_ref must be a non-empty string"),
+                "got {err:?}"
+            );
+        }
     }
 
     #[tokio::test]
