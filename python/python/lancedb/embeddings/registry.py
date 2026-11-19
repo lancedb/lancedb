@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import inspect
 import json
 from typing import Dict, Mapping, Optional, Set, Tuple, Type, Union
 
@@ -120,7 +121,9 @@ class EmbeddingFunctionRegistry:
             [loaded_models][lancedb.embeddings.EmbeddingFunction.loaded_models] and
             [endpoints][lancedb.embeddings.EmbeddingFunction.endpoints] report
             every model and URL its settings can make it load or contact. Those
-            still need approval. Otherwise, a function restored from table
+            still need approval. Validators defined outside LanceDB also run
+            when settings are checked, so a class that has them still needs
+            `allow_function`. Otherwise, a function restored from table
             metadata only computes embeddings once the config is approved, see
             [allow_function][lancedb.embeddings.EmbeddingFunctionRegistry.allow_function].
         """
@@ -237,23 +240,36 @@ class EmbeddingFunctionRegistry:
             {k: v for k, v in args.items() if k not in sensitive_keys},
             from_metadata=True,
         )
-        if not self._function_allowed(name, args):
-            # Stop before inspecting the config, since an unmarked class's
-            # hooks haven't been reviewed for side effects.
+        inspector = _inspector(cls)
+        approved = self._function_approved(name, args)
+        if not approved and (inspector is None or name not in self._safe_to_restore):
+            # Stop before inspecting the config, since validating it would run
+            # code that hasn't been reviewed for side effects.
+            if inspector is None:
+                reason = (
+                    "runs validators or initializers outside LanceDB while "
+                    "validating its settings"
+                )
+            else:
+                reason = "is not registered with safe_to_restore=True"
             func = UntrustedEmbeddingFunction(
                 function_name=name,
                 reasons=(
-                    "is not registered with safe_to_restore=True, so its "
-                    "settings need approval. If you trust any settings for it "
-                    "from table metadata, call "
+                    f"{reason}, so its settings need approval. If you trust "
+                    "any settings for it from table metadata, call "
                     f"get_registry().allow_function({name!r})",
                 ),
             )
             func._original_args = args
             return func
+        if inspector is None:
+            # Approved for any settings, and its settings can't be inspected.
+            func = cls(**public, **self._resolve_secrets(cls, args))
+            func._original_args = args
+            return func
         # Unresolved sensitive values stand in for the real ones, so required
         # fields such as API keys validate without exposing secrets.
-        probe = _inspect_config(cls, {**args, **public})
+        probe = inspector.model_validate({**args, **public})
 
         reasons = []
         model = probe.remote_code_model()
@@ -299,18 +315,21 @@ class EmbeddingFunctionRegistry:
                 function_name=name, reasons=tuple(reasons)
             )
         else:
-            secrets = cls._resolve_variables(
-                {k: v for k, v in args.items() if k in sensitive_keys}
-            )
-            func = cls(**public, **secrets)
+            func = cls(**public, **self._resolve_secrets(cls, args))
         func._original_args = args
         return func
 
-    def _function_allowed(self, name: str, args: dict) -> bool:
+    def _function_approved(self, name: str, args: dict) -> bool:
         return (
-            name in self._safe_to_restore
-            or name in self._allowed_functions
+            name in self._allowed_functions
             or (name, _canonical_config(args)) in self._trusted_configs
+        )
+
+    @staticmethod
+    def _resolve_secrets(cls: Type[EmbeddingFunction], args: dict) -> dict:
+        sensitive_keys = set(cls.sensitive_keys())
+        return cls._resolve_variables(
+            {k: v for k, v in args.items() if k in sensitive_keys}
         )
 
     def allow_remote_code(self, model: str, revision: Optional[str] = None) -> None:
@@ -480,24 +499,60 @@ def _normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def _inspect_config(cls: Type[EmbeddingFunction], values: dict) -> EmbeddingFunction:
+def _inspector(cls: Type[EmbeddingFunction]) -> Optional[Type[EmbeddingFunction]]:
     """
-    Validate `values` as `cls(**values)` would, so aliases, extra settings and
-    validators bind the same way, but without running `cls.__init__` or
-    `cls.model_post_init`, either of which may load the configured model.
+    A subclass of `cls` whose validation binds settings as `cls(**values)`
+    would, so aliases and extra settings resolve the same way, but without
+    running `cls.__init__` or `cls.model_post_init`, either of which may load
+    the configured model. Returns None if validation would run other code that
+    could have side effects, such as validators defined outside LanceDB.
     """
-    inspector = _inspectors.get(cls)
-    if inspector is None:
+    if cls not in _inspectors:
 
         class inspector(cls):
             __init__ = BaseModel.__init__
             model_post_init = BaseModel.model_post_init
 
-        _inspectors[cls] = inspector
-    return inspector.model_validate(values)
+        safe = _validation_is_side_effect_free(
+            inspector.__pydantic_core_schema__, inspector
+        )
+        _inspectors[cls] = inspector if safe else None
+    return _inspectors[cls]
 
 
-_inspectors: Dict[type, type] = {}
+_inspectors: Dict[type, Optional[type]] = {}
+_TRUSTED_VALIDATOR_MODULES = ("lancedb", "pydantic", "pydantic_core", "builtins")
+
+
+def _validation_is_side_effect_free(schema, inspector: type) -> bool:
+    if isinstance(schema, list):
+        return all(_validation_is_side_effect_free(s, inspector) for s in schema)
+    if not isinstance(schema, dict):
+        return True
+    kind = schema.get("type")
+    if kind == "model" and schema["cls"] is not inspector:
+        nested = schema["cls"]
+        if nested.__pydantic_custom_init__ or nested.__pydantic_post_init__:
+            return False
+    if kind == "dataclass" and schema.get("post_init"):
+        return False
+    functions = [schema.get("default_factory")]
+    if isinstance(schema.get("function"), dict):
+        functions.append(schema["function"].get("function"))
+    if not all(f is None or _is_trusted_function(f) for f in functions):
+        return False
+    # Serializers and JSON schema hooks don't run during validation.
+    return all(
+        _validation_is_side_effect_free(value, inspector)
+        for key, value in schema.items()
+        if key not in ("serialization", "metadata")
+    )
+
+
+def _is_trusted_function(func) -> bool:
+    func = inspect.unwrap(getattr(func, "__func__", func))
+    module = getattr(func, "__module__", None) or ""
+    return module.split(".")[0] in _TRUSTED_VALIDATOR_MODULES
 
 
 def _canonical_config(args: dict) -> str:

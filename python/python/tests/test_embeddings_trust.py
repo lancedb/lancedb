@@ -576,25 +576,22 @@ def test_restore_inspects_extra_settings(monkeypatch):
     assert isinstance(func, UntrustedEmbeddingFunction)
 
 
-def test_restore_runs_before_validators_when_inspecting(monkeypatch):
+@pytest.mark.parametrize("mode", ["before", "after"])
+def test_restore_does_not_run_external_validators_before_approval(monkeypatch, mode):
     registry = get_registry()
     monkeypatch.setattr(registry, "_functions", registry._functions.copy())
     monkeypatch.setattr(registry, "_safe_to_restore", registry._safe_to_restore.copy())
+    monkeypatch.setattr(registry, "_allowed_functions", set())
+    loads = []
 
-    @registry.register("renaming-loader", safe_to_restore=True)
-    class RenamingLoader(TextEmbeddingFunction):
+    @registry.register("validating-loader", safe_to_restore=True)
+    class ValidatingLoader(TextEmbeddingFunction):
         name: str = "default"
 
-        @model_validator(mode="before")
-        @classmethod
-        def rename_legacy_key(cls, data):
-            if isinstance(data, dict) and "model" in data:
-                data = dict(data)
-                data["name"] = data.pop("model")
-            return data
-
-        def loaded_models(self):
-            return [] if self.name == "default" else [(self.name, None)]
+        @model_validator(mode=mode)
+        def load(self_or_data):
+            loads.append(mode)  # where a model would be loaded
+            return self_or_data
 
         def ndims(self):
             return 2
@@ -602,8 +599,28 @@ def test_restore_runs_before_validators_when_inspecting(monkeypatch):
         def generate_embeddings(self, texts):
             return [[0.0, 0.0] for _ in texts]
 
-    func = restore("renaming-loader", {"model": "attacker/model"})
+    func = restore("validating-loader", {"name": "attacker/model"})
     assert isinstance(func, UntrustedEmbeddingFunction)
+    assert loads == []
+    with pytest.raises(UntrustedEmbeddingConfigError, match="allow_function"):
+        func.compute_query_embeddings("hello")
+
+    registry.allow_function("validating-loader")
+    func = restore("validating-loader", {"name": "attacker/model"})
+    assert isinstance(func, ValidatingLoader)
+    assert func.name == "attacker/model"
+
+
+def test_builtin_functions_are_inspectable():
+    from lancedb.embeddings.registry import _inspector
+
+    registry = get_registry()
+    uninspectable = [
+        name
+        for name, cls in registry._functions.items()
+        if name in registry._safe_to_restore and _inspector(cls) is None
+    ]
+    assert uninspectable == []
 
 
 @pytest.fixture
