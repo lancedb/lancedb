@@ -29,6 +29,34 @@ export interface EmbeddingFunctionConstructor<
   T extends EmbeddingFunction = EmbeddingFunction,
 > {
   new (modelOptions?: T["TOptions"]): T;
+  /**
+   * The models these options make the function load, other than its default
+   * model, as `[name, revision]` pairs. A function restored from table
+   * metadata only loads them once they are approved with
+   * `EmbeddingFunctionRegistry.allowModel`.
+   *
+   * It is called before the constructor, with the non-sensitive options.
+   */
+  loadedModels?(options: FunctionOptions): [string, string | undefined][];
+  /**
+   * The custom endpoints these options make the function send data to. A
+   * function restored from table metadata only uses them once they are
+   * approved with `EmbeddingFunctionRegistry.allowEndpoint`.
+   *
+   * It is called before the constructor, with the non-sensitive options.
+   */
+  endpoints?(options: FunctionOptions): string[];
+}
+
+/**
+ * Raised when an embedding function restored from table metadata is used
+ * before its options are approved.
+ */
+export class UntrustedEmbeddingConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UntrustedEmbeddingConfigError";
+  }
 }
 
 /**
@@ -87,39 +115,17 @@ export abstract class EmbeddingFunction<
 
   /**
    * Apply variables to the config.
+   *
+   * Secret variables, the default for
+   * `EmbeddingFunctionRegistry.setVar`, only resolve in the keys
+   * returned by {@link getSensitiveKeys}.
    */
   protected resolveVariables(config: Partial<M>): Partial<M> {
     this.#config = config;
-    const registry = getRegistry();
-    const newConfig = { ...config };
-    for (const [key_, value] of Object.entries(newConfig)) {
-      if (
-        this.getSensitiveKeys().includes(key_) &&
-        !value.startsWith("$var:")
-      ) {
-        throw new Error(
-          `The key "${key_}" is sensitive and cannot be set directly. Please use the $var: syntax to set it.`,
-        );
-      }
-      // Makes TS happy (https://stackoverflow.com/a/78391854)
-      const key = key_ as keyof M;
-      if (typeof value === "string" && value.startsWith("$var:")) {
-        const [name, defaultValue] = value.slice(5).split(":", 2);
-        const variableValue = registry.getVar(name);
-        if (!variableValue) {
-          if (defaultValue) {
-            // biome-ignore lint/suspicious/noExplicitAny:
-            newConfig[key] = defaultValue as any;
-          } else {
-            throw new Error(`Variable "${name}" not found`);
-          }
-        } else {
-          // biome-ignore lint/suspicious/noExplicitAny:
-          newConfig[key] = variableValue as any;
-        }
-      }
-    }
-    return newConfig;
+    return getRegistry().resolveVariables(
+      config,
+      this.getSensitiveKeys(),
+    ) as Partial<M>;
   }
 
   /**
@@ -270,6 +276,55 @@ export abstract class TextEmbeddingFunction<
     data: string[],
   ): Promise<number[][] | Float32Array[] | Float64Array[]> {
     return this.generateEmbeddings(data);
+  }
+}
+
+/**
+ * Stands in for an embedding function restored from table metadata whose
+ * options aren't approved yet. Computing embeddings throws
+ * {@link UntrustedEmbeddingConfigError}, which says how to approve them.
+ * Writing the table's metadata again keeps the original options.
+ */
+export class UntrustedEmbeddingFunction extends EmbeddingFunction {
+  readonly functionName: string;
+  readonly reasons: string[];
+  #options: FunctionOptions;
+
+  constructor(
+    functionName: string,
+    options: FunctionOptions,
+    reasons: string[],
+  ) {
+    super();
+    this.functionName = functionName;
+    this.#options = options;
+    this.reasons = reasons;
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny :
+  override toJSON(): Record<string, any> {
+    return JSON.parse(JSON.stringify(this.#options));
+  }
+
+  embeddingDataType(): Float {
+    return new Float32();
+  }
+
+  computeSourceEmbeddings(): Promise<number[][]> {
+    return Promise.reject(this.#error());
+  }
+
+  override computeQueryEmbeddings(): Promise<Awaited<IntoVector>> {
+    return Promise.reject(this.#error());
+  }
+
+  #error(): UntrustedEmbeddingConfigError {
+    const reasons = this.reasons.map((reason) => `\n  - ${reason}`).join("");
+    return new UntrustedEmbeddingConfigError(
+      `Embedding function "${this.functionName}" was restored from table ` +
+        `metadata, which anyone who can write the table controls. It won't ` +
+        `compute embeddings until you approve its options. It${reasons}`,
+    );
   }
 }
 

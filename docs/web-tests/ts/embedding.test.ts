@@ -150,7 +150,9 @@ test("embedding function api_key", async () => {
 openAiTest("embedding function variable fallback", () => {
   // --8<-- [start:register_model_fallback]
   const registry = getRegistry();
-  registry.setVar("openai_model", "text-embedding-3-large");
+  registry.setVar("openai_model", "text-embedding-3-large", {
+    secret: false,
+  });
 
   const func = registry.get("openai")!.create({
     model: "$var:openai_model:text-embedding-3-small",

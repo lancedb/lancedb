@@ -40,7 +40,7 @@ embedding generation, allowing you to focus on your application logic.
 
 ## Embedding Registry {#embedding-registry}
 
-You can get a supported embedding function from the registry, and then use it in your table schema. 
+You can get a supported embedding function from the registry, and then use it in your table schema.
 Once configured, the embedding function will automatically generate embeddings when you insert data
 into the table. Query-time behavior depends on SDK: Python/TypeScript can query with text directly,
 while Rust examples typically compute query embeddings explicitly before vector search.
@@ -105,6 +105,7 @@ This is useful for provider secrets and environment-specific settings in Python 
 - TypeScript uses `registry.setVar(...)`.
 - You can provide a fallback with `$var:name:default`.
 - Sensitive values such as API keys should be passed through registry variables instead of hardcoding them in config.
+- In TypeScript, variables are secret by default, so they can only be used in sensitive keys such as API keys. Pass `{ secret: false }` to `setVar` for other settings, such as the model.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="python" icon="python">
@@ -273,3 +274,8 @@ You can always implement your own embedding function:
     {RsEmbeddingFunction}
     </CodeBlock>
 </CodeGroup>
+
+In TypeScript, anyone who can write a table controls the embedding options stored in it.
+When a table is opened in a new process, a custom embedding function only computes embeddings once you trust its options, with `getRegistry().allowFunction("my-embedder")`.
+If the function's options can't make it load an arbitrary model or send data to an arbitrary URL, register it with `register("my-embedder", { safeToRestore: true })` instead.
+A function that can should report those models from a static `loadedModels(options)` method, and those URLs from a static `endpoints(options)` method, so each one needs approval.
