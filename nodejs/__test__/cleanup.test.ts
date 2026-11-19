@@ -8,6 +8,15 @@ import {
   validateCleanupOptions,
 } from "../lancedb/cleanup";
 
+test.each([null, [], 1, true, "options"])(
+  "cleanup rejects malformed options instead of inheriting retention (%p)",
+  (options) => {
+    expect(() =>
+      validateCleanupOptions(options as unknown as CleanupOptions),
+    ).toThrow("cleanup options must be an object");
+  },
+);
+
 test("cleanup never silently discards an unknown option", () => {
   expect(() =>
     validateCleanupOptions({ force: true } as unknown as CleanupOptions),

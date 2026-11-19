@@ -62,6 +62,12 @@ export function decodeCleanupPlan(value: unknown): CleanupPlan {
 
 /** @internal */
 export function validateCleanupOptions(options?: CleanupOptions): void {
+  if (
+    options !== undefined &&
+    (typeof options !== "object" || options === null || Array.isArray(options))
+  ) {
+    throw new Error("cleanup options must be an object");
+  }
   for (const key of Object.keys(options ?? {})) {
     if (key !== "minAgeSeconds")
       throw new Error(`Unknown cleanup option: ${key}`);
