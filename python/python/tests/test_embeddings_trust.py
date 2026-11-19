@@ -472,6 +472,44 @@ def test_create_trusts_its_own_model():
     assert isinstance(func, UntrustedEmbeddingFunction)
 
 
+@pytest.mark.parametrize("mlx", ["false", "0", 1])
+def test_gte_mlx_flag_cannot_skip_model_approval(mlx):
+    with patch("lancedb.embeddings.gte.attempt_import_or_raise") as imported:
+        func = restore("gte-text", {"name": "attacker/model", "mlx": mlx})
+        if not isinstance(func, UntrustedEmbeddingFunction):
+            func.get_embedding_model()
+    imported.assert_not_called()
+
+
+@pytest.mark.parametrize("safe_to_restore", [False, True])
+def test_restore_does_not_run_post_init_before_approval(monkeypatch, safe_to_restore):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+    monkeypatch.setattr(registry, "_safe_to_restore", registry._safe_to_restore.copy())
+    loads = []
+
+    @registry.register("post-init-loader", safe_to_restore=safe_to_restore)
+    class PostInitLoader(TextEmbeddingFunction):
+        name: str = "default"
+
+        def model_post_init(self, context):
+            loads.append(self.name)  # where a model would be loaded
+
+        def loaded_models(self):
+            return [] if self.name == "default" else [(self.name, None)]
+
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [[0.0, 0.0] for _ in texts]
+
+    func = restore("post-init-loader", {"name": "attacker/model"})
+
+    assert isinstance(func, UntrustedEmbeddingFunction)
+    assert loads == []
+
+
 @pytest.fixture
 def unmarked_function():
     registry = get_registry()

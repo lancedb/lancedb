@@ -72,14 +72,13 @@ class GteEmbeddings(TextEmbeddingFunction):
             stacklevel=3,
         )
         self._ndims = None
-        if kwargs:
-            self.mlx = kwargs.get("mlx", False)
-            if self.mlx is True:
-                self.name = "gte-mlx"
+        if self.mlx is True:
+            self.name = "gte-mlx"
 
     def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
-        # The MLX model is fixed and ignores `name`.
-        if self.mlx or self._uses_default("name"):
+        # The MLX model is fixed and ignores `name`. Restoring calls this on
+        # unvalidated settings, so test exactly as get_embedding_model does.
+        if self.mlx is True or self._uses_default("name"):
             return []
         return [(self.name, None)]
 

@@ -139,6 +139,10 @@ when this process has approved them:
 
 - `trust_remote_code=True`, which runs code from the model's HuggingFace repository.
 - Custom endpoints such as OpenAI `base_url`, Ollama `host`, or watsonx `url`, which receive your data and API keys.
+- A non-default model for `open-clip`, `instructor`, `colpali`, `siglip`, or `gte-text`, whose loaders can run code
+  from the model repository. Approve it with `allow_remote_code`.
+- Any settings for `bedrock-text` or `oci-genai`, whose settings choose where requests go. Approve them with
+  `allow_function`.
 
 Embedding functions you create in the current process are approved automatically. When you open a table in a new
 process, approve these settings explicitly before computing embeddings:

@@ -237,17 +237,23 @@ class EmbeddingFunctionRegistry:
             {k: v for k, v in args.items() if k not in sensitive_keys},
             from_metadata=True,
         )
-        # Inspect the config without running __init__, which may load a model.
-        probe = cls.model_construct(**public)
+        if not self._function_allowed(name, args):
+            # Stop before inspecting the config, since an unmarked class's
+            # hooks haven't been reviewed for side effects.
+            func = UntrustedEmbeddingFunction(
+                function_name=name,
+                reasons=(
+                    "is not registered with safe_to_restore=True, so its "
+                    "settings need approval. If you trust any settings for it "
+                    "from table metadata, call "
+                    f"get_registry().allow_function({name!r})",
+                ),
+            )
+            func._original_args = args
+            return func
+        probe = _inspect_config(cls, public)
 
         reasons = []
-        if not self._function_allowed(name, args):
-            reasons.append(
-                "is not registered with safe_to_restore=True, so its settings "
-                "need approval. If you trust any settings for it from table "
-                "metadata, call "
-                f"get_registry().allow_function({name!r})"
-            )
         model = probe.remote_code_model()
         if model is not None:
             allowed = self._remote_code_allowed(*model)
@@ -470,6 +476,28 @@ _ANY_REVISION = object()
 
 def _normalize_url(url: str) -> str:
     return url.rstrip("/")
+
+
+def _inspect_config(cls: Type[EmbeddingFunction], values: dict) -> EmbeddingFunction:
+    """
+    Like `cls.model_construct(**values)`, but without running `__init__` or
+    `model_post_init`, either of which may load the configured model.
+    """
+    probe = cls.__new__(cls)
+    fields = {}
+    for name, field in cls.model_fields.items():
+        if name in values:
+            fields[name] = values[name]
+        elif not field.is_required():
+            fields[name] = field.get_default(call_default_factory=True)
+    private = {
+        name: attr.get_default() for name, attr in cls.__private_attributes__.items()
+    }
+    object.__setattr__(probe, "__dict__", fields)
+    object.__setattr__(probe, "__pydantic_fields_set__", set(values) & set(fields))
+    object.__setattr__(probe, "__pydantic_extra__", None)
+    object.__setattr__(probe, "__pydantic_private__", private or None)
+    return probe
 
 
 def _canonical_config(args: dict) -> str:
