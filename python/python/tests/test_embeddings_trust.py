@@ -276,6 +276,8 @@ def test_default_endpoints_need_no_allowlist():
     ],
 )
 def test_restored_oci_custom_endpoint_requires_allowlist(model, endpoint):
+    # Its settings choose local credentials, so it always needs approval.
+    get_registry().allow_function("oci-genai")
     func = restore("oci-genai", model)
     assert isinstance(func, UntrustedEmbeddingFunction)
     with pytest.raises(UntrustedEmbeddingConfigError, match="allow_endpoint"):
@@ -288,6 +290,7 @@ def test_restored_oci_custom_endpoint_requires_allowlist(model, endpoint):
 
 
 def test_restored_oci_default_endpoint_needs_no_allowlist():
+    get_registry().allow_function("oci-genai")
     func = restore("oci-genai", {})
     assert isinstance(func, OCIGenAIEmbeddings)
     assert func.endpoints() == []
