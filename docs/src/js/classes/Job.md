@@ -107,7 +107,10 @@ durable resume tokens.
 get jobId(): null | string
 ```
 
-Stable attempt identity. Local IDs cannot be reopened on a server.
+Identity of the selected attempt last observed by this handle.
+For operation handles, `refresh()` or `status()` can select a different
+attempt while `id` stays unchanged. Save this value after refreshing and
+use it throughout paged diagnostics. Local IDs cannot be reopened on a server.
 
 #### Returns
 

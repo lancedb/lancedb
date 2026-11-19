@@ -317,7 +317,13 @@ class AsyncJob(Generic[T]):
 
     @property
     def job_id(self) -> Optional[str]:
-        """Stable attempt identity; local IDs cannot be reopened on a server."""
+        """Identity of the selected attempt last observed by this handle.
+
+        For operation handles, ``refresh()`` or ``status()`` can select a
+        different attempt while ``id`` stays unchanged. Save this value after
+        refreshing and use it throughout paged diagnostics. Local IDs cannot
+        be reopened on a server.
+        """
         return (
             getattr(self._inner, "job_id", self.id)
             if self._inner is not None
@@ -878,7 +884,11 @@ class Job(Generic[T]):
 
     @property
     def job_id(self) -> Optional[str]:
-        """Stable attempt identity. See :attr:`AsyncJob.job_id`."""
+        """Selected attempt ID; refresh can change it while ``id`` stays fixed.
+
+        Save the value after refreshing for paged diagnostics.
+        See :attr:`AsyncJob.job_id`.
+        """
         return self._inner.job_id
 
     @property

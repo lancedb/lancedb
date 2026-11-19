@@ -153,7 +153,12 @@ export class Job<T = void> {
     return this.inner.id ?? null;
   }
 
-  /** Stable attempt identity. Local IDs cannot be reopened on a server. */
+  /**
+   * Identity of the selected attempt last observed by this handle.
+   * For operation handles, `refresh()` or `status()` can select a different
+   * attempt while `id` stays unchanged. Save this value after refreshing and
+   * use it throughout paged diagnostics. Local IDs cannot be reopened on a server.
+   */
   get jobId(): string | null {
     return this.inner.jobId ?? null;
   }

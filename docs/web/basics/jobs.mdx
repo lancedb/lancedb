@@ -323,7 +323,11 @@ state, use Python's `status_typed()`, TypeScript's `statusTyped()`, or Rust's
 their original value and never establish success.
 
 The detail getters report the last observation. Call `status()` or `refresh()`
-to populate registry metadata:
+to populate registry metadata. A handle that follows recovery can select a
+different attempt during either call while the existing `id` stays unchanged.
+Save `job_id` (`jobId` in TypeScript) after refreshing and use that saved value
+throughout an exact-attempt diagnostic read; refreshing again may select a
+later attempt.
 
 | Python field | Meaning |
 | --- | --- |
@@ -440,14 +444,19 @@ returning a cursor is rejected rather than treated as complete.
 
 <CodeGroup>
 ```python Python
+job.refresh()
+attempt_job_id = job.job_id
 token = ""
 while token is not None:
-    errors = tbl.function_errors(job_id=job.job_id, limit=1000, page_token=token)
+    errors = tbl.function_errors(job_id=attempt_job_id, limit=1000, page_token=token)
     print(errors.records, errors.fragments)
     token = errors.page_token
 ```
 
 ```typescript TypeScript
+await job.refresh();
+const jobId = job.jobId;
+if (jobId === null) throw new Error("A registry attempt ID is required");
 let pageToken: string | undefined = "";
 while (pageToken !== undefined) {
   const page = await tbl.functionErrors({ jobId, limit: 1000, pageToken });
@@ -459,6 +468,7 @@ while (pageToken !== undefined) {
 ```rust Rust
 use lancedb::function::FunctionErrorsRequest;
 
+job.refresh().await?;
 let job_id = job.job_id().expect("a registry-backed job");
 let mut token = Some(String::new());
 while let Some(current) = token {

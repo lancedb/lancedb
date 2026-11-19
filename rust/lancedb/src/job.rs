@@ -558,8 +558,12 @@ where
         Ok(self.lifecycle_state().expect("refresh records a state"))
     }
 
-    /// Identity of this attempt. Local identities cannot be passed to
-    /// `Connection::open_job` and last for the lifetime of this handle.
+    /// Identity of the selected attempt last observed by this handle.
+    /// For operation handles, [`Self::refresh`] or [`Self::status`] can select a
+    /// different attempt while [`Self::id`] stays unchanged. Save the returned
+    /// ID after refreshing and use that value throughout paged diagnostics.
+    /// Local identities cannot be passed to `Connection::open_job` and last
+    /// for the lifetime of this handle.
     pub fn job_id(&self) -> Option<String> {
         self.with_description(|description| description.attempt_job_id.clone())
             .flatten()
