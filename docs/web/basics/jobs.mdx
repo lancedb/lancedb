@@ -210,9 +210,9 @@ With a server and SDK that provide listing metadata, `JobInfo` also exposes
 `duration_millis`, and `failure`. Function names include their namespace, joined
 by `$`, and the version is pinned to the computed column refresh. Duration is
 creation-to-completion wall time, including queueing and pauses; running jobs
-have no completed duration. Unknown scalar values and failure summaries are
-`None`, and unavailable or non-column-scoped `columns` are empty. A zero duration
-is a measured value. Failure summaries include phase, message, and retryability;
+have no completed duration. Unknown scalar values and failure summaries stay
+absent (`None` in Python/Rust, `undefined` in TypeScript), and unavailable or
+non-column-scoped `columns` are empty. A zero duration is a measured value. Failure summaries include phase, message, and retryability;
 open the job for full diagnostics.
 
 <CodeGroup>
@@ -237,8 +237,10 @@ async fn print_latest_refresh(db: &Connection) -> Result<()> {
     let mut jobs = db.list_jobs_filtered(filter, ListingOptions::default());
     while let Some(info) = jobs.try_next().await? {
         if info.columns.iter().any(|column| column == "embedding") {
-            println!("{:?} {:?} {:?}",
-                info.function_name, info.function_version, info.duration_millis);
+            println!(
+                "{:?} {:?} {:?}",
+                info.function_name, info.function_version, info.duration_millis
+            );
             if let Some(failure) = info.failure {
                 println!("{:?}", failure.message);
             }
