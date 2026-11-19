@@ -214,6 +214,12 @@ class AsyncJob(Generic[T]):
     The operation may already be complete when the handle is created. ``T``
     is the endpoint's terminal result type; unit-result jobs resolve to
     ``None``.
+
+    Properties such as ``state``, ``result`` and ``failure`` read cached values
+    without contacting the backend. Use ``await job.fetch_status()`` for a live
+    lifecycle check, ``await job.fetch_events()`` for event history, and
+    ``await job.refresh()`` to update cached details. ``status()`` and
+    ``events()`` remain available as backward-compatible methods.
     """
 
     def __init__(
@@ -243,12 +249,28 @@ class AsyncJob(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     async def status(self) -> str:
-        """The operation's current lifecycle state: "running", "finished",
+        """Backward-compatible method for :meth:`fetch_status`.
+
+        Call ``await job.fetch_status()`` for a live check; read ``job.state``
+        for the cached state. ``job.status`` without parentheses is a method,
+        not a lifecycle state.
+        """
+        return await self.fetch_status()
+
+    async def fetch_status(self) -> str:
+        """Fetch the operation's current lifecycle state: "running", "finished",
         "failed", or "cancelled".
 
-        A point snapshot; unlike `wait` it does not block or raise on a
-        terminal failure state. States a newer server reports that this
-        client version does not know pass through as-is.
+        This live request updates the cached :attr:`state` and, for registry
+        jobs, the full record behind :attr:`result`, :attr:`failure` and
+        :attr:`spec`. Unlike :meth:`wait`, it does not wait for completion or
+        raise on a terminal failure state. Request errors propagate. States a
+        newer server reports that this client does not know pass through as-is.
+
+        Examples
+        --------
+        >>> state = await job.fetch_status()  # doctest: +SKIP
+        >>> print(state, job.state)  # doctest: +SKIP
         """
         if self._inner is None:
             return "finished"
@@ -442,8 +464,8 @@ class AsyncJob(Generic[T]):
         Registry details are `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
         expose only lifecycle state through this method. For registry jobs,
-        `status` fetches the whole record too; `wait` records only the terminal
-        state it establishes.
+        :meth:`fetch_status` (also available as :meth:`status`) fetches the
+        whole record too; `wait` records only the terminal state it establishes.
         """
         if self._inner is None:
             return
@@ -453,7 +475,8 @@ class AsyncJob(Generic[T]):
     def state(self) -> Optional[str]:
         """The last observed lifecycle state, without contacting the backend.
 
-        `None` until the handle has talked to it. See :meth:`AsyncJob.refresh`.
+        `None` until the handle has talked to it. Use :meth:`fetch_status` for
+        a live check, or :meth:`refresh` to update all cached registry details.
         """
         if self._inner is None:
             return "finished"
@@ -471,27 +494,28 @@ class AsyncJob(Generic[T]):
 
     @property
     def creation_ms(self) -> Optional[int]:
-        """When the job was created, in milliseconds since the epoch."""
+        """Cached creation time in milliseconds since the epoch; no backend call."""
         return self._field("creation_ms")
 
     @property
     def spec(self) -> Optional[Any]:
-        """The job-type-specific specification it was submitted with."""
+        """Complete cached job-specific specification; no backend call."""
         return self._field("spec")
 
     @property
     def result(self) -> Optional[Any]:
-        """The job-type-specific terminal result, as reported data rather than
-        the typed model :meth:`AsyncJob.wait` returns.
+        """The cached job-specific terminal result, without a backend call.
 
-        `None` until the job succeeds, so a job that never terminates reports
-        its progress through :meth:`AsyncJob.events` instead.
+        This is reported data rather than the typed model :meth:`wait` returns.
+        It can remain `None` until a successful registry record is fetched with
+        :meth:`fetch_status` or :meth:`refresh`. For ongoing progress, use
+        :meth:`progress` or :meth:`fetch_events`.
         """
         return self._field("result")
 
     @property
     def failure(self) -> Optional[JobFailureInfo]:
-        """Why the job failed, when it failed and the server reports a reason."""
+        """Cached failure details, when reported by the server; no backend call."""
         return self._field("failure")
 
     @property
@@ -587,7 +611,23 @@ class AsyncJob(Generic[T]):
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> "pa.Table":
-        """This job's recorded lifecycle events.
+        """Backward-compatible method for :meth:`fetch_events`.
+
+        Call ``await job.fetch_events(...)`` to request recorded event history.
+        """
+        return await self.fetch_events(limit=limit, filter=filter)
+
+    async def fetch_events(
+        self,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> "pa.Table":
+        """Fetch this job's recorded lifecycle events as a ``pyarrow.Table``.
+
+        Each call requests event history without updating cached properties
+        such as :attr:`state`, :attr:`result` or :attr:`failure`. Use
+        :meth:`fetch_status` or :meth:`refresh` to update those properties.
 
         Where the properties above report a terminal result only once the job
         reaches one, events are written as the job runs and outlive the workers
@@ -605,6 +645,11 @@ class AsyncJob(Generic[T]):
             SQL-like expression over the `state`, `updated_by`, `emitted_from`,
             `emitted_by`, and `claim_entity` columns, such as
             ``state = 'claim_complete'``.
+
+        Examples
+        --------
+        >>> events = await job.fetch_events(limit=100)  # doctest: +SKIP
+        >>> print(events.to_pylist())  # doctest: +SKIP
         """
         if self._inner is None:
             raise NotImplementedError(
@@ -668,7 +713,13 @@ def _job_repr(kind: str, job: Any) -> str:
 
 
 class Job(Generic[T]):
-    """Synchronous counterpart of `AsyncJob` with the same result type."""
+    """Synchronous counterpart of `AsyncJob` with the same result type.
+
+    Properties such as ``state``, ``result`` and ``failure`` read cached values.
+    Call ``job.fetch_status()`` for a live lifecycle check,
+    ``job.fetch_events()`` for event history, and ``job.refresh()`` to update
+    cached details. ``status()`` and ``events()`` remain compatible methods.
+    """
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
         self._inner = inner
@@ -682,14 +733,30 @@ class Job(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     def status(self) -> str:
-        """The operation's current lifecycle state: "running", "finished",
+        """Backward-compatible method for :meth:`fetch_status`.
+
+        Call ``job.fetch_status()`` for a live check; read ``job.state`` for
+        the cached state. ``job.status`` without parentheses is a method,
+        not a lifecycle state.
+        """
+        return self.fetch_status()
+
+    def fetch_status(self) -> str:
+        """Fetch the current lifecycle state: "running", "finished",
         "failed", or "cancelled".
 
-        See :meth:`AsyncJob.status`.
+        Updates cached state and registry details. Terminal failure states
+        are returned without raising; request errors propagate.
+        See :meth:`AsyncJob.fetch_status`.
+
+        Examples
+        --------
+        >>> state = job.fetch_status()  # doctest: +SKIP
+        >>> print(state, job.state)  # doctest: +SKIP
         """
         if self._inner is None:
             return "finished"
-        return LOOP.run(self._inner.status())
+        return LOOP.run(self._inner.fetch_status())
 
     def wait(
         self,
@@ -741,7 +808,7 @@ class Job(Generic[T]):
 
     @property
     def state(self) -> Optional[str]:
-        """The last observed lifecycle state. See :attr:`AsyncJob.state`."""
+        """Cached lifecycle state; no backend call. See :attr:`AsyncJob.state`."""
         return self._inner.state if self._inner is not None else "finished"
 
     @property
@@ -833,9 +900,23 @@ class Job(Generic[T]):
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> "pa.Table":
-        """This job's recorded lifecycle events.
+        """Backward-compatible method for :meth:`fetch_events`."""
+        return self.fetch_events(limit=limit, filter=filter)
 
-        See :meth:`AsyncJob.events`.
+    def fetch_events(
+        self,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> "pa.Table":
+        """Fetch recorded events as a ``pyarrow.Table`` without updating caches.
+
+        See :meth:`AsyncJob.fetch_events` for parameters and availability.
+
+        Examples
+        --------
+        >>> events = job.fetch_events(limit=100)  # doctest: +SKIP
+        >>> print(events.to_pylist())  # doctest: +SKIP
         """
         if self._inner is None:
             raise NotImplementedError(
@@ -844,7 +925,7 @@ class Job(Generic[T]):
                     "jobs",
                 )
             )
-        return LOOP.run(self._inner.events(limit=limit, filter=filter))
+        return LOOP.run(self._inner.fetch_events(limit=limit, filter=filter))
 
     def __repr__(self) -> str:
         return _job_repr("Job", self)

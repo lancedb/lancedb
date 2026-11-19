@@ -6857,7 +6857,11 @@ def test_remote_connection_jobs_surface():
         assert finished.progress()["paused"] is False
 
 
-def test_remote_job_handle_reports_its_own_detail():
+@pytest.mark.parametrize(
+    "status_method,events_method",
+    [("status", "events"), ("fetch_status", "fetch_events")],
+)
+def test_remote_job_handle_reports_its_own_detail(status_method, events_method):
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["claim_complete"])], schema=schema)
     sink = pa.BufferOutputStream()
@@ -6865,12 +6869,14 @@ def test_remote_job_handle_reports_its_own_detail():
         writer.write_batch(batch)
     events_body = sink.getvalue().to_pybytes()
     event_payloads = []
+    descriptions = []
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
         body = request.rfile.read(content_len) if content_len > 0 else b""
         payload = json.loads(body) if body else {}
         if request.path == "/v1/jobs/describe":
+            descriptions.append(payload)
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
@@ -6926,9 +6932,16 @@ def test_remote_job_handle_reports_its_own_detail():
         # Nothing it does not know shows up.
         assert "failure" not in repr(job)
 
-        events = job.events(filter="state = 'claim_complete'", limit=500)
+        assert len(descriptions) == 2
+        assert getattr(job, status_method)() == "finished"
+        assert len(descriptions) == 3
+        assert job.result == {"rows_assigned": 1000000}
+        events = getattr(job, events_method)(
+            filter="state = 'claim_complete'", limit=500
+        )
         assert isinstance(events, pa.Table)
         assert events.column("state").to_pylist() == ["claim_complete"]
+        assert len(descriptions) == 3
         # The handle supplies job_id; the caller only narrows the query.
         assert event_payloads[-1] == {
             "job_id": "job-1",
