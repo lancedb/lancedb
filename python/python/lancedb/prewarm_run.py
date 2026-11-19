@@ -94,6 +94,11 @@ class AsyncPrewarmRunRank:
         `RunView.announce_limit`. Repeating an announced wave with the same
         rows is harmless, and a wave every rank has passed is ignored.
         Returns the highest wave announced so far.
+
+        A `PrewarmRunError` with code ``beyond_horizon`` is not fatal: the
+        limit can move down when a rank joins at a lower wave than the last
+        `view` knew of. Announce again once the view, which each heartbeat
+        refreshes, allows the wave.
         """
         return await self._inner.announce(
             [(wave, _ranges(ranges)) for wave, ranges in sorted(waves.items())]

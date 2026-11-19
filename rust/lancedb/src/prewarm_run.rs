@@ -404,6 +404,11 @@ impl PrewarmRunRank {
     /// within [`RunView::announce_limit`]. Repeating an announced wave with
     /// the same rows is harmless, and a wave every rank has passed is
     /// ignored. Returns the highest wave announced so far.
+    ///
+    /// A [`error_codes::BEYOND_HORIZON`] error is not fatal: the limit can
+    /// move down when a rank joins at a lower wave than this handle's last
+    /// [`PrewarmRunRank::view`] knew of. Announce again once the view, which
+    /// each heartbeat refreshes, allows the wave.
     pub async fn announce(&self, waves: Vec<WaveAnnouncement>) -> Result<Option<u64>> {
         #[derive(Deserialize)]
         struct Reply {
