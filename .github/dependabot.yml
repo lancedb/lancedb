@@ -10,29 +10,28 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+      day: wednesday
+    # Skip versions younger than 48h. Does not apply to security updates.
+    cooldown:
+      default-days: 2
     # Only update Cargo.lock, never widen/raise the version requirements in
     # Cargo.toml. The goal is keeping the lockfile (and the binaries we ship)
     # current on security fixes, not forcing our library's consumers onto
     # newer minimum versions.
     versioning-strategy: lockfile-only
+    # One weekly PR for all version bumps, including semver-breaking ones
+    # (e.g. 0.12 -> 0.13), and one PR batching any security updates. A
+    # breaking bump needs fixing up either way, so it's cheaper to fix the
+    # one consolidated PR than to chase separate per-crate PRs.
     groups:
-      # The arrow-rs and datafusion crates are released in lockstep and have to
-      # move together, so keep them in one PR instead of one per sub-crate.
-      # Listed first: a dependency joins the first group it matches.
-      arrow-datafusion:
+      cargo:
+        applies-to: version-updates
         patterns:
-          - arrow
-          - arrow-*
-          - parquet
-          - parquet-*
-          - datafusion
-          - datafusion-*
-          - object_store
-      rust-minor-patch:
-        update-types:
-          - minor
-          - patch
+          - "*"
+      cargo-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: pip
     directory: /python
