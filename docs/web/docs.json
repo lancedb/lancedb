@@ -483,7 +483,6 @@
             "pages": [
               "training/data-loading",
               "training/training-cache",
-              "training/incremental-prewarm",
               "training/permutation",
               "training/observability",
               "training/distributed-training",

@@ -5,3 +5,6 @@ agent-branch-experiments.mdx
 # JSON columns are Beta; not documented until early access.
 # To restore: docs.json Documentation > SQL Reference > DQL, after sql/dql/vector-distance.
 sql/dql/json-functions.mdx
+# Draft until incremental prewarm reaches early access.
+# To restore: docs.json Documentation > Training, after training/training-cache.
+training/incremental-prewarm.mdx
