@@ -39,7 +39,7 @@ def test_waves_take_the_same_positions_of_every_split():
     # Split 0 has 5 rows, split 1 has 3, so split 1 runs out a wave early.
     split0 = [address(0, i) for i in (4, 0, 1, 2, 9)]
     split1 = [address(1, i) for i in (3, 2, 7)]
-    plan = WavePlan(permutation([split0, split1]), 2, 2, {})
+    plan = WavePlan(permutation([split0, split1]), 2, 2)
     assert plan.num_waves == 3
     assert plan.ranges(0) == [
         RowRange(0, 0, 1),
@@ -49,22 +49,33 @@ def test_waves_take_the_same_positions_of_every_split():
     assert plan.ranges(1) == [RowRange(0, 1, 3), RowRange(1, 7, 8)]
     assert plan.ranges(2) == [RowRange(0, 9, 10)]
     assert plan.ranges(3) == []
-    assert plan.wave_of(0, 3) == 1
+    assert plan.first_wave == 0
+    assert plan.wave_of(3) == 1
     assert plan.wave_end(0, 1) == 4
     assert plan.wave_end(1, 1) == 3
     assert plan.fetch_ranges(0, 1, 4) == [RowRange(0, 0, 3)]
 
 
-def test_waves_count_from_each_split_start_position():
+def test_start_positions_trim_waves_but_keep_their_numbers():
     split0 = [address(0, i) for i in range(6)]
     split1 = [address(1, i) for i in range(6)]
-    plan = WavePlan(permutation([split0, split1]), 2, 2, {0: 4, 1: 1})
+    plan = WavePlan(permutation([split0, split1]), 2, 2, {0: 5, 1: 3})
     assert plan.num_waves == 3
-    assert plan.ranges(0) == [RowRange(0, 4, 6), RowRange(1, 1, 3)]
-    assert plan.wave_of(0, 4) == 0
-    assert plan.wave_of(1, 5) == 2
-    with pytest.raises(ValueError):
-        plan.wave_of(0, 3)
+    assert plan.first_wave == 1
+    # Wave 1 is positions 2..4: split 0 has read past it, split 1 has read 2.
+    assert plan.ranges(1) == [RowRange(1, 3, 4)]
+    assert plan.ranges(2) == [RowRange(0, 5, 6), RowRange(1, 4, 6)]
+    assert plan.wave_of(5) == 2
+    assert plan.wave_end(0, 1) == 4
+
+    # A lower bound for another rank's split warms extra rows of the same
+    # waves, never different waves.
+    lower = WavePlan(permutation([split0, split1]), 2, 2, {0: 4, 1: 3})
+    assert lower.first_wave == 1
+    assert lower.ranges(2) == [RowRange(0, 4, 6), RowRange(1, 4, 6)]
+
+    done = WavePlan(permutation([split0, split1]), 2, 2, {0: 6, 1: 6})
+    assert done.first_wave == done.num_waves == 3
     with pytest.raises(ValueError):
         WavePlan(permutation([split0, split1]), 2, 2, {0: 7})
 
@@ -95,7 +106,7 @@ def test_waves_do_not_depend_on_world_size(table):
                 world_size=world_size,
             )
             perm = dataset._perm_table.to_arrow()
-            plans.append(WavePlan(perm, num_splits, 8, {}))
+            plans.append(WavePlan(perm, num_splits, 8))
     waves = [[plan.ranges(w) for w in range(plan.num_waves)] for plan in plans]
     assert all(wave == waves[0] for wave in waves[1:])
 

@@ -4,13 +4,15 @@
 """Wave boundaries and row ranges for StreamingDataset prewarm runs.
 
 A wave is the same span of permutation positions in every split: wave ``w`` of
-split ``s`` is positions ``[start_s + w * P, start_s + (w + 1) * P)``, where
-``P`` is the run's ``wave_positions`` and ``start_s`` the position the split
-resumes from. Waves depend only on the permutation and the start positions,
-never on ``world_size`` or worker count, so every rank computes the same ones.
+split ``s`` is positions ``[w * P, (w + 1) * P)``, where ``P`` is the run's
+``wave_positions``. Waves sit on this fixed grid, so they depend only on the
+permutation: never on ``world_size``, worker count or where a resumed run
+starts reading. Every rank computes the same waves even when ranks disagree
+about other ranks' resume positions; such a disagreement only changes which
+rows of a wave get warmed, never what the wave holds.
 """
 
-from typing import List, Mapping
+from typing import List, Mapping, Optional
 
 import numpy as np
 import pyarrow as pa
@@ -52,7 +54,7 @@ class WavePlan:
         permutation: pa.Table,
         num_splits: int,
         wave_positions: int,
-        start_positions: Mapping[int, int],
+        start_positions: Optional[Mapping[int, int]] = None,
     ):
         """
         Parameters
@@ -64,11 +66,15 @@ class WavePlan:
             Number of splits, ``0 .. num_splits - 1``.
         wave_positions: int
             Positions of each split in one wave, as the run reports it.
-        start_positions: Mapping[int, int]
-            Position each split starts reading from; missing splits start at 0.
+        start_positions: Mapping[int, int], optional
+            Positions of each split already read; missing splits start at 0.
+            A lower bound is safe: it only warms rows that are already read.
+            Start positions never change wave numbers, only which rows of a
+            wave are left to warm.
         """
         if wave_positions <= 0:
             raise ValueError(f"wave_positions must be positive, got {wave_positions}")
+        start_positions = start_positions or {}
         row_ids = permutation.column("row_id").to_numpy().astype(np.uint64)
         split_ids = permutation.column("split_id").to_numpy()
         self._row_ids = [row_ids[split_ids == split] for split in range(num_splits)]
@@ -87,32 +93,34 @@ class WavePlan:
     @property
     def num_waves(self) -> int:
         """Waves until the longest split is read to its end."""
-        remaining = max(
-            (len(ids) - start for ids, start in zip(self._row_ids, self._starts)),
-            default=0,
-        )
-        return -(-remaining // self._wave_positions)
+        longest = max((len(ids) for ids in self._row_ids), default=0)
+        return -(-longest // self._wave_positions)
 
-    def wave_of(self, split: int, position: int) -> int:
-        """The wave holding ``position`` of ``split``."""
-        start = self._starts[split]
-        if position < start:
-            raise ValueError(
-                f"position {position} of split {split} is before its start {start}"
-            )
-        return (position - start) // self._wave_positions
+    @property
+    def first_wave(self) -> int:
+        """The first wave with rows left to read in any split."""
+        unfinished = [
+            start for ids, start in zip(self._row_ids, self._starts) if start < len(ids)
+        ]
+        if not unfinished:
+            return self.num_waves
+        return self.wave_of(min(unfinished))
+
+    def wave_of(self, position: int) -> int:
+        """The wave holding ``position`` of every split."""
+        return position // self._wave_positions
 
     def wave_end(self, split: int, wave: int) -> int:
         """The first position of ``split`` after ``wave``: a fetch must stop
         here to stay inside one wave."""
-        end = self._starts[split] + (wave + 1) * self._wave_positions
+        end = (wave + 1) * self._wave_positions
         return min(end, len(self._row_ids[split]))
 
     def ranges(self, wave: int) -> List[RowRange]:
-        """Every split's rows in ``wave``, as merged row ranges."""
+        """Every split's rows in ``wave`` not yet read, as merged row ranges."""
         parts = []
         for split, (ids, start) in enumerate(zip(self._row_ids, self._starts)):
-            begin = start + wave * self._wave_positions
+            begin = max(start, wave * self._wave_positions)
             parts.append(ids[begin : self.wave_end(split, wave)])
         return row_ids_to_ranges(np.concatenate(parts))
 
