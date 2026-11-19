@@ -2179,7 +2179,13 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-2", "table": "t2", ' +
                     '"job_type": "create_index", "state": "succeeded", ' +
-                    '"created_at_millis": 2000}]}',
+                    '"created_at_millis": 2000, "completed_at_millis": 2000, ' +
+                    '"duration_millis": 0, "columns": ["embedding"], ' +
+                    '"function_name": "features$embed", "function_version": "7"}, ' +
+                    '{"job_id": "job-3", "table": "t2", "job_type": "function_refresh", ' +
+                    '"state": "failed", "created_at_millis": 3000, "duration_millis": 200, ' +
+                    '"completed_at_millis": 3200, "failure": {"phase": "execute", ' +
+                    '"message": "worker failed", "retryable": false}}]}',
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
@@ -2248,9 +2254,31 @@ describe("remote connection jobs surface", () => {
       },
       async (db) => {
         const jobs = await collect(db.listJobs());
-        expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
+        expect(jobs.map((job) => job.jobId)).toEqual([
+          "job-1",
+          "job-2",
+          "job-3",
+        ]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].completedAtMillis).toBeUndefined();
+        expect(jobs[0].durationMillis).toBeUndefined();
+        expect(jobs[0].columns).toEqual([]);
+        expect(jobs[0].functionName).toBeUndefined();
+        expect(jobs[0].functionVersion).toBeUndefined();
+        expect(jobs[0].failure).toBeUndefined();
+        expect(jobs[1].completedAtMillis).toBe(2000);
+        expect(jobs[1].durationMillis).toBe(0);
+        expect(jobs[1].columns).toEqual(["embedding"]);
+        expect(jobs[1].functionName).toBe("features$embed");
+        expect(jobs[1].functionVersion).toBe("7");
+        expect(jobs[1].failure).toBeUndefined();
+        expect(jobs[2].state).toBe("failed");
+        expect(jobs[2].durationMillis).toBe(200);
+        expect(jobs[2].failure?.phase).toBe("execute");
+        expect(jobs[2].failure?.message).toBe("worker failed");
+        expect(jobs[2].failure?.retryable).toBe(false);
+        expect(jobs[2].failure?.traceback).toBeUndefined();
         expect(jobs[0].progress).toEqual({
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",

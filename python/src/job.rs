@@ -203,6 +203,18 @@ pub struct JobInfo {
     job_type: String,
     state: String,
     created_at_millis: i64,
+    /// Terminal timestamp in milliseconds since the epoch, when known.
+    completed_at_millis: Option<i64>,
+    /// Creation-to-completion wall time, including queueing and pauses.
+    duration_millis: Option<i64>,
+    /// Affected columns; empty when unavailable or not column-scoped.
+    columns: Vec<String>,
+    /// Pinned Function catalog name, with namespace segments joined by `$`.
+    function_name: Option<String>,
+    /// Pinned Function version, when known.
+    function_version: Option<String>,
+    /// Durable failure summary, when available.
+    failure: Option<JobFailureInfo>,
     _progress_json: Option<String>,
     paused: bool,
 }
@@ -239,6 +251,12 @@ impl From<lancedb::database::JobInfo> for JobInfo {
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
+            completed_at_millis: info.completed_at_millis,
+            duration_millis: info.duration_millis,
+            columns: info.columns,
+            function_name: info.function_name,
+            function_version: info.function_version,
+            failure: info.failure.map(Into::into),
             _progress_json: Some(progress),
             paused: info.paused,
         }

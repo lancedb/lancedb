@@ -6695,10 +6695,29 @@ def test_remote_connection_jobs_surface():
                         dict(
                             job_id="job-2",
                             table="t2",
-                            job_type="create_index",
+                            job_type="function_refresh",
                             state="succeeded",
                             created_at_millis=2000,
-                        )
+                            completed_at_millis=2000,
+                            duration_millis=0,
+                            columns=["embedding"],
+                            function_name="features$embed",
+                            function_version="7",
+                        ),
+                        dict(
+                            job_id="job-3",
+                            table="t2",
+                            job_type="function_refresh",
+                            state="failed",
+                            created_at_millis=3000,
+                            completed_at_millis=3200,
+                            duration_millis=200,
+                            failure=dict(
+                                phase="execute",
+                                message="worker failed",
+                                retryable=False,
+                            ),
+                        ),
                     ]
                 )
             request.send_response(200)
@@ -6796,7 +6815,7 @@ def test_remote_connection_jobs_surface():
 
     with mock_lancedb_connection(handler) as db:
         jobs = list(db.list_jobs())
-        assert [job.job_id for job in jobs] == ["job-1", "job-2"]
+        assert [job.job_id for job in jobs] == ["job-1", "job-2", "job-3"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
         assert jobs[0].progress == {
@@ -6810,6 +6829,24 @@ def test_remote_connection_jobs_surface():
         }
         assert jobs[0].paused is True
         assert jobs[1].state == "finished"
+        assert jobs[0].completed_at_millis is None
+        assert jobs[0].duration_millis is None
+        assert jobs[0].columns == []
+        assert jobs[0].function_name is None
+        assert jobs[0].function_version is None
+        assert jobs[0].failure is None
+        assert jobs[1].completed_at_millis == 2000
+        assert jobs[1].duration_millis == 0
+        assert jobs[1].columns == ["embedding"]
+        assert jobs[1].function_name == "features$embed"
+        assert jobs[1].function_version == "7"
+        assert jobs[1].failure is None
+        assert jobs[2].state == "failed"
+        assert jobs[2].duration_millis == 200
+        assert jobs[2].failure.phase == "execute"
+        assert jobs[2].failure.message == "worker failed"
+        assert jobs[2].failure.retryable is False
+        assert jobs[2].failure.traceback is None
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
