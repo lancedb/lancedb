@@ -112,6 +112,13 @@ class _StreamingDatasetAdapter(IterableDataset):
             yield _WorkerSample(sample, self.dataset)
 
     def __getattr__(self, name):
+        # Special methods are never forwarded. Before Python 3.11 an object
+        # has no default ``__getstate__``, so pickle's lookup of it lands
+        # here; forwarding it would pickle the wrapped dataset's state as
+        # this adapter's own, and a spawned worker would get an adapter
+        # with no ``dataset``.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         dataset = self.__dict__.get("dataset")
         if dataset is None:
             raise AttributeError(name)
