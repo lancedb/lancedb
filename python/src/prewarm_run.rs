@@ -56,10 +56,10 @@ impl PrewarmRun {
         }
     }
 
-    pub fn join(self_: PyRef<'_, Self>, rank: u32) -> PyResult<Bound<'_, PyAny>> {
+    pub fn join(self_: PyRef<'_, Self>, rank: u32, first_wave: u64) -> PyResult<Bound<'_, PyAny>> {
         let run = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let rank = run.join(rank).await.infer_error()?;
+            let rank = run.join(rank, first_wave).await.infer_error()?;
             Ok(PrewarmRunRank {
                 inner: Arc::new(rank),
             })

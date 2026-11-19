@@ -89,10 +89,11 @@ class AsyncPrewarmRunRank:
     async def announce(self, waves: Waves) -> Optional[int]:
         """Announce upcoming waves, mapping each wave to its row ranges.
 
-        Only rank 0 may announce. Waves must follow the last announced one
-        and stay within `RunView.announce_limit`.
-        Repeating an announced wave with the same rows is harmless. Returns
-        the highest wave announced so far.
+        Only rank 0 may announce. Waves may come in any order, and the server
+        warms the lowest one first; they must stay within
+        `RunView.announce_limit`. Repeating an announced wave with the same
+        rows is harmless, and a wave every rank has passed is ignored.
+        Returns the highest wave announced so far.
         """
         return await self._inner.announce(
             [(wave, _ranges(ranges)) for wave, ranges in sorted(waves.items())]
@@ -169,10 +170,13 @@ class AsyncPrewarmRun:
         """A reader for ``rank``, which another process has joined."""
         return AsyncPrewarmRunReader(self._inner.reader(rank))
 
-    async def join(self, rank: int) -> AsyncPrewarmRunRank:
+    async def join(self, rank: int, first_wave: int = 0) -> AsyncPrewarmRunRank:
         """Join as ``rank`` and start sending heartbeats. Joining again is
-        harmless."""
-        return AsyncPrewarmRunRank(await self._inner.join(rank))
+        harmless.
+
+        ``first_wave`` is the wave the rank reads first: 0 unless training
+        resumes part way through the data."""
+        return AsyncPrewarmRunRank(await self._inner.join(rank, first_wave))
 
 
 class PrewarmRunRank:
@@ -247,6 +251,6 @@ class PrewarmRun:
         """See `AsyncPrewarmRun.reader`."""
         return PrewarmRunReader(self._inner.reader(rank))
 
-    def join(self, rank: int) -> PrewarmRunRank:
+    def join(self, rank: int, first_wave: int = 0) -> PrewarmRunRank:
         """See `AsyncPrewarmRun.join`."""
-        return PrewarmRunRank(LOOP.run(self._inner.join(rank)))
+        return PrewarmRunRank(LOOP.run(self._inner.join(rank, first_wave)))

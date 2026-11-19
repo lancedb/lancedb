@@ -67,7 +67,7 @@ EXPECTED_CALLS = [
             "world_size": 2,
         },
     ),
-    ("join", {"rank": 0}),
+    ("join", {"rank": 0, "current_wave": 0}),
     (
         "announce",
         {

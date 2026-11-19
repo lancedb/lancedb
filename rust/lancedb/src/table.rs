@@ -3275,7 +3275,7 @@ impl Table {
     ///         world_size: 8,
     ///     })
     ///     .await?;
-    /// let rank = run.join(0).await?;
+    /// let rank = run.join(0, 0).await?;
     /// rank.wait_ready(0, Duration::from_secs(600)).await?;
     /// // ... read wave 0 ...
     /// rank.close().await?;

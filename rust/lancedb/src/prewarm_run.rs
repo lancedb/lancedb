@@ -5,7 +5,8 @@
 //!
 //! A training job opens one run per table. Each rank joins it, rank 0
 //! announces the rows of upcoming waves, and every rank waits for a wave to
-//! be warm before reading it. While a rank is joined, a background task sends
+//! be warm before reading it. The client numbers waves; a run that resumes
+//! training part way through its data starts at a wave above 0. While a rank is joined, a background task sends
 //! heartbeats that keep it live and tell LanceDB Enterprise which wave it is
 //! reading, so the server warms the waves ahead and lets consumed ones go.
 //!
@@ -44,7 +45,6 @@ pub mod error_codes {
     pub const NOT_JOINED: &str = "not_joined";
     pub const RUN_KEY_CONFLICT: &str = "run_key_conflict";
     pub const WAVE_NOT_ANNOUNCED: &str = "wave_not_announced";
-    pub const WAVE_OUT_OF_ORDER: &str = "wave_out_of_order";
     pub const ANNOUNCEMENT_CONFLICT: &str = "announcement_conflict";
     pub const BEYOND_HORIZON: &str = "beyond_horizon";
     pub const RUN_RELEASED: &str = "run_released";
@@ -198,15 +198,19 @@ impl PrewarmRun {
         }
     }
 
-    /// Join the run as `rank` and start sending heartbeats. Joining again
-    /// with the same rank is harmless.
-    pub async fn join(&self, rank: u32) -> Result<PrewarmRunRank> {
+    /// Join the run as `rank` and start sending heartbeats. `first_wave` is
+    /// the wave the rank reads first: 0 unless training resumes part way
+    /// through the data. The server needs it at once, since the waves it
+    /// warms are the ones ahead of the slowest rank. Joining again with the
+    /// same rank is harmless.
+    pub async fn join(&self, rank: u32, first_wave: u64) -> Result<PrewarmRunRank> {
         let deadline = Instant::now() + DEFAULT_RUN_CALL_TIMEOUT;
-        let view: RunView = call(self, "join", json!({ "rank": rank }), deadline).await?;
+        let body = json!({ "rank": rank, "current_wave": first_wave });
+        let view: RunView = call(self, "join", body, deadline).await?;
         let shared = Arc::new(RankShared {
             run: self.clone(),
             rank,
-            current_wave: AtomicU64::new(view.reading_wave),
+            current_wave: AtomicU64::new(first_wave),
             view: Mutex::new(view),
         });
         let heartbeat = tokio::spawn(heartbeat_loop(shared.clone()));
@@ -265,8 +269,11 @@ impl Member<'_> {
             match call(self.run, name, body.clone(), deadline).await {
                 Err(Error::PrewarmRun { code, .. }) if code == error_codes::NOT_JOINED => {
                     if let Some(shared) = self.joined {
-                        let view: RunView =
-                            call(self.run, "join", json!({ "rank": self.rank }), deadline).await?;
+                        let rejoin = json!({
+                            "rank": self.rank,
+                            "current_wave": shared.current_wave.load(Ordering::Relaxed),
+                        });
+                        let view: RunView = call(self.run, "join", rejoin, deadline).await?;
                         shared.record(view);
                         return call(self.run, name, body, deadline).await;
                     }
@@ -392,10 +399,11 @@ impl PrewarmRunRank {
         self.shared.view()
     }
 
-    /// Announce upcoming waves. Only rank 0 may announce; waves must follow
-    /// the last announced one and stay within [`RunView::announce_limit`].
-    /// Repeating an announced wave with the same rows is harmless. Returns
-    /// the highest wave announced so far.
+    /// Announce upcoming waves. Only rank 0 may announce. Waves may come in
+    /// any order, and the server warms the lowest one first; they must stay
+    /// within [`RunView::announce_limit`]. Repeating an announced wave with
+    /// the same rows is harmless, and a wave every rank has passed is
+    /// ignored. Returns the highest wave announced so far.
     pub async fn announce(&self, waves: Vec<WaveAnnouncement>) -> Result<Option<u64>> {
         #[derive(Deserialize)]
         struct Reply {

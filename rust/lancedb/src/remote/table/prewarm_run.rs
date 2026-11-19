@@ -357,7 +357,7 @@ mod tests {
             )
             .reply("wave_status", 200, json!({ "wave": 0, "status": "ready" }));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(1).await.unwrap();
+        let rank = run.join(1, 0).await.unwrap();
         rank.wait_ready(0, Duration::from_secs(60)).await.unwrap();
         let polls = script.calls("wave_status");
         assert_eq!(polls.len(), 3);
@@ -373,7 +373,7 @@ mod tests {
             .reply("wave_status", 502, json!("bad gateway"))
             .reply("wave_status", 200, json!({ "wave": 3, "status": "ready" }));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         rank.wait_ready(3, Duration::from_secs(60)).await.unwrap();
         assert_eq!(script.calls("wave_status").len(), 3);
     }
@@ -382,7 +382,7 @@ mod tests {
     async fn wait_ready_times_out_while_the_supervisor_is_away() {
         let script = opened().reply("wave_status", 503, error(error_codes::NOT_READY));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         let error = rank
             .wait_ready(0, Duration::from_secs(5))
             .await
@@ -396,9 +396,17 @@ mod tests {
             .reply("wave_status", 409, error(error_codes::NOT_JOINED))
             .reply("wave_status", 200, json!({ "wave": 0, "status": "ready" }));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(1).await.unwrap();
-        rank.wait_ready(0, Duration::from_secs(60)).await.unwrap();
-        assert_eq!(script.calls("join").len(), 2);
+        let rank = run.join(1, 3).await.unwrap();
+        rank.wait_ready(5, Duration::from_secs(60)).await.unwrap();
+        // The first join carries the rank's first wave, and the second the
+        // wave it had reached when the server dropped it.
+        assert_eq!(
+            script.calls("join"),
+            vec![
+                json!({ "rank": 1, "current_wave": 3 }),
+                json!({ "rank": 1, "current_wave": 5 }),
+            ]
+        );
         assert_eq!(script.calls("wave_status").len(), 2);
     }
 
@@ -406,7 +414,7 @@ mod tests {
     async fn a_failed_run_raises_with_the_server_diagnostic() {
         let script = opened().reply("wave_status", 410, error(error_codes::RUN_FAILED));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         let error = rank
             .wait_ready(0, Duration::from_secs(60))
             .await
@@ -433,7 +441,7 @@ mod tests {
             json!({ "wave": 0, "status": "consumed" }),
         );
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         let error = rank
             .wait_ready(0, Duration::from_secs(60))
             .await
@@ -450,7 +458,7 @@ mod tests {
             .reply("announce", 200, json!({ "highest_announced": 1 }))
             .reply("rewarm", 200, json!({}));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         let range = RowRange {
             fragment_id: 3,
             start: 10,
@@ -489,7 +497,7 @@ mod tests {
     async fn a_rejected_announcement_raises() {
         let script = opened().reply("announce", 409, error(error_codes::BEYOND_HORIZON));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         let error = rank.announce(vec![]).await.unwrap_err();
         assert!(
             matches!(&error, Error::PrewarmRun { code, .. } if code == error_codes::BEYOND_HORIZON),
@@ -505,7 +513,7 @@ mod tests {
             .reply("wave_status", 200, json!({ "wave": 4, "status": "ready" }))
             .reply("heartbeat", 200, view(1_000));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(1).await.unwrap();
+        let rank = run.join(1, 0).await.unwrap();
         rank.wait_ready(4, Duration::from_secs(60)).await.unwrap();
         tokio::time::sleep(Duration::from_millis(2_500)).await;
         let beats = script.calls("heartbeat");
@@ -520,7 +528,7 @@ mod tests {
             .reply("join", 200, view(1_000))
             .reply("heartbeat", 410, error(error_codes::RUN_RELEASED));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let _rank = run.join(0).await.unwrap();
+        let _rank = run.join(0, 0).await.unwrap();
         tokio::time::sleep(Duration::from_secs(10)).await;
         assert_eq!(script.calls("heartbeat").len(), 1);
     }
@@ -529,7 +537,7 @@ mod tests {
     async fn closing_an_ended_run_succeeds() {
         let script = opened().reply("close", 410, error(error_codes::RUN_RELEASED));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         rank.close().await.unwrap();
         assert_eq!(script.calls("close"), vec![json!({ "rank": 0 })]);
     }
@@ -646,7 +654,7 @@ mod tests {
             .reply("join", 200, view(1_000))
             .reply("heartbeat", 200, view(1_000));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
-        let rank = run.join(0).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
         rank.report_wave(5);
         rank.report_wave(3);
         tokio::time::sleep(Duration::from_millis(1_500)).await;
