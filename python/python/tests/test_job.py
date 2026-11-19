@@ -123,6 +123,33 @@ async def test_job_live_accessors_propagate_request_errors(job_accessors, method
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("method", ["fetch_status", "fetch_events"])
+async def test_job_fetch_accessors_preserve_existing_overrides(
+    sync, method, monkeypatch
+):
+    job = AsyncJob(None)
+    if sync:
+        job = Job(job)
+    original = "status" if method == "fetch_status" else "events"
+    value = "running" if original == "status" else pa.table({"state": ["running"]})
+    override = MagicMock(return_value=value) if sync else AsyncMock(return_value=value)
+    monkeypatch.setattr(job, original, override)
+    kwargs = (
+        {} if original == "status" else {"limit": 10, "filter": "state = 'running'"}
+    )
+
+    if sync:
+        actual = await asyncio.to_thread(getattr(job, method), **kwargs)
+    else:
+        actual = await getattr(job, method)(**kwargs)
+    assert actual is value
+    override.assert_called_once_with(**kwargs)
+    if not sync:
+        override.assert_awaited_once_with(**kwargs)
+
+
+@pytest.mark.asyncio
 async def test_job_live_accessors_for_completed_local_jobs(job_accessors):
     job, call = job_accessors(None)
     assert job.state == "finished"

@@ -256,7 +256,9 @@ class AsyncJob(Generic[T]):
         for the cached state. ``job.status`` without parentheses is a method,
         not a lifecycle state.
         """
-        return await self.fetch_status()
+        if self._inner is None:
+            return "finished"
+        return await self._inner.status()
 
     async def fetch_status(self) -> str:
         """Fetch the operation's current lifecycle state: "running", "finished",
@@ -273,9 +275,7 @@ class AsyncJob(Generic[T]):
         >>> state = await job.fetch_status()  # doctest: +SKIP
         >>> print(state, job.state)  # doctest: +SKIP
         """
-        if self._inner is None:
-            return "finished"
-        return await self._inner.status()
+        return await self.status()
 
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
@@ -622,7 +622,14 @@ class AsyncJob(Generic[T]):
         See [fetch_events()][lancedb.job.AsyncJob.fetch_events].
         Call ``await job.fetch_events(...)`` to request recorded event history.
         """
-        return await self.fetch_events(limit=limit, filter=filter)
+        if self._inner is None:
+            raise NotImplementedError(
+                _append_doc_url(
+                    "job event history is only available for server-side jobs",
+                    "jobs",
+                )
+            )
+        return await self._inner.events(limit=limit, filter=filter)
 
     async def fetch_events(
         self,
@@ -659,14 +666,7 @@ class AsyncJob(Generic[T]):
         >>> events = await job.fetch_events(limit=100)  # doctest: +SKIP
         >>> print(events.to_pylist())  # doctest: +SKIP
         """
-        if self._inner is None:
-            raise NotImplementedError(
-                _append_doc_url(
-                    "job event history is only available for server-side jobs",
-                    "jobs",
-                )
-            )
-        return await self._inner.events(limit=limit, filter=filter)
+        return await self.events(limit=limit, filter=filter)
 
     def __repr__(self) -> str:
         return _job_repr("AsyncJob", self)
@@ -748,7 +748,9 @@ class Job(Generic[T]):
         the cached state. ``job.status`` without parentheses is a method,
         not a lifecycle state.
         """
-        return self.fetch_status()
+        if self._inner is None:
+            return "finished"
+        return LOOP.run(self._inner.status())
 
     def fetch_status(self) -> str:
         """Fetch the current lifecycle state: "running", "finished",
@@ -763,9 +765,7 @@ class Job(Generic[T]):
         >>> state = job.fetch_status()  # doctest: +SKIP
         >>> print(state, job.state)  # doctest: +SKIP
         """
-        if self._inner is None:
-            return "finished"
-        return LOOP.run(self._inner.fetch_status())
+        return self.status()
 
     def wait(
         self,
@@ -916,7 +916,14 @@ class Job(Generic[T]):
 
         See [fetch_events()][lancedb.job.Job.fetch_events].
         """
-        return self.fetch_events(limit=limit, filter=filter)
+        if self._inner is None:
+            raise NotImplementedError(
+                _append_doc_url(
+                    "job event history is only available for server-side jobs",
+                    "jobs",
+                )
+            )
+        return LOOP.run(self._inner.events(limit=limit, filter=filter))
 
     def fetch_events(
         self,
@@ -934,14 +941,7 @@ class Job(Generic[T]):
         >>> events = job.fetch_events(limit=100)  # doctest: +SKIP
         >>> print(events.to_pylist())  # doctest: +SKIP
         """
-        if self._inner is None:
-            raise NotImplementedError(
-                _append_doc_url(
-                    "job event history is only available for server-side jobs",
-                    "jobs",
-                )
-            )
-        return LOOP.run(self._inner.fetch_events(limit=limit, filter=filter))
+        return self.events(limit=limit, filter=filter)
 
     def __repr__(self) -> str:
         return _job_repr("Job", self)
