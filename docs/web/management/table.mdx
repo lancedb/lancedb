@@ -395,16 +395,12 @@ file, up to 64 KiB by default, and larger values are stored outside it.
 
 ### Blob columns {#multimodal-blob-v2}
 
-<Badge color="purple">Early access</Badge>
-
 Filter rows by their metadata first. Then read the matching blob bytes in
 Python, or copy the matching rows to another table with Enterprise SQL.
 
-{/* Draft for Blob v2 GA. Confirm release status before removing Early access.
-
-Blob v2 GA supports standard tables. Tables with Realtime or MemWAL enabled
-are outside the GA support scope.
-*/}
+Starting with LanceDB Enterprise 1.15.0, Blob v2 is generally available on
+ordinary tables. Tables with Realtime Engine or MemWAL enabled are outside
+this support scope.
 
 #### From image files to a filtered table {#photo-tutorial}
 
