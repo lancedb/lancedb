@@ -2295,6 +2295,53 @@ def test_columns_invalid_column_raises(tmp_path):
         list(ds)
 
 
+@pytest.fixture
+def struct_table(tmp_path):
+    """A table with a struct column, ``location {city, zip}``."""
+    db = lancedb.connect(tmp_path)
+    rows = [
+        {"id": i, "location": {"city": f"city-{i}", "zip": i}} for i in range(NUM_ROWS)
+    ]
+    return db.create_table("data", pa.Table.from_pylist(rows))
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["location.city", "id * 2", "id AS renamed"],
+    ids=["nested_field", "expression", "alias"],
+)
+def test_columns_take_top_level_names_only(struct_table, column):
+    """``columns`` names top-level columns. A nested field or an expression is
+    rejected by name, though a plain query on the table accepts both. A prewarm
+    run relies on this: it can serve only selections whose schema comes from
+    the table without a query."""
+    ds = StreamingDataset(
+        struct_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id", column],
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        list(ds)
+
+
+def test_columns_select_a_whole_struct(struct_table):
+    """A struct column is a top-level column, so it is read whole."""
+    ds = StreamingDataset(
+        struct_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id", "location"],
+    )
+    items = list(ds)
+    assert len(items) == NUM_ROWS
+    assert all(list(item.keys()) == ["id", "location"] for item in items)
+    assert all(
+        item["location"] == {"city": f"city-{item['id']}", "zip": item["id"]}
+        for item in items
+    )
+
+
 def test_shuffle_clump_size_yields_all_rows(lance_table):
     """shuffle_clump_size still produces a complete epoch with no duplicates or
     omissions — clumping affects I/O locality, not correctness."""
