@@ -67,12 +67,13 @@ pub(super) fn attach<S: HttpSend>(
     identifier: &str,
     run_id: String,
     version: u64,
+    wave_positions: Option<u64>,
 ) -> PrewarmRun {
     let transport = RemotePrewarmRunTransport {
         client: client.clone(),
         identifier: identifier.to_string(),
     };
-    PrewarmRun::new(Arc::new(transport), run_id, version)
+    PrewarmRun::new(Arc::new(transport), run_id, version, wave_positions)
 }
 
 /// Open a run with `POST /v1/table/{id}/prewarm_run/`.
@@ -86,6 +87,7 @@ pub(super) async fn open<S: HttpSend>(
     struct Reply {
         run_id: String,
         version: u64,
+        wave_positions: u64,
     }
     body["run_key"] = json!(options.run_key);
     body["version"] = json!(options.version);
@@ -102,7 +104,13 @@ pub(super) async fn open<S: HttpSend>(
             request_id,
             status_code: Some(status),
         })?;
-        return Ok(attach(client, identifier, reply.run_id, reply.version));
+        return Ok(attach(
+            client,
+            identifier,
+            reply.run_id,
+            reply.version,
+            Some(reply.wave_positions),
+        ));
     }
     let text = response.text().await.unwrap_or_default();
     let body = serde_json::from_str::<ErrorBody>(&text).ok();
@@ -296,7 +304,11 @@ mod tests {
     /// A script with an open run and a join whose heartbeats stay quiet.
     fn opened() -> Script {
         Script::default()
-            .reply("open", 200, json!({ "run_id": "run-1", "version": 42 }))
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
+            )
             .reply("join", 200, view(3_600_000))
     }
 
@@ -306,6 +318,7 @@ mod tests {
         let run = script.table().open_prewarm_run(options()).await.unwrap();
         assert_eq!(run.run_id(), "run-1");
         assert_eq!(run.version(), 42);
+        assert_eq!(run.wave_positions(), Some(64));
         assert_eq!(
             script.calls("open"),
             vec![json!({
@@ -508,7 +521,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn heartbeats_report_the_wave_being_read() {
         let script = Script::default()
-            .reply("open", 200, json!({ "run_id": "run-1", "version": 42 }))
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
+            )
             .reply("join", 200, view(1_000))
             .reply("wave_status", 200, json!({ "wave": 4, "status": "ready" }))
             .reply("heartbeat", 200, view(1_000));
@@ -524,7 +541,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn heartbeats_stop_when_the_run_ends() {
         let script = Script::default()
-            .reply("open", 200, json!({ "run_id": "run-1", "version": 42 }))
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
+            )
             .reply("join", 200, view(1_000))
             .reply("heartbeat", 410, error(error_codes::RUN_RELEASED));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
@@ -650,7 +671,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn reported_waves_reach_the_heartbeat() {
         let script = Script::default()
-            .reply("open", 200, json!({ "run_id": "run-1", "version": 42 }))
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
+            )
             .reply("join", 200, view(1_000))
             .reply("heartbeat", 200, view(1_000));
         let run = script.table().open_prewarm_run(options()).await.unwrap();

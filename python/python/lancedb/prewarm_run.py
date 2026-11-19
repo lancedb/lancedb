@@ -171,6 +171,12 @@ class AsyncPrewarmRun:
         """The table version the run reads."""
         return self._inner.version
 
+    @property
+    def wave_positions(self) -> Optional[int]:
+        """Permutation positions of each split that one wave holds. ``None``
+        on a handle from ``attach_prewarm_run``."""
+        return self._inner.wave_positions
+
     def reader(self, rank: int) -> AsyncPrewarmRunReader:
         """A reader for ``rank``, which another process has joined."""
         return AsyncPrewarmRunReader(self._inner.reader(rank))
@@ -251,6 +257,11 @@ class PrewarmRun:
     @property
     def version(self) -> int:
         return self._inner.version
+
+    @property
+    def wave_positions(self) -> Optional[int]:
+        """See `AsyncPrewarmRun.wave_positions`."""
+        return self._inner.wave_positions
 
     def reader(self, rank: int) -> PrewarmRunReader:
         """See `AsyncPrewarmRun.reader`."""

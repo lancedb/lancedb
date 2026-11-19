@@ -50,6 +50,11 @@ impl PrewarmRun {
         self.inner.version()
     }
 
+    #[getter]
+    pub fn wave_positions(&self) -> Option<u64> {
+        self.inner.wave_positions()
+    }
+
     pub fn reader(&self, rank: u32) -> PrewarmRunReader {
         PrewarmRunReader {
             inner: self.inner.reader(rank),

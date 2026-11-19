@@ -162,6 +162,7 @@ pub struct PrewarmRun {
     transport: Arc<dyn PrewarmRunTransport>,
     run_id: Arc<str>,
     version: u64,
+    wave_positions: Option<u64>,
 }
 
 impl PrewarmRun {
@@ -169,11 +170,13 @@ impl PrewarmRun {
         transport: Arc<dyn PrewarmRunTransport>,
         run_id: String,
         version: u64,
+        wave_positions: Option<u64>,
     ) -> Self {
         Self {
             transport,
             run_id: run_id.into(),
             version,
+            wave_positions,
         }
     }
 
@@ -184,6 +187,14 @@ impl PrewarmRun {
     /// The table version the run reads.
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Permutation positions of each split that one wave holds, as the server
+    /// chose when the run opened. A rank needs it before joining, to work out
+    /// its first wave. `None` on a handle attached by run id, whose process
+    /// gets it from the one that opened the run.
+    pub fn wave_positions(&self) -> Option<u64> {
+        self.wave_positions
     }
 
     /// A reader for `rank` that waits on and re-warms waves without joining

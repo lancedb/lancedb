@@ -49,7 +49,7 @@ def make_handler(replies):
 
 
 REPLIES = {
-    "open": (200, {"run_id": "run-1", "version": 42}),
+    "open": (200, {"run_id": "run-1", "version": 42, "wave_positions": 64}),
     "join": (200, VIEW),
     "announce": (200, {"highest_announced": 1}),
     "wave_status": (200, {"wave": 0, "status": "ready"}),
@@ -94,6 +94,8 @@ def test_prewarm_run_sync():
             "job-7-attempt-0-epoch-0", version=42, world_size=2, columns=["id"]
         )
         assert (run.run_id, run.version) == ("run-1", 42)
+        assert run.wave_positions == 64
+        assert table.attach_prewarm_run("run-1", 42).wave_positions is None
         rank = run.join(0)
         assert rank.rank == 0
         assert rank.view().wave_positions == 64

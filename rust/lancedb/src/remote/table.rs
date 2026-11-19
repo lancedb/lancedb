@@ -4880,6 +4880,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             &self.identifier,
             run_id.to_string(),
             version,
+            None,
         ))
     }
 
