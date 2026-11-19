@@ -15,6 +15,10 @@ class AsyncRecordBatchReader:
     An async iterator over a stream of RecordBatches.
 
     Also allows access to the schema of the stream
+
+    Cancelling an active batch read closes its native query stream. Further reads
+    of that stream raise ``RuntimeError``; run the query again to obtain a new
+    reader.
     """
 
     def __init__(
