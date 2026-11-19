@@ -73,6 +73,8 @@ The compartment OCID can also be supplied at runtime instead of being stored in 
 
 ```python
     registry = get_registry()
-    registry.set_var("oci_compartment", "ocid1.compartment.oc1..<your-compartment>")
+    registry.set_var(
+        "oci_compartment", "ocid1.compartment.oc1..<your-compartment>", secret=False
+    )
     oci_genai = registry.get("oci-genai").create(compartment_id="$var:oci_compartment")
 ```
