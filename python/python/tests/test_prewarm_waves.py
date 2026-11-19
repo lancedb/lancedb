@@ -80,6 +80,22 @@ def test_start_positions_trim_waves_but_keep_their_numbers():
         WavePlan(permutation([split0, split1]), 2, 2, {0: 7})
 
 
+def test_ranges_are_cut_from_row_addresses_when_the_permutation_has_them():
+    # A table with stable row ids: the ids count up from 0, while the rows
+    # sit in fragment 3 after a compaction.
+    row_ids = [5, 0, 1, 2]
+    addresses = [address(3, i) for i in (9, 4, 5, 6)]
+    plain = permutation([row_ids])
+    with_addresses = plain.append_column("row_addr", pa.array(addresses, pa.uint64()))
+
+    assert not WavePlan.has_row_addresses(plain)
+    assert WavePlan(plain, 1, 4).ranges(0) == [RowRange(0, 0, 3), RowRange(0, 5, 6)]
+    assert WavePlan.has_row_addresses(with_addresses)
+    plan = WavePlan(with_addresses, 1, 4)
+    assert plan.ranges(0) == [RowRange(3, 4, 7), RowRange(3, 9, 10)]
+    assert plan.fetch_ranges(0, 1, 3) == [RowRange(3, 4, 6)]
+
+
 @pytest.fixture
 def table(tmp_path):
     db = lancedb.connect(tmp_path)

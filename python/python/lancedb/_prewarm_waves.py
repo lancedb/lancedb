@@ -61,7 +61,11 @@ class WavePlan:
         ----------
         permutation: pa.Table
             The permutation table (``row_id``, ``split_id``) in read order: a
-            split's position ``p`` is its ``p``-th row.
+            split's position ``p`` is its ``p``-th row. Ranges are cut from
+            its ``row_addr`` column when it has one, as a permutation built
+            with ``with_row_addresses`` does. Without it they are cut from
+            ``row_id``, which is only right on a table without stable row
+            ids.
         num_splits: int
             Number of splits, ``0 .. num_splits - 1``.
         wave_positions: int
@@ -75,7 +79,8 @@ class WavePlan:
         if wave_positions <= 0:
             raise ValueError(f"wave_positions must be positive, got {wave_positions}")
         start_positions = start_positions or {}
-        row_ids = permutation.column("row_id").to_numpy().astype(np.uint64)
+        addresses = "row_addr" if self.has_row_addresses(permutation) else "row_id"
+        row_ids = permutation.column(addresses).to_numpy().astype(np.uint64)
         split_ids = permutation.column("split_id").to_numpy()
         self._row_ids = [row_ids[split_ids == split] for split in range(num_splits)]
         self._starts = [start_positions.get(split, 0) for split in range(num_splits)]
@@ -85,6 +90,11 @@ class WavePlan:
                 raise ValueError(
                     f"split {split} starts at position {start} but has {len(ids)} rows"
                 )
+
+    @staticmethod
+    def has_row_addresses(permutation: pa.Table) -> bool:
+        """Whether ``permutation`` records true row addresses."""
+        return "row_addr" in permutation.column_names
 
     @property
     def wave_positions(self) -> int:

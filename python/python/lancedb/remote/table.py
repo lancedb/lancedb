@@ -1545,6 +1545,7 @@ class RemoteTable(Table):
         version: int,
         world_size: int,
         columns: Optional[List[str]] = None,
+        row_addresses: bool = False,
     ) -> PrewarmRun:
         """Open a prewarm run for a training job reading this table.
 
@@ -1553,7 +1554,11 @@ class RemoteTable(Table):
         return PrewarmRun(
             LOOP.run(
                 self._table.open_prewarm_run(
-                    run_key, version=version, world_size=world_size, columns=columns
+                    run_key,
+                    version=version,
+                    world_size=world_size,
+                    columns=columns,
+                    row_addresses=row_addresses,
                 )
             )
         )

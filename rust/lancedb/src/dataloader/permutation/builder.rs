@@ -8,7 +8,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
 use datafusion_expr::col;
 use futures::TryStreamExt;
-use lance_core::ROW_ID;
+use lance_core::{ROW_ADDR, ROW_ID};
 use lance_datafusion::exec::SessionContextExt;
 
 use crate::{
@@ -25,6 +25,11 @@ use crate::{
 };
 
 pub const SRC_ROW_ID_COL: &str = "row_id";
+
+/// Each row's address in the base table, `fragment_id << 32 | offset`, at
+/// the version the permutation was built against. Stored only when the
+/// builder is asked to; see [`PermutationBuilder::with_row_addresses`].
+pub const SRC_ROW_ADDR_COL: &str = "row_addr";
 
 pub const SPLIT_NAMES_CONFIG_KEY: &str = "split_names";
 
@@ -61,6 +66,8 @@ pub struct PermutationConfig {
     temp_dir: TemporaryDirectory,
     /// Destination
     destination: PermutationDestination,
+    /// Whether to store each row's address next to its row id
+    row_addresses: bool,
 }
 
 /// Strategy for shuffling the data.
@@ -96,7 +103,7 @@ pub enum ShuffleStrategy {
 ///
 /// The permutation table is not a materialized copy of the underlying data and can be very lightweight.
 /// It is not a view of the underlying data and is not a copy of the data.  It is a separate table that
-/// stores just row id and split id.
+/// stores just row id and split id, and each row's address when asked to.
 pub struct PermutationBuilder {
     config: PermutationConfig,
     base_table: Table,
@@ -155,6 +162,23 @@ impl PermutationBuilder {
     /// The default is to use the operating system's default temporary directory.
     pub fn with_temp_dir(mut self, temp_dir: TemporaryDirectory) -> Self {
         self.config.temp_dir = temp_dir;
+        self
+    }
+
+    /// Also stores each row's address, in a [`SRC_ROW_ADDR_COL`] column.
+    ///
+    /// A row id says which row to read; a row address says where the row is
+    /// stored. The two are the same number unless the table has stable row
+    /// ids, where a row keeps its id when compaction moves it. A reader that
+    /// must name storage locations, such as one that asks LanceDB Enterprise
+    /// to warm the rows it will read next, needs the address.
+    ///
+    /// Addresses are only valid at the base table version the permutation
+    /// records. They are carried through the split strategies that keep the
+    /// scan's columns: no split, sequential and random. Any other strategy
+    /// fails the build.
+    pub fn with_row_addresses(mut self) -> Self {
+        self.config.row_addresses = true;
         self
     }
 
@@ -286,7 +310,29 @@ impl PermutationBuilder {
 
         // First pass, apply filter and load row ids.  `Shuffler` permutes positions, so
         // every rank must scan the rows in the same order to build the same permutation.
-        let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
+        let scan_columns: &[&str] = if self.config.row_addresses {
+            // The other strategies rebuild each batch from the row id and the
+            // split id they compute, which would drop the address.
+            if !matches!(
+                self.config.split_strategy,
+                SplitStrategy::NoSplit
+                    | SplitStrategy::Sequential { .. }
+                    | SplitStrategy::Random { .. }
+            ) {
+                return Err(Error::NotSupported {
+                    message: "row addresses can only be stored with no split, a sequential \
+                              split or a random split"
+                        .to_string(),
+                });
+            }
+            &[ROW_ID, ROW_ADDR]
+        } else {
+            &[ROW_ID]
+        };
+        let mut rows = self
+            .base_table
+            .query()
+            .select(Select::columns(scan_columns));
 
         if let Some(filter) = &self.config.filter {
             rows = rows.only_if(filter);
@@ -348,6 +394,11 @@ impl PermutationBuilder {
 
         // Rename _rowid to row_id
         let renamed = rename_column(sorted, ROW_ID, SRC_ROW_ID_COL)?;
+        let renamed = if self.config.row_addresses {
+            rename_column(renamed, ROW_ADDR, SRC_ROW_ADDR_COL)?
+        } else {
+            renamed
+        };
 
         let mut metadata = HashMap::from([(
             BASE_VERSION_CONFIG_KEY.to_string(),
@@ -435,6 +486,80 @@ mod tests {
             "Permutation table should only contain row_id and split_id columns, but found: {:?}",
             field_names,
         );
+    }
+
+    /// On a table without stable row ids a row's address is its row id, so
+    /// equal values in every row show the two columns stay paired through
+    /// the split, the shuffle and the sort.
+    #[tokio::test]
+    async fn test_row_addresses_are_stored_beside_row_ids() {
+        use arrow::datatypes::UInt64Type;
+        use arrow_array::cast::AsArray;
+        use futures::TryStreamExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let initial_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(100), BatchCount::from(10));
+        let data_table = db
+            .create_table("base_tbl", initial_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let permutation_table = PermutationBuilder::new(data_table.clone())
+            .with_split_strategy(
+                SplitStrategy::Random {
+                    seed: Some(7),
+                    sizes: SplitSizes::Fixed(4),
+                    clump_size: Some(5),
+                },
+                None,
+            )
+            .with_row_addresses()
+            .build()
+            .await
+            .unwrap();
+
+        let schema = permutation_table.schema().await.unwrap();
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(field_names, vec!["row_id", "row_addr", "split_id"]);
+
+        let batches: Vec<RecordBatch> = permutation_table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let mut rows = 0;
+        for batch in &batches {
+            let ids = batch["row_id"].as_primitive::<UInt64Type>();
+            let addrs = batch["row_addr"].as_primitive::<UInt64Type>();
+            assert_eq!(ids, addrs);
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, 1000);
+
+        // A strategy that rebuilds its batches cannot carry the address.
+        let error = PermutationBuilder::new(data_table)
+            .with_split_strategy(
+                SplitStrategy::Calculated {
+                    calculation: "col_a % 2".to_string(),
+                },
+                None,
+            )
+            .with_row_addresses()
+            .build()
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, Error::NotSupported { .. }), "{error:?}");
     }
 
     #[tokio::test]

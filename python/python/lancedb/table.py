@@ -2083,6 +2083,7 @@ class Table(ABC):
         version: int,
         world_size: int,
         columns: Optional[List[str]] = None,
+        row_addresses: bool = False,
     ) -> PrewarmRun:
         """Open a prewarm run for a training job reading this table.
 
@@ -2103,6 +2104,12 @@ class Table(ABC):
             Number of ranks. Fixed for the life of the run.
         columns: list of str, optional
             Columns to warm. If None, all columns are warmed.
+        row_addresses: bool, default False
+            Whether the row ranges this client announces are cut from true
+            row addresses, as they are from a permutation built with
+            ``with_row_addresses``. Ranges cut from row ids are only right on
+            a table without stable row ids, so a server needs this to accept
+            a table that has them.
 
         Examples
         --------
@@ -7685,6 +7692,7 @@ class AsyncTable:
         version: int,
         world_size: int,
         columns: Optional[List[str]] = None,
+        row_addresses: bool = False,
     ) -> AsyncPrewarmRun:
         """Open a prewarm run for a training job reading this table.
 
@@ -7692,7 +7700,11 @@ class AsyncTable:
         """
         return AsyncPrewarmRun(
             await self._inner.open_prewarm_run(
-                run_key, version=version, world_size=world_size, columns=columns
+                run_key,
+                version=version,
+                world_size=world_size,
+                columns=columns,
+                row_addresses=row_addresses,
             )
         )
 

@@ -257,6 +257,23 @@ class PermutationBuilder:
         self._async.filter(filter)
         return self
 
+    def with_row_addresses(self) -> "PermutationBuilder":
+        """
+        Also store each row's address, in a ``row_addr`` column.
+
+        A row id says which row to read; a row address says where the row is
+        stored. The two are the same number unless the table has stable row ids,
+        where a row keeps its id when compaction moves it. A reader that must name
+        storage locations, such as one that asks LanceDB Enterprise to warm the
+        rows it will read next, needs the address.
+
+        Addresses are only valid at the base table version the permutation
+        records. They are only stored with no split, ``split_sequential`` or
+        ``split_random``; any other split strategy fails ``execute``.
+        """
+        self._async.with_row_addresses()
+        return self
+
     def execute(self) -> LanceTable:
         """
         Execute the configuration and create the permutation table.

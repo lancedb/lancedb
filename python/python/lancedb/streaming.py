@@ -678,9 +678,33 @@ class StreamingDataset(IterableDataset):
         self._resume_positions: dict[int, int] = {}
 
         # Build the permutation table once, deterministically.
-        builder = permutation_builder(table)
-        if filter is not None:
-            builder = builder.filter(filter)
+        def new_builder():
+            builder = permutation_builder(table)
+            if filter is not None:
+                builder = builder.filter(filter)
+            return builder
+
+        def build(split):
+            """Build with ``split``, recording row addresses when a prewarm
+            run may use them.
+
+            A run names the rows to warm by where they are stored. On a table
+            with stable row ids that is not what a row id says, so the
+            permutation has to carry each row's address as well.
+            """
+            if _prewarm and _prewarm_session.backend_for(table) is not None:
+                try:
+                    return split(new_builder().with_row_addresses()).execute()
+                except Exception as error:
+                    # A server that cannot return row addresses must not stop
+                    # the dataset from being built. Without them a run still
+                    # works on a table without stable row ids.
+                    logger.warning(
+                        "building the permutation without row addresses: %s", error
+                    )
+            return split(new_builder()).execute()
+
+        builder = new_builder()
         if split_strategy is not None:
             # Escape hatch: lets any PermutationBuilder split strategy drive this
             # dataset (split_hash, split_calculated, bootstrap_sample, or any future
@@ -731,11 +755,15 @@ class StreamingDataset(IterableDataset):
                 )
         elif shuffle:
             perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
-            self._perm_table = builder.split_random(
-                fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
-            ).execute()
+            self._perm_table = build(
+                lambda builder: builder.split_random(
+                    fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
+                )
+            )
         else:
-            self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+            self._perm_table = build(
+                lambda builder: builder.split_sequential(fixed=num_splits)
+            )
         # Only the split_strategy path needs a permutation fingerprint in the
         # checkpoint (see `_checkpoint_snapshot`): split_random/split_sequential are
         # already fully pinned by shuffle_seed/num_splits, and a fingerprint over raw

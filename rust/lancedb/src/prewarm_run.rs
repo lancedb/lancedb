@@ -70,6 +70,14 @@ pub struct PrewarmRunOptions {
     pub columns: Vec<String>,
     /// Number of ranks. Fixed for the life of the run.
     pub world_size: u32,
+    /// Whether the row ranges this client announces are cut from true row
+    /// addresses. Set it when they come from a permutation built with
+    /// [`with_row_addresses`]. A client that cuts ranges from row ids is
+    /// only right on a table without stable row ids, where the two are the
+    /// same number, so a server needs this to accept a table that has them.
+    ///
+    /// [`with_row_addresses`]: crate::dataloader::permutation::builder::PermutationBuilder::with_row_addresses
+    pub row_addresses: bool,
 }
 
 /// Rows `[start, end)` of one fragment.

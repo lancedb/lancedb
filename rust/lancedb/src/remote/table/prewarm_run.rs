@@ -93,6 +93,11 @@ pub(super) async fn open<S: HttpSend>(
     body["version"] = json!(options.version);
     body["columns"] = json!(options.columns);
     body["world_size"] = json!(options.world_size);
+    // Sent only when set, so a server that predates the field sees the body
+    // it always has.
+    if options.row_addresses {
+        body["row_addresses"] = json!(true);
+    }
     let request = client
         .post(&format!("/v1/table/{identifier}/prewarm_run/"))
         .json(&body);
@@ -298,6 +303,7 @@ mod tests {
             version: 42,
             columns: vec!["image".into()],
             world_size: 2,
+            row_addresses: false,
         }
     }
 
@@ -328,6 +334,17 @@ mod tests {
                 "world_size": 2,
             })]
         );
+    }
+
+    #[tokio::test]
+    async fn open_says_when_ranges_are_cut_from_row_addresses() {
+        let script = opened();
+        let options = PrewarmRunOptions {
+            row_addresses: true,
+            ..options()
+        };
+        script.table().open_prewarm_run(options).await.unwrap();
+        assert_eq!(script.calls("open")[0]["row_addresses"], json!(true));
     }
 
     #[tokio::test]

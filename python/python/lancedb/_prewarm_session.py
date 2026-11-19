@@ -85,12 +85,14 @@ class _RemoteBackend:
         version: int,
         world_size: int,
         columns: Optional[Sequence[str]],
+        row_addresses: bool,
     ):
         return self._table.open_prewarm_run(
             run_key,
             version=version,
             world_size=world_size,
             columns=list(columns) if columns is not None else None,
+            row_addresses=row_addresses,
         )
 
     def reader(self, run_id: str, version: int, rank: int):
@@ -289,7 +291,11 @@ def open_session(
     run_key = _run_key(attempt_id, [table.name, version, *key_parts])
     try:
         run = backend.open_run(
-            run_key, version=version, world_size=world_size, columns=columns
+            run_key,
+            version=version,
+            world_size=world_size,
+            columns=columns,
+            row_addresses=WavePlan.has_row_addresses(permutation),
         )
     except NotImplementedError:
         unavailable("the server does not support prewarm runs")

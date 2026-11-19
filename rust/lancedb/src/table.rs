@@ -3273,6 +3273,7 @@ impl Table {
     ///         version: 42,
     ///         columns: vec!["image".into(), "label".into()],
     ///         world_size: 8,
+    ///         row_addresses: false,
     ///     })
     ///     .await?;
     /// let rank = run.join(0, 0).await?;

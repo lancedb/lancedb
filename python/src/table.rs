@@ -1934,13 +1934,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (run_key, *, version, world_size, columns=None))]
+    #[pyo3(signature = (run_key, *, version, world_size, columns=None, row_addresses=false))]
     pub fn open_prewarm_run(
         self_: PyRef<'_, Self>,
         run_key: String,
         version: u64,
         world_size: u32,
         columns: Option<Vec<String>>,
+        row_addresses: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let options = lancedb::prewarm_run::PrewarmRunOptions {
@@ -1948,6 +1949,7 @@ impl Table {
             version,
             columns: columns.unwrap_or_default(),
             world_size,
+            row_addresses,
         };
         future_into_py(self_.py(), async move {
             let run = inner.open_prewarm_run(options).await.infer_error()?;

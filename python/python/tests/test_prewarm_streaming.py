@@ -123,9 +123,10 @@ class FakeBackend:
         self.run = run
         self.keys = []
 
-    def open_run(self, run_key, *, version, world_size, columns):
+    def open_run(self, run_key, *, version, world_size, columns, row_addresses):
         assert version == self.run.version
         self.keys.append(run_key)
+        self.row_addresses = row_addresses
         return self.run
 
     def reader(self, run_id, version, rank):
@@ -188,6 +189,51 @@ def test_a_run_changes_no_sample_and_announces_every_wave(table, run):
     assert run.rewarms == []
     assert run.closed == [0]
     assert ds._prewarm_session is None and ds._prewarm_state is None
+
+
+def test_a_table_with_stable_row_ids_is_warmed_by_row_address(tmp_path, monkeypatch):
+    """With stable row ids a row id is not where the row is stored, so the
+    dataset records row addresses and cuts every wave from them."""
+    db = lancedb.connect(tmp_path)
+    stable = {"new_table_enable_stable_row_ids": "true"}
+    table = db.create_table(
+        "data", pa.table({"id": list(range(40))}), storage_options=stable
+    )
+    for start in range(40, NUM_ROWS, 40):
+        table.add(pa.table({"id": list(range(start, start + 40))}))
+    # Compaction moves every row; the row ids stay.
+    table.optimize()
+    rows = table.search().select(["_rowid", "_rowaddr"]).to_arrow()
+    address_of = dict(zip(rows["_rowid"].to_pylist(), rows["_rowaddr"].to_pylist()))
+    assert any(row_id != addr for row_id, addr in address_of.items())
+
+    run = FakeRun(table.version)
+    backend = FakeBackend(table, run)
+    monkeypatch.setattr(_prewarm_session, "backend_for", lambda _table: backend)
+    monkeypatch.setattr(_prewarm_session, "_POLL_INTERVAL_S", 0.005)
+
+    ds = dataset(table)
+    perm = ds._perm_table.to_arrow()
+    assert perm.column_names == ["row_id", "row_addr", "split_id"]
+    assert perm["row_addr"].to_pylist() == [
+        address_of[row_id] for row_id in perm["row_id"].to_pylist()
+    ]
+
+    assert sorted(ids(ds)) == list(range(NUM_ROWS))
+    assert backend.row_addresses is True
+    announced = {
+        (r.fragment_id, offset)
+        for ranges in run.announced.values()
+        for r in ranges
+        for offset in range(r.start, r.end)
+    }
+    assert announced == {
+        (addr >> 32, addr & 0xFFFFFFFF) for addr in address_of.values()
+    }
+
+
+def test_a_dataset_without_a_run_records_no_row_addresses(table):
+    assert dataset(table)._perm_table.to_arrow().column_names == ["row_id", "split_id"]
 
 
 def test_a_fetch_never_crosses_a_wave(table, run, monkeypatch):
