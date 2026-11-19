@@ -257,8 +257,11 @@ wait and reconnect, and the run continues.
   prewarm runs.
 - **One rank announces.** If rank 0 stops, the other ranks wait until
   their reads time out.
-- **Tables with stable row ids are not supported.** `StreamingDataset`
-  reads them without a run and logs a warning.
+- **Tables with stable row ids need a service that accepts them.**
+  `StreamingDataset` records where each row is stored, so it can warm
+  such a table. It reads without a run, and logs a warning, when the
+  version of the service does not accept these tables or when the dataset
+  is built with `split_strategy`.
 - **External blob payloads are not cached.** When a
   [Blob v2](/management/table#managed-blobs) value is stored at an external
   location, its payload is read from that location directly, not through
