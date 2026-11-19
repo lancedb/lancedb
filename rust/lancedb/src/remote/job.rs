@@ -52,7 +52,7 @@ impl From<&str> for JobState {
             "IN_PROGRESS" | "in_progress" | "created" | "CREATED" | "queued" | "QUEUED" => {
                 Self::InProgress
             }
-            "CANCELLED" | "cancelled" | "canceled" => Self::Cancelled,
+            "CANCELLED" | "cancelled" | "canceled" | "CANCELED" => Self::Cancelled,
             // The server reports a timed-out job as FAILED on describe;
             // accept the raw registry state too in case a future server
             // stops folding it.

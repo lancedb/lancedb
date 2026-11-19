@@ -46,4 +46,4 @@ At most this many records (server default 10000, cap 100000).
 optional pageToken: string;
 ```
 
-Empty starts paging for an exact jobId; otherwise continue that page.
+Empty starts retained history, including repaired rows, for an exact jobId; otherwise continue that page.

@@ -327,14 +327,14 @@ its full record, then cache it for the getters above.
 ### retry()
 
 ```ts
-retry(): Promise<Job>
+retry(): Promise<Job<T>>
 ```
 
 Select this exact attempt's pinned successor. Requires backend support.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`T`&gt;&gt;
 
 ***
 
