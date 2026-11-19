@@ -1,5 +1,6 @@
 ---
 title: "Incremental Prewarm"
+tag: "Early access"
 sidebarTitle: "Incremental Prewarm"
 description: "LanceDB Enterprise warms a training job's data just ahead of where StreamingDataset is reading, so the first epoch does not read cold from object storage."
 icon: "forward"
@@ -8,6 +9,8 @@ availability:
   embedded: unavailable
   enterprise: available
 ---
+
+<Badge color="purple">Early access</Badge>
 
 When [`StreamingDataset`](/training/data-loading) reads a table through
 LanceDB Enterprise, the service warms rows just ahead of the reader.
