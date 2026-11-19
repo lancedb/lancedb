@@ -13,6 +13,8 @@
 - [EmbeddingFunction](classes/EmbeddingFunction.md)
 - [EmbeddingFunctionRegistry](classes/EmbeddingFunctionRegistry.md)
 - [TextEmbeddingFunction](classes/TextEmbeddingFunction.md)
+- [UntrustedEmbeddingConfigError](classes/UntrustedEmbeddingConfigError.md)
+- [UntrustedEmbeddingFunction](classes/UntrustedEmbeddingFunction.md)
 
 ### Interfaces
 
@@ -21,6 +23,8 @@
 - [EmbeddingFunctionCreate](interfaces/EmbeddingFunctionCreate.md)
 - [FieldOptions](interfaces/FieldOptions.md)
 - [FunctionOptions](interfaces/FunctionOptions.md)
+- [RegisterOptions](interfaces/RegisterOptions.md)
+- [SetVarOptions](interfaces/SetVarOptions.md)
 
 ### Type Aliases
 
