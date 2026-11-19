@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
 
-@register("ollama")
+@register("ollama", safe_to_restore=True)
 class OllamaEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses Ollama

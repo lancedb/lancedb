@@ -17,7 +17,7 @@ from .utils import TEXT, api_key_not_found_help
 EMBEDDING_BATCH_SIZE = 100
 
 
-@register("gemini-text")
+@register("gemini-text", safe_to_restore=True)
 class GeminiText(TextEmbeddingFunction):
     """
     An embedding function that uses Google's Gemini API. Requires GOOGLE_API_KEY to

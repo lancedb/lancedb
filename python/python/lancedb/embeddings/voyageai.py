@@ -160,7 +160,7 @@ def sanitize_text_input(inputs: TEXT) -> List[str]:
     return inputs
 
 
-@register("voyageai")
+@register("voyageai", safe_to_restore=True)
 class VoyageAIEmbeddingFunction(EmbeddingFunction):
     """
     An embedding function that uses the VoyageAI API

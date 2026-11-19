@@ -15,7 +15,7 @@ from .registry import register
 from .utils import TEXT
 
 
-@register("huggingface")
+@register("huggingface", safe_to_restore=True)
 class TransformersEmbeddingFunction(EmbeddingFunction):
     """
     An embedding function that can use any model from the transformers library.
@@ -90,7 +90,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         return embedding
 
 
-@register("colbert")
+@register("colbert", safe_to_restore=True)
 class ColbertEmbeddings(TransformersEmbeddingFunction):
     """
     An embedding function that uses the colbert model from the huggingface library.

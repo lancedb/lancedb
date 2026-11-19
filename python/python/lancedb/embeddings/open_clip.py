@@ -6,7 +6,7 @@ import concurrent.futures
 import io
 import os
 import urllib.parse as urlparse
-from typing import TYPE_CHECKING, List, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 from urllib.request import url2pathname
 
 import numpy as np
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     import torch
 
 
-@register("open-clip")
+@register("open-clip", safe_to_restore=True)
 class OpenClipEmbeddings(EmbeddingFunction):
     """
     An embedding function that uses the OpenClip API
@@ -55,6 +55,13 @@ class OpenClipEmbeddings(EmbeddingFunction):
         self._model, self._preprocess = model, preprocess
         self._tokenizer = open_clip.get_tokenizer(self.name)
         self._ndims = None
+
+    def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
+        # `pretrained` picks the checkpoint, which may be any URL, so it stands
+        # in for the revision.
+        if self._uses_default("name", "pretrained"):
+            return []
+        return [(self.name, self.pretrained)]
 
     def ndims(self):
         if self._ndims is None:

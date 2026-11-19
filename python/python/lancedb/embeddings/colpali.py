@@ -4,7 +4,7 @@
 
 from functools import lru_cache
 from logging import warning
-from typing import List, Union, Optional, Any, Callable
+from typing import List, Union, Optional, Any, Callable, Tuple
 import numpy as np
 import io
 import warnings
@@ -15,7 +15,7 @@ from .registry import register
 from .utils import TEXT, IMAGES, is_flash_attn_2_available
 
 
-@register("colpali")
+@register("colpali", safe_to_restore=True)
 class ColPaliEmbeddings(EmbeddingFunction):
     """
     An embedding function that uses the ColPali engine for
@@ -115,6 +115,9 @@ class ColPaliEmbeddings(EmbeddingFunction):
             self.pooling_func,
             self.quantization_config,
         )
+
+    def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
+        return [] if self._uses_default("model_name") else [(self.model_name, None)]
 
     @staticmethod
     @lru_cache(maxsize=1)

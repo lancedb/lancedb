@@ -3,7 +3,7 @@
 
 
 import warnings
-from typing import List, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -13,7 +13,7 @@ from .registry import register
 from .utils import weak_lru
 
 
-@register("gte-text")
+@register("gte-text", safe_to_restore=True)
 class GteEmbeddings(TextEmbeddingFunction):
     """
     Deprecated: GTE embeddings should be used through sentence-transformers.
@@ -76,6 +76,12 @@ class GteEmbeddings(TextEmbeddingFunction):
             self.mlx = kwargs.get("mlx", False)
             if self.mlx is True:
                 self.name = "gte-mlx"
+
+    def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
+        # The MLX model is fixed and ignores `name`.
+        if self.mlx or self._uses_default("name"):
+            return []
+        return [(self.name, None)]
 
     @property
     def embedding_model(self):

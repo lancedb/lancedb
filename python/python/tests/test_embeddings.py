@@ -218,8 +218,14 @@ def test_embedding_function_variables():
     func = registry.get("variable-testing").create(key1="$var:test:some_value")
     assert func.key1 == "some_value"
 
-    # Should set a variable that the embedding function understands
+    # Secret variables only go into sensitive fields
     registry.set_var("test", "some_value")
+    with pytest.raises(ValueError, match="Variable 'test' is secret") as exc_info:
+        registry.get("variable-testing").create(key1="$var:test")
+    assert "some_value" not in str(exc_info.value)
+
+    # Should set a variable that the embedding function understands
+    registry.set_var("test", "some_value", secret=False)
     func = registry.get("variable-testing").create(key1="$var:test")
     assert func.key1 == "some_value"
 
