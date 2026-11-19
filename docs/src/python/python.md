@@ -1580,6 +1580,10 @@ Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 
 ::: lancedb.compaction.CompactionResult
 
+::: lancedb.cleanup.CleanupPlan
+
+::: lancedb.cleanup.CleanupResult
+
 ::: lancedb.prewarm.PrewarmDataResult
 
 ::: lancedb.prewarm.PrewarmDataPlan

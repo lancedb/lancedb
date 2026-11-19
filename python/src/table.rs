@@ -2309,6 +2309,37 @@ impl Table {
         })
     }
 
+    /// Explain Enterprise version cleanup without submitting a job.
+    #[pyo3(signature = (min_age_seconds=None))]
+    pub fn explain_cleanup<'py>(
+        self_: PyRef<'py, Self>,
+        min_age_seconds: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = lancedb::table::CleanupOptions::new();
+        options.min_age_seconds = min_age_seconds;
+        future_into_py(self_.py(), async move {
+            let plan = inner.explain_cleanup(options).await.infer_error()?;
+            serde_json::to_string(&plan)
+                .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
+    /// Submit Enterprise version cleanup and retain its durable job and result.
+    #[pyo3(signature = (min_age_seconds=None))]
+    pub fn cleanup_async<'py>(
+        self_: PyRef<'py, Self>,
+        min_age_seconds: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = lancedb::table::CleanupOptions::new();
+        options.min_age_seconds = min_age_seconds;
+        future_into_py(self_.py(), async move {
+            let job = inner.cleanup_async(options).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
     /// Submit remote compaction and retain its durable job and actual result.
     #[pyo3(signature = (compaction_options=None))]
     pub fn compact_async<'py>(

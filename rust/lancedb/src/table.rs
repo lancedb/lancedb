@@ -89,6 +89,8 @@ pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub use optimize::CompactionResult;
+mod cleanup;
+pub use cleanup::{CleanupOptions, CleanupPlan, CleanupResult};
 mod prewarm;
 pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
@@ -907,6 +909,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Submit Enterprise version cleanup and retain its durable job and outcome.
+    async fn cleanup_async(&self, _options: CleanupOptions) -> Result<Job<CleanupResult>> {
+        Err(Error::NotSupported {
+            message: "durable cleanup jobs are only supported on remote tables".into(),
+        })
+    }
+
+    async fn explain_cleanup(&self, _options: CleanupOptions) -> Result<CleanupPlan> {
+        Err(Error::NotSupported {
+            message: "cleanup previews require LanceDB Enterprise".into(),
+        })
+    }
+
     /// Submit remote compaction and retain its durable job and actual outcome.
     async fn compact_async(
         &self,
@@ -2129,6 +2144,35 @@ impl Table {
         options: optimize::CompactionOverrides,
     ) -> Result<Job<CompactionResult>> {
         self.inner.compact_async(options).await
+    }
+
+    /// Submit durable version cleanup through SQL VACUUM and return after acceptance.
+    ///
+    /// Retention resolves invocation > selected table/branch > deployment. Requires
+    /// Ownership and parent Usage. Local and historical handles are unsupported.
+    /// Operators must disable/drain automatic cleanup and prevent other cleanup,
+    /// tag/branch publication and restore until completion, including direct clients.
+    /// The server does not enforce that coordination. Preview is available without deletion.
+    /// Wait, cancel and reopen reuse the shared Job APIs; timeout does not cancel,
+    /// and cancellation cannot undo deletion or prove storage I/O has stopped.
+    ///
+    /// ```
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let job = table.cleanup_async(lancedb::table::CleanupOptions::new()
+    ///     .min_age_seconds(604800)).await?;
+    /// let result = job.wait().await?;
+    /// println!("{:?}", result.old_versions);
+    /// # Ok(()) }
+    /// ```
+    pub async fn cleanup_async(&self, options: CleanupOptions) -> Result<Job<CleanupResult>> {
+        self.inner.cleanup_async(options).await
+    }
+
+    /// Explain Enterprise version cleanup without deleting files or submitting a job.
+    /// Requires the same ownership and retention options as [`Self::cleanup_async`].
+    /// Counts are observational estimates, not a reservation for later execution.
+    pub async fn explain_cleanup(&self, options: CleanupOptions) -> Result<CleanupPlan> {
+        self.inner.explain_cleanup(options).await
     }
 
     /// Language-binding entry point retaining optional compaction fields.

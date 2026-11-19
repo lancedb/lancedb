@@ -52,6 +52,7 @@ from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult
+from lancedb.cleanup import CleanupPlan, CleanupResult, _validate_min_age_seconds
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -3169,6 +3170,38 @@ class Table(ABC):
         compaction for you automatically.
         """
 
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview version deletion without submitting a job or deleting files.
+
+        Uses the same retention, branch and Ownership boundary as cleanup_async.
+        Estimates exclude auxiliary sweeps and reserve no snapshot for execution.
+        """
+        raise NotImplementedError("cleanup previews require LanceDB Enterprise")
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit durable remote version cleanup through SQL VACUUM.
+
+        Omitted retention inherits selected table/branch then deployment policy.
+        Requires Ownership and parent Usage. Local/historical handles are unsupported.
+        Disable/drain automatic cleanup and prevent other cleanup, tag/branch
+        publication and restore until completion, including direct storage clients.
+        The server does not enforce coordination. Cancellation cannot undo deletion
+        or prove storage I/O stopped. Preview is available without deletion.
+
+        Save ``job.id`` to reopen with ``db.open_job(id)``. Waiting returns
+        [CleanupResult][lancedb.cleanup.CleanupResult]; timeout leaves work running.
+        Unknown totals after retry/recovery remain None. Auxiliary sweeps are
+        best effort and excluded from the version-deletion counts.
+
+        >>> job = table.cleanup_async(min_age_seconds=604800)  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "durable cleanup jobs are only supported on remote tables"
+        )
+
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
     ) -> Job[CompactionResult]:
@@ -6137,6 +6170,14 @@ class LanceTable(Table):
         return Job(
             LOOP.run(self._table.compact_async(compaction_options=compaction_options))
         )
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
 
     def optimize(
         self,
@@ -9849,6 +9890,25 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def explain_cleanup(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> CleanupPlan:
+        """Read-only preview; see Table.explain_cleanup."""
+        _validate_min_age_seconds(min_age_seconds)
+        return CleanupPlan.from_json(await self._inner.explain_cleanup(min_age_seconds))
+
+    async def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> AsyncJob[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        _validate_min_age_seconds(min_age_seconds)
+        return _typed_job(
+            await self._inner.cleanup_async(min_age_seconds), CleanupResult.from_json
+        )
 
     async def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None

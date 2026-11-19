@@ -3223,3 +3223,59 @@ describe("table overrides", () => {
     expect(requests).toEqual([]);
   });
 });
+
+describe("cleanup typed results", () => {
+  test.each(["counts", "no_op", "unknown", "missing", "FAILED", "CANCELLED"])(
+    "reopens and waits for cleanup (%s)",
+    async (outcome) => {
+      const known = outcome !== "unknown";
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "cleanup-job",
+              ["job_type"]: "cleanup",
+              ["job_state"]: ["FAILED", "CANCELLED"].includes(outcome)
+                ? outcome
+                : "DONE",
+              result:
+                outcome === "missing"
+                  ? null
+                  : {
+                      ["format_version"]: 1,
+                      ["min_age_seconds"]: 0,
+                      ["statistics_complete"]: known,
+                      ["old_versions"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 2
+                        : null,
+                      ["bytes_removed"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 123
+                        : null,
+                    },
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CleanupResult>("cleanup-job");
+          if (["missing", "FAILED", "CANCELLED"].includes(outcome)) {
+            await expect(job.wait()).rejects.toThrow();
+          } else {
+            const result = await job.wait();
+            expect(result.statisticsComplete).toBe(known);
+            expect(result.oldVersions).toBe(
+              known ? (outcome === "no_op" ? 0 : 2) : null,
+            );
+            expect(result.minAgeSeconds).toBe(0);
+          }
+        },
+      );
+    },
+  );
+});
