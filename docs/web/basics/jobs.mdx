@@ -215,7 +215,8 @@ have no completed duration. Unknown scalar values and failure summaries are
 is a measured value. Failure summaries include phase, message, and retryability;
 open the job for full diagnostics.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 latest = next(
     (info for info in db.list_jobs(table="events") if "embedding" in info.columns),
     None,
@@ -225,6 +226,47 @@ if latest is not None:
     if latest.failure is not None:
         print(latest.failure.message)
 ```
+
+```rust Rust icon="rust"
+use futures::TryStreamExt;
+use lancedb::{database::JobListFilter, listing::ListingOptions, Connection, Result};
+
+async fn print_latest_refresh(db: &Connection) -> Result<()> {
+    let mut filter = JobListFilter::default();
+    filter.table = Some("events".into());
+    let mut jobs = db.list_jobs_filtered(filter, ListingOptions::default());
+    while let Some(info) = jobs.try_next().await? {
+        if info.columns.iter().any(|column| column == "embedding") {
+            println!("{:?} {:?} {:?}",
+                info.function_name, info.function_version, info.duration_millis);
+            if let Some(failure) = info.failure {
+                println!("{:?}", failure.message);
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+```
+
+```typescript TypeScript icon="js"
+for await (const info of db.listJobs({ pageLimit: 50 })) {
+  if (info.table === "events" && info.columns.includes("embedding")) {
+    console.log(info.functionName, info.functionVersion, info.durationMillis);
+    if (info.failure !== undefined) {
+      console.log(info.failure.message);
+    }
+    break;
+  }
+}
+```
+</CodeGroup>
+
+Python and Rust support server-side table filtering. TypeScript `listJobs`
+currently accepts only pagination options, so its example filters rows on the
+client and may read more pages. The displayed table name has no namespace;
+use a table name unique within the listed database for this TypeScript example.
+Use Python, Rust, or SQL for an exact namespaced table listing.
 
 SQL `SHOW JOBS` and `SHOW JOBS FOR TABLE events` expose the same metadata.
 SQL returns `columns` as a list and `failure` as nullable JSON text.
