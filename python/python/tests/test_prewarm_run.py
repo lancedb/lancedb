@@ -201,6 +201,36 @@ async def test_cache_only_query_raises_not_resident_async():
     assert headers == ["true"]
 
 
+def test_permutation_builds_over_a_cache_only_table():
+    """The server serves only takes cache-only and refuses a scan, so setting
+    up a permutation and reading its schema must not send a query."""
+    from lancedb.permutation import Permutation
+
+    unexpected = []
+
+    def handler(request):
+        path = request.path.rstrip("/")
+        if path == "/v1/table/test/describe":
+            status, body = 200, DESCRIBE
+        elif path == "/v1/table/test/count_rows":
+            status, body = 200, 10
+        else:
+            unexpected.append(request.path)
+            status, body = 400, {"error": "refused", "error_code": "refused"}
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.checkout(42)
+        permutation = Permutation.identity(table.cache_only())
+        assert permutation.schema.names == ["id"]
+        assert permutation.select_columns(["id"]).schema.names == ["id"]
+    assert unexpected == []
+
+
 def test_cache_only_survives_pickling():
     with mock_lancedb_connection(cache_only_handler([])) as db:
         table = db.open_table("test")

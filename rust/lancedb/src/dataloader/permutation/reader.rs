@@ -530,7 +530,17 @@ impl PermutationReader {
         }
     }
 
+    /// The schema of the rows this reader returns for `selection`.
+    ///
+    /// A selection of plain columns is answered from the base table's schema,
+    /// without a query. Besides saving a round trip on remote tables, that is
+    /// what lets a reader be set up over a cache-only table: the server
+    /// refuses the scan a schema query would send. Any other selection asks
+    /// the table, because only it can type the expressions.
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
+        if let Some(schema) = self.plain_columns_schema(&selection).await? {
+            return Ok(schema);
+        }
         let table = Table::from(self.base_table.clone());
         // limit(1) because some table types execute the query to get its schema
         table
@@ -539,6 +549,61 @@ impl PermutationReader {
             .limit(1)
             .output_schema()
             .await
+    }
+
+    /// The output schema of a selection that only picks and renames columns,
+    /// or `None` when the selection computes anything or names something that
+    /// is not a top-level column. Such a selection falls back to a query,
+    /// which also reports a missing column the way a read would.
+    ///
+    /// A nested field, such as `location.city`, is not handled here: it falls
+    /// back to the query like an expression does. On a cache-only table the
+    /// server refuses that query, so a nested field cannot be selected during
+    /// a prewarm run yet. Python's `StreamingDataset` does not reach this: it
+    /// takes top-level column names only.
+    async fn plain_columns_schema(&self, selection: &Select) -> Result<Option<SchemaRef>> {
+        // Each output column as (output name, source column).
+        let columns: Vec<(&str, &str)> = match selection {
+            Select::All => return Ok(Some(self.base_table.schema().await?)),
+            Select::Columns(columns) => columns
+                .iter()
+                .map(|name| (name.as_str(), name.as_str()))
+                .collect(),
+            // The Python bindings send every selection in this form, a plain
+            // column as the pair (name, name).
+            Select::Dynamic(columns) => columns
+                .iter()
+                .map(|(name, source)| (name.as_str(), source.as_str()))
+                .collect(),
+            Select::Expr(columns) => {
+                let mut plain = Vec::with_capacity(columns.len());
+                for (name, expr) in columns {
+                    match expr {
+                        Expr::Column(column) if column.relation.is_none() => {
+                            plain.push((name.as_str(), column.name.as_str()));
+                        }
+                        _ => return Ok(None),
+                    }
+                }
+                plain
+            }
+        };
+        let table_schema = self.base_table.schema().await?;
+        let mut fields = Vec::with_capacity(columns.len());
+        for (name, source) in columns {
+            let field = if source == ROW_ID {
+                lance_core::ROW_ID_FIELD.clone()
+            } else if let Ok(field) = table_schema.field_with_name(source) {
+                field.clone()
+            } else {
+                return Ok(None);
+            };
+            fields.push(field.with_name(name));
+        }
+        Ok(Some(Arc::new(arrow_schema::Schema::new_with_metadata(
+            fields,
+            table_schema.metadata().clone(),
+        ))))
     }
 
     pub fn count_rows(&self) -> u64 {
@@ -766,6 +831,78 @@ mod tests {
         let row_ids_table = virtual_table("row_ids", &permutation_batch).await;
 
         (base_table, row_ids_table, row_ids)
+    }
+
+    /// The schema answered from the table's own schema must be the one a
+    /// query would report, or empty batches and real ones would disagree.
+    #[tokio::test]
+    async fn test_output_schema_of_plain_columns_matches_the_query() {
+        let (base_table, row_ids_table, _) = setup_permutation_tables(10).await;
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            row_ids_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let reversed = vec!["other_col".to_string(), "idx".to_string()];
+        let renamed = vec![
+            ("renamed".to_string(), "other_col".to_string()),
+            ("idx".to_string(), "idx".to_string()),
+        ];
+        let with_row_id = vec!["idx".to_string(), ROW_ID.to_string()];
+        for selection in [
+            Select::All,
+            Select::Columns(reversed),
+            Select::Dynamic(renamed),
+            Select::Expr(vec![("renamed".to_string(), col("idx"))]),
+            Select::Columns(with_row_id),
+        ] {
+            let plain = reader
+                .plain_columns_schema(&selection)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("{selection:?} is a plain selection"));
+            let queried = base_table
+                .query()
+                .select(selection.clone())
+                .limit(1)
+                .output_schema()
+                .await
+                .unwrap();
+            assert_eq!(plain, queried, "{selection:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_output_schema_asks_the_table_about_anything_else() {
+        let (base_table, _, _) = setup_permutation_tables(10).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
+
+        let computed = Select::Dynamic(vec![("double".to_string(), "idx * 2".to_string())]);
+        assert!(
+            reader
+                .plain_columns_schema(&computed)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let schema = reader.output_schema(computed).await.unwrap();
+        assert_eq!(schema.field(0).name(), "double");
+
+        // A missing column is the query's error to report.
+        let missing = Select::Columns(vec!["no_such_column".to_string()]);
+        assert!(
+            reader
+                .plain_columns_schema(&missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(reader.output_schema(missing).await.is_err());
     }
 
     #[tokio::test]

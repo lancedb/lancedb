@@ -599,6 +599,52 @@ mod tests {
         })
     }
 
+    /// The server serves only takes cache-only and refuses a scan, so
+    /// setting up a reader over a cache-only table must not send one. The
+    /// handler panics on any query.
+    #[tokio::test]
+    async fn a_permutation_reader_is_set_up_over_a_cache_only_table_without_a_query() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+        use crate::query::Select;
+
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => json!({
+                    "version": 42,
+                    "schema": {"fields": [
+                        {"name": "id", "type": {"type": "int64"}, "nullable": true},
+                        {"name": "v", "type": {"type": "int64"}, "nullable": true}
+                    ]},
+                }),
+                "/v1/table/my_table/count_rows/" => json!(10),
+                path => panic!("unexpected request: {path}"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap()
+        });
+        table.checkout(42).await.unwrap();
+        let cache_only = table.cache_only().await.unwrap();
+        let reader = PermutationReader::identity(cache_only.base_table().clone())
+            .await
+            .unwrap();
+
+        let names = |schema: arrow_schema::SchemaRef| -> Vec<String> {
+            schema.fields().iter().map(|f| f.name().clone()).collect()
+        };
+        let all = reader.output_schema(Select::All).await.unwrap();
+        assert_eq!(names(all), ["id", "v"]);
+        let columns = Select::Columns(vec!["v".to_string(), "id".to_string()]);
+        assert_eq!(
+            names(reader.output_schema(columns).await.unwrap()),
+            ["v", "id"]
+        );
+        // The form the Python bindings send for a plain column.
+        let dynamic = Select::Dynamic(vec![("v".to_string(), "v".to_string())]);
+        assert_eq!(names(reader.output_schema(dynamic).await.unwrap()), ["v"]);
+    }
+
     #[tokio::test]
     async fn cache_only_queries_raise_not_resident() {
         use crate::query::ExecutableQuery;
