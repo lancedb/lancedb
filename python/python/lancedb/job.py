@@ -249,8 +249,9 @@ class AsyncJob(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     async def status(self) -> str:
-        """Backward-compatible method for :meth:`fetch_status`.
+        """Backward-compatible live lifecycle check.
 
+        See [fetch_status()][lancedb.job.AsyncJob.fetch_status].
         Call ``await job.fetch_status()`` for a live check; read ``job.state``
         for the cached state. ``job.status`` without parentheses is a method,
         not a lifecycle state.
@@ -261,9 +262,9 @@ class AsyncJob(Generic[T]):
         """Fetch the operation's current lifecycle state: "running", "finished",
         "failed", or "cancelled".
 
-        This live request updates the cached :attr:`state` and, for registry
-        jobs, the full record behind :attr:`result`, :attr:`failure` and
-        :attr:`spec`. Unlike :meth:`wait`, it does not wait for completion or
+        This live request updates the cached ``state`` and, for registry
+        jobs, the full record behind ``result``, ``failure`` and ``spec``.
+        Unlike [wait()][lancedb.job.AsyncJob.wait], it does not wait for completion or
         raise on a terminal failure state. Request errors propagate. States a
         newer server reports that this client does not know pass through as-is.
 
@@ -464,8 +465,9 @@ class AsyncJob(Generic[T]):
         Registry details are `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
         expose only lifecycle state through this method. For registry jobs,
-        :meth:`fetch_status` (also available as :meth:`status`) fetches the
-        whole record too; `wait` records only the terminal state it establishes.
+        [fetch_status()][lancedb.job.AsyncJob.fetch_status] (also available as
+        ``status()``) fetches the whole record too; ``wait()`` records only the
+        terminal state it establishes.
         """
         if self._inner is None:
             return
@@ -475,8 +477,9 @@ class AsyncJob(Generic[T]):
     def state(self) -> Optional[str]:
         """The last observed lifecycle state, without contacting the backend.
 
-        `None` until the handle has talked to it. Use :meth:`fetch_status` for
-        a live check, or :meth:`refresh` to update all cached registry details.
+        `None` until the handle has talked to it. Use
+        [fetch_status()][lancedb.job.AsyncJob.fetch_status] for a live check, or
+        [refresh()][lancedb.job.AsyncJob.refresh] to update cached registry details.
         """
         if self._inner is None:
             return "finished"
@@ -506,10 +509,13 @@ class AsyncJob(Generic[T]):
     def result(self) -> Optional[Any]:
         """The cached job-specific terminal result, without a backend call.
 
-        This is reported data rather than the typed model :meth:`wait` returns.
+        This is reported data rather than the typed model
+        [wait()][lancedb.job.AsyncJob.wait] returns.
         It can remain `None` until a successful registry record is fetched with
-        :meth:`fetch_status` or :meth:`refresh`. For ongoing progress, use
-        :meth:`progress` or :meth:`fetch_events`.
+        [fetch_status()][lancedb.job.AsyncJob.fetch_status] or
+        [refresh()][lancedb.job.AsyncJob.refresh]. For ongoing progress, use
+        [progress()][lancedb.job.AsyncJob.progress] or
+        [fetch_events()][lancedb.job.AsyncJob.fetch_events].
         """
         return self._field("result")
 
@@ -611,8 +617,9 @@ class AsyncJob(Generic[T]):
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> "pa.Table":
-        """Backward-compatible method for :meth:`fetch_events`.
+        """Backward-compatible event history request.
 
+        See [fetch_events()][lancedb.job.AsyncJob.fetch_events].
         Call ``await job.fetch_events(...)`` to request recorded event history.
         """
         return await self.fetch_events(limit=limit, filter=filter)
@@ -626,8 +633,9 @@ class AsyncJob(Generic[T]):
         """Fetch this job's recorded lifecycle events as a ``pyarrow.Table``.
 
         Each call requests event history without updating cached properties
-        such as :attr:`state`, :attr:`result` or :attr:`failure`. Use
-        :meth:`fetch_status` or :meth:`refresh` to update those properties.
+        such as ``state``, ``result`` or ``failure``. Use
+        [fetch_status()][lancedb.job.AsyncJob.fetch_status] or
+        [refresh()][lancedb.job.AsyncJob.refresh] to update those properties.
 
         Where the properties above report a terminal result only once the job
         reaches one, events are written as the job runs and outlive the workers
@@ -733,8 +741,9 @@ class Job(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     def status(self) -> str:
-        """Backward-compatible method for :meth:`fetch_status`.
+        """Backward-compatible live lifecycle check.
 
+        See [fetch_status()][lancedb.job.Job.fetch_status].
         Call ``job.fetch_status()`` for a live check; read ``job.state`` for
         the cached state. ``job.status`` without parentheses is a method,
         not a lifecycle state.
@@ -747,7 +756,7 @@ class Job(Generic[T]):
 
         Updates cached state and registry details. Terminal failure states
         are returned without raising; request errors propagate.
-        See :meth:`AsyncJob.fetch_status`.
+        See [AsyncJob.fetch_status()][lancedb.job.AsyncJob.fetch_status].
 
         Examples
         --------
@@ -808,7 +817,10 @@ class Job(Generic[T]):
 
     @property
     def state(self) -> Optional[str]:
-        """Cached lifecycle state; no backend call. See :attr:`AsyncJob.state`."""
+        """Cached lifecycle state; no backend call.
+
+        See [AsyncJob.state][lancedb.job.AsyncJob.state].
+        """
         return self._inner.state if self._inner is not None else "finished"
 
     @property
@@ -900,7 +912,10 @@ class Job(Generic[T]):
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> "pa.Table":
-        """Backward-compatible method for :meth:`fetch_events`."""
+        """Backward-compatible event history request.
+
+        See [fetch_events()][lancedb.job.Job.fetch_events].
+        """
         return self.fetch_events(limit=limit, filter=filter)
 
     def fetch_events(
@@ -911,7 +926,8 @@ class Job(Generic[T]):
     ) -> "pa.Table":
         """Fetch recorded events as a ``pyarrow.Table`` without updating caches.
 
-        See :meth:`AsyncJob.fetch_events` for parameters and availability.
+        See [AsyncJob.fetch_events()][lancedb.job.AsyncJob.fetch_events]
+        for parameters and availability.
 
         Examples
         --------
