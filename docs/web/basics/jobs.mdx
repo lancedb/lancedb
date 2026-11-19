@@ -221,7 +221,11 @@ full diagnostics.
 <CodeGroup>
 ```python Python icon="python"
 latest = next(
-    (info for info in db.list_jobs(table="events") if "embedding" in info.columns),
+    (
+        info
+        for info in db.list_jobs(table="events", job_type="function_refresh")
+        if "embedding" in info.columns
+    ),
     None,
 )
 if latest is not None:
@@ -237,6 +241,7 @@ use lancedb::{database::JobListFilter, listing::ListingOptions, Connection, Resu
 async fn print_latest_refresh(db: &Connection) -> Result<()> {
     let mut filter = JobListFilter::default();
     filter.table = Some("events".into());
+    filter.job_types = vec!["function_refresh".into()];
     let mut jobs = db.list_jobs_filtered(filter, ListingOptions::default());
     while let Some(info) = jobs.try_next().await? {
         if info.columns.iter().any(|column| column == "embedding") {
@@ -256,7 +261,11 @@ async fn print_latest_refresh(db: &Connection) -> Result<()> {
 
 ```typescript TypeScript icon="js"
 for await (const info of db.listJobs({ pageLimit: 50 })) {
-  if (info.table === "events" && info.columns.includes("embedding")) {
+  if (
+    info.jobType === "function_refresh" &&
+    info.table === "events" &&
+    info.columns.includes("embedding")
+  ) {
     console.log(info.functionName, info.functionVersion, info.durationMillis);
     if (info.failure !== undefined) {
       console.log(info.failure.message);
