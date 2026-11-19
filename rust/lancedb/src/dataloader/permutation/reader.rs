@@ -533,10 +533,15 @@ impl PermutationReader {
     /// The schema of the rows this reader returns for `selection`.
     ///
     /// A selection of plain columns is answered from the base table's schema,
-    /// without a query. Besides saving a round trip on remote tables, that is
-    /// what lets a reader be set up over a cache-only table: the server
-    /// refuses the scan a schema query would send. Any other selection asks
-    /// the table, because only it can type the expressions.
+    /// without a query. Any other selection asks the table, because only it
+    /// can type the expressions.
+    ///
+    /// Skipping the query saves a round trip on remote tables, and it is
+    /// required for a cache-only table (`Table::cache_only`). Python's
+    /// `StreamingDataset` reads through one during a prewarm run, and is the
+    /// only caller in LanceDB that builds a reader over one. The server
+    /// serves only takes cache-only, so it refuses the scan a schema query
+    /// would send, and the dataset would fail before reading a row.
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         if let Some(schema) = self.plain_columns_schema(&selection).await? {
             return Ok(schema);
