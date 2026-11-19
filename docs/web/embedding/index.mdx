@@ -156,6 +156,24 @@ registry.allow_endpoint("http://my-ollama-host:11434")
 
 Until then, computing embeddings raises `UntrustedEmbeddingConfigError`. Other operations on the table still work.
 
+In TypeScript, the same applies to a `huggingface` model or tokenizer other than the default, which is downloaded
+from the HuggingFace Hub, and to custom endpoints reported by an embedding function. For example, before reopening
+a table in a new process whose embedding function uses `Xenova/bge-small-en-v1.5`:
+
+<CodeGroup>
+```typescript TypeScript icon="square-js"
+import { getRegistry } from "@lancedb/lancedb/embedding";
+
+const registry = getRegistry();
+registry.allowModel("Xenova/bge-small-en-v1.5");
+registry.allowEndpoint("https://my-embedding-host.example/v1");
+
+const table = await db.openTable("docs");
+```
+</CodeGroup>
+
+Until then, computing embeddings throws `UntrustedEmbeddingConfigError`, which names the call to make.
+
 ## Multiple embedding columns {#multiple-embedding-columns}
 
 A single table can include more than one embedding definition when you want to store multiple semantic views

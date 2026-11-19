@@ -296,10 +296,15 @@ export class EmbeddingFunctionRegistry {
     }
 
     let func: EmbeddingFunction;
+    // The constructor resolves variables through this registry, so it sees
+    // the same values the checks above approved.
+    const previous = registryGlobal[restoringRegistryKey];
+    registryGlobal[restoringRegistryKey] = this;
     this.#resolvingFromMetadata = true;
     try {
       func = new ctor(options);
     } finally {
+      registryGlobal[restoringRegistryKey] = previous;
       this.#resolvingFromMetadata = false;
     }
     await func.init?.();
@@ -547,6 +552,9 @@ function getBuiltInFunctions(registry: EmbeddingFunctionRegistry): Set<string> {
 const registryKey = Symbol.for(
   "@lancedb/lancedb::embedding-function-registry::v1",
 );
+const restoringRegistryKey = Symbol.for(
+  "@lancedb/lancedb::embedding-restoring-registry::v1",
+);
 const registryGlobal = globalThis as typeof globalThis & {
   [key: symbol]: EmbeddingFunctionRegistry | undefined;
 };
@@ -591,6 +599,15 @@ export function registerBuiltIn<
  */
 export function getRegistry(): EmbeddingFunctionRegistry {
   return _REGISTRY;
+}
+
+/**
+ * @ignore
+ * The registry whose variables an embedding function's constructor resolves:
+ * the one restoring it from table metadata, or else the global registry.
+ */
+export function getVariableRegistry(): EmbeddingFunctionRegistry {
+  return registryGlobal[restoringRegistryKey] ?? _REGISTRY;
 }
 
 export interface EmbeddingFunctionConfig {

@@ -15,7 +15,7 @@ import {
   newVectorType,
 } from "../arrow";
 import { sanitizeType } from "../sanitize";
-import { getRegistry } from "./registry";
+import { getVariableRegistry } from "./registry";
 
 /**
  * Options for a given embedding function
@@ -122,7 +122,7 @@ export abstract class EmbeddingFunction<
    */
   protected resolveVariables(config: Partial<M>): Partial<M> {
     this.#config = config;
-    return getRegistry().resolveVariables(
+    return getVariableRegistry().resolveVariables(
       config,
       this.getSensitiveKeys(),
     ) as Partial<M>;

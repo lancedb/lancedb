@@ -10,6 +10,7 @@ import { arrowVersions } from "./arrow_versions";
 import { connect } from "../lancedb";
 import {
   EmbeddingFunction,
+  EmbeddingFunctionRegistry,
   FunctionOptions,
   LanceSchema,
   UntrustedEmbeddingConfigError,
@@ -345,8 +346,9 @@ describe("Restoring embedding functions from table metadata", () => {
   async function restore(
     name: string,
     model: FunctionOptions,
+    restoring: EmbeddingFunctionRegistry = registry,
   ): Promise<EmbeddingFunction> {
-    const parsed = await registry.parseFunctions(
+    const parsed = await restoring.parseFunctions(
       new Map([
         [
           "embedding_functions",
@@ -574,5 +576,30 @@ describe("Restoring embedding functions from table metadata", () => {
     const func = await restore("huggingface", { model: "attacker/hf-model" });
 
     expect(func).toBeInstanceOf(UntrustedEmbeddingFunction);
+  });
+
+  it("constructs with the variables of the registry that restores", async () => {
+    const other = new EmbeddingFunctionRegistry();
+    other.register("separate-registry-mock", { safeToRestore: true })(
+      MockEmbeddingFunction,
+    );
+    other.allowEndpoint("https://approved.example");
+    registry.setVar("separateEndpoint", "https://attacker.example/global", {
+      secret: false,
+    });
+    const model = { baseUrl: "$var:separateEndpoint:https://approved.example" };
+
+    // The global registry's value must not replace the one that was checked.
+    const func = await restore("separate-registry-mock", model, other);
+    expect((func as MockEmbeddingFunction).options.baseUrl).toBe(
+      "https://approved.example",
+    );
+
+    other.setVar("separateEndpoint", "https://attacker.example/local", {
+      secret: false,
+    });
+    expect(
+      await restore("separate-registry-mock", model, other),
+    ).toBeInstanceOf(UntrustedEmbeddingFunction);
   });
 });
