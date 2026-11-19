@@ -3320,8 +3320,13 @@ impl Table {
     /// [`Error::NotResident`] instead of reading storage. A training job in a
     /// prewarm run reads through this handle, re-warms the rows a failed read
     /// asked for, waits for them, and retries. The handle must be checked out
-    /// at the run's version. Only queries (scans, takes and searches) are
-    /// cache-only; other calls on the handle behave as usual.
+    /// at the run's version.
+    ///
+    /// Every query on the handle asks to be served from the cache, and the
+    /// server decides which kinds it can serve that way. Today that is takes
+    /// by row id or offset; it refuses a scan or search on this handle
+    /// instead of reading storage for it. Calls that are not queries behave
+    /// as usual.
     pub async fn cache_only(&self) -> Result<Self> {
         Ok(Self {
             inner: self.inner.cache_only().await?,

@@ -2130,8 +2130,13 @@ class Table(ABC):
         raises [NotResidentError][lancedb.exceptions.NotResidentError] instead of
         reading storage. A training job in a prewarm run reads through this
         handle, re-warms the rows a failed read asked for, waits for them, and
-        retries. Check out the run's version before calling this. Only queries
-        are cache-only; other calls on the handle behave as usual.
+        retries. Check out the run's version before calling this.
+
+        Every query on the handle asks to be served from the cache, and the
+        server decides which kinds it can serve that way. Today that is takes
+        by row id or offset; it refuses a scan or search on this handle
+        instead of reading storage for it. Calls that are not queries behave
+        as usual.
         """
         raise NotImplementedError(
             "cache-only reads are only supported on remote tables"
