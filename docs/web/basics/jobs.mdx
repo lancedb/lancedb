@@ -390,13 +390,15 @@ result = job.wait(timeout=timedelta(minutes=10))
 ```
 
 ```typescript TypeScript
-await job.wait({ timeoutMs: 10 * 60 * 1000, progress: console.log });
+await job.wait({ timeoutMs: 10 * 60 * 1000, onProgress: console.log });
 ```
 
 ```rust Rust
 use std::time::Duration;
 
-job.wait_timeout(Duration::from_secs(10 * 60)).await?;
+job.wait_with_options(
+    lancedb::job::JobWaitOptions::new().timeout(Duration::from_secs(10 * 60)),
+).await?;
 ```
 </CodeGroup>
 
@@ -429,7 +431,7 @@ for batch in job.history(JobEventsRequest::default().limit(1000)).await? {
 ```
 </CodeGroup>
 
-For row diagnostics, opt into paging with an exact `job_id` and an empty
+For retained row diagnostics, including repaired rows, opt into paging with an exact `job_id` and an empty
 `page_token`. Continue until the response omits its token, keeping the table,
 branch, job, and column filters unchanged. Records and capped-fragment
 summaries share the page budget. An empty page can still have a continuation.

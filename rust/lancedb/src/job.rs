@@ -781,25 +781,6 @@ where
         self.wait_with_options(JobWaitOptions::default()).await
     }
 
-    /// Wait for at most `timeout` without cancelling the operation. The same
-    /// handle can be waited on again after [`Error::Timeout`].
-    pub async fn wait_timeout(&self, timeout: Duration) -> Result<T> {
-        tokio::time::timeout(timeout, self.wait()).await.map_err(|_| Error::Timeout {
-            message: format!("job {:?} is still running after {} seconds; waiting timed out without cancelling it", self.job_id(), timeout.as_secs_f64()),
-        })?
-    }
-
-    /// Wait with a progress observer and a deadline. Timing out leaves the
-    /// operation running and the handle reusable, just like [`Self::wait_timeout`].
-    pub async fn wait_with_progress_timeout<F>(&self, timeout: Duration, progress: F) -> Result<T>
-    where
-        F: FnMut(&JobDescription) + Send + 'static,
-    {
-        tokio::time::timeout(timeout, self.wait_with_progress(progress)).await.map_err(|_| Error::Timeout {
-            message: format!("job {:?} is still running after {} seconds; waiting timed out without cancelling it", self.job_id(), timeout.as_secs_f64()),
-        })?
-    }
-
     /// Wait for the operation while observing progress from the backend's
     /// existing wait poller. The callback is called once for each description
     /// the poller fetches, including the terminal observation when the server

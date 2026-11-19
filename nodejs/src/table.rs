@@ -1846,7 +1846,7 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
-    /// Empty starts paging for an exact jobId; otherwise continue that page.
+    /// Empty starts retained history, including repaired rows, for an exact jobId; otherwise continue that page.
     pub page_token: Option<String>,
 }
 

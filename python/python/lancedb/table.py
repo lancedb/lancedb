@@ -3979,7 +3979,8 @@ class Table(ABC):
             Requires Enterprise workflow version 1 or later. Historical records
             cannot be used with the current-input ``rows()`` helper.
         page_token: str, optional
-            Empty starts paging for an exact job_id. Continue with the response's
+            Empty starts retained history, including repaired rows, for an exact
+            job_id. Continue with the response's
             page_token until it is None, keeping all filters unchanged.
 
         Returns
@@ -6631,7 +6632,11 @@ class LanceTable(Table):
         [`Table.function_errors`][lancedb.table.Table.function_errors]."""
         return LOOP.run(
             self._table.function_errors(
-                job_id=job_id, column=column, limit=limit, history=history, page_token=page_token
+                job_id=job_id,
+                column=column,
+                limit=limit,
+                history=history,
+                page_token=page_token,
             )
         ).as_sync(self)
 
@@ -9467,7 +9472,8 @@ class AsyncTable:
             Requires Enterprise workflow version 1 or later. Historical records
             cannot be used with the current-input ``rows()`` helper.
         page_token: str, optional
-            Empty starts paging for an exact job_id. Continue with the response's
+            Empty starts retained history, including repaired rows, for an exact
+            job_id. Continue with the response's
             page_token until it is None, keeping all filters unchanged.
 
         Returns
@@ -9531,7 +9537,11 @@ class AsyncTable:
         ...     print("listing stopped at the limit")
         """
         raw = await self._inner.function_errors(
-            job_id=job_id, column=column, limit=limit, history=history, page_token=page_token
+            job_id=job_id,
+            column=column,
+            limit=limit,
+            history=history,
+            page_token=page_token,
         )
         return AsyncFunctionErrors(raw, self, history=history or page_token is not None)
 

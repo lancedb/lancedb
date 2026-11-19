@@ -1338,7 +1338,11 @@ class RemoteTable(Table):
     ):
         return LOOP.run(
             self._table.function_errors(
-                job_id=job_id, column=column, limit=limit, history=history, page_token=page_token, page_token=page_token
+                job_id=job_id,
+                column=column,
+                limit=limit,
+                history=history,
+                page_token=page_token,
             )
         ).as_sync(self)
 

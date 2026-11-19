@@ -4,7 +4,7 @@
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import { decodeCleanupResult } from "./cleanup";
 import { decodeCompactionResult } from "./compaction";
-import { JobFailureInfo, Job as NativeJob } from "./native";
+import type { JobFailureInfo, Job as NativeJob } from "./native";
 import { decodePrewarmDataResult } from "./prewarm";
 
 /** Which of a job's events {@link Job.events} returns. */
@@ -335,8 +335,8 @@ export class Job<T = void> {
   }
 
   /** Select this exact attempt's pinned successor. Requires backend support. */
-  async retry(): Promise<Job> {
-    return new Job(await this.inner.retry());
+  async retry(): Promise<Job<T>> {
+    return new Job<T>(await this.inner.retry(), this.resultDecoder);
   }
 
   /**

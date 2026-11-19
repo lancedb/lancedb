@@ -758,7 +758,8 @@ mod tests {
         assert!(!state.is_success());
         assert!(!state.is_terminal());
         assert!(matches!(
-            job.wait_timeout(Duration::from_millis(1)).await,
+            job.wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(1)))
+                .await,
             Err(crate::Error::Timeout { .. })
         ));
         assert_eq!(job.lifecycle_state(), Some(state));
@@ -802,7 +803,9 @@ mod tests {
             })
         }));
         assert!(matches!(
-            local.wait_timeout(Duration::from_millis(1)).await,
+            local
+                .wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(1)))
+                .await,
             Err(crate::Error::Timeout { .. })
         ));
         sender.send(7).unwrap();
@@ -818,7 +821,9 @@ mod tests {
         });
         let remote = Job::<u64>::new_typed(Box::new(RemoteJob::new(client, "job-1".to_string())));
         assert!(matches!(
-            remote.wait_timeout(Duration::from_millis(1)).await,
+            remote
+                .wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(1)))
+                .await,
             Err(crate::Error::Timeout { .. })
         ));
         done.store(true, Ordering::SeqCst);

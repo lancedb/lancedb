@@ -30,8 +30,19 @@ describe("Job attempt contract", () => {
     const wait = jest.fn().mockRejectedValue(new Error("Timeout error"));
     const cancel = jest.fn();
     const job = new Job({ wait, cancel } as unknown as NativeJob);
-    await expect(job.wait({ timeoutMs: 0.5 })).rejects.toThrow("Timeout");
-    expect(wait).toHaveBeenCalledWith(undefined, 0.5);
+    await expect(job.wait({ timeoutMs: 1 })).rejects.toThrow("Timeout");
+    expect(wait).toHaveBeenCalledWith(undefined, 1);
     expect(cancel).not.toHaveBeenCalled();
+  });
+  test("retry retains the typed result decoder", async () => {
+    const successor = {
+      waitResult: jest.fn().mockResolvedValue({ value: 7 }),
+    } as unknown as NativeJob;
+    const inner = {
+      retry: jest.fn().mockResolvedValue(successor),
+    } as unknown as NativeJob;
+    const job = new Job(inner, (value) => (value as { value: number }).value);
+    const retry = await job.retry();
+    expect(await retry.wait()).toBe(7);
   });
 });

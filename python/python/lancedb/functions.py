@@ -1176,6 +1176,7 @@ class _FunctionErrors:
         self.records = raw.records
         self.fragments = raw.fragments
         self.truncated = raw.truncated
+        self.page_token = getattr(raw, "page_token", None)
 
     def __repr__(self) -> str:
         return repr(self._raw)

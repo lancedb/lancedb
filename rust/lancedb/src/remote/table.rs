@@ -4562,7 +4562,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         let paged = request.page_token.is_some();
         let mut body = serde_json::json!({});
-        if request.history {
+        if request.history || paged {
             body["history"] = serde_json::json!(true);
         }
         if let Some(job_id) = &request.job_id {
@@ -13710,6 +13710,7 @@ mod tests {
                 let body: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
                 assert_eq!(body["page_token"], "");
+                assert_eq!(body["history"], true);
                 assert_eq!(body["job_id"], "attempt-1");
                 let mut response = json!({"records":[],"fragments":[],"truncated":true});
                 if !legacy {

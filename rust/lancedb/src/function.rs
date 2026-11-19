@@ -1345,7 +1345,8 @@ pub struct FunctionErrorsRequest {
     /// At most this many records; the server default is 10000 and its cap
     /// 100000. [`FunctionErrors::truncated`] says whether the cap was hit.
     pub limit: Option<usize>,
-    /// Empty starts paging for an exact job_id; a returned token continues it.
+    /// Empty starts retained history for an exact job_id, including repaired rows.
+    /// A returned token continues that history regardless of `history`.
     pub page_token: Option<String>,
 }
 
