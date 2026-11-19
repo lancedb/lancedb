@@ -561,8 +561,9 @@ where
     /// Identity of this attempt. Local identities cannot be passed to
     /// `Connection::open_job` and last for the lifetime of this handle.
     pub fn job_id(&self) -> Option<String> {
-        self.id()
-            .map(str::to_string)
+        self.with_description(|description| description.attempt_job_id.clone())
+            .flatten()
+            .or_else(|| self.id().map(str::to_string))
             .or_else(|| self.cache_read().local_operation_id.clone())
     }
 

@@ -1279,6 +1279,7 @@ class FunctionErrorRecord:
     input: Optional[str]
     attempts: Optional[int]
     job_id: str
+    attempt_job_id: Optional[str]
     fragment_id: int
     row_offset: Optional[int]
     row_id: Optional[int]

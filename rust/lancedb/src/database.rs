@@ -326,6 +326,8 @@ impl JobInfo {
 #[derive(Debug, Clone)]
 pub struct JobDescription {
     pub job_id: String,
+    /// Exact selected attempt when job_id is a durable operation handle.
+    pub attempt_job_id: Option<String>,
     /// Root identity shared by the explicit retry lineage, when reported.
     pub operation_id: Option<String>,
     /// One-based attempt ordinal, when reported.
@@ -401,6 +403,9 @@ impl JobDescription {
             snapshot.insert("operation_id".to_string(), operation_id.clone().into());
         }
         snapshot.insert("job_id".to_string(), self.job_id.clone().into());
+        if let Some(attempt_job_id) = &self.attempt_job_id {
+            snapshot.insert("attempt_job_id".to_string(), attempt_job_id.clone().into());
+        }
         if let Some(attempt) = self.attempt {
             snapshot.insert("attempt".to_string(), attempt.into());
         }

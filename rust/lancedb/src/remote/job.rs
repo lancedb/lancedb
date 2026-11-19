@@ -111,6 +111,8 @@ pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) job_id: String,
     #[serde(default)]
+    pub(super) attempt_job_id: Option<String>,
+    #[serde(default)]
     pub(super) operation_id: Option<String>,
     #[serde(default)]
     pub(super) attempt: Option<u32>,
@@ -174,6 +176,7 @@ impl DescribeJobResponse {
         let state = self.state().client_label();
         JobDescription {
             job_id: self.job_id,
+            attempt_job_id: self.attempt_job_id,
             operation_id: self.operation_id,
             attempt: self.attempt,
             retry_of: self.retry_of,
@@ -763,6 +766,27 @@ mod tests {
             Err(crate::Error::Timeout { .. })
         ));
         assert_eq!(job.lifecycle_state(), Some(state));
+    }
+
+    #[tokio::test]
+    async fn operation_handles_report_the_selected_attempt_without_changing_id() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({"job_id":"operation-1", "attempt_job_id":"attempt-2",
+                    "operation_id":"operation-1", "attempt":2, "retry_of":"operation-1",
+                    "job_state":"IN_PROGRESS", "lifecycle_state":"queued"})
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "operation-1".into())));
+        assert_eq!(job.status_typed().await.unwrap(), crate::JobState::Queued);
+        assert_eq!(job.id(), Some("operation-1"));
+        assert_eq!(job.job_id().as_deref(), Some("attempt-2"));
+        assert_eq!(job.operation_id().as_deref(), Some("operation-1"));
+        assert_eq!(job.attempt(), Some(2));
     }
 
     #[tokio::test]

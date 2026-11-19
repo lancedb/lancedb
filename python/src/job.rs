@@ -352,6 +352,7 @@ impl JobFailureInfo {
 #[derive(Clone)]
 pub struct JobDescription {
     job_id: String,
+    attempt_job_id: Option<String>,
     operation_id: Option<String>,
     attempt: Option<u32>,
     retry_of: Option<String>,
@@ -420,6 +421,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
         let progress_json = description.progress_snapshot().to_string();
         Self {
             job_id: description.job_id,
+            attempt_job_id: description.attempt_job_id,
             operation_id: description.operation_id,
             attempt: description.attempt,
             retry_of: description.retry_of,
