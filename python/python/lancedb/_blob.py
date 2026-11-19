@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Blob fetch API and v2 projection helpers."""
+"""Blob fetch API and projection helpers."""
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Optional, Union
 import pyarrow as pa
 
 from .expr import Expr
-from .schema import blob_column_paths, row_addressable_blob_v2_paths
+from .schema import (
+    blob_column_paths,
+    row_addressable_blob_paths,
+    row_addressable_blob_v2_paths,
+)
 from .types import BlobMode, QueryProjection, QueryProjectionSpec
 
 if TYPE_CHECKING:
@@ -29,6 +33,15 @@ ROW_ID_FIELD_NAME = "_lance_row_id"
 
 FetchBlobsSync = Callable[[str, list[int]], pa.Array | pa.ChunkedArray]
 FetchBlobsAsync = Callable[[str, list[int]], Awaitable[pa.Array | pa.ChunkedArray]]
+
+
+def _validate_blob_buffer_size(size: Optional[int]) -> Optional[int]:
+    if size is None:
+        return None
+    size = operator.index(size)
+    if size < 0:
+        raise ValueError("buffer_size must be non-negative")
+    return size
 
 
 def _normalize_blob_descriptor(value):
@@ -53,6 +66,16 @@ class BlobFile(io.RawIOBase):
 
     def __init__(self, inner) -> None:
         self._inner = inner
+
+    def set_buffer_size(self, size: int) -> None:
+        """Set sequential read-ahead bytes (default 512 KiB); 0 disables it.
+
+        Changing the size discards unused prefetched bytes without moving the
+        cursor. Explicit ``read_range`` and ``read_ranges`` bypass read-ahead.
+        """
+        if self.closed:
+            raise ValueError("set_buffer_size of closed file")
+        self._inner.set_buffer_size(_validate_blob_buffer_size(size))
 
     async def aread(self) -> bytes:
         if self.closed:
@@ -165,6 +188,25 @@ def blob_v2_projection_sources(
     return _project_blob_paths(row_addressable_blob_v2_paths(schema), projection)
 
 
+def blob_projection_sources(
+    schema: pa.Schema,
+    projection: QueryProjection,
+    *,
+    include_legacy: bool = False,
+) -> dict[str, str]:
+    """Map projected blob outputs to row-addressable source columns.
+
+    Legacy v1 columns are included only when the caller can safely fetch them
+    through the same row-id path as v2.
+    """
+    paths = (
+        row_addressable_blob_paths(schema)
+        if include_legacy
+        else row_addressable_blob_v2_paths(schema)
+    )
+    return _project_blob_paths(paths, projection)
+
+
 def reject_unfetchable_blob_columns(
     schema: pa.Schema, projection: QueryProjection, blob_sources: dict[str, str]
 ) -> None:
@@ -177,8 +219,9 @@ def reject_unfetchable_blob_columns(
     if unfetchable:
         raise ValueError(
             f"blob_mode='bytes' cannot fetch blob columns {unfetchable}. Bytes are "
-            "fetched by row id, which covers blob v2 columns with one blob per "
-            "row but not legacy blob columns or blobs inside lists. Use "
+            "fetched by row id for legacy and v2 columns in local plain scans, "
+            "but not for blobs inside lists or query shapes whose result columns "
+            "cannot be matched back to the source. Use "
             "blob_mode='descriptions' or remove these columns from the projection."
         )
 
@@ -269,7 +312,7 @@ def finalize_blob_query_table(
     return stash_auto_row_ids(tbl, blob_paths)
 
 
-async def replace_v2_blob_columns_with_bytes(
+async def replace_blob_columns_with_bytes(
     tbl: pa.Table,
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsAsync,
@@ -289,7 +332,7 @@ async def replace_v2_blob_columns_with_bytes(
     return tbl
 
 
-def replace_v2_blob_columns_with_bytes_sync(
+def replace_blob_columns_with_bytes_sync(
     tbl: pa.Table,
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsSync,

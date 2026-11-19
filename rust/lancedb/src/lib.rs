@@ -48,6 +48,8 @@
 //!   Install any `metrics`-compatible recorder to collect them.
 //! - `metrics-otel` - Add a pull-based adapter (the `metrics_otel` module) over
 //!   the `metrics` facade for bridging metrics into OpenTelemetry or similar.
+//! - `test-fixtures` - Expose shared golden data through `test_fixtures` for
+//!   downstream compatibility tests. Disabled by default.
 //!
 //! ### Quick Start
 //!
@@ -216,9 +218,12 @@ pub mod query;
 pub mod remote;
 pub mod rerankers;
 pub mod secrets;
+pub mod server_info;
 pub mod sql;
 pub mod storage_integration;
 pub mod table;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;

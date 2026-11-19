@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
+import { decodeCompactionResult } from "./compaction";
 import { JobFailureInfo, Job as NativeJob } from "./native";
+import { decodePrewarmDataResult } from "./prewarm";
 
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
@@ -39,6 +41,31 @@ export interface JobProgress {
   rows_remaining?: number | null;
   // biome-ignore lint/style/useNamingConvention: server wire format
   rows_failed?: number | null;
+  /** Maintenance work observations; rewritten rows are not committed rows. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_rewritten?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_targeted?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_partial?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_active?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_failed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  fragments_selected?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  bytes_read?: number | null;
   /** Execution identity and sample time used for client-side ETA derivation. */
   // biome-ignore lint/style/useNamingConvention: server wire format
   execution_epoch?: number | null;
@@ -53,6 +80,18 @@ export interface JobProgress {
 
 /** Callback for progress snapshots observed while waiting for a job. */
 export type JobProgressCallback = (progress: JobProgress) => void;
+
+/** Client-side controls for waiting without cancelling the underlying job. */
+export interface JobWaitOptions {
+  /**
+   * Maximum wait in milliseconds, including status requests and polling backoff.
+   * Must be a nonnegative safe integer. Omit to wait indefinitely; zero allows
+   * only an immediately ready result.
+   */
+  timeoutMs?: number;
+  /** Observe progress using the same poller that waits for completion. */
+  onProgress?: JobProgressCallback;
+}
 
 /**
  * A handle to an operation that may still be running.
@@ -71,11 +110,20 @@ export type JobProgressCallback = (progress: JobProgress) => void;
  *
  * @hideconstructor
  */
-export class Job {
+export class Job<T = void> {
   private readonly inner: NativeJob;
 
-  constructor(inner: NativeJob) {
+  private readonly resultDecoder?: (value: unknown) => T;
+
+  constructor(inner: NativeJob, resultDecoder?: (value: unknown) => T) {
     this.inner = inner;
+    this.resultDecoder =
+      resultDecoder ??
+      (inner.jobType === "prewarm_page_cache"
+        ? (decodePrewarmDataResult as (value: unknown) => T)
+        : inner.jobType === "compact"
+          ? (decodeCompactionResult as (value: unknown) => T)
+          : undefined);
   }
 
   /**
@@ -161,18 +209,64 @@ export class Job {
    * synchronous observer: its return value is ignored and not awaited. If it
    * throws, the error is logged with `console.warn` and waiting continues; a
    * callback exception does not reject `wait`.
+   *
+   * Pass an options object to set a client-side timeout. Expiry rejects with an
+   * error and stops this wait, including pending status requests and backoff.
+   * The operation continues; use the same handle to wait again. Registry jobs
+   * can also be reopened with `Connection.openJob`; query IDs cannot.
+   *
+   * @example
+   * ```ts
+   * const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+   * ```
    */
-  async wait(progressCallback?: JobProgressCallback): Promise<void> {
-    if (progressCallback === undefined) {
-      return this.inner.wait();
+  async wait(
+    optionsOrProgress?: JobWaitOptions | JobProgressCallback,
+  ): Promise<T> {
+    const options: JobWaitOptions =
+      typeof optionsOrProgress === "function"
+        ? { onProgress: optionsOrProgress }
+        : (optionsOrProgress ?? {});
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError(
+        "wait expects an options object or a progress callback",
+      );
     }
-    return this.inner.wait((progress) => {
-      try {
-        progressCallback(this.enrichProgress(progress));
-      } catch (error) {
-        console.warn("Job progress callback threw:", error);
+    for (const key of Object.keys(options)) {
+      if (key !== "timeoutMs" && key !== "onProgress") {
+        throw new TypeError(`Unknown job wait option: ${key}`);
       }
-    });
+    }
+    const { timeoutMs, onProgress: progressCallback } = options;
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0)
+    ) {
+      throw new RangeError("timeoutMs must be a nonnegative safe integer");
+    }
+    if (
+      progressCallback !== undefined &&
+      typeof progressCallback !== "function"
+    ) {
+      throw new TypeError("onProgress must be a function");
+    }
+    const callback =
+      progressCallback === undefined
+        ? undefined
+        : (progress: Record<string, unknown>) => {
+            try {
+              progressCallback(this.enrichProgress(progress));
+            } catch (error) {
+              console.warn("Job progress callback threw:", error);
+            }
+          };
+    if (this.resultDecoder !== undefined) {
+      return this.resultDecoder(
+        await this.inner.waitResult(callback, timeoutMs),
+      );
+    }
+    await this.inner.wait(callback, timeoutMs);
+    return undefined as T;
   }
 
   /** Request cancellation. Cancelling a finished operation is a no-op. */

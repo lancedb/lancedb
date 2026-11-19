@@ -1,5 +1,6 @@
 ---
 title: "Create a Function"
+tag: "Early access"
 sidebarTitle: "Create Function"
 description: "Register Python as a column: CPU, GPU, and remote-service Functions, called once per row or once per batch."
 icon: code
@@ -8,6 +9,8 @@ availability:
   embedded: unavailable
   enterprise: available
 ---
+
+<Badge color="purple">Early access</Badge>
 
 Some curation steps cannot be written as a SQL expression: an embedding
 model, an image decode, a call to an external service. A Function is a
@@ -26,9 +29,9 @@ inferred from the annotations:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf(pip=["numpy==2.2.0"])
+@function(pip=["numpy==2.2.0"])
 def score(value: float) -> float:
     return value * 2
 
@@ -41,6 +44,58 @@ table.add_columns({"doubled": version(value=col("value"))})
 immutable version, so changing one produces a new version rather than
 altering rows a previous version already filled.
 
+## Supported Function signatures {#signature-types}
+
+A table's [Arrow schema](/sql/data-types#supported) can contain types that a
+Function cannot accept or return. The matrix below describes the Python SDK
+`0.42.0-beta.12` source contract. Nested schemas and list-Blob outputs require
+a matching Enterprise server; an SDK upgrade alone does not enable them.
+
+| Arrow type | Function input/output support |
+| --- | --- |
+| Boolean; signed/unsigned 8, 16, 32, 64-bit integers; float16/32/64 | Supported. Ordinary `int` and `float` annotations infer int64 and float64. |
+| utf8 / large_utf8; binary / large_binary | Supported. `str` and `bytes` infer utf8 and binary. Plain binary does not carry Blob semantics. |
+| date32 / date64 | Supported; Python `date` infers date32. |
+| timestamp, with or without timezone; time32/64; duration; interval | Unsupported by the Function signature grammar. A Python `datetime` annotation can resolve to an Arrow timestamp but registration still rejects it. |
+| decimal; map; dictionary; union; fixed-size binary | Unsupported. Decode dictionary values and use supported scalar/list/struct representations. |
+| struct; list / large_list; positive-length fixed-size list | Supported with supported children. Explicit schemas preserve child nullability; annotation-only `list[T]` uses non-nullable elements. Struct fields must be nonempty and uniquely named. |
+| Blob v2 at top level or in a struct | Supported in inputs and outputs; use `lancedb.blob(...)` in the schema. |
+| Blob v2 under list / large_list | Output only on supporting SDK/server versions. Inputs are rejected. |
+| Blob v2 under fixed-size list or map | Unsupported in both directions. |
+
+For times, pass an int64 epoch value with an explicit unit such as microseconds,
+or a UTF-8 ISO 8601 string with its timezone. Convert inside the Function and
+cast the result in SQL if needed. Use scaled integers with a declared scale
+when exact decimal values matter; converting to float can lose precision.
+Represent a map as a list of key/value structs when that fits the calculation.
+
+A scalar output is non-nullable because physical NULL represents an unfilled
+computed output. For an optional value, return a named struct with a nullable
+field, for example:
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+@function(
+    input_schema=pa.schema([pa.field("text", pa.string(), nullable=False)]),
+    output_schema=pa.schema([pa.field("score", pa.float64(), nullable=True)]),
+)
+def optional_score(text: str):
+    return {"score": float(len(text)) if text else None}
+```
+
+Return a dictionary by field name. A successfully computed nullable field can
+be NULL; `score IS NULL` alone cannot distinguish it from pending work or a
+skipped failure. Use the job result and error diagnostics. Do not assume an
+explicit assignment-state flag is available on every deployment.
+
+List-nested Blob outputs are queryable as descriptors, but row-ID blob fetch
+APIs and `blob_mode="bytes"` do not fetch payloads inside lists. Prefer a
+separate row per media item when you need independent reads, retries or
+re-scoring. A plain struct shaped like a Blob without its extension metadata
+is not a substitute for `lancedb.blob`.
+
 ## Batch: once per call, many rows at a time {#batch}
 
 A function is called once per batch instead of once per row when its
@@ -52,11 +107,12 @@ same doubling logic, vectorized over a whole batch at once:
 ```python Python icon="python"
 import pyarrow as pa
 import pyarrow.compute as pc
-from lancedb import udf
+from lancedb import function
 
-@udf(
+@function(
     pip=["numpy==2.2.0"],
     batch_size=32,
+    max_concurrency=4,
     row_timeout_seconds=90,
 )
 def score_batch(value: pa.Array) -> pa.Array:
@@ -69,24 +125,27 @@ once a function also does something with real fixed cost per call -- loading
 a model, opening a connection, making a network round trip.
 
 `batch_size` caps the number of input rows in each execution batch; actual
-batches may be smaller. `row_timeout_seconds` bounds each Python call: one
-row for scalar Functions or the entire batch for vectorized Functions. It
-does not include the instance's `__init__`. Both settings are fixed into the
-registered version and apply to direct calls, computed columns, and
-materialized-view refreshes alike. Omit them to use adaptive batching and the
-service's default per-call deadline.
+batches may be smaller. `max_concurrency` limits user-code calls in flight for
+one Function within one logical execution; it does not limit calls across
+different jobs and is not an account-wide quota. `row_timeout_seconds` bounds
+each Python call: one row for scalar Functions or the entire batch for
+vectorized Functions. It does not include the instance's `__init__`. These
+settings are fixed into the registered version and apply to direct calls,
+computed columns, and materialized-view refreshes alike. A refresh can
+override `max_concurrency` for that execution. Omit it to preserve the
+existing behavior.
 
 ## Stateful Functions: load once, call many times {#stateful}
 
-A `@udf`-decorated **class** is the same callable with state. Each remote
+A `@function`-decorated **class** is the same callable with state. Each remote
 instance calls `__init__` once, calls `__call__` for every row or batch it
 processes, and calls `close()`, if defined, once when it retires:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf
+@function
 class scale:
     def __init__(self, factor: float, offset: float = 0.0):
         self.factor = factor
@@ -116,13 +175,13 @@ in the Function version. `gpu=True` remains required:
 <CodeGroup>
 ```python Python icon="python"
 import pyarrow as pa
-from lancedb import udf
+from lancedb import function
 
 gpu_class = next(
     gpu.name for gpu in db.list_gpu_classes() if gpu.gpu_model == "NVIDIA A10G"
 )
 
-@udf(
+@function(
     gpu=True,
     gpu_class=gpu_class,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
@@ -163,9 +222,12 @@ in the function's source. A Secret is a database-scoped named credential:
 puts it in the environment variable the function reads, without ever
 returning it from any API or recording it in the function's own definition.
 Combine it with the stateful form so the HTTP client -- and any rate limiter
-around it -- is built once, not reopened on every row. There is no built-in
-retry or per-row error-skip policy -- a function that calls a flaky service
-should handle timeouts and retries itself, inside `__call__`.
+around it -- is built once, not reopened on every row. Configure HTTP timeouts
+inside `__call__`. Refresh-level `error_policy='skip'` can record row failures;
+see [handling failures](/management/function#failures). Native retry policies
+need matching SDK, server and Function-image support; on other deployments,
+handle bounded retries inside the Function only when repeating the request is
+safe.
 
 See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
 full worked example, how the bound value actually reaches a running
@@ -212,9 +274,9 @@ how the `video: BlobReader` parameter does that:
 from datetime import timedelta
 
 from lancedb import BlobReader, col
-from lancedb.functions import udf
+from lancedb.functions import function
 
-@udf(
+@function(
     name="extract_frame",
     gpu=True,
     pip=["av==13.1.0", "pillow==11.0.0"],
@@ -233,11 +295,12 @@ extract_frame_version = db.create_function_async(extract_frame).wait(
 ```
 </CodeGroup>
 
-An empty byte string is a filled result. A scalar output cannot be nullable,
-because a physical NULL marks an unfilled computed row. To return a nullable
-blob as a value, use a named-struct output schema with a nullable blob field;
-the struct itself records whether the result has been filled. Read a nested
-blob with `table.fetch_blobs("payload.image", hits)`.
+An empty byte string is a filled result. A top-level Blob v2 output cannot be
+nullable; to return a nullable blob as a value, use a named-struct output
+schema with a nullable blob field. The struct itself records whether the
+result has been filled. A nullable non-Blob scalar output is declared with
+`Optional[T]` or `T | None`; see [Functions](/management/function#define).
+Read a nested blob with `table.fetch_blobs("payload.image", hits)`.
 
 A list or large-list output may also contain Blob v2 elements; inputs and
 fixed-size lists do not support this layout. List-nested values are queryable
@@ -261,7 +324,7 @@ A second Function can bind a blob another Function produced. Register
 
 <CodeGroup>
 ```python Python icon="python"
-@udf(gpu=True, pip=["transformers==4.47.0"])
+@function(gpu=True, pip=["transformers==4.47.0"])
 def caption(jpeg: bytes) -> str:
     ...  # run a vision-language model over the JPEG, return one sentence
 
@@ -339,10 +402,10 @@ box type without loading the rest of the video:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import BlobReader, udf
+from lancedb import BlobReader, function
 
 
-@udf
+@function
 def first_box_type(video: BlobReader) -> bytes:
     video.seek(4)
     return video.read(4)

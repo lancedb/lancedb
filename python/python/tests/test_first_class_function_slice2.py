@@ -9,7 +9,7 @@ import functools
 import importlib.util
 import inspect
 import types
-from datetime import date
+from datetime import date, datetime, timedelta
 import http.server
 import json
 import os
@@ -18,25 +18,32 @@ import subprocess
 import sys
 import typing
 import urllib.parse
-from typing import Optional
+import warnings
+from decimal import Decimal
+from typing import Annotated, Optional
 
 import pyarrow as pa
 import pytest
 
 import lancedb
 from lancedb import BlobReader
+from lancedb.db import AsyncConnection, DBConnection, LanceDBConnection
 from lancedb.functions import (
+    FunctionRegistrationRequest,
+    FunctionSignature,
+    FunctionVersion,
     HuggingFaceModel,
     PythonRuntimeSpec,
     SecretBinding,
     SecretReference,
-    UdfDefinition,
+    FunctionDefinition,
     _canonical_arrow_type,
     _exact_arrow_type,
     _GRAMMAR_PRIMITIVES,
-    udf,
+    function,
 )
 from lancedb.secrets import EnvVarSecret
+from lancedb.remote.db import RemoteDBConnection
 from utils import start_server_thread
 
 THRESHOLD = 20
@@ -59,7 +66,7 @@ FUNCTION_VERSION = json.loads(
 )["version"]
 
 
-@udf(
+@function(
     pip=["numpy>=2"],
     env={"MODE": "test"},
     python_version="3.12",
@@ -68,7 +75,7 @@ def normalize_score(value: float) -> float:
     return value / 100.0
 
 
-@udf(
+@function(
     pip=["openai==3.7.0"],
     env={"MODE": "test"},
     python_version="3.12",
@@ -77,8 +84,65 @@ def analyze_caption(caption: str) -> str:
     return caption.strip()
 
 
-def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
-    assert isinstance(normalize_score, UdfDefinition)
+def _function_version_with_resolved_environment():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environment"] = {
+        "packages": [
+            {
+                "name": "torch",
+                "version": "2.9.0+cu130",
+                "source": "https://packages.example/simple",
+            },
+            {"name": "transformers", "version": "4.57.1"},
+        ],
+        "provenance": {
+            "configured_index_urls": ["https://packages.example/simple"],
+            "configured_find_links": ["https://downloads.example/wheels"],
+            "resolved_indexes": ["https://packages.example/simple"],
+            "cuda_toolkit": "12.8",
+            "torch_version": "torch==2.9.0+cu130",
+        },
+        "warnings": [
+            "transformers resolved to transformers==4.57.1 but is not pinned "
+            "exactly; add transformers==4.57.1 to pin it."
+        ],
+    }
+    return version
+
+
+def _function_version_with_resolved_environments():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environments"] = {
+        "linux/amd64": {
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple",
+                }
+            ],
+            "warnings": ["amd64 environment warning"],
+        },
+        "linux/arm64": {
+            "packages": [],
+            "warnings": ["arm64 environment warning"],
+        },
+    }
+    return version
+
+
+def test_scalar_function_matches_shared_registration_golden_and_remains_callable():
+    assert isinstance(normalize_score, FunctionDefinition)
     assert normalize_score(25.0) == 0.25
     assert (
         normalize_score.registration_request.to_canonical_json()
@@ -93,13 +157,125 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
     }
 
 
-def test_udf_declares_pinned_hugging_face_models():
+def test_refresh_lock_is_a_registration_option_not_part_of_identity():
+    default = normalize_score.registration_request
+    old_json = default.to_canonical_json()
+    assert "refresh_lock" not in json.loads(old_json)
+
+    refreshed = default.with_refresh_lock(True)
+    payload = json.loads(refreshed.to_canonical_json())
+    assert payload["refresh_lock"] is True
+    assert (
+        FunctionRegistrationRequest.from_json(
+            refreshed.to_canonical_json()
+        ).refresh_lock
+        is True
+    )
+    assert refreshed.artifact.digest == default.artifact.digest
+    assert refreshed.runtime.digest == default.runtime.digest
+    assert default.with_refresh_lock(False).to_canonical_json() == old_json
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        default.with_refresh_lock(1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exist_ok", [False, True])
+async def test_async_create_function_forwards_refresh_lock(exist_ok):
+    calls = []
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            calls.append((json.loads(request_json), namespace_path, exist_ok))
+            return object()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    await connection.create_function_async(normalize_score)
+    await connection.create_function_async(
+        normalize_score, refresh_lock=True, exist_ok=exist_ok, namespace_path=["team"]
+    )
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        await connection.create_function_async(normalize_score, refresh_lock=1)
+
+    assert len(calls) == 2
+    assert "refresh_lock" not in calls[0][0]
+    assert calls[0][1:] == (None, False)
+    assert calls[1][0]["refresh_lock"] is True
+    assert calls[1][1:] == (["team"], exist_ok)
+
+
+@pytest.mark.parametrize("exist_ok", [False, True])
+def test_sync_create_function_paths_forward_refresh_lock(exist_ok):
+    calls = []
+
+    class AsyncInner:
+        async def create_function_async(
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
+        ):
+            calls.append(("wrapped", refresh_lock, namespace_path, exist_ok))
+            return object()
+
+    for connection_type in (LanceDBConnection, RemoteDBConnection):
+        connection = object.__new__(connection_type)
+        connection._conn = AsyncInner()
+        connection.create_function_async(
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
+        )
+
+    class BlockingConnection:
+        def create_function_async(
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
+        ):
+            calls.append(("blocking", refresh_lock, namespace_path, exist_ok))
+
+            class ImmediateJob:
+                def wait(self):
+                    return "version"
+
+            return ImmediateJob()
+
+    blocking = BlockingConnection()
+    assert (
+        DBConnection.create_function(
+            blocking,
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
+        )
+        == "version"
+    )
+    assert calls == [
+        ("wrapped", True, ["team"], exist_ok),
+        ("wrapped", True, ["team"], exist_ok),
+        ("blocking", True, ["team"], exist_ok),
+    ]
+
+
+def test_function_declares_pinned_hugging_face_models():
     model = HuggingFaceModel(
         repo="sentence-transformers/all-MiniLM-L6-v2",
         revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
     )
 
-    @udf(pip=["sentence-transformers==3.3.1"], models=[model])
+    @function(pip=["sentence-transformers==3.3.1"], models=[model])
     def embed_text(value: str) -> list[float]:
         return [1.0]
 
@@ -114,23 +290,24 @@ def test_udf_declares_pinned_hugging_face_models():
     assert "models" not in undeclared
 
     with pytest.raises(ValueError, match="once"):
-        udf(name="duplicate_model", models=[model, model])(lambda value: value)
+        function(name="duplicate_model", models=[model, model])(lambda value: value)
     with pytest.raises(ValueError, match="40-character"):
         HuggingFaceModel(repo="owner/model", revision="main")
     with pytest.raises(ValueError, match="reserve"):
-        udf(
+        function(
             name="reserved_model_env",
             models=[model],
             env={"HF_HOME": "/tmp/model"},
         )(lambda value: value)
 
 
-def test_udf_execution_controls_match_shared_registration_golden():
-    controlled = udf(
+def test_function_execution_controls_match_shared_registration_golden():
+    controlled = function(
         pip=["numpy>=2"],
         env={"MODE": "test"},
         python_version="3.12",
         batch_size=2,
+        max_concurrency=4,
         row_timeout_seconds=0.75,
     )(normalize_score.__wrapped__)
     assert (
@@ -141,8 +318,8 @@ def test_udf_execution_controls_match_shared_registration_golden():
     )
 
 
-def test_udf_execution_controls_apply_to_vectorized_functions():
-    @udf(
+def test_function_execution_controls_apply_to_vectorized_functions():
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.int64(),
         batch_size=3,
@@ -156,40 +333,73 @@ def test_udf_execution_controls_apply_to_vectorized_functions():
     assert request["row_timeout_seconds"] == 1.25
 
 
+def test_function_retry_policy_is_part_of_registration():
+    policy = lancedb.FunctionRetryPolicy(transient=True, max_attempts=4)
+    definition = function(retry_policy=policy)(normalize_score.__wrapped__)
+    request = json.loads(definition.registration_request.to_canonical_json())
+    assert request["retry_policy"] == {"max_attempts": 4, "transient": True}
+    assert lancedb.FunctionRetryPolicy(max_attempts=1).max_attempts == 1
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"max_attempts": 0, "transient": True},
+        {"max_attempts": 101, "transient": True},
+        {"max_attempts": True},
+        {"max_attempts": 3},
+        {"transient": True, "initial_backoff_seconds": -1},
+        {"transient": True, "max_backoff_seconds": float("inf")},
+        {"transient": True, "max_backoff_seconds": 0},
+        {"message_pattern": "["},
+        {"exception_types": [""]},
+        {"transient": True, "typo": 1},
+    ],
+)
+def test_function_retry_policy_rejects_invalid_options(options):
+    with pytest.raises(ValueError):
+        lancedb.FunctionRetryPolicy(**options)
+
+
 @pytest.mark.parametrize(
     ("options", "field"),
     [
         ({"batch_size": 0}, "batch_size"),
         ({"batch_size": 2**32}, "batch_size"),
         ({"batch_size": True}, "batch_size"),
+        ({"max_concurrency": 0}, "max_concurrency"),
+        ({"max_concurrency": -1}, "max_concurrency"),
+        ({"max_concurrency": 2**32}, "max_concurrency"),
+        ({"max_concurrency": True}, "max_concurrency"),
+        ({"max_concurrency": 1.5}, "max_concurrency"),
         ({"row_timeout_seconds": 0}, "row_timeout_seconds"),
         ({"row_timeout_seconds": -0.25}, "row_timeout_seconds"),
         ({"row_timeout_seconds": float("inf")}, "row_timeout_seconds"),
         ({"row_timeout_seconds": True}, "row_timeout_seconds"),
     ],
 )
-def test_udf_execution_controls_require_their_positive_ranges(options, field):
+def test_function_execution_controls_require_their_positive_ranges(options, field):
     def identity(value: int) -> int:
         return value
 
     with pytest.raises(ValueError, match=field):
-        udf(**options)(identity)
+        function(**options)(identity)
 
 
 @pytest.mark.parametrize(
     "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
 )
-def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+def test_function_rejects_function_names_with_periods_or_hyphens(name):
     with pytest.raises(ValueError, match="invalid Function name"):
 
-        @udf(name=name)
+        @function(name=name)
         def image_info(value: int) -> int:
             return value
 
 
 @pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
-def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
-    @udf(name=name)
+def test_function_accepts_function_names_with_letters_digits_and_underscores(name):
+    @function(name=name)
     def image_info(value: int) -> int:
         return value
 
@@ -197,7 +407,7 @@ def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
     assert image_info(1) == 1
 
 
-def test_secret_bound_udf_matches_its_shared_registration_golden():
+def test_secret_bound_function_matches_its_shared_registration_golden():
     assert analyze_caption("  hello  ") == "hello"
     bound = analyze_caption.bind_secrets(
         [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
@@ -443,15 +653,15 @@ def test_a_secret_name_admits_what_a_namespace_name_does():
             )
 
 
-def _main_udf_source(
+def _main_function_source(
     *, threshold: int = 20, input_annotation: str = "int", comparison: str = ">="
 ) -> str:
     return (
         "from __future__ import annotations\n"
-        "from lancedb.functions import udf\n"
+        "from lancedb.functions import function\n"
         f"THRESHOLD = {threshold}\n"
         "\n"
-        "@udf\n"
+        "@function\n"
         f"def label(value: {input_annotation}) -> str:\n"
         f"    return 'big' if value {comparison} THRESHOLD else 'small'\n"
         "\n"
@@ -460,7 +670,7 @@ def _main_udf_source(
     )
 
 
-def _run_main_udf(path: Path, source: str) -> dict:
+def _run_main_function(path: Path, source: str) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source)
     result = subprocess.run(
@@ -472,15 +682,15 @@ def _run_main_udf(path: Path, source: str) -> dict:
     return json.loads(result.stdout)
 
 
-def test_main_udf_registration_identity_is_stable_across_processes_and_paths(
+def test_main_function_registration_identity_is_stable_across_processes_and_paths(
     tmp_path,
 ):
-    source = _main_udf_source()
+    source = _main_function_source()
     original_path = tmp_path / "original" / "job.py"
     moved_path = tmp_path / "moved" / "renamed_job.py"
 
-    original_runs = [_run_main_udf(original_path, source) for _ in range(2)]
-    moved_run = _run_main_udf(moved_path, source)
+    original_runs = [_run_main_function(original_path, source) for _ in range(2)]
+    moved_run = _run_main_function(moved_path, source)
 
     assert len({run["artifact"]["digest"] for run in [*original_runs, moved_run]}) == 1
     assert all(
@@ -489,15 +699,15 @@ def test_main_udf_registration_identity_is_stable_across_processes_and_paths(
     )
     assert original_runs[0] == original_runs[1] == moved_run
 
-    body_change = _run_main_udf(
-        tmp_path / "changes" / "body.py", _main_udf_source(comparison=">")
+    body_change = _run_main_function(
+        tmp_path / "changes" / "body.py", _main_function_source(comparison=">")
     )
-    global_change = _run_main_udf(
-        tmp_path / "changes" / "global.py", _main_udf_source(threshold=21)
+    global_change = _run_main_function(
+        tmp_path / "changes" / "global.py", _main_function_source(threshold=21)
     )
-    annotation_change = _run_main_udf(
+    annotation_change = _run_main_function(
         tmp_path / "changes" / "annotation.py",
-        _main_udf_source(input_annotation="float"),
+        _main_function_source(input_annotation="float"),
     )
 
     baseline = original_runs[0]
@@ -521,11 +731,13 @@ def _run_packaged(definition, *args):
     """Execute the shipped artifact in a fresh namespace, as a worker would."""
     source = base64.b64decode(definition.registration_request.artifact.content.data)
     namespace: dict = {}
-    exec(compile(source, "<udf>", "exec"), namespace)
+    exec(compile(source, "<function>", "exec"), namespace)
     return namespace[definition.registration_request.artifact.entrypoint](*args)
 
 
-def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa.Array:
+def _execute_registered_array_function_v1(
+    request: dict, batch: pa.RecordBatch
+) -> pa.Array:
     """Exercise adapter-v1 annotation dispatch over a registered artifact."""
     assert request["artifact"]["adapter"] == {
         "kind": "scalar_to_arrow_batch",
@@ -539,7 +751,7 @@ def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa
         "RecordBatch": pa.RecordBatch,
         "typing": typing,
     }
-    exec(compile(source, "<registered-udf>", "exec"), namespace)
+    exec(compile(source, "<registered-function>", "exec"), namespace)
     function = namespace[request["artifact"]["entrypoint"]]
     parameters = tuple(inspect.signature(function).parameters.values())
     annotations = typing.get_type_hints(function)
@@ -552,8 +764,8 @@ def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa
     return result
 
 
-def test_udf_conda_environment():
-    @udf(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
+def test_function_conda_environment():
+    @function(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
     def halve(value: float) -> float:
         return value / 2
 
@@ -567,13 +779,13 @@ def test_udf_conda_environment():
     assert "channels" not in pip_request["runtime"]["environment"]
 
     with pytest.raises(ValueError, match="not both"):
-        udf(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
+        function(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
     with pytest.raises(ValueError, match="requires conda"):
-        udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
+        function(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
-def test_udf_apt_system_packages():
-    @udf(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
+def test_function_apt_system_packages():
+    @function(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
     def decode(value: float) -> float:
         return value
 
@@ -584,7 +796,7 @@ def test_udf_apt_system_packages():
         "system_packages": ["libavcodec60", "libavutil58"],
     }
 
-    @udf(conda=["numpy"], apt=["libsndfile1"])
+    @function(conda=["numpy"], apt=["libsndfile1"])
     def conda_decode(value: float) -> float:
         return value
 
@@ -593,14 +805,14 @@ def test_udf_apt_system_packages():
     pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
     assert "system_packages" not in pip_request["runtime"]["environment"]
     with pytest.raises(ValueError, match="trimmed"):
-        udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
+        function(name="padded", apt=[" libsndfile1"])(lambda value: value)
 
 
 @pytest.mark.parametrize("packages", [{"pip": ["numpy"]}, {"conda": ["numpy"]}])
-def test_udf_image(packages):
+def test_function_image(packages):
     image = "ghcr.io/acme/embedder@sha256:" + "a" * 64
 
-    @udf(image=image, **packages)
+    @function(image=image, **packages)
     def embed(value: float) -> float:
         return value
 
@@ -613,22 +825,24 @@ def test_udf_image(packages):
 @pytest.mark.parametrize(
     "image", ["ghcr.io/acme/embedder:latest", "embedder@sha256:" + "a" * 64, ""]
 )
-def test_udf_image_requires_digest_reference(image):
+def test_function_image_requires_digest_reference(image):
     with pytest.raises(ValueError, match="sha256"):
-        udf(name="pinned", image=image)(lambda value: value)
+        function(name="pinned", image=image)(lambda value: value)
 
 
-def test_udf_gpu_marker_uses_gpu_runtime():
-    @udf(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
-    def double_on_gpu(value: int) -> int:
-        return value * 2
+def test_function_gpu_marker_uses_gpu_runtime():
+    with pytest.warns(UserWarning, match="uses a scalar callable"):
+
+        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+        def double_on_gpu(value: int) -> int:
+            return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
     assert request["runtime"]["gpu_class"] == "a10g"
 
-    @udf(pip=["pyarrow"])
+    @function(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
         return value
 
@@ -644,12 +858,12 @@ def test_udf_gpu_marker_uses_gpu_runtime():
 
     for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
         with pytest.raises(ValueError, match="gpu must be a boolean"):
-            udf(name="invalid_gpu", gpu=invalid)(identity)
+            function(name="invalid_gpu", gpu=invalid)(identity)
     for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
         with pytest.raises(ValueError, match="gpu_class"):
-            udf(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
+            function(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
     with pytest.raises(ValueError, match="requires gpu=True"):
-        udf(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
+        function(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
 
     base_runtime = {
         "kind": "python_v2",
@@ -671,6 +885,60 @@ def test_udf_gpu_marker_uses_gpu_runtime():
         )
 
 
+class _GpuScalarFunction:
+    def __call__(self, value: str) -> int:
+        return len(value)
+
+
+class _GpuArrayFunction:
+    def __call__(self, value: pa.Array) -> pa.Array:
+        return value
+
+
+def test_gpu_scalar_warning_names_the_vectorized_alternative():
+    with pytest.warns(UserWarning, match="model batch is not inferred"):
+
+        @function(gpu=True)
+        def scalar_embedding(value: str) -> list[int]:
+            return [len(value)]
+
+    input_schema = pa.schema([pa.field("value", pa.string(), nullable=False)])
+    with pytest.warns(UserWarning, match="uses a scalar callable"):
+        class_scalar = function(_GpuScalarFunction, gpu=True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
+        def array_embedding(value: pa.Array) -> pa.Array:
+            return value
+
+        @function(
+            gpu=True, input_schema=input_schema, output_schema=pa.list_(pa.int64())
+        )
+        def record_batch_embedding(value: pa.RecordBatch) -> pa.Array:
+            return value.column(0)
+
+        @function
+        def cpu_scalar(value: str) -> int:
+            return len(value)
+
+        class_embedding = function(
+            _GpuArrayFunction,
+            gpu=True,
+            input_schema=input_schema,
+            output_schema=pa.list_(pa.int64()),
+        )
+
+    assert not caught
+    assert array_embedding.registration_request.batch_size is None
+    assert record_batch_embedding.registration_request.batch_size is None
+    assert cpu_scalar.registration_request.batch_size is None
+    assert class_scalar.registration_request.batch_size is None
+    assert class_embedding.registration_request.batch_size is None
+
+
 def test_unknown_runtime_discards_payload_before_known_field_validation():
     for payload in [
         {
@@ -689,8 +957,8 @@ def test_unknown_runtime_discards_payload_before_known_field_validation():
         assert runtime.to_canonical_json() == '{"kind":"python_v3"}'
 
 
-def test_udf_packages_attribute_access_and_body_imports():
-    @udf
+def test_function_packages_attribute_access_and_body_imports():
+    @function
     def word_norm(body: str) -> float:
         import numpy as np
 
@@ -703,14 +971,14 @@ def test_udf_packages_attribute_access_and_body_imports():
     assert _run_packaged(word_norm, "aa bb") == pytest.approx(8**0.5)
 
 
-def test_udf_packages_module_globals_and_global_caches():
-    @udf
+def test_function_packages_module_globals_and_global_caches():
+    @function
     def label(value: int) -> str:
         return "big" if value >= THRESHOLD else "small"
 
     assert _run_packaged(label, 21) == "big"
 
-    @udf
+    @function
     def cached(value: int) -> int:
         global _CACHE
         if _CACHE is None:
@@ -720,16 +988,16 @@ def test_udf_packages_module_globals_and_global_caches():
     assert _run_packaged(cached, 2) == 42
 
 
-def test_udf_annotations_are_not_runtime_names():
-    @udf
+def test_function_annotations_are_not_runtime_names():
+    @function
     def identity(value: date) -> date:
         return value
 
     assert _run_packaged(identity, date(2026, 8, 25)) == date(2026, 8, 25)
 
 
-def test_udf_nested_scopes_resolve_lexically():
-    @udf
+def test_function_nested_scopes_resolve_lexically():
+    @function
     def score(value: int) -> int:
         offset = 2
 
@@ -741,7 +1009,7 @@ def test_udf_nested_scopes_resolve_lexically():
     assert _run_packaged(score, 3) == 5
 
 
-def test_udf_resolves_module_globals_before_builtins(tmp_path):
+def test_function_resolves_module_globals_before_builtins(tmp_path):
     module_path = tmp_path / "shadowing_udfs.py"
     module_path.write_text(
         "max = 7\n"
@@ -762,10 +1030,10 @@ def test_udf_resolves_module_globals_before_builtins(tmp_path):
     spec.loader.exec_module(module)
 
     # The module's `max = 7` is what the interpreter would use, so it ships.
-    assert _run_packaged(udf(module.uses_literal_shadow), 1) == 8
+    assert _run_packaged(function(module.uses_literal_shadow), 1) == 8
     # A callable global cannot ship; it must not be silently swapped for the builtin.
     with pytest.raises(TypeError, match="unsupported global value of type function"):
-        udf(module.uses_callable_shadow)
+        function(module.uses_callable_shadow)
 
 
 def test_canonical_arrow_type_prefers_the_compact_grammar():
@@ -787,19 +1055,17 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
         == "large_list<float32>"
     )
     for outside in [
-        pa.timestamp("us"),
-        pa.decimal128(10, 2),
         pa.binary(4),
-        pa.duration("s"),
+        pa.time32("s"),
+        pa.time64("us"),
         pa.list_(pa.float32(), 0),
-        pa.list_(pa.timestamp("us")),
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
             _canonical_arrow_type(outside)
 
 
-def test_udf_nested_annotations_are_postponed_in_the_artifact():
-    @udf
+def test_function_nested_annotations_are_postponed_in_the_artifact():
+    @function
     def score(value: int) -> int:
         def identity(item: date) -> date:
             return item
@@ -810,8 +1076,8 @@ def test_udf_nested_annotations_are_postponed_in_the_artifact():
     assert _run_packaged(score, 3) == 3
 
 
-def test_udf_ships_globals_the_body_deletes():
-    @udf
+def test_function_ships_globals_the_body_deletes():
+    @function
     def clear(value: int) -> int:
         global _CACHE
         del _CACHE
@@ -820,7 +1086,7 @@ def test_udf_ships_globals_the_body_deletes():
     assert _run_packaged(clear, 3) == 3
 
 
-def test_udf_rejects_a_module_global_that_does_not_import_as_itself(tmp_path):
+def test_function_rejects_a_module_global_that_does_not_import_as_itself(tmp_path):
     module_path = tmp_path / "fake_module_udfs.py"
     module_path.write_text(
         "import types\n"
@@ -834,10 +1100,10 @@ def test_udf_rejects_a_module_global_that_does_not_import_as_itself(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with pytest.raises(TypeError, match="does not import as 'numpy'"):
-        udf(module.score)
+        function(module.score)
 
 
-def test_udf_rejects_a_module_level_namespace_alias(tmp_path):
+def test_function_rejects_a_module_level_namespace_alias(tmp_path):
     module_path = tmp_path / "aliasing_udfs.py"
     module_path.write_text(
         "import builtins as b\n"
@@ -849,8 +1115,8 @@ def test_udf_rejects_a_module_level_namespace_alias(tmp_path):
     spec = importlib.util.spec_from_file_location("aliasing_udfs", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    with pytest.raises(ValueError, match="dynamic namespace access"):
-        udf(module.score)
+    with pytest.raises(ValueError, match="imports from namespace-access modules"):
+        function(module.score)
 
 
 @pytest.mark.parametrize(
@@ -860,10 +1126,9 @@ def test_udf_rejects_a_module_level_namespace_alias(tmp_path):
         "eval('THRESHOLD')",
         "(lambda g: g()['THRESHOLD'])(globals)",
         "__import__('sys').modules[__name__].THRESHOLD",
-        "sys.modules[__name__].THRESHOLD",
     ],
 )
-def test_udf_rejects_dynamic_namespace_access(access):
+def test_function_rejects_dynamic_namespace_access(access):
     namespace: dict = {}
     exec(
         f"def score(value: int) -> int:\n    return value + {access}\n",
@@ -872,9 +1137,7 @@ def test_udf_rejects_dynamic_namespace_access(access):
     )
     with pytest.raises(ValueError, match="dynamic namespace access"):
         _package_from_text(
-            "def score(value: int) -> int:\n"
-            "    import sys\n"
-            f"    return value + {access}\n"
+            f"def score(value: int) -> int:\n    return value + {access}\n"
         )
 
 
@@ -883,9 +1146,11 @@ def _package_from_text(source: str, module_globals: dict | None = None):
     import tempfile
 
     directory = tempfile.mkdtemp()
-    path = Path(directory) / "generated_udf_module.py"
+    path = Path(directory) / "generated_function_module.py"
     path.write_text(source)
-    spec = importlib.util.spec_from_file_location(f"generated_udf_{id(source)}", path)
+    spec = importlib.util.spec_from_file_location(
+        f"generated_function_{id(source)}", path
+    )
     module = importlib.util.module_from_spec(spec)
     if module_globals:
         module.__dict__.update(module_globals)
@@ -895,10 +1160,10 @@ def _package_from_text(source: str, module_globals: dict | None = None):
         for value in vars(module).values()
         if callable(value) and getattr(value, "__module__", None) == module.__name__
     ]
-    return udf(functions[0])
+    return function(functions[0])
 
 
-def test_udf_rejects_a_non_standard_builtins_environment():
+def test_function_rejects_a_non_standard_builtins_environment():
     def score(value: int) -> int:
         return len([1]) + value
 
@@ -913,7 +1178,7 @@ def test_udf_rejects_a_non_standard_builtins_environment():
     patched.__annotations__ = score.__annotations__
     assert patched(3) == 102
     with pytest.raises(ValueError, match="non-standard builtins environment"):
-        udf(patched)
+        function(patched)
 
     class ReportingDict(dict):  # reports standard entries, resolves differently
         def __missing__(self, key):
@@ -925,7 +1190,7 @@ def test_udf_rejects_a_non_standard_builtins_environment():
     disguised.__annotations__ = score.__annotations__
     assert disguised(3) == 102
     with pytest.raises(ValueError, match="non-standard builtins environment"):
-        udf(disguised)
+        function(disguised)
 
     hooked = types.FunctionType(
         score.__code__,
@@ -934,10 +1199,10 @@ def test_udf_rejects_a_non_standard_builtins_environment():
     )
     hooked.__annotations__ = score.__annotations__
     with pytest.raises(ValueError, match="non-standard builtins environment"):
-        udf(hooked)
+        function(hooked)
 
 
-def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
+def test_function_recursion_versus_a_rebound_module_name(tmp_path):
     module_path = tmp_path / "rebound_udfs.py"
     module_path.write_text(
         "def fact(value: int) -> int:\n"
@@ -949,20 +1214,20 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
     spec = importlib.util.spec_from_file_location("rebound_udfs", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert _run_packaged(udf(module.fact), 5) == 120
+    assert _run_packaged(function(module.fact), 5) == 120
     raw = module.score
     module.score = 10
     with pytest.raises(ValueError, match="binds that name to another value"):
-        udf(raw)
+        function(raw)
     # A wrapper that merely exposes __wrapped__ is not the function.
     module.score = functools.wraps(raw)(lambda value: 41)
     with pytest.raises(ValueError, match="binds that name to another value"):
-        udf(raw)
+        function(raw)
     # The decorator's own result is; a subclass of it is not.
-    module.fact = udf(module.fact)
+    module.fact = function(module.fact)
     assert _run_packaged(module.fact, 4) == 24
 
-    class Twisted(UdfDefinition):
+    class Twisted(FunctionDefinition):
         def __call__(self, *args, **kwargs):
             return 41
 
@@ -977,7 +1242,7 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
         python_version=None,
     )
     with pytest.raises(ValueError, match="binds that name to another value"):
-        udf(raw_fact)
+        function(raw_fact)
 
 
 def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
@@ -1048,12 +1313,12 @@ def _shadows_missing_in_a_lambda(value: int) -> int:
 
 
 @pytest.mark.parametrize(
-    "function",
+    "target",
     [_calls_missing, _shadows_missing_in_a_comprehension, _shadows_missing_in_a_lambda],
 )
-def test_udf_rejects_a_truly_unresolved_global(function):
+def test_function_rejects_a_truly_unresolved_global(target):
     with pytest.raises(ValueError, match=r"unresolved global names: \['missing'\]"):
-        udf(function)
+        function(target)
 
 
 def _arrow_type_from_golden(spec: dict) -> pa.DataType:
@@ -1108,7 +1373,7 @@ def test_explicit_arrow_schema_is_deterministic():
         nullable=False,
     )
 
-    @udf(input_schema=input_schema, output_schema=output_schema)
+    @function(input_schema=input_schema, output_schema=output_schema)
     def explicit(value):
         return [value, value, value]
 
@@ -1119,8 +1384,342 @@ def test_explicit_arrow_schema_is_deterministic():
     assert signature.output.nullable is False
 
 
+def test_timestamp_annotation_and_explicit_schema_serialization():
+    for unit in ("s", "ms", "us", "ns"):
+        for timezone in (None, "UTC", "America/New_York", "+08:00", "-05:00"):
+            encoded = json.loads(_canonical_arrow_type(pa.timestamp(unit, tz=timezone)))
+            if unit == "us" and timezone is None:
+                assert encoded == {"type": "timestamp"}
+            else:
+                suffix = timezone if timezone is not None else "-"
+                assert encoded == {"type": f"timestamp:{unit}:{suffix}"}
+
+    with pytest.raises(TypeError, match="reserved for no timezone"):
+        _canonical_arrow_type(pa.timestamp("us", tz="-"))
+
+    @function
+    def normalize(
+        ts: Annotated[datetime, pa.timestamp("ns", tz="UTC")],
+    ) -> Annotated[datetime, pa.timestamp("ns", tz="UTC")]:
+        return ts
+
+    signature = normalize.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {"type": "timestamp:ns:UTC"}
+    assert json.loads(signature.output.arrow_type) == {"type": "timestamp:ns:UTC"}
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def optional_timestamp(
+        ts: Optional[Annotated[datetime, pa.timestamp("ms", tz="UTC")]],
+    ) -> int:
+        return 0
+
+    optional_input = optional_timestamp.registration_request.signature.inputs[0]
+    assert optional_input.nullable is True
+    assert json.loads(optional_input.arrow_type) == {"type": "timestamp:ms:UTC"}
+
+    @function
+    def legacy(ts: datetime) -> datetime:
+        return ts
+
+    legacy_signature = legacy.registration_request.signature
+    assert json.loads(legacy_signature.inputs[0].arrow_type) == {"type": "timestamp"}
+    assert json.loads(legacy_signature.output.arrow_type) == {"type": "timestamp"}
+    legacy_round_trip = FunctionSignature.from_json(
+        legacy_signature.to_canonical_json()
+    )
+    assert legacy_round_trip.inputs[0].arrow_type == '{"type":"timestamp"}'
+
+    input_schema = pa.schema(
+        [pa.field("ts", pa.timestamp("ms", tz="America/New_York"), nullable=True)]
+    )
+    output_schema = pa.schema(
+        [
+            pa.field("ts", pa.timestamp("ns", tz="+08:00"), nullable=True),
+            pa.field("elapsed", pa.duration("ms"), nullable=False),
+        ]
+    )
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def nested(ts):
+        return {"ts": ts, "elapsed": None}
+
+    nested_signature = nested.registration_request.signature
+    assert nested_signature.inputs[0].nullable is True
+    assert json.loads(nested_signature.inputs[0].arrow_type) == {
+        "type": "timestamp:ms:America/New_York"
+    }
+    assert nested_signature.output.kind == "named_struct"
+    assert nested_signature.output.fields[0].nullable is True
+    assert json.loads(nested_signature.output.fields[0].arrow_type) == {
+        "type": "timestamp:ns:+08:00"
+    }
+    assert json.loads(nested_signature.output.fields[1].arrow_type) == {
+        "type": "duration:ms"
+    }
+
+    list_type = pa.list_(pa.field("item", pa.timestamp("ms", tz="UTC"), nullable=False))
+    assert json.loads(_canonical_arrow_type(list_type)) == {
+        "type": "list",
+        "fields": [
+            {
+                "name": "item",
+                "nullable": False,
+                "type": {"type": "timestamp:ms:UTC"},
+            }
+        ],
+    }
+
+
+def test_duration_annotation_and_explicit_schema_serialization():
+    for unit in ("s", "ms", "us", "ns"):
+        encoded = json.loads(_canonical_arrow_type(pa.duration(unit)))
+        expected = (
+            {"type": "duration"} if unit == "us" else {"type": f"duration:{unit}"}
+        )
+        assert encoded == expected
+
+    @function
+    def elapsed(
+        value: Annotated[timedelta, pa.duration("s")],
+    ) -> Annotated[timedelta, pa.duration("ns")]:
+        return value
+
+    signature = elapsed.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {"type": "duration:s"}
+    assert json.loads(signature.output.arrow_type) == {"type": "duration:ns"}
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def optional_elapsed(
+        value: Optional[Annotated[timedelta, pa.duration("ms")]],
+    ) -> int:
+        return 0
+
+    optional_input = optional_elapsed.registration_request.signature.inputs[0]
+    assert optional_input.nullable is True
+    assert json.loads(optional_input.arrow_type) == {"type": "duration:ms"}
+
+    with pytest.raises(
+        TypeError, match="timedelta Function annotations require an explicit unit"
+    ):
+
+        @function
+        def missing(value: timedelta) -> timedelta:
+            return value
+
+    input_schema = pa.schema([pa.field("elapsed", pa.duration("ms"), nullable=True)])
+    output_schema = pa.field("result", pa.duration("us"), nullable=False)
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(elapsed: timedelta) -> timedelta:
+        return elapsed
+
+    explicit_signature = explicit.registration_request.signature
+    assert explicit_signature.inputs[0].nullable is True
+    assert json.loads(explicit_signature.inputs[0].arrow_type) == {
+        "type": "duration:ms"
+    }
+    assert json.loads(explicit_signature.output.arrow_type) == {"type": "duration"}
+    explicit_round_trip = FunctionSignature.from_json(
+        explicit_signature.to_canonical_json()
+    )
+    assert explicit_round_trip.output.arrow_type == '{"type":"duration"}'
+
+
+def test_map_annotation_and_explicit_schema_serialization():
+    @function
+    def map_round_trip(values: dict[str, int]) -> dict[str, int]:
+        return values
+
+    signature = map_round_trip.registration_request.signature
+    expected = {
+        "type": "map",
+        "fields": [
+            {
+                "name": "entries",
+                "nullable": False,
+                "type": {
+                    "type": "struct",
+                    "fields": [
+                        {
+                            "name": "key",
+                            "nullable": False,
+                            "type": {"type": "utf8"},
+                        },
+                        {
+                            "name": "value",
+                            "nullable": False,
+                            "type": {"type": "int64"},
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+    assert json.loads(signature.inputs[0].arrow_type) == expected
+    assert json.loads(signature.output.arrow_type) == expected
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def nullable_values(
+        values: dict[str, Optional[int]],
+    ) -> dict[str, Optional[int]]:
+        return values
+
+    nullable_signature = nullable_values.registration_request.signature
+    nullable_map = json.loads(nullable_signature.inputs[0].arrow_type)
+    assert nullable_map["fields"][0]["type"]["fields"][1] == {
+        "name": "value",
+        "nullable": True,
+        "type": {"type": "int64"},
+    }
+
+    input_schema = pa.schema(
+        [
+            pa.field(
+                "values",
+                pa.map_(pa.string(), pa.field("custom", pa.int64(), nullable=True)),
+                nullable=False,
+            )
+        ]
+    )
+    output_schema = pa.field(
+        "result",
+        pa.map_(pa.string(), pa.field("value", pa.int64(), nullable=False)),
+        nullable=False,
+    )
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(values):
+        return {}
+
+    explicit_signature = explicit.registration_request.signature
+    explicit_input = json.loads(explicit_signature.inputs[0].arrow_type)
+    assert explicit_input["fields"][0]["type"]["fields"][1] == {
+        "name": "custom",
+        "nullable": True,
+        "type": {"type": "int64"},
+    }
+    explicit_output = json.loads(explicit_signature.output.arrow_type)
+    assert explicit_output["fields"][0]["type"]["fields"][1]["nullable"] is False
+
+
+def test_map_rejects_unsupported_boundaries():
+    with pytest.raises(TypeError, match="map keys_sorted=true"):
+        _canonical_arrow_type(pa.map_(pa.string(), pa.int64(), keys_sorted=True))
+    with pytest.raises(TypeError, match="map keys must be non-nullable utf8"):
+        _canonical_arrow_type(pa.map_(pa.int64(), pa.int64()))
+    with pytest.raises(TypeError, match="Blob v2 fields nested under"):
+        _canonical_arrow_type(pa.map_(pa.string(), lancedb.blob("image").type))
+    with pytest.raises(TypeError, match="map keys must be str"):
+
+        @function
+        def invalid_keys(values: dict[int, int]) -> int:
+            return 0
+
+
+def test_decimal_annotation_and_explicit_schema_serialization():
+    @function
+    def price(
+        amount: Annotated[Decimal, pa.decimal128(10, 2)],
+    ) -> Annotated[Decimal, pa.decimal256(50, 4)]:
+        return Decimal("1.0000")
+
+    signature = price.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {
+        "type": "decimal128",
+        "length": 10002,
+    }
+    assert json.loads(signature.output.arrow_type) == {
+        "type": "decimal256",
+        "length": 50004,
+    }
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+    assert json.loads(_canonical_arrow_type(pa.decimal128(10, -2))) == {
+        "type": "decimal128",
+        "length": 9998,
+    }
+    decimal_map = json.loads(
+        _canonical_arrow_type(pa.map_(pa.string(), pa.decimal128(10, 2)))
+    )
+    assert decimal_map["fields"][0]["type"]["fields"][1]["type"] == {
+        "type": "decimal128",
+        "length": 10002,
+    }
+
+    input_schema = pa.schema([pa.field("amount", pa.decimal128(12, 2), nullable=False)])
+    output_schema = pa.field("result", pa.decimal256(60, 6), nullable=False)
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(amount: Decimal) -> Decimal:
+        return amount
+
+    explicit_signature = explicit.registration_request.signature
+    assert json.loads(explicit_signature.inputs[0].arrow_type) == {
+        "type": "decimal128",
+        "length": 12002,
+    }
+    assert json.loads(explicit_signature.output.arrow_type) == {
+        "type": "decimal256",
+        "length": 60006,
+    }
+
+    with pytest.raises(
+        TypeError, match="Decimal Function annotations require precision and scale"
+    ):
+
+        @function
+        def missing(amount: Decimal) -> Decimal:
+            return amount
+
+
+def test_nullable_scalar_output_annotation_and_explicit_schema():
+    input_schema = pa.schema([pa.field("value", pa.int64(), nullable=False)])
+
+    @function(input_schema=input_schema)
+    def optional_annotation(value: int) -> Optional[int]:
+        return None if value == 0 else value * 2
+
+    @function(input_schema=input_schema)
+    def optional_union(value: int) -> int | None:
+        return None if value == 0 else value * 2
+
+    @function(
+        input_schema=input_schema,
+        output_schema=pa.field("result", pa.int64(), nullable=True),
+    )
+    def explicit_schema(value: int):
+        return None if value == 0 else value * 2
+
+    for definition in (optional_annotation, optional_union, explicit_schema):
+        signature = definition.registration_request.signature
+        assert (signature.output.kind, signature.output.arrow_type) == (
+            "scalar",
+            "int64",
+        )
+        assert signature.output.nullable is True
+        assert json.loads(signature.to_canonical_json())["output"] == {
+            "kind": "scalar",
+            "arrow_type": "int64",
+            "nullable": True,
+        }
+        assert (
+            FunctionSignature.from_json(signature.to_canonical_json()).output.nullable
+            is True
+        )
+
+
 def test_blob_fields_use_the_scalar_function_semantic_type():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=lancedb.blob("result", nullable=False),
     )
@@ -1134,12 +1733,12 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
 
 
 def test_blob_input_access_is_inferred_from_annotations():
-    @udf
+    @function
     def read_blob(video: BlobReader, timestamp_s: float) -> bytes:
         video.seek(int(timestamp_s))
         return video.read(4)
 
-    @udf
+    @function
     def read_bytes(video: bytes) -> int:
         return len(video)
 
@@ -1156,11 +1755,11 @@ def test_blob_input_access_is_inferred_from_annotations():
 
 
 def test_nullable_blob_reader_and_explicit_blob_bytes():
-    @udf
+    @function
     def nullable(video: Optional[BlobReader]) -> int:
         return 0 if video is None else video.size()
 
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
         output_schema=pa.field("size", pa.int64(), nullable=False),
     )
@@ -1180,7 +1779,7 @@ def test_blob_reader_rejects_an_incompatible_explicit_schema():
         return video.size()
 
     with pytest.raises(TypeError, match="requires a Blob V2 field"):
-        udf(
+        function(
             read,
             input_schema=pa.schema([pa.field("video", pa.int64(), nullable=False)]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
@@ -1188,7 +1787,7 @@ def test_blob_reader_rejects_an_incompatible_explicit_schema():
 
 
 def test_whole_named_struct_function_can_include_a_blob_result_field():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=pa.field(
             "payload",
@@ -1242,7 +1841,7 @@ def test_struct_blob_signature_fields_preserve_exact_metadata_and_nullability():
         nullable=False,
     )
 
-    @udf(input_schema=pa.schema([nested_input]), output_schema=nested_output)
+    @function(input_schema=pa.schema([nested_input]), output_schema=nested_output)
     def copy_payload(payload):
         return payload
 
@@ -1286,7 +1885,7 @@ def test_struct_blob_signature_supports_multiple_struct_levels():
         nullable=False,
     )
 
-    @udf(
+    @function(
         input_schema=pa.schema([recursive]),
         output_schema=pa.field("size", pa.int64(), nullable=False),
     )
@@ -1307,7 +1906,7 @@ def test_struct_blob_signature_supports_multiple_struct_levels():
     ],
 )
 def test_blob_output_accepts_list_ancestors(data_type):
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
         output_schema=pa.field("frames", data_type, nullable=False),
     )
@@ -1332,7 +1931,7 @@ def test_blob_output_accepts_list_ancestors(data_type):
 def test_blob_output_rejects_map_and_fixed_size_list_ancestors(data_type):
     with pytest.raises(TypeError, match="nested under collection types"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
             output_schema=pa.field("frames", data_type, nullable=False),
         )
@@ -1343,7 +1942,7 @@ def test_blob_output_rejects_map_and_fixed_size_list_ancestors(data_type):
 def test_blob_output_named_struct_accepts_list_ancestor():
     frames_type = pa.list_(lancedb.blob("item", nullable=False))
 
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1381,7 +1980,7 @@ def test_blob_signature_rejects_collection_ancestors(data_type):
         match="Blob v2 fields nested under collection types are not supported",
     ):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", data_type, nullable=False)]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
         )
@@ -1408,7 +2007,7 @@ def test_blob_signature_rejects_collection_below_a_struct():
         match="Blob v2 fields nested under collection types are not supported",
     ):
 
-        @udf(
+        @function(
             input_schema=pa.schema([nested]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
         )
@@ -1417,7 +2016,7 @@ def test_blob_signature_rejects_collection_below_a_struct():
 
 
 def test_blob_fields_support_vectorized_pyarrow_arrays():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
         output_schema=lancedb.blob("result", nullable=False),
     )
@@ -1430,7 +2029,7 @@ def test_blob_fields_support_vectorized_pyarrow_arrays():
     values = pa.array([b"large blob", b"", None], type=pa.large_binary())
     request = json.loads(copy_blobs.registration_request.to_canonical_json())
     batch = pa.RecordBatch.from_arrays([values], names=["image"])
-    result = _execute_registered_array_udf_v1(request, batch)
+    result = _execute_registered_array_function_v1(request, batch)
     assert isinstance(result, pa.LargeBinaryArray)
     assert result.to_pylist() == [b"large blob", b"", b""]
 
@@ -1451,7 +2050,7 @@ def test_blob_fields_support_vectorized_pyarrow_arrays():
 
 
 def test_documented_blob_array_identity_executes_packaged_artifact():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=lancedb.blob("copy", nullable=False),
     )
@@ -1460,7 +2059,7 @@ def test_documented_blob_array_identity_executes_packaged_artifact():
 
     values = pa.array([b"large blob", b""], type=pa.large_binary())
     request = json.loads(copy_blobs.registration_request.to_canonical_json())
-    result = _execute_registered_array_udf_v1(
+    result = _execute_registered_array_function_v1(
         request,
         pa.RecordBatch.from_arrays([values], names=["image"]),
     )
@@ -1468,7 +2067,7 @@ def test_documented_blob_array_identity_executes_packaged_artifact():
 
 
 def test_named_struct_function_can_include_a_blob_result_field():
-    @udf(
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1489,7 +2088,7 @@ def test_named_struct_function_can_include_a_blob_result_field():
 
 
 def test_named_struct_function_preserves_nullable_result_fields():
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1507,7 +2106,7 @@ def test_named_struct_function_preserves_nullable_result_fields():
         ("failure_code", False),
     ]
 
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.schema(
             [
@@ -1537,7 +2136,7 @@ def test_metadata_marked_blob_field_uses_the_semantic_type():
         metadata={"ARROW:extension:name": "lance.blob.v2"},
     )
 
-    @udf(
+    @function(
         input_schema=pa.schema([metadata_blob]),
         output_schema=pa.field("size", pa.int64(), nullable=False),
     )
@@ -1557,7 +2156,7 @@ def test_blob_marker_rejects_invalid_storage_layout():
 
     with pytest.raises(TypeError, match="requires a supported Blob storage layout"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([malformed]),
             output_schema=pa.field("size", pa.int64(), nullable=False),
         )
@@ -1584,7 +2183,7 @@ def test_nested_non_blob_extension_is_not_silently_unwrapped():
     )
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([nested]),
             output_schema=pa.field("result", pa.int64(), nullable=False),
         )
@@ -1596,7 +2195,7 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     input_schema = pa.schema([pa.field("text", pa.large_string(), nullable=True)])
     output_schema = pa.field("result", pa.large_string(), nullable=False)
 
-    @udf(input_schema=input_schema, output_schema=output_schema)
+    @function(input_schema=input_schema, output_schema=output_schema)
     def preserve(text):
         return text
 
@@ -1622,7 +2221,7 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
 def test_large_binary_schemas_use_the_canonical_function_name():
     payload = pa.field("data", pa.large_binary(), nullable=True)
 
-    @udf(
+    @function(
         input_schema=pa.schema([payload]),
         output_schema=pa.field("result", pa.large_binary(), nullable=False),
     )
@@ -1693,7 +2292,7 @@ def test_nested_struct_output_uses_canonical_exact_json():
         ]
     )
 
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("text", pa.string(), nullable=False)]),
         output_schema=pa.field("analysis", analysis, nullable=False),
     )
@@ -1743,31 +2342,25 @@ def test_nested_struct_output_uses_canonical_exact_json():
 def test_annotation_and_explicit_schema_validation_fail_closed():
     with pytest.raises(TypeError, match="missing Function annotations"):
 
-        @udf
+        @function
         def missing(value):
             return value
 
     with pytest.raises(TypeError, match="unsupported Function annotation"):
 
-        @udf
+        @function
         def unsupported(value: set[str]) -> str:
             return ""
 
-    with pytest.raises(ValueError, match="output must be non-nullable"):
-
-        @udf
-        def nullable_output(value: int) -> Optional[int]:
-            return value
-
     with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
-        @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+        @function(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
             return value
 
     with pytest.raises(ValueError, match="exactly match callable parameters"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("other", pa.int64())]),
             output_schema=pa.int64(),
         )
@@ -1776,12 +2369,27 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
     with pytest.raises(ValueError, match="output must be non-nullable"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
-            output_schema=pa.field("result", pa.int64(), nullable=True),
+            output_schema=pa.field(
+                "result",
+                pa.struct([pa.field("value", pa.int64(), nullable=False)]),
+                nullable=True,
+            ),
         )
-        def nullable_explicit(value):
-            return value
+        def nullable_struct(value):
+            return {"value": value}
+
+    with pytest.raises(
+        ValueError, match="Blob v2 Function output must be non-nullable"
+    ):
+
+        @function(
+            input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+            output_schema=lancedb.blob("result", nullable=True),
+        )
+        def nullable_blob(image):
+            return image
 
     for invalid_field in [
         pa.field("", pa.int32(), nullable=False),
@@ -1789,7 +2397,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-            @udf(
+            @function(
                 input_schema=pa.schema([pa.field("value", pa.int64())]),
                 output_schema=pa.schema([invalid_field]),
             )
@@ -1798,7 +2406,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema(
                 [pa.field("value", pa.int64(), metadata={"k": "v"})]
             ),
@@ -1809,7 +2417,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
             output_schema=pa.field(
                 "result", pa.int64(), nullable=False, metadata={"k": "v"}
@@ -1821,7 +2429,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
     struct_type = pa.struct([pa.field("value", pa.int64(), nullable=False)])
     with pytest.raises(TypeError, match="unsupported Arrow type"):
 
-        @udf(
+        @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
             output_schema=pa.field(
                 "result", struct_type, nullable=False, metadata={"k": "v"}
@@ -1845,9 +2453,32 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
     ]:
         with pytest.raises(TypeError, match="schema metadata"):
 
-            @udf(input_schema=input_schema, output_schema=output_schema)
+            @function(input_schema=input_schema, output_schema=output_schema)
             def schema_metadata(value):
                 return value
+
+
+def test_default_function_runtime_matches_server_identity():
+    definition = function(python_version="3.12")(analyze_caption.__wrapped__)
+    runtime = definition.registration_request.runtime
+    assert runtime.env == {}
+    cases = json.loads((FIXTURES / "runtime_identity.json").read_text(encoding="utf-8"))
+    expected = next(
+        case["digest"] for case in cases if case["name"] == "empty-environment"
+    )
+    assert runtime.digest == expected
+
+
+def test_environment_changes_do_not_change_source_identity():
+    definition = function(
+        pip=["openai==3.46.0"],
+        env={"MODE": "test"},
+        python_version="3.12",
+    )(analyze_caption.__wrapped__)
+    previous = analyze_caption.registration_request
+    changed = definition.registration_request
+    assert previous.artifact.digest == changed.artifact.digest
+    assert previous.runtime.digest != changed.runtime.digest
 
 
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
@@ -1860,9 +2491,343 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
+        db.get_function("normalize_score")
+    with pytest.raises(NotImplementedError, match=message):
         list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
+
+
+class _RawFunctionCatalog:
+    def __init__(self, definition, *, encode=False):
+        self.definition = json.dumps(definition) if encode else definition
+        self.requested_versions = []
+
+    async def get_function(self, _name, version=None, namespace_path=None):
+        self.requested_versions.append(version)
+        return self.definition
+
+    def list_functions(self, *, namespace_path=None, page_token=None, page_limit=None):
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.definition is None:
+            raise StopAsyncIteration
+        definition, self.definition = self.definition, None
+        return definition
+
+    def num_page_results(self):
+        return int(self.definition is not None)
+
+    def page_token(self):
+        return None
+
+
+def test_function_version_reads_requested_and_resolved_environments():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.runtime is None
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.environment.requested is None
+    assert legacy_version.environment.resolved is None
+
+    payload = _function_version_with_resolved_environment()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.environment.requested is version.runtime
+    assert version.environment.resolved is version.resolved_environment
+    assert version.runtime.kind == "python"
+    resolved = version.resolved_environment
+    assert resolved.packages[0].version == "2.9.0+cu130"
+    assert resolved.packages[0].source == "https://packages.example/simple"
+    assert resolved.packages[1].source is None
+    assert resolved.provenance.torch_version == "torch==2.9.0+cu130"
+    assert resolved.warnings == tuple(payload["resolved_environment"]["warnings"])
+
+    encoded = json.loads(version.to_canonical_json())
+    assert encoded["runtime"]["kind"] == "python"
+    assert encoded["resolved_environment"]["packages"][0]["version"] == "2.9.0+cu130"
+    assert "source" not in encoded["resolved_environment"]["packages"][1]
+    assert (
+        encoded["resolved_environment"]["provenance"]["torch_version"]
+        == "torch==2.9.0+cu130"
+    )
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environment"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
+def test_function_version_reads_resolved_environments_by_platform():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.resolved_environments == {}
+    assert legacy_version.environment_report == {}
+
+    payload = _function_version_with_resolved_environments()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.resolved_environment is None
+    assert version.resolved_environments == version.environment_report
+    assert set(version.environment_report) == {"linux/amd64", "linux/arm64"}
+    assert (
+        version.environment_report["linux/amd64"].packages[0].version == "2.9.0+cu130"
+    )
+    assert version.environment_report["linux/arm64"].packages == ()
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+
+    encoded = json.loads(version.to_canonical_json())
+    assert "resolved_environment" not in encoded
+    assert (
+        encoded["resolved_environments"]["linux/amd64"]["packages"][0]["version"]
+        == "2.9.0+cu130"
+    )
+    assert encoded["resolved_environments"]["linux/arm64"]["packages"] == []
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    missing_platform = json.loads(json.dumps(payload))
+    del missing_platform["resolved_environments"]["linux/arm64"]
+    missing_version = FunctionVersion.from_json(json.dumps(missing_platform))
+    assert "linux/arm64" not in missing_version.environment_report
+    assert "linux/amd64" in missing_version.environment_report
+
+    empty_map = json.loads(json.dumps(payload))
+    empty_map["resolved_environments"] = {}
+    empty_version = FunctionVersion.from_json(json.dumps(empty_map))
+    assert empty_version.resolved_environments == {}
+    assert "resolved_environments" not in json.loads(empty_version.to_canonical_json())
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environments"]["linux/amd64"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_server_environment_warnings_once():
+    payload = _function_version_with_resolved_environment()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            assert "refresh_lock" not in json.loads(request_json)
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == list(
+        payload["resolved_environment"]["warnings"]
+    )
+    assert version.environment.resolved.warnings == tuple(
+        payload["resolved_environment"]["warnings"]
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_per_platform_environment_warnings():
+    payload = _function_version_with_resolved_environments()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == [
+        "amd64 environment warning",
+        "arm64 environment warning",
+    ]
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+def test_blocking_create_function_emits_server_environment_warnings():
+    payload = _function_version_with_resolved_environment()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = AsyncConnection(Inner())
+    with pytest.warns(UserWarning) as recorded:
+        version = DBConnection.create_function(connection, normalize_score)
+    assert [str(w.message) for w in recorded] == list(
+        payload["resolved_environment"]["warnings"]
+    )
+    assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_registration_warnings():
+    payload = _function_version_with_resolved_environment()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
+    assert listed[0].environment.resolved == version.resolved_environment
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_per_platform_warnings():
+    payload = _function_version_with_resolved_environments()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment_report == listed[0].environment_report
+
+
+def _assert_execution_control_encoding(version):
+    encoded = json.loads(version.to_canonical_json())
+    assert type(encoded["batch_size"]) is int
+    assert type(encoded["row_timeout_seconds"]) is float
+    assert type(encoded["result_stability"]) is str
+    return encoded
+
+
+@pytest.mark.asyncio
+async def test_async_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        runtime_digest=normalize_score.registration_request.runtime.digest,
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    catalog = _RawFunctionCatalog(definition, encode=True)
+    connection = AsyncConnection(catalog)
+
+    latest = await connection.get_function("embed")
+    integer = await connection.get_function("embed", version=1)
+    exact = await connection.get_function("embed", version="1")
+    await connection.get_function("embed", version="001")
+    listed = [item async for item in connection.list_functions(page_limit=32)]
+    assert len(listed) == 1
+    for version in [latest, integer, exact, *listed]:
+        assert _assert_execution_control_encoding(version) == definition
+    assert catalog.requested_versions == [None, "1", "1", "001"]
+    with pytest.raises(TypeError, match="int, str, or None"):
+        await connection.get_function("embed", version=True)
+    with pytest.raises(TypeError, match="int, str, or None"):
+        await connection.get_function("embed", version=1.5)
+
+
+def test_sync_catalog_path_preserves_execution_controls():
+    definition = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    definition.update(
+        runtime_digest=normalize_score.registration_request.runtime.digest,
+        batch_size=12,
+        row_timeout_seconds=8.0,
+        result_stability="input_and_context",
+    )
+    connection = object.__new__(RemoteDBConnection)
+    catalog = _RawFunctionCatalog(FunctionVersion(**definition))
+    connection._conn = catalog
+
+    latest = connection.get_function("embed")
+    integer = connection.get_function("embed", version=1)
+    exact = connection.get_function("embed", version="1")
+    connection.get_function("embed", version="001")
+    listed = list(connection.list_functions(page_limit=32))
+    assert len(listed) == 1
+    for version in [latest, integer, exact, *listed]:
+        assert _assert_execution_control_encoding(version) == definition
+    assert catalog.requested_versions == [None, "1", "1", "001"]
+    with pytest.raises(TypeError, match="int, str, or None"):
+        connection.get_function("embed", version=True)
+    with pytest.raises(TypeError, match="int, str, or None"):
+        connection.get_function("embed", version=1.5)
+
+
+def test_sync_drop_function_emits_server_warnings_without_changing_bool_api():
+    class _DropConnection:
+        async def drop_function(self, name, *, version, namespace_path=None):
+            return True
+
+        async def _drop_function_with_warnings(
+            self, name, *, version, namespace_path=None
+        ):
+            return True, [
+                'materialized view "pinned" references Function "embed" version "1"'
+            ]
+
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = _DropConnection()
+
+    with pytest.warns(UserWarning, match="references Function"):
+        assert connection.drop_function("embed", version="1") is True
+
+
+@pytest.mark.asyncio
+async def test_async_drop_function_emits_server_warnings_without_changing_bool_api():
+    class _Inner:
+        async def _drop_function_with_warnings(
+            self, name, version, namespace_path=None
+        ):
+            return True, [
+                'materialized view "pinned" references Function "embed" version "1"'
+            ]
+
+        async def drop_function(self, name, version, namespace_path=None):
+            return True
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = _Inner()
+
+    with pytest.warns(UserWarning, match="references Function"):
+        assert await connection.drop_function("embed", version="1") is True
 
 
 @contextlib.contextmanager
@@ -1916,6 +2881,9 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "source_digest": body["artifact"]["digest"],
+                    "runtime_digest": PythonRuntimeSpec.from_json(
+                        json.dumps(body["runtime"])
+                    ).digest,
                     "secret_bindings": body.get("secret_bindings", []),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
@@ -2018,8 +2986,8 @@ def test_building_a_binding_contacts_no_server():
     assert state["requests"] == []
 
 
-def test_vectorized_blob_udf_executes_packaged_artifact_and_publishes(tmp_path):
-    @udf(
+def test_vectorized_blob_function_executes_packaged_artifact_and_publishes(tmp_path):
+    @function(
         input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
         output_schema=lancedb.blob("copy", nullable=False),
     )
@@ -2060,7 +3028,7 @@ def test_vectorized_blob_udf_executes_packaged_artifact_and_publishes(tmp_path):
     )
     hydrated = source.fetch_blobs("image", input_hits)
     assert isinstance(hydrated, pa.LargeBinaryArray)
-    result = _execute_registered_array_udf_v1(
+    result = _execute_registered_array_function_v1(
         registration,
         pa.RecordBatch.from_arrays([hydrated], names=["image"]),
     )
@@ -2106,7 +3074,7 @@ def test_blob_list_output_fresh_artifact_survives_local_reopen(
     input_type = physical_list(pa.int64())
     item = lancedb.blob("item", nullable=True)
 
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("frames", input_type, nullable=False)]),
         output_schema=pa.field("frames", declared_list(item), nullable=False),
     )
@@ -2124,7 +3092,7 @@ def test_blob_list_output_fresh_artifact_survives_local_reopen(
     item_field = declared["fields"][0]
     assert item_field["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
 
-    result = _execute_registered_array_udf_v1(
+    result = _execute_registered_array_function_v1(
         request,
         pa.RecordBatch.from_arrays(
             [pa.array([[0], [1]], type=input_type)],
@@ -2189,11 +3157,11 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
 
 
 def test_one_explicit_schema_infers_the_other_from_annotations():
-    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    @function(input_schema=pa.schema([pa.field("value", pa.int64())]))
     def explicit_input(value) -> float:
         return float(value or 0)
 
-    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    @function(output_schema=pa.field("result", pa.float32(), nullable=False))
     def explicit_output(value: Optional[int]):
         return float(value or 0)
 

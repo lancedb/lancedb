@@ -163,6 +163,8 @@ impl CreateTableRequest {
 /// sharing the same data, deletion, and index files.
 #[derive(Clone, Debug)]
 pub struct CloneTableRequest {
+    /// Preserve an existing target rather than returning a duplicate-name error.
+    pub exist_ok: bool,
     /// The name of the target table to create
     pub target_table_name: String,
     /// The namespace path for the target table. Empty list represents root namespace.
@@ -184,6 +186,7 @@ pub struct CloneTableRequest {
 impl CloneTableRequest {
     pub fn new(target_table_name: String, source_uri: String) -> Self {
         Self {
+            exist_ok: false,
             target_table_name,
             target_namespace_path: vec![],
             source_uri,
@@ -233,6 +236,45 @@ pub enum ReadConsistency {
     Eventual(Duration),
     /// Changes are immediately visible in target tables
     Strong,
+}
+
+/// Registry lifecycle states accepted when filtering jobs.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobListState {
+    /// A job that has not reached a terminal state.
+    InProgress,
+    /// A job that completed successfully.
+    Succeeded,
+    /// A job that failed.
+    Failed,
+    /// A job that was canceled.
+    Canceled,
+    /// A job that exceeded its timeout.
+    TimedOut,
+}
+
+/// Server-side filters applied before job pagination.
+///
+/// Continuation tokens must be resumed with the same filters. Creation times
+/// are Unix timestamps in milliseconds; the lower bound is inclusive and the
+/// upper bound is exclusive.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct JobListFilter {
+    /// Table name within `namespace_path`, including all its branches; absent means all tables.
+    pub table: Option<String>,
+    /// Namespace of `table`; requires a table name.
+    pub namespace_path: Vec<String>,
+    /// Registry state, such as `in_progress`, `succeeded`, or `failed`.
+    /// These are server states, rather than the labels in [`JobInfo::state`].
+    pub state: Option<JobListState>,
+    /// Include jobs of any of these types; empty means all types.
+    pub job_types: Vec<String>,
+    /// Inclusive creation-time lower bound.
+    pub created_at_gte_millis: Option<i64>,
+    /// Exclusive creation-time upper bound.
+    pub created_at_lt_millis: Option<i64>,
 }
 
 /// A row from [`Database::list_jobs`]: one server-side job (index build,
@@ -479,6 +521,13 @@ pub trait Database:
     async fn list_gpu_classes(&self) -> Result<Vec<GpuClass>> {
         gpu_class_catalog_not_supported()
     }
+
+    /// Read the responding remote server's build identity.
+    async fn server_info(&self) -> Result<crate::server_info::ServerInfo> {
+        Err(crate::Error::NotSupported {
+            message: "Server build discovery requires a remote LanceDB connection".into(),
+        })
+    }
     /// Create a materialized view through a remote catalog and return its
     /// initial-population job. Local connections use the native declaration
     /// path directly.
@@ -552,6 +601,14 @@ pub trait Database:
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
+    /// Look up the latest currently visible immutable Function version.
+    async fn get_function_latest(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::function::FunctionVersion> {
+        function_catalog_not_supported()
+    }
     /// Fetch one page of published immutable Function versions in one namespace.
     async fn list_functions(
         &self,
@@ -580,6 +637,18 @@ pub trait Database:
     ) -> Result<(bool, crate::job::Job)> {
         let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
+    }
+    /// Internal bridge for the Python binding to preserve the public bool API
+    /// while making advisory SQL warnings available to the wrapper.
+    #[doc(hidden)]
+    async fn drop_function_with_warnings(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<(bool, Vec<String>)> {
+        let dropped = self.drop_function(name, version, namespace_path).await?;
+        Ok((dropped, Vec::new()))
     }
     /// Create a database-owned storage integration in a namespace.
     async fn create_storage_integration(
@@ -615,13 +684,14 @@ pub trait Database:
         secret_catalog_not_supported()
     }
 
-    /// Create a named Secret in this database. Fails if the name is taken, so
-    /// a create can never silently become a rotation.
+    /// Create a named Secret in this database. If the name is taken, fail unless
+    /// `exist_ok` is true, in which case the stored value is left unchanged.
     async fn create_secret(
         &self,
         _name: &str,
         _value: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<()> {
         secret_catalog_not_supported()
     }
@@ -665,6 +735,7 @@ pub trait Database:
         _name: &str,
         _query: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<ViewDescription> {
         view_ops_not_supported()
     }
@@ -748,6 +819,14 @@ pub trait Database:
     /// Fetch one page of server-side jobs across the database's tables.
     async fn list_jobs(&self, _options: ListingOptions) -> Result<ListingPage<JobInfo>> {
         job_op_not_supported("list_jobs")
+    }
+    /// Fetch one page of jobs matching server-side filters.
+    async fn list_jobs_filtered(
+        &self,
+        _filter: JobListFilter,
+        _options: ListingOptions,
+    ) -> Result<ListingPage<JobInfo>> {
+        job_op_not_supported("list_jobs_filtered")
     }
     /// Request cancellation of a job by id. Returns true if the server
     /// accepted the cancellation, false if no such job exists. Cancelling an

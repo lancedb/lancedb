@@ -17,6 +17,7 @@ import {
   tableFromIPC,
   vectorFromArray,
 } from "./arrow";
+import { isBlobDescriptorField, isBlobField } from "./blob";
 import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
@@ -148,6 +149,34 @@ async function readBlobBytes(
   );
 }
 
+// Discover descriptors from the executed query, not the live table's cached
+// schema. Projection names are literal aliases; only source paths use dots.
+function projectedBlobSources(
+  schema: Schema,
+  projection: [string, string][] | undefined,
+): BlobSource[] {
+  const sources: BlobSource[] = [];
+  for (const field of schema.fields) {
+    const source =
+      projection?.find(([output]) => output === field.name)?.[1] ?? field.name;
+    const visit = (child: Field, path: string[]) => {
+      if (isBlobField(child) || isBlobDescriptorField(child)) {
+        sources.push({
+          output: field.name,
+          path,
+          source: [source, ...path].join("."),
+        });
+      } else if (DataType.isStruct(child.type)) {
+        for (const nested of child.type.children) {
+          visit(nested, [...path, nested.name]);
+        }
+      }
+    };
+    visit(field, []);
+  }
+  return sources;
+}
+
 function withBinaryColumns(
   table: ArrowTable,
   replacements: Map<Field, (Buffer | null)[]>,
@@ -237,6 +266,9 @@ export interface QueryExecutionOptions {
 
   /**
    * Timeout for query execution in milliseconds
+   *
+   * The timeout also covers reading the results, so consuming them slowly can
+   * exceed it.
    */
   timeoutMs?: number;
 
@@ -254,8 +286,10 @@ export interface QueryExecutionOptions {
    * bytes. Blobs inside lists keep their descriptors. Arbitrary projection
    * expressions are not materialized as bytes.
    *
-   * The rows and the bytes come from the same table version. If the table
-   * changes while the query runs, the query runs again, up to three times.
+   * The rows and bytes come from the same snapshot. Remote queries require
+   * authoritative query version and snapshot identity headers, verified again
+   * by the blob response. Older servers can still return `"descriptions"`.
+   * Local queries retry up to three times if the table changes while they run.
    *
    * @example
    * ```ts
@@ -496,6 +530,34 @@ export class QueryBase<
     if (context === undefined) {
       return this.collect(options, false);
     }
+    if (!context.table.isNative()) {
+      // Request row IDs in the same query so newly added Blob columns can be
+      // fetched without rerunning the query against a different snapshot.
+      const addRowId = !context.withRowId;
+      const table = await this.collect(options, addRowId);
+      const sources = projectedBlobSources(table.schema, context.projection);
+      if (sources.length === 0) {
+        return addRowId
+          ? table.select(
+              table.schema.fields
+                .map((field) => field.name)
+                .filter((name) => name !== "_rowid"),
+            )
+          : table;
+      }
+      const version = table.schema.metadata.get("lancedb:query_version");
+      const identity = table.schema.metadata.get("lancedb:query_snapshot");
+      if (version === undefined || identity === undefined) {
+        throw new Error(
+          'blobMode "bytes" requires a trustworthy query snapshot: missing, invalid, or inconsistent x-lancedb-query-version or x-lancedb-query-snapshot. Upgrade every serving node, or use blobMode "descriptions".',
+        );
+      }
+      const snapshot = await context.table.querySnapshotWithIdentity(
+        version,
+        identity,
+      );
+      return readBlobBytes(table, sources, snapshot, addRowId);
+    }
     for (let attempt = 1; ; attempt++) {
       // The snapshot pins the bytes. The query runs on the live table, so an
       // unchanged version afterwards proves it read the snapshot's version.
@@ -530,10 +592,10 @@ export class QueryBase<
     for await (const batch of RecordBatchIterator(iterator)) {
       batches.push(batch);
     }
-    if (batches.length === 0) {
-      return tableFromIPC((await iterator).schema());
-    }
-    return new ArrowTable(batches);
+    // Read metadata from the executed stream, including empty results and
+    // query types whose individual batches do not carry the stream metadata.
+    const schema = tableFromIPC((await iterator).schema()).schema;
+    return new ArrowTable(schema, batches);
   }
 
   private blobBytesContext(
@@ -853,6 +915,11 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
 
   /**
    * Set the initial IVF search effort to a finite value in [0, 1].
+   *
+   * Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+   * 80% and 90% for L2, cosine and dot through k=100000. The probe budget
+   * adapts to the metric and k. Hamming and larger k remain uncalibrated;
+   * 100000 is not an API limit. Remote queries also require server support.
    *
    * The default, null, uses Auto (internally 0.5). Zero starts at the caller
    * minimum; one searches all partitions within the caller maximum. Later

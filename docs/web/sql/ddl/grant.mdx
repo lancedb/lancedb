@@ -26,10 +26,10 @@ GRANT OPERATE, USAGE ON SYSTEM TO ROLE ops
 GRANT USAGE, CREATE SCHEMA ON DATABASE analytics TO ROLE readers
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE events TO ROLE etl
 GRANT CREATE SECRET, CREATE FUNCTION ON SCHEMA platform TO ROLE platform_admins
-GRANT USAGE, UPDATE ON SECRET platform.`openai-prod` TO ROLE etl, rotation_service
-GRANT USAGE ON SECRET platform.`openai-prod` TO USER alice, GROUP ID 'g1'
+GRANT USAGE, UPDATE ON SECRET platform.`model-api-key` TO ROLE etl, rotation_service
+GRANT USAGE ON SECRET platform.`model-api-key` TO USER alice, GROUP ID 'g1'
 GRANT USAGE ON FUNCTION platform.embed TO ROLE research
-GRANT OWNERSHIP ON SECRET platform.`openai-prod` TO ROLE platform_admins
+GRANT OWNERSHIP ON SECRET platform.`model-api-key` TO ROLE platform_admins
 REVOKE USAGE ON FUNCTION platform.embed FROM ROLE research
 ```
 </CodeGroup>

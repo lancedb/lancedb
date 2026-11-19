@@ -204,6 +204,30 @@ impl BlobFile {
         lance::dataset::BlobFile::new_external(object_store, path, uri, position, size).into()
     }
 
+    /// Default sequential read-ahead window, in bytes.
+    pub const DEFAULT_READ_BUFFER_SIZE: usize = 512 * 1024;
+
+    /// Set sequential read-ahead bytes. `0` disables read-ahead.
+    ///
+    /// Changing the size discards unused prefetched bytes without moving the
+    /// cursor. [`Self::read_range`] and [`Self::read_ranges`] bypass read-ahead.
+    /// The default is [`Self::DEFAULT_READ_BUFFER_SIZE`].
+    ///
+    /// ```
+    /// # async fn sparse_read(file: &lancedb::blob::BlobFile) -> lance_core::Result<()> {
+    /// file.set_buffer_size(0).await?;
+    /// let header = file.read_up_to(16).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_buffer_size(&self, size: usize) -> lance_core::Result<()> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.set_buffer_size(size).await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.set_buffer_size(size).await,
+        }
+    }
+
     /// Close the handle.
     pub async fn close(&self) -> lance_core::Result<()> {
         match &self.inner {
@@ -332,7 +356,7 @@ impl BlobFile {
 ///
 /// `row_id` is obtained from a query with row ids enabled.
 /// `offset` and `length` are relative to the beginning of the logical blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BlobRangeRequest {
     /// Row id of the blob value to read.
     pub row_id: u64,

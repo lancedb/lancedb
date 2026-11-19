@@ -3,6 +3,7 @@
 
 
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any, List, Iterable, Literal, TYPE_CHECKING
@@ -16,9 +17,18 @@ __version__ = str(_Version(_native_version))
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import (
+    FunctionColumnAutoRefreshStatus as FunctionColumnAutoRefreshStatus,
+)
+from ._lancedb import (
+    FunctionColumnLastRefreshJob as FunctionColumnLastRefreshJob,
+)
+from ._lancedb import FunctionColumnStatus as FunctionColumnStatus
+from ._lancedb import (
+    FunctionColumnVersionStatus as FunctionColumnVersionStatus,
+)
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
-from ._lancedb import FunctionErrors as FunctionErrors
 from ._lancedb import GpuClass as GpuClass
 from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
@@ -35,16 +45,27 @@ from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
 from .functions import (
+    FunctionErrors as FunctionErrors,
+    AsyncFunctionErrors as AsyncFunctionErrors,
+    FunctionErrorGroup as FunctionErrorGroup,
+    FunctionProvenance as FunctionProvenance,
+    FunctionValueProvenance as FunctionValueProvenance,
     AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
+    FunctionDefinition as FunctionDefinition,
+    FunctionEnvironment as FunctionEnvironment,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionRetryPolicy as FunctionRetryPolicy,
     FunctionVersion as FunctionVersion,
     HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
+    ResolvedEnvironment as ResolvedEnvironment,
+    ResolvedEnvironmentProvenance as ResolvedEnvironmentProvenance,
+    ResolvedPackage as ResolvedPackage,
     RefreshColumnResult as RefreshColumnResult,
-    UdfDefinition as UdfDefinition,
+    function as function,
     udf as udf,
 )
 from .secrets import EnvVarSecret as EnvVarSecret
@@ -77,6 +98,7 @@ from .catalog import (
 
 if TYPE_CHECKING:
     from lance.blob import BlobType as BlobType
+    from .functions import UdfDefinition as UdfDefinition
 
 
 def __getattr__(name: str):
@@ -85,6 +107,13 @@ def __getattr__(name: str):
 
         globals()["BlobType"] = BlobType
         return BlobType
+    if name == "UdfDefinition":
+        from . import functions
+
+        warnings.warn(
+            functions.UDF_DEFINITION_DEPRECATION, DeprecationWarning, stacklevel=2
+        )
+        return functions.FunctionDefinition
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -649,6 +678,15 @@ __all__ = [
     "AsyncTable",
     "CompactionOptions",
     "FtsToken",
+    "FunctionColumnAutoRefreshStatus",
+    "FunctionColumnLastRefreshJob",
+    "FunctionColumnStatus",
+    "FunctionColumnVersionStatus",
+    "FunctionErrors",
+    "AsyncFunctionErrors",
+    "FunctionErrorGroup",
+    "FunctionProvenance",
+    "FunctionValueProvenance",
     "col",
     "Expr",
     "func",

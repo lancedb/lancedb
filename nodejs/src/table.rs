@@ -9,19 +9,122 @@ use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    FunctionRefreshPlanningConfig as LanceFunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources as LanceFunctionRefreshPodResources,
+    FunctionWorkerResourceBudget as LanceFunctionWorkerResourceBudget, NewColumnTransform, Ref,
+    Table as LanceDbTable,
 };
 use napi::Env;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
+use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
+use crate::job::JobFailureInfo;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
+
+/// Settings for durable data-cache prewarm submission.
+#[napi(object)]
+pub struct PrewarmDataOptions {
+    pub columns: Option<Vec<String>>,
+    pub filter: Option<String>,
+    pub concurrency: Option<f64>,
+    pub parameters: Option<Buffer>,
+}
+
+impl PrewarmDataOptions {
+    fn into_options(self) -> napi::Result<lancedb::table::PrewarmDataOptions> {
+        let mut options =
+            lancedb::table::PrewarmDataOptions::new().columns(self.columns.unwrap_or_default());
+        options.filter = self.filter;
+        if let Some(parameters) = self.parameters {
+            let mut batches = ipc_file_to_batches(parameters.to_vec())
+                .and_then(|reader| {
+                    reader
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(Into::into)
+                })
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            if batches.len() != 1 || batches[0].num_rows() != 1 {
+                return Err(napi::Error::from_reason(
+                    "prewarm parameters must contain one row in one batch",
+                ));
+            }
+            options.parameters = Some(batches.remove(0));
+        }
+        if let Some(value) = self.concurrency {
+            if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > u32::MAX as f64
+            {
+                return Err(napi::Error::from_reason(
+                    "concurrency must be an integer between 1 and 4294967295",
+                ));
+            }
+            options.concurrency = Some(value as u32);
+        }
+        Ok(options)
+    }
+}
+
+/// Per-invocation file-compaction settings. All numbers must be safe integers.
+#[napi(object)]
+pub struct CompactionOptions {
+    pub target_rows_per_fragment: Option<f64>,
+    pub max_source_rows: Option<f64>,
+    pub io_buffer_size: Option<f64>,
+    pub batch_size: Option<f64>,
+}
+
+impl CompactionOptions {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
+        const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+        fn integer(
+            value: Option<f64>,
+            name: &str,
+            max: u64,
+            allow_zero: bool,
+        ) -> napi::Result<Option<u64>> {
+            let Some(value) = value else {
+                return Ok(None);
+            };
+            let min = if allow_zero { 0 } else { 1 };
+            let max = max.min(MAX_SAFE_INTEGER);
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || value < min as f64
+                || value > max as f64
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be a safe integer between {min} and {max}"
+                )));
+            }
+            Ok(Some(value as u64))
+        }
+        let mut options = lancedb::table::optimize::CompactionOverrides::default();
+        if let Some(target) = integer(
+            self.target_rows_per_fragment,
+            "targetRowsPerFragment",
+            u32::MAX as u64,
+            false,
+        )? {
+            options.target_rows_per_fragment = Some(target as usize);
+        }
+        options.max_source_rows = integer(
+            self.max_source_rows,
+            "maxSourceRows",
+            usize::MAX as u64,
+            false,
+        )?
+        .map(|v| v as usize);
+        options.io_buffer_size = integer(self.io_buffer_size, "ioBufferSize", u64::MAX, true)?;
+        options.batch_size =
+            integer(self.batch_size, "batchSize", u32::MAX as u64, false)?.map(|v| v as usize);
+        Ok(options)
+    }
+}
 
 #[napi]
 pub struct Table {
@@ -75,7 +178,7 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean, retries?: number"
     )]
     pub async fn add(
         &self,
@@ -83,6 +186,7 @@ impl Table {
         mode: String,
         progress_callback: Option<ProgressFn>,
         allow_external_blob_outside_bases: Option<bool>,
+        retries: Option<u32>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -98,6 +202,11 @@ impl Table {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
+        if let Some(retries) = retries {
+            let retries = u8::try_from(retries)
+                .map_err(|_| napi::Error::from_reason("retries must be between 0 and 255"))?;
+            op = op.retries(retries);
+        }
 
         op = if mode == "append" {
             op.mode(AddDataMode::Append)
@@ -232,6 +341,40 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn prewarm_data_async(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .prewarm_data_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn explain_prewarm_data(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let plan = self
+            .inner_ref()?
+            .explain_prewarm_data(options)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn wait_for_index(&self, index_names: Vec<String>, timeout_s: i64) -> Result<()> {
         let timeout = std::time::Duration::from_secs(timeout_s.try_into().unwrap());
         let index_names: Vec<&str> = index_names.iter().map(|s| s.as_str()).collect();
@@ -282,6 +425,31 @@ impl Table {
     #[napi(catch_unwind)]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
+    }
+
+    /// Whether this handle reads an in-process dataset.
+    #[napi]
+    pub fn is_native(&self) -> napi::Result<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
+    }
+
+    /// Constrain deferred blob reads by the producing query response.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot_with_identity(
+        &self,
+        version: String,
+        identity: String,
+    ) -> napi::Result<Self> {
+        // Keep u64 query versions exact across the JavaScript boundary.
+        let version = version
+            .parse::<u64>()
+            .map_err(|_| napi::Error::from_reason("Invalid query snapshot version"))?;
+        let snapshot = self
+            .inner_ref()?
+            .query_snapshot_with_identity(version, &identity)
+            .await
+            .default_error()?;
+        Ok(Self::new(snapshot))
     }
 
     /// Return a read-only table handle pinned to the current query revision.
@@ -355,7 +523,32 @@ impl Table {
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
                 .default_error()?;
-            Ok(copy_blob_buffers(array))
+            copy_blob_buffers(array)
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blob_ranges<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        requests: Vec<BlobRangeRequest>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(requests.len()).map_err(|error| {
+            napi::Error::from_reason(format!("cannot allocate blob range requests: {error}"))
+        })?;
+        for request in requests {
+            ranges.push(request.parse()?);
+        }
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blob_ranges(column.as_str(), ranges)
+                .await
+                .default_error()?;
+            copy_blob_buffers(array)
         })
     }
 
@@ -421,20 +614,30 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn refresh_column(&self, column: String) -> napi::Result<RefreshColumnResult> {
+    pub async fn refresh_column(
+        &self,
+        column: String,
+        options: Option<RefreshColumnOptions>,
+    ) -> napi::Result<RefreshColumnResult> {
+        let options = options.unwrap_or_default().try_into()?;
         let res = self
             .inner_ref()?
-            .refresh_column(column)
+            .refresh_column_with_options(column, options)
             .await
             .default_error()?;
         Ok(res.into())
     }
 
     #[napi(catch_unwind)]
-    pub async fn refresh_column_async(&self, column: String) -> napi::Result<crate::job::Job> {
+    pub async fn refresh_column_async(
+        &self,
+        column: String,
+        options: Option<RefreshColumnOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options.unwrap_or_default().try_into()?;
         let job = self
             .inner_ref()?
-            .refresh_column_async(column)
+            .refresh_column_async_with_options(column, options)
             .await
             .default_error()?;
         Ok(crate::job::Job::new(job))
@@ -454,6 +657,7 @@ impl Table {
             })
             .transpose()?;
         let request = lancedb::function::FunctionErrorsRequest {
+            history: false,
             job_id: options.job_id,
             column: options.column,
             limit,
@@ -464,6 +668,55 @@ impl Table {
             .await
             .default_error()?;
         Ok(errors.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn function_column_statuses(
+        &self,
+        column: Option<String>,
+    ) -> napi::Result<Vec<FunctionColumnStatus>> {
+        let statuses = self
+            .inner_ref()?
+            .function_column_statuses(column.as_deref())
+            .await
+            .default_error()?;
+        Ok(statuses.into_iter().map(Into::into).collect())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn function_column_status(
+        &self,
+        column: String,
+    ) -> napi::Result<FunctionColumnStatus> {
+        let status = self
+            .inner_ref()?
+            .function_column_status(&column)
+            .await
+            .default_error()?;
+        Ok(status.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_function_column(
+        &self,
+        column: String,
+        timeout_seconds: Option<i64>,
+    ) -> napi::Result<FunctionColumnStatus> {
+        let timeout = timeout_seconds
+            .map(|seconds| {
+                u64::try_from(seconds)
+                    .map(std::time::Duration::from_secs)
+                    .map_err(|_| {
+                        napi::Error::from_reason("timeoutSeconds must be a non-negative integer")
+                    })
+            })
+            .transpose()?;
+        let status = self
+            .inner_ref()?
+            .wait_for_function_column(&column, timeout)
+            .await
+            .default_error()?;
+        Ok(status.into())
     }
 
     #[napi(catch_unwind)]
@@ -601,6 +854,37 @@ impl Table {
         Ok(spec.map(RTEWriteSpec::from))
     }
 
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn get_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .get_table_overrides()
+            .await
+            .default_error()
+    }
+
+    #[napi(
+        catch_unwind,
+        ts_args_type = "overrides: Record<string, unknown>",
+        ts_return_type = "Promise<Record<string, unknown>>"
+    )]
+    pub async fn update_table_overrides(
+        &self,
+        overrides: serde_json::Value,
+    ) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .update_table_overrides(overrides)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn reset_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .reset_table_overrides()
+            .await
+            .default_error()
+    }
+
     #[napi(catch_unwind, js_name = "closeRTEWriters")]
     pub async fn close_rte_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_rte_writers().await.default_error()
@@ -718,10 +1002,28 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn compact_async(
+        &self,
+        options: Option<CompactionOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(CompactionOptions::into_overrides)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .compact_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
         before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
+        compaction_options: Option<CompactionOptions>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
@@ -735,37 +1037,20 @@ impl Table {
             })
             .transpose()?;
 
-        let compaction_stats = inner
-            .optimize(OptimizeAction::Compact {
-                options: lancedb::table::CompactionOptions::default(),
-                remap_options: None,
-            })
-            .await
-            .default_error()?
-            .compaction
-            .unwrap();
-        let prune_stats = if let Some(before_timestamp) = before_timestamp {
-            inner
-                .optimize_prune_before(before_timestamp, delete_unverified, None)
-                .await
-        } else {
-            inner
-                .optimize(OptimizeAction::Prune {
-                    older_than: None,
-                    delete_unverified,
-                    error_if_tagged_old_versions: None,
-                })
-                .await
-        }
-        .default_error()?
-        .prune
-        .unwrap();
-        inner
-            .optimize(lancedb::table::OptimizeAction::Index(
-                OptimizeOptions::default(),
-            ))
+        let stats = inner
+            .optimize_full_with_overrides(
+                compaction_options
+                    .map(CompactionOptions::into_overrides)
+                    .transpose()?
+                    .unwrap_or_default(),
+                None,
+                before_timestamp,
+                delete_unverified,
+            )
             .await
             .default_error()?;
+        let compaction_stats = stats.compaction.unwrap();
+        let prune_stats = stats.prune.unwrap();
         Ok(OptimizeStats {
             compaction: CompactionStats {
                 files_added: compaction_stats.files_added as i64,
@@ -1535,6 +1820,293 @@ pub struct FunctionErrorsOptions {
     pub limit: Option<i64>,
 }
 
+/// Aggregate worker resources for one Enterprise Function refresh.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionWorkerResourceBudget {
+    /// Aggregate CPU budget in millicores; 1000 is one CPU.
+    pub cpu_millis: f64,
+    /// Aggregate memory budget in bytes.
+    pub memory_bytes: f64,
+    /// Aggregate GPU budget. Omitted means zero, a CPU-only refresh.
+    pub gpu_count: Option<f64>,
+}
+
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: f64,
+    /// Memory limit in bytes.
+    pub memory_bytes: f64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: f64,
+}
+
+/// Resources and sizing policy for the planning fleet of one registered
+/// Function refresh.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: f64,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: f64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: f64,
+}
+
+/// Overrides retries of failed user-code calls for one refresh. Omitted
+/// fields use the Function refresh defaults.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct FunctionRetryPolicy {
+    /// Total calls, including the first; 1 disables retries, maximum 100.
+    pub max_attempts: Option<u32>,
+    /// Initial exponential-backoff ceiling, in seconds.
+    pub initial_backoff_seconds: Option<f64>,
+    /// Maximum backoff, in seconds.
+    pub max_backoff_seconds: Option<f64>,
+    /// Exception class names, preferably qualified.
+    pub exception_types: Option<Vec<String>>,
+    /// Regular expression matched against the exception class and message.
+    pub message_pattern: Option<String>,
+    /// Structured provider error codes or HTTP status codes.
+    pub error_codes: Option<Vec<String>>,
+    /// Match connection/timeouts, HTTP 429/503, SlowDown and
+    /// ServiceUnavailable.
+    pub transient: Option<bool>,
+    /// Honor Retry-After within the configured maximum.
+    pub honor_retry_after: Option<bool>,
+}
+
+fn positive_safe_integer(value: f64, name: &str) -> napi::Result<u64> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if !value.is_finite() || value.fract() != 0.0 || !(1.0..=MAX_SAFE_INTEGER).contains(&value) {
+        return Err(napi::Error::from_reason(format!(
+            "{name} must be a positive safe integer"
+        )));
+    }
+    Ok(value as u64)
+}
+
+fn resource_budget_gpu_count(value: Option<f64>) -> napi::Result<u32> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&value) {
+        return Err(napi::Error::from_reason(
+            "resourceBudget.gpuCount must be an integer between 0 and 4294967295",
+        ));
+    }
+    Ok(value as u32)
+}
+
+fn positive_u32(value: Option<f64>, name: &str) -> napi::Result<Option<u32>> {
+    value
+        .map(|value| {
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || !(1.0..=u32::MAX as f64).contains(&value)
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be an integer between 1 and 4294967295"
+                )));
+            }
+            Ok(value as u32)
+        })
+        .transpose()
+}
+
+/// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
+/// option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
+/// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
+/// `resourceBudget`.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct RefreshColumnOptions {
+    /// Only refresh the rows matching this SQL filter.
+    #[napi(js_name = "where")]
+    pub where_clause: Option<String>,
+    /// Maximum rows per Function call; must be greater than zero.
+    pub batch_size: Option<u32>,
+    /// Row-count threshold for publishing completed Function split ranges.
+    /// Must be a positive safe integer. Omit for whole-fragment publication.
+    /// Actual publications can be larger; remaining rows publish at completion.
+    /// Requires LanceDB Enterprise with non-Blob Function outputs.
+    pub publication_interval_rows: Option<f64>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub max_concurrency: Option<f64>,
+    /// GPU class for Function workers.
+    pub gpu_class: Option<String>,
+    /// Complete aggregate CPU and memory budget for a registered Function
+    /// refresh. `gpuCount` inside the budget defaults to zero.
+    pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    /// CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing for the refresh planning fleet.
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
+    /// Positive aggregate GPU budget for Function workers.
+    pub gpu_count: Option<u32>,
+    /// Override retries of failed user-code calls for this refresh.
+    pub retry_policy: Option<FunctionRetryPolicy>,
+    /// `"fail"` (default) stops on a row error; `"skip"` writes null and
+    /// records the error, subject to the failure limits.
+    pub error_policy: Option<String>,
+    /// Under a skip policy, fail the job once more than this share of rows
+    /// (0 to 1) has failed.
+    pub max_failed_fraction: Option<f64>,
+    /// Under a skip policy, fail the job once more than this many rows have
+    /// failed.
+    pub max_failed_rows: Option<i64>,
+    /// Deadline for one Function call, in seconds.
+    pub row_timeout_seconds: Option<f64>,
+    /// Deadline for Function initialization, in seconds.
+    pub init_timeout_seconds: Option<f64>,
+    /// Worker count for an expression column; Function columns reject it.
+    pub num_workers: Option<u32>,
+    /// Cap on executor processes per Function worker.
+    pub max_executor_processes_per_worker: Option<u32>,
+}
+
+impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
+    type Error = napi::Error;
+
+    fn try_from(value: RefreshColumnOptions) -> napi::Result<Self> {
+        let mut options = Self::default();
+        options.where_clause = value.where_clause;
+        options.batch_size = value.batch_size.map(|size| size as usize);
+        options.publication_interval_rows = value
+            .publication_interval_rows
+            .map(|rows| positive_safe_integer(rows, "publicationIntervalRows"))
+            .transpose()?;
+        options.max_concurrency = positive_u32(value.max_concurrency, "maxConcurrency")?;
+        options.gpu_class = value.gpu_class;
+        options.resource_budget = value
+            .resource_budget
+            .map(|budget| {
+                Ok::<_, napi::Error>(
+                    LanceFunctionWorkerResourceBudget::new(
+                        positive_safe_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
+                        positive_safe_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
+                    )
+                    .with_gpu_count(resource_budget_gpu_count(budget.gpu_count)?),
+                )
+            })
+            .transpose()?;
+        options.supervisor_resources = value
+            .supervisor_resources
+            .map(|resources| {
+                Ok::<_, napi::Error>(LanceFunctionRefreshPodResources::new(
+                    positive_safe_integer(resources.cpu_millis, "supervisorResources.cpuMillis")?,
+                    positive_safe_integer(
+                        resources.memory_bytes,
+                        "supervisorResources.memoryBytes",
+                    )?,
+                    positive_safe_integer(
+                        resources.ephemeral_storage_bytes,
+                        "supervisorResources.ephemeralStorageBytes",
+                    )?,
+                ))
+            })
+            .transpose()?;
+        options.planning_workers = value
+            .planning_workers
+            .map(|planning| {
+                let resources = LanceFunctionRefreshPodResources::new(
+                    positive_safe_integer(
+                        planning.resources.cpu_millis,
+                        "planningWorkers.resources.cpuMillis",
+                    )?,
+                    positive_safe_integer(
+                        planning.resources.memory_bytes,
+                        "planningWorkers.resources.memoryBytes",
+                    )?,
+                    positive_safe_integer(
+                        planning.resources.ephemeral_storage_bytes,
+                        "planningWorkers.resources.ephemeralStorageBytes",
+                    )?,
+                );
+                let max_workers = usize::try_from(positive_safe_integer(
+                    planning.max_workers,
+                    "planningWorkers.maxWorkers",
+                )?)
+                .map_err(|_| napi::Error::from_reason("planningWorkers.maxWorkers is too large"))?;
+                Ok::<_, napi::Error>(LanceFunctionRefreshPlanningConfig::new(
+                    resources,
+                    max_workers,
+                    positive_safe_integer(
+                        planning.rows_per_worker,
+                        "planningWorkers.rowsPerWorker",
+                    )?,
+                    positive_safe_integer(
+                        planning.fragments_per_worker,
+                        "planningWorkers.fragmentsPerWorker",
+                    )?,
+                ))
+            })
+            .transpose()?;
+        options.gpu_count = value.gpu_count;
+        options.retry_policy = value.retry_policy.map(|policy| {
+            let mut converted = lancedb::function::FunctionRetryPolicy::default();
+            if let Some(max_attempts) = policy.max_attempts {
+                converted.max_attempts = max_attempts;
+            }
+            if let Some(seconds) = policy.initial_backoff_seconds {
+                converted.initial_backoff_seconds = seconds;
+            }
+            if let Some(seconds) = policy.max_backoff_seconds {
+                converted.max_backoff_seconds = seconds;
+            }
+            if let Some(exception_types) = policy.exception_types {
+                converted.exception_types = exception_types;
+            }
+            if let Some(pattern) = policy.message_pattern {
+                converted.message_pattern = Some(pattern);
+            }
+            if let Some(error_codes) = policy.error_codes {
+                converted.error_codes = error_codes;
+            }
+            if let Some(transient) = policy.transient {
+                converted.transient = transient;
+            }
+            if let Some(honor_retry_after) = policy.honor_retry_after {
+                converted.honor_retry_after = honor_retry_after;
+            }
+            converted
+        });
+        options.error_policy = match value.error_policy.as_deref() {
+            None => None,
+            Some("fail") => Some(lancedb::function::FunctionErrorPolicy::Fail),
+            Some("skip") => Some(lancedb::function::FunctionErrorPolicy::Skip),
+            Some(other) => {
+                return Err(napi::Error::from_reason(format!(
+                    "errorPolicy must be \"fail\" or \"skip\", got \"{other}\""
+                )));
+            }
+        };
+        options.max_failed_fraction = value.max_failed_fraction;
+        options.max_failed_rows = value
+            .max_failed_rows
+            .map(|rows| {
+                u64::try_from(rows).map_err(|_| {
+                    napi::Error::from_reason("maxFailedRows must be a non-negative integer")
+                })
+            })
+            .transpose()?;
+        options.row_timeout_seconds = value.row_timeout_seconds;
+        options.init_timeout_seconds = value.init_timeout_seconds;
+        options.num_workers = value.num_workers.map(|workers| workers as usize);
+        options.max_executor_processes_per_worker = value.max_executor_processes_per_worker;
+        Ok(options)
+    }
+}
+
 /// One row a Function refresh skipped, as the server recorded it.
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -1550,6 +2122,8 @@ pub struct FunctionErrorRecord {
     pub table_version: i64,
     pub error_type: String,
     pub error_message: String,
+    /// User-code traceback, possibly truncated by the server.
+    pub traceback: Option<String>,
     pub created_at_millis: i64,
 }
 
@@ -1565,6 +2139,7 @@ impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
             table_version: record.table_version as i64,
             error_type: record.error_type,
             error_message: record.error_message,
+            traceback: record.traceback,
             created_at_millis: record.created_at_millis,
         }
     }
@@ -1602,6 +2177,116 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     pub truncated: bool,
+}
+
+/// One exact immutable Function revision attached to a table output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnVersionStatus {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub object_id: String,
+    pub location: String,
+    pub version: String,
+    pub manifest_digest: String,
+}
+
+/// Latest matching refresh Job projected for a Function output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnLastRefreshJob {
+    pub job_id: String,
+    pub state: String,
+    pub automatic: Option<bool>,
+    pub completed_at_millis: Option<BigInt>,
+    pub failure: Option<JobFailureInfo>,
+}
+
+impl From<lancedb::table::FunctionColumnLastRefreshJob> for FunctionColumnLastRefreshJob {
+    fn from(job: lancedb::table::FunctionColumnLastRefreshJob) -> Self {
+        Self {
+            job_id: job.job_id,
+            state: job.state,
+            automatic: job.automatic,
+            completed_at_millis: job.completed_at_millis.map(BigInt::from),
+            failure: job.failure.map(Into::into),
+        }
+    }
+}
+
+/// Automatic-refresh projection for a Function output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnAutoRefreshStatus {
+    pub enabled: bool,
+    pub interval_seconds: Option<BigInt>,
+    pub active_job_id: Option<String>,
+    pub state: String,
+    pub failure_streak: u32,
+    pub effective_cooldown_millis: Option<BigInt>,
+    pub blocked_reason: Option<String>,
+    pub next_run_at_millis: Option<BigInt>,
+    pub next_run_at_reason: Option<String>,
+}
+
+/// Exact four-way status of one Function output at one table version.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnStatus {
+    pub column: String,
+    pub binding_id: String,
+    pub function: FunctionColumnVersionStatus,
+    pub table_version: BigInt,
+    pub rows: BigInt,
+    pub fresh: BigInt,
+    pub stale: BigInt,
+    pub never_computed: BigInt,
+    pub failed: BigInt,
+    pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    pub last_failure_job: Option<FunctionColumnLastRefreshJob>,
+    pub auto_refresh: FunctionColumnAutoRefreshStatus,
+}
+
+impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
+    fn from(status: lancedb::table::FunctionColumnStatus) -> Self {
+        Self {
+            column: status.column,
+            binding_id: status.binding_id,
+            function: FunctionColumnVersionStatus {
+                name: status.function.name,
+                namespace_path: status.function.namespace_path,
+                object_id: status.function.object_id,
+                location: status.function.location,
+                version: status.function.version,
+                manifest_digest: status.function.manifest_digest,
+            },
+            table_version: BigInt::from(status.table_version),
+            rows: BigInt::from(status.rows),
+            fresh: BigInt::from(status.fresh),
+            stale: BigInt::from(status.stale),
+            never_computed: BigInt::from(status.never_computed),
+            failed: BigInt::from(status.failed),
+            last_refresh_job: status.last_refresh_job.map(Into::into),
+            last_failure_job: status.last_failure_job.map(Into::into),
+            auto_refresh: FunctionColumnAutoRefreshStatus {
+                enabled: status.auto_refresh.enabled,
+                interval_seconds: status.auto_refresh.interval_seconds.map(BigInt::from),
+                active_job_id: status.auto_refresh.active_job_id,
+                state: status.auto_refresh.state.as_str().to_string(),
+                failure_streak: status.auto_refresh.failure_streak,
+                effective_cooldown_millis: status
+                    .auto_refresh
+                    .effective_cooldown_millis
+                    .map(BigInt::from),
+                blocked_reason: status
+                    .auto_refresh
+                    .blocked_reason
+                    .map(|reason| reason.as_str().to_string()),
+                next_run_at_millis: status.auto_refresh.next_run_at_millis.map(BigInt::from),
+                next_run_at_reason: status.auto_refresh.next_run_at_reason,
+            },
+        }
+    }
 }
 
 impl From<lancedb::function::FunctionErrors> for FunctionErrors {

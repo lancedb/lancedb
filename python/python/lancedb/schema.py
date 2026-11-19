@@ -122,6 +122,15 @@ def blob_v2_column_paths(schema: pa.Schema) -> list[str]:
     return [path for path, _ in _collect_blob_paths(schema, is_blob_v2_field)]
 
 
+def row_addressable_blob_paths(schema: pa.Schema) -> list[str]:
+    """Blob v1 and v2 paths with one blob addressable by table row id."""
+    return [
+        path
+        for path, has_list_ancestor in _collect_blob_paths(schema, is_blob_like_field)
+        if not has_list_ancestor
+    ]
+
+
 def row_addressable_blob_v2_paths(schema: pa.Schema) -> list[str]:
     """Blob v2 paths with one blob addressable by table row id.
 
