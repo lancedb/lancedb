@@ -4,7 +4,7 @@
 import json
 from typing import Dict, Mapping, Optional, Set, Tuple, Type, Union
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 from .base import (
     EmbeddingFunction,
@@ -251,7 +251,9 @@ class EmbeddingFunctionRegistry:
             )
             func._original_args = args
             return func
-        probe = _inspect_config(cls, public)
+        # Unresolved sensitive values stand in for the real ones, so required
+        # fields such as API keys validate without exposing secrets.
+        probe = _inspect_config(cls, {**args, **public})
 
         reasons = []
         model = probe.remote_code_model()
@@ -480,24 +482,22 @@ def _normalize_url(url: str) -> str:
 
 def _inspect_config(cls: Type[EmbeddingFunction], values: dict) -> EmbeddingFunction:
     """
-    Like `cls.model_construct(**values)`, but without running `__init__` or
-    `model_post_init`, either of which may load the configured model.
+    Validate `values` as `cls(**values)` would, so aliases, extra settings and
+    validators bind the same way, but without running `cls.__init__` or
+    `cls.model_post_init`, either of which may load the configured model.
     """
-    probe = cls.__new__(cls)
-    fields = {}
-    for name, field in cls.model_fields.items():
-        if name in values:
-            fields[name] = values[name]
-        elif not field.is_required():
-            fields[name] = field.get_default(call_default_factory=True)
-    private = {
-        name: attr.get_default() for name, attr in cls.__private_attributes__.items()
-    }
-    object.__setattr__(probe, "__dict__", fields)
-    object.__setattr__(probe, "__pydantic_fields_set__", set(values) & set(fields))
-    object.__setattr__(probe, "__pydantic_extra__", None)
-    object.__setattr__(probe, "__pydantic_private__", private or None)
-    return probe
+    inspector = _inspectors.get(cls)
+    if inspector is None:
+
+        class inspector(cls):
+            __init__ = BaseModel.__init__
+            model_post_init = BaseModel.model_post_init
+
+        _inspectors[cls] = inspector
+    return inspector.model_validate(values)
+
+
+_inspectors: Dict[type, type] = {}
 
 
 def _canonical_config(args: dict) -> str:

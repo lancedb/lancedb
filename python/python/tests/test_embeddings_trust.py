@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import lancedb
 import pyarrow as pa
 import pytest
+from pydantic import AliasChoices, AliasPath, ConfigDict, Field, model_validator
 from lancedb.embeddings import (
     ColPaliEmbeddings,
     EmbeddingFunctionConfig,
@@ -472,7 +473,7 @@ def test_create_trusts_its_own_model():
     assert isinstance(func, UntrustedEmbeddingFunction)
 
 
-@pytest.mark.parametrize("mlx", ["false", "0", 1])
+@pytest.mark.parametrize("mlx", ["false", "0", 0])
 def test_gte_mlx_flag_cannot_skip_model_approval(mlx):
     with patch("lancedb.embeddings.gte.attempt_import_or_raise") as imported:
         func = restore("gte-text", {"name": "attacker/model", "mlx": mlx})
@@ -508,6 +509,101 @@ def test_restore_does_not_run_post_init_before_approval(monkeypatch, safe_to_res
 
     assert isinstance(func, UntrustedEmbeddingFunction)
     assert loads == []
+
+
+def _model_field(kind):
+    if kind == "alias":
+        return Field("default", alias="m")
+    if kind == "validation_alias":
+        return Field("default", validation_alias="m")
+    if kind == "alias_choices":
+        return Field("default", validation_alias=AliasChoices("other", "m"))
+    return Field("default", validation_alias=AliasPath("m", 0))
+
+
+@pytest.mark.parametrize(
+    "kind, config",
+    [
+        ("alias", {"m": "attacker/model"}),
+        ("validation_alias", {"m": "attacker/model"}),
+        ("alias_choices", {"m": "attacker/model"}),
+        ("alias_path", {"m": ["attacker/model"]}),
+    ],
+)
+def test_restore_binds_aliases_like_the_constructor(monkeypatch, kind, config):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+    monkeypatch.setattr(registry, "_safe_to_restore", registry._safe_to_restore.copy())
+
+    @registry.register(f"alias-{kind}", safe_to_restore=True)
+    class AliasLoader(TextEmbeddingFunction):
+        model_name: str = _model_field(kind)
+
+        def loaded_models(self):
+            if self.model_name == "default":
+                return []
+            return [(self.model_name, None)]
+
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [[0.0, 0.0] for _ in texts]
+
+    assert isinstance(restore(f"alias-{kind}", config), UntrustedEmbeddingFunction)
+
+
+def test_restore_inspects_extra_settings(monkeypatch):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+    monkeypatch.setattr(registry, "_safe_to_restore", registry._safe_to_restore.copy())
+
+    @registry.register("extra-loader", safe_to_restore=True)
+    class ExtraLoader(TextEmbeddingFunction):
+        model_config = ConfigDict(extra="allow")
+
+        def loaded_models(self):
+            model = (self.model_extra or {}).get("model", "default")
+            return [] if model == "default" else [(model, None)]
+
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [[0.0, 0.0] for _ in texts]
+
+    func = restore("extra-loader", {"model": "attacker/model"})
+    assert isinstance(func, UntrustedEmbeddingFunction)
+
+
+def test_restore_runs_before_validators_when_inspecting(monkeypatch):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+    monkeypatch.setattr(registry, "_safe_to_restore", registry._safe_to_restore.copy())
+
+    @registry.register("renaming-loader", safe_to_restore=True)
+    class RenamingLoader(TextEmbeddingFunction):
+        name: str = "default"
+
+        @model_validator(mode="before")
+        @classmethod
+        def rename_legacy_key(cls, data):
+            if isinstance(data, dict) and "model" in data:
+                data = dict(data)
+                data["name"] = data.pop("model")
+            return data
+
+        def loaded_models(self):
+            return [] if self.name == "default" else [(self.name, None)]
+
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [[0.0, 0.0] for _ in texts]
+
+    func = restore("renaming-loader", {"model": "attacker/model"})
+    assert isinstance(func, UntrustedEmbeddingFunction)
 
 
 @pytest.fixture
