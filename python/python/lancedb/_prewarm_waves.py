@@ -106,6 +106,10 @@ class WavePlan:
             return self.num_waves
         return self.wave_of(min(unfinished))
 
+    def split_rows(self, split: int) -> int:
+        """How many positions ``split`` has."""
+        return len(self._row_ids[split])
+
     def wave_of(self, position: int) -> int:
         """The wave holding ``position`` of every split."""
         return position // self._wave_positions

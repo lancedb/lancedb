@@ -38,6 +38,7 @@ import pyarrow.compute as pc
 import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
+from . import _prewarm_session
 from .permutation import (
     Permutation,
     PermutationBuilder,
@@ -171,6 +172,7 @@ class _ConsumerCommitIterator:
         self._released = True
         dataset = self.__dict__.get("_dataset")
         if dataset is not None:
+            dataset._stop_prewarm()
             dataset._release_consumer_iterator(self._owner_token)
 
     def _shutdown_workers(self):
@@ -230,6 +232,19 @@ class StreamingDataset(IterableDataset):
 
     The main thread round-robins over the cooked queues, yielding one row per
     split per cycle.
+
+    On a LanceDB Enterprise table whose server supports prewarm runs, each
+    iteration coordinates one: the server warms the rows the ranks are about
+    to read, a wave at a time, and reads wait for their wave instead of
+    fetching from storage. Samples and their order do not change. A read
+    fails with [PrewarmRunError][lancedb.exceptions.PrewarmRunError] when the
+    server cannot keep upcoming rows in its cache, which a row-by-row shuffle
+    can cause; set ``shuffle_clump_size`` so that rows read together are
+    stored together. Without run support the dataset reads as it always has
+    and logs a warning that says why. With DataLoader workers a run needs
+    [StreamingDataLoader][lancedb.streaming.StreamingDataLoader], and ranks
+    of a distributed job need ``torch.distributed`` initialized, or
+    ``torchrun --rdzv-id``, to agree on which run is theirs.
 
     Parameters
     ----------
@@ -463,6 +478,11 @@ class StreamingDataset(IterableDataset):
         worker_info_override=None,
         # Deprecated; use io_queue_depth instead.
         prefetch_batches: Optional[int] = None,
+        # Private. `_prewarm=False` reads without a prewarm run even where the
+        # server supports one; `_wait_ready_timeout_s` overrides how long a
+        # read waits for its wave to warm.
+        _prewarm: bool = True,
+        _wait_ready_timeout_s: Optional[float] = None,
     ):
         super().__init__()
         if prefetch_batches is not None:
@@ -574,6 +594,23 @@ class StreamingDataset(IterableDataset):
         self._transform_queue_depth = transform_queue_depth
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
+
+        # Prewarm run state. The session lives in the rank's main process;
+        # the state is what reading processes need to take part; the slots
+        # hold the wave each split has reached, written by the readers and
+        # read by the session.
+        self._prewarm = _prewarm
+        self._wait_ready_timeout_s = (
+            _wait_ready_timeout_s
+            if _wait_ready_timeout_s is not None
+            else _prewarm_session.DEFAULT_WAIT_READY_TIMEOUT_S
+        )
+        self._prewarm_session: Optional[_prewarm_session.Session] = None
+        self._prewarm_state: Optional[_prewarm_session.ReaderState] = None
+        self._prewarm_wave_slots: RawArray = RawArray(ctypes.c_int64, num_splits)
+        # Counts iterations so that a second pass over this dataset opens its
+        # own run instead of finding the first one ended.
+        self._prewarm_iterations = 0
 
         # Packing resume state: permutation positions and partial-block buffers.
         self._pack_consumed: list[int] = [0] * num_splits
@@ -839,6 +876,9 @@ class StreamingDataset(IterableDataset):
                 consumer_checkpoint_transport=consumer_checkpoint_transport
             )
         finally:
+            # A worker only reads in a run; its main process owns the session.
+            if get_worker_info() is None:
+                self._stop_prewarm()
             if owner_token is not None:
                 self._release_consumer_iterator(owner_token)
 
@@ -858,6 +898,34 @@ class StreamingDataset(IterableDataset):
         if not my_splits:
             return
 
+        if real_worker:
+            prewarm_state = self._prewarm_state
+            if (
+                prewarm_state is None
+                and self._prewarm
+                and not consumer_checkpoint_transport
+                and _prewarm_session.backend_for(self._table) is not None
+            ):
+                _prewarm_session.unavailable(
+                    "a DataLoader with workers has no main-process iteration to "
+                    "own the run; use StreamingDataLoader"
+                )
+        else:
+            prewarm_state = self._start_prewarm()
+        waves = (
+            _prewarm_session.WaveReader(
+                prewarm_state,
+                table=self._table,
+                permutation=self._perm_table.to_arrow(),
+                num_splits=self._num_splits,
+                rank=self._rank,
+                slots=self._prewarm_wave_slots,
+            )
+            if prewarm_state is not None
+            else None
+        )
+        read_table = waves.table if waves is not None else self._table
+
         # Set identity transform on each Permutation so __getitems__ returns
         # the raw RecordBatch.  Stage 2 applies the real transform.
         permutations: list[Permutation] = []
@@ -865,19 +933,13 @@ class StreamingDataset(IterableDataset):
         initial_positions: list[int] = []
         for split_idx in my_splits:
             perm = Permutation.from_tables(
-                self._table, self._perm_table, split=split_idx
+                read_table, self._perm_table, split=split_idx
             )
             if self._columns is not None:
                 perm = perm.select_columns(self._columns)
             perm = perm.with_transform(Transforms.arrow2arrow)
             sample_count = self._resume_samples.get(split_idx, self._resume_offset)
-            # Both modes resume from absolute permutation positions. Packing
-            # stores them separately because it also checkpoints partial blocks.
-            start_pos = (
-                self._pack_consumed[split_idx]
-                if self._pack_sequences is not None
-                else self._resume_positions.get(split_idx, sample_count)
-            )
+            start_pos = self._start_position(split_idx)
             if start_pos > 0:
                 perm = perm.with_skip(start_pos)
             initial_samples.append(sample_count)
@@ -939,9 +1001,17 @@ class StreamingDataset(IterableDataset):
 
         # ── Stage 1 helpers ───────────────────────────────────────────────────
 
-        def _io_call(perm, indices):
+        def _io_call(i, perm, indices, abs_start):
             t0 = time.perf_counter()
-            batch = perm.__getitems__(indices)
+            if waves is None:
+                batch = perm.__getitems__(indices)
+            else:
+                batch = waves.read(
+                    my_splits[i],
+                    abs_start,
+                    abs_start + len(indices),
+                    lambda: perm.__getitems__(indices),
+                )
             self._bytes_loaded += batch.nbytes
             self._fetch_time += time.perf_counter() - t0
             return batch
@@ -952,11 +1022,16 @@ class StreamingDataset(IterableDataset):
                 return
             fetch = min(batch_size, remaining)
             start = fetch_head[i]
+            abs_start = initial_positions[i] + start
+            if waves is not None:
+                # A fetch stays inside one wave, the unit that is warmed.
+                fetch = waves.fetch_end(my_splits[i], abs_start, fetch) - abs_start
             fetch_head[i] += fetch
             perm_i = permutations[i]
             indices = list(range(start, start + fetch))
-            abs_start = initial_positions[i] + start
-            io_pending[i].append((abs_start, io_pool.submit(_io_call, perm_i, indices)))
+            io_pending[i].append(
+                (abs_start, io_pool.submit(_io_call, i, perm_i, indices, abs_start))
+            )
 
         def _fill_io(i: int) -> None:
             # Budget covers both in-flight fetches (io_pending) and batches
@@ -972,6 +1047,16 @@ class StreamingDataset(IterableDataset):
                 and fetch_head[i] < split_sizes[i]
             ):
                 _submit_io(i)
+            if waves is not None:
+                # The split still needs every wave from its oldest unfinished
+                # fetch on; rows already fetched are held in memory.
+                if io_pending[i]:
+                    oldest = io_pending[i][0][0]
+                elif fetch_head[i] < split_sizes[i]:
+                    oldest = initial_positions[i] + fetch_head[i]
+                else:
+                    oldest = None
+                waves.note_position(my_splits[i], oldest)
 
         def _drain_io(i: int) -> None:
             """Move completed I/O futures into raw_batches non-blockingly."""
@@ -1320,6 +1405,10 @@ class StreamingDataset(IterableDataset):
                     # were all skipped before completing a single cycle), so
                     # counters like rows_skipped would otherwise be stale.
                     _update_stats(idle=True)
+                    if waves is not None:
+                        # Fetches still waiting on a wave would hold the I/O
+                        # pool open until their wait timed out.
+                        waves.close()
                     self._raw_batches_ref = None
                     self._cooked_ref = None
                     self._fetch_head_ref = None
@@ -1465,6 +1554,7 @@ class StreamingDataset(IterableDataset):
             "_fetch_head_ref",
             "_split_sizes_ref",
             "_local_consumed_ref",
+            "_prewarm_session",
         ):
             state[key] = None
         state["_consumer_iterator_lock"] = None
@@ -1487,6 +1577,69 @@ class StreamingDataset(IterableDataset):
                 # Rebuilt from Arrow, so the recorded pin cannot resolve on it.
                 perm_data = _drop_base_version(perm_data)
         self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
+
+    def _start_position(self, split: int) -> int:
+        """The permutation position ``split`` resumes from. Exact for splits
+        this instance has read, a lower bound for the rest."""
+        # Both modes resume from absolute permutation positions. Packing
+        # stores them separately because it also checkpoints partial blocks.
+        if self._pack_sequences is not None:
+            return self._pack_consumed[split]
+        sample_count = self._resume_samples.get(split, self._resume_offset)
+        return self._resume_positions.get(split, sample_count)
+
+    def _start_prewarm(self) -> Optional[_prewarm_session.ReaderState]:
+        """Open this iteration's prewarm run in the rank's main process.
+
+        Returns what reading processes need to take part, or ``None`` when
+        the iteration reads without a run.
+        """
+        self._stop_prewarm()
+        if _prewarm_session.backend_for(self._table) is None:
+            return None
+        if not self._prewarm:
+            _prewarm_session.unavailable("_prewarm=False")
+            return None
+        if self._worker_info_override is not None:
+            _prewarm_session.unavailable(
+                "worker_info_override splits a rank across iterators that "
+                "cannot share one run membership"
+            )
+            return None
+        self._prewarm_iterations += 1
+        session = _prewarm_session.open_session(
+            table=self._table,
+            permutation=self._perm_table.to_arrow(),
+            num_splits=self._num_splits,
+            rank=self._rank,
+            world_size=self._world_size,
+            rank_splits=self._rank_splits,
+            columns=self._columns,
+            start_positions={
+                split: self._start_position(split) for split in range(self._num_splits)
+            },
+            slots=self._prewarm_wave_slots,
+            key_parts=[
+                self._shuffle_seed,
+                self._epoch,
+                self._num_splits,
+                self._world_size,
+                self._prewarm_iterations,
+            ],
+            wait_ready_timeout_s=self._wait_ready_timeout_s,
+        )
+        if session is None:
+            return None
+        self._prewarm_session = session
+        self._prewarm_state = session.state
+        return session.state
+
+    def _stop_prewarm(self) -> None:
+        session = self._prewarm_session
+        self._prewarm_session = None
+        self._prewarm_state = None
+        if session is not None:
+            session.close()
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
@@ -2063,6 +2216,10 @@ class StreamingDataLoader(DataLoader):
                         "splits assigned to this rank have equal consumed-sample "
                         "counts"
                     )
+            if self.num_workers > 0:
+                # Workers only read; this process holds the rank's membership
+                # and hands them the run through the pickled dataset.
+                dataset._start_prewarm()
             return _ConsumerCommitIterator(
                 super().__iter__(),
                 dataset,
@@ -2070,6 +2227,7 @@ class StreamingDataLoader(DataLoader):
                 require_uniform=self.num_workers > 1 or packed,
             )
         except BaseException:
+            dataset._stop_prewarm()
             if owner_token is not None:
                 dataset._release_consumer_iterator(owner_token)
             else:

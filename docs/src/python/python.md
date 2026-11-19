@@ -1189,6 +1189,12 @@ its reads. [Table.open_prewarm_run][lancedb.table.Table.open_prewarm_run]
 opens a run, each rank joins it, and readers read through
 [Table.cache_only][lancedb.table.Table.cache_only].
 
+[StreamingDataset][lancedb.streaming.StreamingDataset] does this by itself on
+a LanceDB Enterprise table whose server supports runs, and reads as it always
+has otherwise, logging a warning that says why. With DataLoader workers it
+needs [StreamingDataLoader][lancedb.streaming.StreamingDataLoader]. The
+classes below are for loaders that drive a run themselves.
+
 ::: lancedb.prewarm_run.PrewarmRun
 
 ::: lancedb.prewarm_run.PrewarmRunRank
