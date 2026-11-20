@@ -11,7 +11,12 @@ import pyarrow as pa
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable, Table
 from .background_loop import LOOP
-from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
+from .util import (
+    batch_to_tensor,
+    batch_to_tensor_columns,
+    batch_to_tensor_dict,
+    batch_to_tensor_rows,
+)
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -1031,6 +1036,7 @@ class Permutation:
             "pandas",
             "arrow",
             "torch",
+            "torch_dict",
             "torch_row",
             "torch_col",
             "polars",
@@ -1042,28 +1048,50 @@ class Permutation:
         If this method is not called, the "python" format will be used.
 
         The format can be one of:
-        - "numpy" - the batch will be a dict of numpy arrays (one per column)
+        - "numpy" - a single NumPy ndarray built with
+          ``batch.to_pandas().to_numpy()``. Numeric columns are usually
+          zero-copy. Nested or mixed-type columns produce an object array rather
+          than a numeric array.
         - "python" - the batch will be a list of dicts (one per row)
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a list of per-row dicts mapping column
-          name to a 0-D torch tensor. Works with the default
-          ``torch.utils.data.DataLoader`` collate, which stacks the per-row
-          dicts back into a dict of batched tensors.
-        - "torch_row" - the batch will be a list of tensors, one per row
-        - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
+        - "torch" - a list of per-row dicts mapping column names to tensors with
+          shape ``(*S)``. The default DataLoader collate stacks these into a
+          dict of ``(B, *S)`` tensors.
+        - "torch_dict" - a dict mapping each column name to one tensor with
+          shape ``(B, *S)``. Columns may have different sample shapes ``S``.
+          Use an identity collate to consume the batch directly. Tensors share
+          Arrow storage where the layout allows.
+        - "torch_row" - a list of per-row tensors with shape ``(C, *S)``. All
+          columns must have the same sample shape ``S``. A single scalar column
+          produces ``(1,)`` tensors. Numeric dtypes are combined with
+          ``torch.promote_types``.
+        - "torch_col" - one tensor with shape ``(C, B, *S)``. All columns must
+          have the same sample shape ``S``. For one column this is an
+          ``unsqueeze(0)`` view of the column tensor.
         - "polars" - the batch will be a polars DataFrame
 
-        Conversion may or may not involve a data copy.  Lance uses Arrow internally
-        and so it is able to zero-copy to the arrow and polars formats.
+        For torch formats, ``S`` is the shape of one sample. Scalar columns have
+        ``S = ()``. A fixed-size-list column of width ``D`` contributes a
+        dimension ``D``, and nested fixed-size lists contribute one dimension
+        per level. Fixed-shape tensors use their logical shape, including any
+        axis permutation. Torch formats reject nulls; use the "python" or
+        "arrow" format for nullable columns.
 
-        Conversion to torch and torch_col will be zero-copy but will only support a
-        subset of data types (numeric types).
+        ``lance.bfloat16`` values become ``torch.bfloat16`` tensors when the
+        leaf field is ``fixed_size_binary[2]`` and carries the
+        ``ARROW:extension:name`` metadata value ``lance.bfloat16``. Unmarked
+        binary columns are rejected.
 
-        Conversion to numpy and/or pandas will typically be zero-copy for numeric
-        types.  Conversion of strings, lists, and structs will require creating python
-        objects and this is not zero-copy.
+        Conversion may or may not involve a data copy. Lance uses Arrow
+        internally and can zero-copy to the arrow and polars formats.
+        "torch_dict", "torch", and a single-column "torch_col" produce
+        numeric and fixed-size-list tensors without copying where the Arrow
+        layout allows. Multi-column "torch_col" and "torch_row" stack columns
+        and therefore copy. Conversion to numpy and/or pandas will typically be
+        zero-copy for numeric types. Conversion of strings, lists, and structs
+        will require creating Python objects and this is not zero-copy.
 
         For custom formatting, use
         [with_transform][lancedb.permutation.Permutation.with_transform] which
@@ -1082,6 +1110,8 @@ class Permutation:
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
             return self.with_transform(batch_to_tensor_dict)
+        elif format == "torch_dict":
+            return self.with_transform(batch_to_tensor_columns)
         elif format == "torch_row":
             return self.with_transform(batch_to_tensor_rows)
         elif format == "torch_col":

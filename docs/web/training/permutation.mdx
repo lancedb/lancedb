@@ -50,32 +50,69 @@ LanceDB's `lancedb.util.tbl_to_tensor` helper as PyTorch's `collate_fn`; it conv
 column-major `torch.Tensor` with shape `(columns, rows)`.
 
 `Permutation` works differently: its default output is a list of Python dicts, which PyTorch's default collate function
-can batch into a dict of tensors. This is usually more convenient when you are getting started. However, there is a
-significant performance penalty converting from Arrow, Lance's internal representation, to this default format. If you
-want the default PyTorch dict-of-tensors behavior, use a `Permutation` as-is; if you want direct Arrow-to-tensor
-conversion, either pass `lancedb.util.tbl_to_tensor` as `collate_fn` with a direct `Table` or configure a `Permutation`
-with one of the transform formats described below.
+can batch into a dict of tensors. However, converting every value to a Python object has a significant performance
+penalty. To convert the Arrow data in different ways, call `with_format()` with one of the formats below. Here `B` is
+the batch size, `C` is the number of columns, and `*S` is the shape of one sample.
 
-To address this, the `Permutation` class provides a set of builtin transform functions that can be applied to map
-the Arrow data in different ways. The `arrow` and `polars` formats will always avoid data copies. However, `numpy`,
-`pandas`, and `torch_col` formats will also avoid data copies in most cases. The `python`, `python_col`, and
-`torch` formats will all require at least one full copy of the data and are the slowest options.
+| Format | Output of `iter(batch_size=B)` | DataLoader collate |
+|---|---|---|
+| `"arrow"` | `pyarrow.RecordBatch` | Not accepted directly |
+| `"torch_dict"` | `dict[str, Tensor]`, one `(B, *S)` tensor per column | Identity function |
+| `"torch"` | `list[dict[str, Tensor]]`, one `(*S)` tensor per column per row | Default collate produces `dict[str, Tensor]` with `(B, *S)` |
+| `"torch_col"` | One `(C, B, *S)` tensor | Identity function |
+| `"torch_row"` | `list[Tensor]`, one `(C, *S)` tensor per row | Default collate produces `(B, C, *S)` |
+| `"numpy"` | One NumPy ndarray | Not accepted directly |
+
+`torch_dict` is usually the best choice for training because it keeps column names, handles columns with different
+sample shapes, and shares Arrow storage where the layout allows. `torch_col` and `torch_row` require every column to
+have the same sample shape; `torch_row` combines numeric dtypes with `torch.promote_types`, while `torch_col` requires
+a common dtype because it stacks columns. If they see mixed scalar and vector columns, they name the mismatched fields
+and shapes and point you to `torch_dict`.
+
+The torch formats reject null values. Use the `"python"` or `"arrow"` format for nullable columns, or drop/fill the
+nulls first. `lance.bfloat16` values are supported when the leaf field is `fixed_size_binary[2]` with the
+`ARROW:extension:name` metadata set to `lance.bfloat16`; these become `torch.bfloat16` tensors. An unmarked binary
+column is rejected rather than guessed to be bfloat16.
+
+The `numpy` format returns one ndarray built with `batch.to_pandas().to_numpy()`. Numeric columns are usually
+zero-copy, but tables with nested, list, or mixed-type columns produce an object ndarray rather than a numeric array.
+
+### Using torch_dict with a torch data loader {#using-torch-dict-with-a-torch-data-loader}
+
+`torch_dict` produces a dictionary of per-column tensors for each batch. Pass an identity function as `collate_fn` so
+PyTorch returns that dictionary unchanged. Scalar columns have shape `(B,)`, a `FixedSizeList<float, D>` column has
+shape `(B, D)`, and nested fixed-size lists contribute one dimension per level. Fixed-shape tensor columns use their
+logical shape, with the Arrow axis permutation applied as a view.
+
+<CodeGroup>
+```python Python icon="python"
+import torch
+from lancedb.permutation import Permutation
+
+permutation = Permutation.identity(table).with_format("torch_dict")
+dataloader = torch.utils.data.DataLoader(
+    permutation,
+    batch_size=1024,
+    shuffle=True,
+    collate_fn=lambda batch: batch,
+)
+
+for batch in dataloader:
+    print(batch["id"].shape)      # (1024,)
+    print(batch["vector"].shape)  # (1024, 128)
+```
+</CodeGroup>
+
+When `num_workers > 0`, replace the lambda with a picklable top-level function that returns its argument.
 
 ### Using the torch column format with a torch data loader {#using-the-torch-column-format-with-a-torch-data-loader}
 
-The `torch_col` format is the most efficient way to convert from Arrow to a `torch.Tensor`. It will convert the
-entire Arrow batch to a _column-major_ `torch.Tensor`. In other words, given C columns and R rows, the resulting
-Tensor will have shape `(C, R)`. However, this format generates an error if you are using a
-`torch.utils.data.DataLoader` with the default collation function:
+The `torch_col` format converts the entire Arrow batch to one tensor with shape `(C, B, *S)`. For a table of scalar
+columns this is the familiar `(columns, rows)` tensor. For a single column it is an `unsqueeze(0)` view of the
+per-column tensor, so no data is copied; stacking multiple columns does copy.
 
-```text
-TypeError: stack(): argument 'tensors' (position 1) must be tuple of Tensors, not Tensor
-```
-
-This error occurs because the default collation function does not currently expect a single two-dimensional tensor.
-It expects a list of tensors which it will then stack. This is what is output by the `torch` format but that format
-requires a data copy. To avoid this error, and avoid data copies, you will need to provide a custom collation function
-in addition to specifying the `torch_col` format.
+PyTorch's default collate does not accept a single multi-dimensional tensor. Pass an identity function as `collate_fn`
+to receive the tensor directly from the data loader.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -85,8 +122,6 @@ permutation = Permutation.identity(table).with_format("torch_col")
 dataloader = torch.utils.data.DataLoader(permutation, collate_fn=lambda x: x)
 ```
 </CodeGroup>
-
-This will now output a single two-dimensional tensor for each batch.
 
 ## Selecting columns {#selecting-columns}
 
