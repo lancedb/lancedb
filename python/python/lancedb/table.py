@@ -2660,7 +2660,11 @@ class Table(ABC):
 
     @abstractmethod
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
         """
         Take a list of offsets from the table.
@@ -2672,9 +2676,13 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.
-        Repeated offsets produce repeated rows, which makes this method suitable for
-        sampling with replacement.
+        By default, no guarantees are made regarding the order in which results
+        are returned. Repeated offsets produce repeated rows, which makes this
+        method suitable for sampling with replacement. Set ``preserve_order=True``
+        to return found rows in input order, including repeated offsets. Missing
+        non-negative offsets are omitted. Negative offsets are rejected and are
+        not Python-style relative indices. ``preserve_order`` cannot be combined
+        with an explicit ``order_by``.
 
         Parameters
         ----------
@@ -2682,6 +2690,10 @@ class Table(ABC):
             The offsets to take.
         with_row_id: bool, default False
             If True, include the "_rowid" column in the results.
+        preserve_order: bool, default False
+            If True, return found rows in input order. Rust take queries apply
+            limit/offset after restoration; Python take builders and Query
+            conversion do not expose pagination.
 
         Returns
         -------
@@ -4551,7 +4563,10 @@ class LanceTable(Table):
         -------
         pa.Schema
             A PyArrow schema object."""
-        return LOOP.run(self._table.schema())
+        schema_sync = getattr(self._table, "_schema_sync", None)
+        if schema_sync is None:
+            return LOOP.run(self._table.schema())
+        return schema_sync()
 
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
@@ -4563,9 +4578,15 @@ class LanceTable(Table):
         return LOOP.run(self._table.version())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder
@@ -6082,6 +6103,13 @@ class LanceTable(Table):
 
         async_query = self._table._sync_query_to_async(query)
         async_query._blob_row_id_prepared = query._blob_row_id_prepared
+        if (
+            self._table._inner._is_native()
+            and self._namespace_client is None
+            and not self._route_pushdown_to_rust
+            and isinstance(async_query, (AsyncQuery, AsyncVectorQuery, AsyncFTSQuery))
+        ):
+            return async_query._execute_eager_sync(timeout=timeout)
         return LOOP.run(async_query._execute_eager(timeout=timeout))
 
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
@@ -7452,6 +7480,9 @@ class AsyncTable:
         """
         return _restore_blob_extensions(await self._inner.schema())
 
+    def _schema_sync(self) -> pa.Schema:
+        return _restore_blob_extensions(self._inner.schema_sync())
+
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
         Get the embedding functions for the table
@@ -8489,10 +8520,18 @@ class AsyncTable:
         if query.take_offsets is not None or query.take_row_ids is not None:
             if query.take_offsets is not None and query.take_row_ids is not None:
                 raise ValueError("Only one of take_offsets and take_row_ids may be set")
+            if query.preserve_order is True and query.take_offsets is None:
+                raise ValueError("preserve_order only supports take_offsets")
+            if query.preserve_order is True and query.order_by:
+                raise ValueError(
+                    "preserve_order cannot be combined with an explicit order_by"
+                )
             take_query = (
                 self.take_row_ids(query.take_row_ids)
                 if query.take_row_ids is not None
-                else self.take_offsets(query.take_offsets)
+                else self.take_offsets(
+                    query.take_offsets, preserve_order=query.preserve_order is True
+                )
             )
             if query.columns is not None:
                 columns = query.columns
@@ -9706,7 +9745,11 @@ class AsyncTable:
         await self._inner.restore(version)
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> AsyncTakeQuery:
         """
         Take a list of offsets from the table.
@@ -9718,8 +9761,12 @@ class AsyncTable:
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.
-        Repeated offsets produce repeated rows.
+        By default, no guarantees are made regarding the order in which results
+        are returned. Repeated offsets produce repeated rows. Set
+        ``preserve_order=True`` to return found rows in input order, including
+        repeated offsets. Missing non-negative offsets are omitted. Negative
+        offsets are rejected and are not Python-style relative indices.
+        ``preserve_order`` cannot be combined with an explicit ``order_by``.
 
         Parameters
         ----------
@@ -9727,6 +9774,10 @@ class AsyncTable:
             The offsets to take.
         with_row_id: bool, default False
             If True, include the "_rowid" column in the results.
+        preserve_order: bool, default False
+            If True, return found rows in input order. Rust take queries apply
+            limit/offset after restoration; Python take builders and Query
+            conversion do not expose pagination.
 
         Returns
         -------
@@ -9735,6 +9786,8 @@ class AsyncTable:
             offsets.
         """
         query = AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        if preserve_order:
+            query._inner.preserve_order()
         if with_row_id:
             query.with_row_id()
         return query
@@ -10241,6 +10294,26 @@ class FragmentSummaryStats:
     p99: int
 
 
+def _validate_branch_source(
+    from_ref: Optional[str],
+    from_version: Optional[int],
+    from_tag: Optional[str],
+) -> None:
+    if from_tag is None:
+        return
+    conflicts = [
+        name
+        for name, value in (("from_ref", from_ref), ("from_version", from_version))
+        if value is not None
+    ]
+    if conflicts:
+        raise ValueError(
+            "from_tag cannot be combined with "
+            + " or ".join(conflicts)
+            + "; pass only one source"
+        )
+
+
 class Tags:
     """
     Table tag manager.
@@ -10271,7 +10344,7 @@ class Tags:
         """
         return LOOP.run(self._table.tags.get_version(tag))
 
-    def create(self, tag: str, version: int) -> None:
+    def create(self, tag: str, version: Optional[int] = None) -> None:
         """
         Create a tag for a given table version.
 
@@ -10280,8 +10353,9 @@ class Tags:
         tag: str,
             The name of the tag to create. This name must be unique among all tag
             names for the table.
-        version: int,
-            The table version to tag.
+        version: int, optional
+            The table version to tag. Defaults to the version visible to this
+            handle, including a checked-out version.
         """
         LOOP.run(self._table.tags.create(tag, version))
 
@@ -10328,6 +10402,8 @@ class Branches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
+        *,
+        from_tag: Optional[str] = None,
     ) -> "Table":
         """Create a branch and return a handle scoped to it.
 
@@ -10339,9 +10415,13 @@ class Branches:
             Source branch to fork from. Defaults to ``main``.
         from_version: int, optional
             A specific version on ``from_ref`` to fork from. Defaults to latest.
+        from_tag: str, optional
+            Source tag to fork from. Cannot be combined with ``from_ref`` or
+            ``from_version``.
         """
+        _validate_branch_source(from_ref, from_version, from_tag)
         async_table = LOOP.run(
-            self._table.branches.create(name, from_ref, from_version)
+            self._table.branches.create(name, from_ref, from_version, from_tag=from_tag)
         )
         return self._wrap(async_table)
 
@@ -10423,7 +10503,7 @@ class AsyncTags:
         """
         return await self._table.tags.get_version(tag)
 
-    async def create(self, tag: str, version: int) -> None:
+    async def create(self, tag: str, version: Optional[int] = None) -> None:
         """
         Create a tag for a given table version.
 
@@ -10432,8 +10512,9 @@ class AsyncTags:
         tag: str,
             The name of the tag to create. This name must be unique among all tag
             names for the table.
-        version: int,
-            The table version to tag.
+        version: int, optional
+            The table version to tag. Defaults to the version visible to this
+            handle, including a checked-out version.
         """
         await self._table.tags.create(tag, version)
 
@@ -10477,6 +10558,8 @@ class AsyncBranches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
+        *,
+        from_tag: Optional[str] = None,
     ) -> "AsyncTable":
         """Create a branch and return a handle scoped to it.
 
@@ -10488,12 +10571,19 @@ class AsyncBranches:
             Source branch to fork from. Defaults to ``main``.
         from_version: int, optional
             A specific version on ``from_ref`` to fork from. Defaults to latest.
+        from_tag: str, optional
+            Source tag to fork from. Cannot be combined with ``from_ref`` or
+            ``from_version``.
         """
+        _validate_branch_source(from_ref, from_version, from_tag)
         # "main" and None are two spellings of the root branch in lance; normalize
-        # so from_ref="main" behaves identically to the default.
+        # so from_ref="main" behaves identically to the default. This must happen
+        # after validating from_tag conflicts so an explicit from_ref is not lost.
         if from_ref == "main":
             from_ref = None
-        inner = await self._table.branches.create(name, from_ref, from_version)
+        inner = await self._table.branches.create(
+            name, from_ref, from_version, from_tag=from_tag
+        )
         return AsyncTable(inner)
 
     async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":

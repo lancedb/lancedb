@@ -696,23 +696,25 @@ full worked example.
 For the full skip, inspect, grouped-error, stable-row-ID retry and quarantine
 workflow, see [Handle Function failures](/management/function-failures).
 
-By default, a Function that raises fails the refresh job. Choose how the
-refresh handles row errors with its error policy:
+By default, a refresh skips rows where the Function raises, up to a 5%
+failed-row ceiling. Choose how the refresh handles row errors with its error
+policy:
 
 <CodeGroup>
 ```sql SQL icon="database"
-REFRESH COLUMN embedding ON documents WITH (error_policy = 'skip')
+REFRESH COLUMN embedding ON documents WITH (error_policy = 'fail')
 ```
 </CodeGroup>
 
-`skip` writes null outputs for failing rows and records their errors. Inspect
+`skip` retains a failing row's existing output, leaves an unassigned output
+unassigned and records the error. Inspect
 them with `SHOW ERRORS` or `table.function_errors()`. Failure limits still
 apply, and initialization or infrastructure failures can still fail the job.
 See the [SQL refresh options](/sql/dml/refresh-column#options). A Function
 that calls a transiently failing external service can handle bounded retries
 inside its body.
 
-Letting the job fail is the other option: fix the cause and refresh again. The
+`fail` is the opt-in alternative: fix the cause and refresh again. The
 next unfiltered refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
 but how much of the failed job's work was kept is not guaranteed, so do not
 count on the retry costing only the rows that did not complete. A refresh with
