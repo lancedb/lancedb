@@ -97,6 +97,9 @@ pub(super) async fn open<S: HttpSend>(
     if options.row_addresses {
         body["row_addresses"] = json!(true);
     }
+    if let Some(num_splits) = options.num_splits {
+        body["num_splits"] = json!(num_splits);
+    }
     // Opening is safe to repeat: the same `run_key` finds the same run. It
     // does not reach the run's coordinator, so a few attempts cover a
     // gateway blip and the long deadline of later calls is not needed.
@@ -390,6 +393,18 @@ mod tests {
         let options = options().with_row_addresses(true);
         script.table().open_prewarm_run(options).await.unwrap();
         assert_eq!(script.calls("open")[0]["row_addresses"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn open_sends_the_split_count_only_when_given() {
+        let script = opened();
+        script.table().open_prewarm_run(options()).await.unwrap();
+        assert!(script.calls("open")[0].get("num_splits").is_none());
+
+        let script = opened();
+        let options = options().with_num_splits(Some(128));
+        script.table().open_prewarm_run(options).await.unwrap();
+        assert_eq!(script.calls("open")[0]["num_splits"], json!(128));
     }
 
     #[tokio::test]

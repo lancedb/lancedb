@@ -2084,6 +2084,7 @@ class Table(ABC):
         world_size: int,
         columns: Optional[List[str]] = None,
         row_addresses: bool = False,
+        num_splits: Optional[int] = None,
     ) -> PrewarmRun:
         """Open a prewarm run for a training job reading this table.
 
@@ -2110,6 +2111,12 @@ class Table(ABC):
             ``with_row_addresses``. Ranges cut from row ids are only right on
             a table without stable row ids, so a server needs this to accept
             a table that has them.
+        num_splits: int, optional
+            How many splits the permutation has. A wave holds that many
+            splits' rows, so the server sizes waves from it to keep one
+            wave's announcement under its request size limit. Every rank must
+            pass the same value. If None, the server uses its default wave
+            size.
 
         Examples
         --------
@@ -7693,6 +7700,7 @@ class AsyncTable:
         world_size: int,
         columns: Optional[List[str]] = None,
         row_addresses: bool = False,
+        num_splits: Optional[int] = None,
     ) -> AsyncPrewarmRun:
         """Open a prewarm run for a training job reading this table.
 
@@ -7705,6 +7713,7 @@ class AsyncTable:
                 world_size=world_size,
                 columns=columns,
                 row_addresses=row_addresses,
+                num_splits=num_splits,
             )
         )
 

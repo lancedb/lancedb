@@ -57,6 +57,8 @@ pub mod error_codes {
     pub const NOT_READY: &str = "not_ready";
     /// A cache-only query needed data the cache does not hold.
     pub const NOT_RESIDENT: &str = "not_resident";
+    /// A run call's body is over the run API's limit.
+    pub const CALL_TOO_LARGE: &str = "call_too_large";
     /// Client-side: the rank asked about a wave every live rank has passed,
     /// so it was dropped from the run or fell behind.
     pub const WAVE_CONSUMED: &str = "wave_consumed";
@@ -86,6 +88,11 @@ pub struct PrewarmRunOptions {
     ///
     /// [`with_row_addresses`]: crate::dataloader::permutation::builder::PermutationBuilder::with_row_addresses
     pub row_addresses: bool,
+    /// How many splits the client's permutation has. A wave holds that many
+    /// splits' rows, so the server sizes waves from it to keep one wave's
+    /// announcement under the run API's body limit. Every rank must send the
+    /// same value. `None` leaves the server's default wave size.
+    pub num_splits: Option<u32>,
 }
 
 impl PrewarmRunOptions {
@@ -97,6 +104,7 @@ impl PrewarmRunOptions {
             columns: Vec::new(),
             world_size,
             row_addresses: false,
+            num_splits: None,
         }
     }
 
@@ -110,6 +118,13 @@ impl PrewarmRunOptions {
     /// [`row_addresses`](Self::row_addresses).
     pub fn with_row_addresses(mut self, row_addresses: bool) -> Self {
         self.row_addresses = row_addresses;
+        self
+    }
+
+    /// Say how many splits the permutation has; see
+    /// [`num_splits`](Self::num_splits).
+    pub fn with_num_splits(mut self, num_splits: Option<u32>) -> Self {
+        self.num_splits = num_splits;
         self
     }
 }

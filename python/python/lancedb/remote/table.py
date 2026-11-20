@@ -1546,6 +1546,7 @@ class RemoteTable(Table):
         world_size: int,
         columns: Optional[List[str]] = None,
         row_addresses: bool = False,
+        num_splits: Optional[int] = None,
     ) -> PrewarmRun:
         """Open a prewarm run for a training job reading this table.
 
@@ -1559,6 +1560,7 @@ class RemoteTable(Table):
                     world_size=world_size,
                     columns=columns,
                     row_addresses=row_addresses,
+                    num_splits=num_splits,
                 )
             )
         )

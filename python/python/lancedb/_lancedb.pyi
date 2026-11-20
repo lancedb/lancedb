@@ -702,6 +702,7 @@ class Table:
         world_size: int,
         columns: Optional[List[str]] = None,
         row_addresses: bool = False,
+        num_splits: Optional[int] = None,
     ) -> PrewarmRun: ...
     async def list_indices(self) -> list[IndexConfig]: ...
     async def tokenize(

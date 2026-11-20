@@ -60,6 +60,8 @@ _BASE_VERSION_KEY = b"base_version"
 
 _BEYOND_HORIZON = "beyond_horizon"
 _CACHE_ONLY_UNSUPPORTED = "cache_only_unsupported"
+# Client-side: rank 0 stopped announcing, so later waves will never warm.
+ANNOUNCER_STOPPED = "announcer_stopped"
 
 
 class ReaderState(NamedTuple):
@@ -86,6 +88,7 @@ class _RemoteBackend:
         world_size: int,
         columns: Optional[Sequence[str]],
         row_addresses: bool,
+        num_splits: int,
     ):
         return self._table.open_prewarm_run(
             run_key,
@@ -93,6 +96,7 @@ class _RemoteBackend:
             world_size=world_size,
             columns=list(columns) if columns is not None else None,
             row_addresses=row_addresses,
+            num_splits=num_splits,
         )
 
     def reader(self, run_id: str, version: int, rank: int):
@@ -173,11 +177,14 @@ class Session:
         rank_splits: Sequence[int],
         *,
         announce: bool,
+        announcer_stopped,
     ):
         self.state = state
         self._rank = rank_handle
         self._plan = plan
         self._slots = slots
+        self._announcer_stopped = announcer_stopped
+        self._announcer_stopped.value = False
         self._rank_splits = list(rank_splits)
         self._stop = threading.Event()
         self._reporter = threading.Thread(
@@ -220,13 +227,19 @@ class Session:
                     continue
                 wave += 1
         except Exception:
-            # Readers fail on their own: a wave that is never announced times
-            # out their wait, and a run that ended raises from it.
             logger.exception(
                 "prewarm run %s: rank 0 stopped announcing at wave %d",
                 self.state.run_id,
                 wave,
             )
+            # Without this, this rank's readers would wait out their whole
+            # timeout on a wave nobody will announce. The flag is shared
+            # memory because they may be other processes. It reaches only
+            # this rank: the run has no call that fails it for the others,
+            # which end when the launcher tears the job down or their own
+            # wait times out.
+            if not self._stop.is_set():
+                self._announcer_stopped.value = True
 
     def close(self) -> None:
         """Leave the run. Never raises, so it cannot hide a training error."""
@@ -262,6 +275,7 @@ def open_session(
     slots,
     key_parts: Sequence[Any],
     wait_ready_timeout_s: float,
+    announcer_stopped,
 ) -> Optional[Session]:
     """Open and join the run for one iteration.
 
@@ -271,6 +285,9 @@ def open_session(
 
     ``start_positions`` holds the position every split resumes from. Other
     ranks' splits may be lower bounds.
+
+    ``announcer_stopped`` is a shared flag the session sets when this rank
+    was announcing and had to stop; this rank's readers watch it.
     """
     backend = backend_for(table)
     if backend is None:
@@ -296,6 +313,7 @@ def open_session(
             world_size=world_size,
             columns=columns,
             row_addresses=WavePlan.has_row_addresses(permutation),
+            num_splits=num_splits,
         )
     except NotImplementedError:
         unavailable("the server does not support prewarm runs")
@@ -336,7 +354,15 @@ def open_session(
     state = ReaderState(
         run.run_id, run.version, plan.wave_positions, wait_ready_timeout_s
     )
-    return Session(rank_handle, plan, state, slots, rank_splits, announce=rank == 0)
+    return Session(
+        rank_handle,
+        plan,
+        state,
+        slots,
+        rank_splits,
+        announce=rank == 0,
+        announcer_stopped=announcer_stopped,
+    )
 
 
 class ReaderClosed(RuntimeError):
@@ -355,6 +381,7 @@ class WaveReader:
         num_splits: int,
         rank: int,
         slots,
+        announcer_stopped,
     ):
         backend = backend_for(table)
         if backend is None:
@@ -370,6 +397,7 @@ class WaveReader:
         self._plan = WavePlan(permutation, num_splits, state.wave_positions)
         self._timeout = state.wait_ready_timeout_s
         self._slots = slots
+        self._announcer_stopped = announcer_stopped
         self._lock = threading.Lock()
         self._wave_locks: dict[int, threading.Lock] = {}
         self._ready: set[int] = set()
@@ -426,6 +454,15 @@ class WaveReader:
             if self._closed.is_set():
                 future.cancel()
                 raise ReaderClosed(f"prewarm run {self._run_id}: the iteration ended")
+            if self._announcer_stopped.value:
+                future.cancel()
+                raise PrewarmRunError(
+                    f"prewarm run {self._run_id}: rank 0 stopped announcing "
+                    "waves, so the rows still to read will not be warmed; its "
+                    "log has the cause",
+                    self._run_id,
+                    ANNOUNCER_STOPPED,
+                )
             done, _ = concurrent.futures.wait([future], timeout=_CLOSE_POLL_S)
             if done:
                 return future.result()

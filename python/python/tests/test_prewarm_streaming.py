@@ -46,6 +46,7 @@ class FakeRun:
         self.closed = []
         self.stale_views = 0
         self.failure = None
+        self.too_large_from = None
 
     def reading_wave(self):
         with self.lock:
@@ -78,6 +79,11 @@ class FakeRank:
                 self.run.beyond_horizon += 1
                 raise PrewarmRunError(
                     "too far ahead", self.run.run_id, "beyond_horizon"
+                )
+            too_large = self.run.too_large_from
+            if too_large is not None and any(wave >= too_large for wave in waves):
+                raise PrewarmRunError(
+                    "the call is too large", self.run.run_id, "call_too_large"
                 )
             self.run.announced.update(waves)
 
@@ -123,10 +129,13 @@ class FakeBackend:
         self.run = run
         self.keys = []
 
-    def open_run(self, run_key, *, version, world_size, columns, row_addresses):
+    def open_run(
+        self, run_key, *, version, world_size, columns, row_addresses, num_splits
+    ):
         assert version == self.run.version
         self.keys.append(run_key)
         self.row_addresses = row_addresses
+        self.num_splits = num_splits
         return self.run
 
     def reader(self, run_id, version, rank):
@@ -184,6 +193,7 @@ def test_a_run_changes_no_sample_and_announces_every_wave(table, run):
     plan = plan_of(ds)
     assert plan.num_waves == 5
     assert run.joins == [(0, 0)]
+    assert run.backend.num_splits == 4
     assert run.announced == {wave: plan.ranges(wave) for wave in range(5)}
     assert run.beyond_horizon == 0
     assert run.rewarms == []
@@ -348,6 +358,17 @@ def test_a_failed_run_fails_the_iteration(table, run):
     with pytest.raises(PrewarmRunError) as error:
         ids(dataset(table))
     assert error.value.code == "run_failed"
+    assert run.closed == [0]
+
+
+def test_a_stopped_announcer_fails_the_read_without_waiting_out_the_timeout(table, run):
+    run.too_large_from = 2
+    started = time.monotonic()
+    with pytest.raises(PrewarmRunError) as raised:
+        list(dataset(table, _wait_ready_timeout_s=60))
+    assert raised.value.code == "announcer_stopped"
+    assert time.monotonic() - started < 10
+    assert sorted(run.announced) == [0, 1]
     assert run.closed == [0]
 
 

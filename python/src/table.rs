@@ -1934,7 +1934,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (run_key, *, version, world_size, columns=None, row_addresses=false))]
+    #[pyo3(signature = (run_key, *, version, world_size, columns=None, row_addresses=false, num_splits=None))]
     pub fn open_prewarm_run(
         self_: PyRef<'_, Self>,
         run_key: String,
@@ -1942,11 +1942,13 @@ impl Table {
         world_size: u32,
         columns: Option<Vec<String>>,
         row_addresses: bool,
+        num_splits: Option<u32>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let options = lancedb::prewarm_run::PrewarmRunOptions::new(run_key, version, world_size)
             .with_columns(columns.unwrap_or_default())
-            .with_row_addresses(row_addresses);
+            .with_row_addresses(row_addresses)
+            .with_num_splits(num_splits);
         future_into_py(self_.py(), async move {
             let run = inner.open_prewarm_run(options).await.infer_error()?;
             Ok(crate::prewarm_run::PrewarmRun::new(run))

@@ -30,7 +30,7 @@ import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from multiprocessing import RawArray, get_context
+from multiprocessing import RawArray, RawValue, get_context
 from typing import Any, Callable, cast, Iterator, Literal, NamedTuple, Optional, Union
 
 import pyarrow as pa
@@ -615,6 +615,9 @@ class StreamingDataset(IterableDataset):
         self._prewarm_session: Optional[_prewarm_session.Session] = None
         self._prewarm_state: Optional[_prewarm_session.ReaderState] = None
         self._prewarm_wave_slots: RawArray = RawArray(ctypes.c_int64, num_splits)
+        # Set by the session when this rank's announcing stopped on an error,
+        # so that its readers, which may be worker processes, fail at once.
+        self._prewarm_announcer_stopped = RawValue(ctypes.c_bool, False)
         # Counts iterations so that a second pass over this dataset opens its
         # own run instead of finding the first one ended.
         self._prewarm_iterations = 0
@@ -955,6 +958,7 @@ class StreamingDataset(IterableDataset):
                 num_splits=self._num_splits,
                 rank=self._rank,
                 slots=self._prewarm_wave_slots,
+                announcer_stopped=self._prewarm_announcer_stopped,
             )
             if prewarm_state is not None
             else None
@@ -1662,6 +1666,7 @@ class StreamingDataset(IterableDataset):
                 self._prewarm_iterations,
             ],
             wait_ready_timeout_s=self._wait_ready_timeout_s,
+            announcer_stopped=self._prewarm_announcer_stopped,
         )
         if session is None:
             return None
