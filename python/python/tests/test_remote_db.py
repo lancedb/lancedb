@@ -4163,6 +4163,36 @@ def query_test_table(
         yield table
 
 
+def test_remote_fragment_constraints_fail_before_query():
+    query_calls = 0
+
+    def query_handler(body):
+        nonlocal query_calls
+        query_calls += 1
+        return pa.table({"text": ["unexpected"]})
+
+    with query_test_table(query_handler) as table:
+        with pytest.raises(NotImplementedError, match="fragment selection"):
+            table.search().fragment_ids([0]).to_arrow()
+
+    assert query_calls == 0
+
+
+def test_remote_fts_count_rows_rejects_fragment_constraints():
+    query_calls = 0
+
+    def query_handler(body):
+        nonlocal query_calls
+        query_calls += 1
+        return pa.table({"text": ["unexpected"]})
+
+    with query_test_table(query_handler) as table:
+        with pytest.raises(NotImplementedError, match="fragment selection"):
+            table.search("hello", query_type="fts").fragment_ids([0]).count_rows()
+
+    assert query_calls == 0
+
+
 @pytest.mark.parametrize(
     "query,search_kwargs,expected_column",
     [
