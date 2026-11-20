@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import base64
 import importlib
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -16,11 +18,13 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Optional, get_type_hints
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from lancedb import col
-from lancedb.functions import FunctionVersion, udf
+from lancedb.functions import FunctionDefinition, FunctionVersion, function, udf
 
 FIXTURES = (
     Path(__file__).parents[3]
@@ -63,7 +67,7 @@ def helper_package(tmp_path, monkeypatch):
     return write
 
 
-@udf
+@function
 class scale:
     def __init__(
         self,
@@ -114,17 +118,428 @@ def test_class_function_declares_inputs_output_and_initialization():
     assert scale.registration_request.artifact.entrypoint == "scale"
     source = artifact(scale).decode()
     assert source.startswith("from __future__ import annotations\n")
-    assert "class scale:" in source and "@udf" not in source
+    assert "class scale:" in source and "@function" not in source
 
 
 def test_function_without_initialization_keeps_its_wire_form():
-    @udf
+    @function
     def double(value: int) -> int:
         return value * 2
 
     request = json.loads(double.registration_request.to_canonical_json())
     assert "initialization" not in request["signature"]
     assert request["artifact"]["kind"] == "python_callable"
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_schemas", [False, True])
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize(
+    ("declaration", "statement"),
+    [
+        ("def", "yield value"),
+        ("def", "yield from [value]"),
+        ("async def", "yield value"),
+    ],
+)
+def test_generator_functions_are_rejected_at_decoration(
+    helper_package, decorator, explicit_schemas, class_function, declaration, statement
+):
+    signature = (
+        "__call__(self, value: int)" if class_function else "generates(value: int)"
+    )
+    source = f"{declaration} {signature} -> int:\n    {statement}\n"
+    if class_function:
+        source = "class generates:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_generator", {"__init__.py": source})
+    options = (
+        {
+            "input_schema": pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+            "output_schema": pa.int64(),
+        }
+        if explicit_schemas
+        else {}
+    )
+    with pytest.raises(TypeError) as error:
+        decorator(**options)(module.generates)
+    message = str(error.value)
+    assert "generator Functions are not supported" in message
+    assert "return a value" in message
+    assert "return a list" in message
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("decorator", [function, udf])
+@pytest.mark.parametrize("explicit_name", [False, True])
+def test_lambda_functions_explain_the_named_alternative(decorator, explicit_name):
+    options = {"name": "double"} if explicit_name else {}
+    with pytest.raises(TypeError, match="lambda.*use a named def"):
+        decorator(**options)(lambda value: value * 2)
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("cache_decorator", ["lru_cache", "cache"])
+def test_cached_functions_explain_where_to_keep_caches(
+    helper_package, class_function, cache_decorator
+):
+    signature = "__call__(self, value: int)" if class_function else "cached(value: int)"
+    source = (
+        f"@functools.{cache_decorator}\ndef {signature} -> int:\n    return value * 2\n"
+    )
+    if class_function:
+        source = "class cached:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_cached", {"__init__.py": "import functools\n" + source})
+    with pytest.raises(TypeError) as error:
+        function(module.cached)
+    message = str(error.value)
+    assert "decorated wrappers are not supported" in message
+    assert "inside the function body" in message
+    assert "class Function with a cache in __init__" in message
+
+
+@pytest.mark.parametrize("class_function", [False, True])
+@pytest.mark.parametrize("keyword_only", [False, True])
+def test_callable_defaults_explain_class_initialization(
+    helper_package, class_function, keyword_only
+):
+    parameters = "value: float, " + ("*, " if keyword_only else "")
+    parameters += "threshold: float = 0.5"
+    signature = (
+        f"__call__(self, {parameters})"
+        if class_function
+        else f"thresholded({parameters})"
+    )
+    source = f"def {signature} -> bool:\n    return value >= threshold\n"
+    if class_function:
+        source = "class thresholded:\n" + textwrap.indent(source, "    ")
+    module = helper_package("fx_defaults", {"__init__.py": source})
+    with pytest.raises(TypeError) as error:
+        function(module.thresholded)
+    message = str(error.value)
+    assert "defaults are not supported: 'threshold'" in message
+    assert "class Function's __init__" in message
+    assert "binding-time initialization values" in message
+
+
+def test_function_can_return_a_list_from_a_generator_expression():
+    @function
+    def many(value: int) -> list[int]:
+        return list(item * 2 for item in range(value))
+
+    namespace = {}
+    exec(compile(artifact(many), "user_function.py", "exec"), namespace)
+    assert namespace["many"](3) == [0, 2, 4]
+    assert many.registration_request.signature.output.arrow_type == "list<int64>"
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize(
+    ("global_value", "value_type"),
+    [
+        ("float('inf')", "float"),
+        ("{'label': float('nan')}", "float"),
+        ("[1, (2, object())]", "object"),
+        ("{'labels': range(2)}", "range"),
+        ("pa.array([1])", "Int64Array"),
+        ("np.array(['label'])", "ndarray with dtype <U5"),
+        ("np.array([1.0], dtype=np.longdouble)", "ndarray with dtype"),
+        ("np.datetime64('2026-01-01')", "datetime64 with dtype datetime64[D]"),
+        ("np.ma.masked_array([1.0])", "MaskedArray"),
+    ],
+)
+def test_unsupported_global_names_value_and_remedy(
+    helper_package, kind, global_value, value_type
+):
+    definition = (
+        "class uses_global:\n"
+        "    def __call__(self, value: int) -> int:\n"
+        "        return value if CAPTURED_VALUE else 0\n"
+        if kind == "class"
+        else "def uses_global(value: int) -> int:\n"
+        "    return value if CAPTURED_VALUE else 0\n"
+    )
+    module = helper_package(
+        "fx_unsupported_global",
+        {
+            "__init__.py": "import numpy as np\nimport pyarrow as pa\n"
+            f"CAPTURED_VALUE = {global_value}\n" + definition
+        },
+    )
+    with pytest.raises(TypeError) as error:
+        function(module.uses_global)
+    message = str(error.value)
+    assert "CAPTURED_VALUE" in message
+    assert value_type in message
+    assert "finite float" in message
+    assert "inside the function or class body" in message
+
+
+def test_supported_nested_literal_global_still_packages(helper_package):
+    module = helper_package(
+        "fx_literal_global",
+        {
+            "__init__.py": "CAPTURED_VALUE = (None, True, 1, 'label', "
+            "b'bytes', (1.5,))\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value + CAPTURED_VALUE[2]\n"
+        },
+    )
+    definition = function(module.uses_global)
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["uses_global"](3) == 4
+    assert namespace["CAPTURED_VALUE"] == module.CAPTURED_VALUE
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_arrow_and_structured_globals_are_captured(helper_package, kind):
+    body = (
+        "    if x is None:\n"
+        "        return (LABELS, EMPTY, ARROW, WEIGHTS, NUMPY)\n"
+        "    rows = [{'label': 'pick', 'score': LABELS['pick']}] * len(x)\n"
+        "    return pa.array(rows, type=OUT_TYPE)\n"
+    )
+    definition = (
+        "class judge:\n    def __call__(self, x: pa.Array) -> pa.Array:\n"
+        + textwrap.indent(body, "    ")
+        if kind == "class"
+        else "def judge(x: pa.Array) -> pa.Array:\n" + body
+    )
+    module = helper_package(
+        "fx_structured_global",
+        {
+            "__init__.py": textwrap.dedent("""
+                import numpy as np
+                import pyarrow as pa
+
+                OUT_TYPE = pa.struct(
+                    [pa.field("label", pa.string()), pa.field("score", pa.int32())]
+                )
+                LABELS = {
+                    "pick": 0,
+                    "place": 1,
+                    "nested": [None, (1.5, b"x"), {"deep": frozenset({"b", "a"})}],
+                }
+                EMPTY = ([], {}, set(), frozenset(), ())
+                ARROW = {
+                    "field": pa.field(
+                        "score", pa.int32(), nullable=False, metadata={"unit": "pts"}
+                    ),
+                    "schema": pa.schema(
+                        [pa.field("label", pa.dictionary(pa.int8(), pa.utf8(), True))],
+                        metadata={"version": "1"},
+                    ),
+                    "tensor": pa.fixed_shape_tensor(pa.float32(), [2, 2]),
+                }
+                WEIGHTS = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+                NUMPY = (
+                    np.float32(0.5),
+                    np.True_,
+                    np.uint64(2**64 - 1),
+                    np.array(1.5),
+                    np.zeros((0, 3), dtype=np.int16),
+                    np.array([1.0, -0.0], dtype=">f8"),
+                )
+            """)
+            + definition
+        },
+    )
+    out_type = module.OUT_TYPE
+    packaged = function(
+        input_schema=pa.schema([pa.field("x", pa.int64(), nullable=False)]),
+        output_schema=pa.field("out", out_type, nullable=False),
+    )(module.judge)
+    source = artifact(packaged).decode()
+    assert "import numpy as _lancedb_numpy" in source
+    assert "import pyarrow as _lancedb_pyarrow" in source
+
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    call = namespace["judge"]() if kind == "class" else namespace["judge"]
+    result = call(pa.array([1, 2]))
+    assert result.type == out_type
+    assert result.to_pylist() == [{"label": "pick", "score": 0}] * 2
+    assert namespace["OUT_TYPE"] == out_type
+
+    assert namespace["LABELS"] == module.LABELS
+    assert list(namespace["LABELS"]) == list(module.LABELS)
+    assert namespace["EMPTY"] == module.EMPTY
+    assert [type(value) for value in namespace["EMPTY"]] == [
+        type(value) for value in module.EMPTY
+    ]
+    for key, value in module.ARROW.items():
+        assert namespace["ARROW"][key].equals(value, check_metadata=True)
+        assert type(namespace["ARROW"][key]) is type(value)
+
+    weights = namespace["WEIGHTS"]
+    assert weights.dtype == module.WEIGHTS.dtype
+    assert np.array_equal(weights, module.WEIGHTS)
+    for captured, original in zip(namespace["NUMPY"], module.NUMPY, strict=True):
+        assert type(captured) is type(original)
+        assert captured.dtype == original.dtype
+        assert np.shape(captured) == np.shape(original)
+        assert np.array_equal(captured, original)
+    assert np.signbit(namespace["NUMPY"][-1][1])
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize("shape", [(0,), (0, 3), (2, 0, 3), (500_000, 0)])
+def test_empty_numpy_captures_preserve_shape_without_expanding(
+    helper_package, kind, shape
+):
+    definition = (
+        "class empty_size:\n    def __call__(self, value: int) -> int:\n"
+        "        return value + EMPTY.size\n"
+        if kind == "class"
+        else "def empty_size(value: int) -> int:\n    return value + EMPTY.size\n"
+    )
+    module = helper_package(
+        "fx_empty_numpy_global",
+        {
+            "__init__.py": "import numpy as np\n"
+            f"EMPTY = np.empty({shape!r}, dtype='>i2')\n" + definition
+        },
+    )
+    source = artifact(function(module.empty_size))
+    assert len(source) < 1024
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    captured = namespace["EMPTY"]
+    assert captured.shape == shape
+    assert captured.dtype == module.EMPTY.dtype
+    assert captured.size == 0
+    call = namespace["empty_size"]() if kind == "class" else namespace["empty_size"]
+    assert call(7) == 7
+
+
+def test_captured_containers_are_copied_when_decorated(helper_package):
+    module = helper_package(
+        "fx_captured_copy",
+        {
+            "__init__.py": """
+                SHARED = [1, 2]
+                CONFIG = {"shared": SHARED, "again": SHARED}
+
+                def uses_config(value: int) -> int:
+                    return value + len(CONFIG["shared"]) + len(SHARED)
+            """
+        },
+    )
+    definition = function(module.uses_config)
+    module.SHARED.append(3)
+
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["SHARED"] == [1, 2]
+    assert namespace["CONFIG"] == {"shared": [1, 2], "again": [1, 2]}
+    assert namespace["CONFIG"]["shared"] is not namespace["CONFIG"]["again"]
+    assert namespace["CONFIG"]["shared"] is not namespace["SHARED"]
+    assert namespace["uses_config"](1) == 5
+
+
+def test_captured_sets_package_deterministically(tmp_path):
+    script = tmp_path / "sets.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+
+            from lancedb import function
+
+            WORDS = {f"word{index}" for index in range(20)}
+            MIXED = frozenset({("pair", 1), b"bytes", None, 2.5, "text"})
+
+            @function
+            def known(word: str) -> bool:
+                return word in WORDS or word in MIXED
+
+            print(json.dumps([
+                known.registration_request.artifact.digest,
+                list(WORDS),
+            ]))
+            """
+        )
+    )
+    runs = []
+    for seed in ("0", "1", "2", "3"):
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert result.returncode == 0, result.stderr
+        runs.append(json.loads(result.stdout))
+    # Hash randomization reorders the client's set; the artifact must not change.
+    assert len({tuple(order) for _, order in runs}) > 1
+    assert len({digest for digest, _ in runs}) == 1
+
+
+@pytest.mark.parametrize(
+    ("global_value", "message"),
+    [
+        ("list(range(300_000))", "too large to capture"),
+        ("np.zeros(2_000_000)", "too large to capture"),
+        ("'x' * (1024 * 1024)", "too large to capture"),
+        ("functools.reduce(lambda inner, _: [inner], range(40), [])", "32 levels"),
+        ("_cycle()", "contains itself"),
+        ("pa.schema([pa.field('x', pa.list_(_Extension()))])", "defined in Python"),
+    ],
+)
+def test_captured_value_limits_name_the_global(helper_package, global_value, message):
+    module = helper_package(
+        "fx_captured_limits",
+        {
+            "__init__.py": textwrap.dedent("""
+                import functools
+
+                import numpy as np
+                import pyarrow as pa
+
+                class _Extension(pa.ExtensionType):
+                    def __init__(self):
+                        super().__init__(pa.int64(), "fx.extension")
+
+                    def __arrow_ext_serialize__(self):
+                        return b""
+
+                    @classmethod
+                    def __arrow_ext_deserialize__(cls, storage_type, serialized):
+                        return cls()
+
+                def _cycle():
+                    value = []
+                    value.append(value)
+                    return value
+            """)
+            + f"CAPTURED_VALUE = {global_value}\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value if CAPTURED_VALUE else 0\n"
+        },
+    )
+    with pytest.raises((TypeError, ValueError)) as error:
+        function(module.uses_global)
+    assert "CAPTURED_VALUE" in str(error.value)
+    assert message in str(error.value)
+    assert "inside the function or class body" in str(error.value)
+
+
+def test_captured_sets_keep_their_builtins(helper_package):
+    module = helper_package(
+        "fx_captured_builtins",
+        {
+            "__init__.py": """
+                STOP = frozenset({"a"})
+                frozenset = ("shadowed",)
+
+                def uses_sets(word: str) -> bool:
+                    return word in STOP or word in frozenset
+            """
+        },
+    )
+    with pytest.raises(ValueError, match="cannot package 'frozenset'"):
+        function(module.uses_sets)
 
 
 @pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
@@ -147,11 +562,11 @@ def test_batch_annotations_require_explicit_schemas(annotation, kind, helper_pac
         """
     module = helper_package("fx_batch_annotations", {"__init__.py": source})
     with pytest.raises(TypeError, match="input_schema and output_schema"):
-        udf(module.identity)
+        function(module.identity)
 
 
 def test_array_batch_annotations_accept_explicit_schemas():
-    @udf(
+    @function(
         input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
         output_schema=pa.int64(),
     )
@@ -168,7 +583,49 @@ def test_array_batch_annotations_accept_explicit_schemas():
     assert identity(values).equals(values)
 
 
-@pytest.mark.parametrize("class_udf", [False, True])
+def test_batch_functions_take_one_array_parameter_per_input_column():
+    @function(
+        input_schema=pa.schema(
+            [
+                pa.field("value", pa.float64(), nullable=False),
+                pa.field("weight", pa.float64(), nullable=False),
+            ]
+        ),
+        output_schema=pa.float64(),
+    )
+    def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+        return pc.multiply(value, weight)
+
+    signature = weighted_score.registration_request.signature
+    assert [parameter.name for parameter in signature.inputs] == ["value", "weight"]
+    result = weighted_score(pa.array([1.0, 2.0]), pa.array([3.0, 4.0]))
+    assert result.to_pylist() == [3.0, 8.0]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda definition: definition(col("value")),
+        lambda definition: definition(value=col("value")),
+        lambda definition: definition(value=col("value") * 2),
+    ],
+    ids=["positional", "keyword", "derived"],
+)
+def test_definition_calls_reject_expr_inputs_before_user_code(invoke):
+    @function
+    def double(value: float) -> float:
+        raise AssertionError("user code ran")
+
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        invoke(double)
+
+
+def test_class_definition_binds_initialization_only_on_a_version():
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        scale(factor=col("factor"), label="x")
+
+
+@pytest.mark.parametrize("class_function", [False, True])
 @pytest.mark.parametrize("postponed", [False, True])
 @pytest.mark.parametrize(
     ("annotation", "nullable"),
@@ -185,13 +642,13 @@ def test_array_batch_annotations_accept_explicit_schemas():
     ],
 )
 def test_blob_reader_annotations_resolve_in_the_artifact(
-    helper_package, monkeypatch, class_udf, postponed, annotation, nullable
+    helper_package, monkeypatch, class_function, postponed, annotation, nullable
 ):
     definition = (
         f"class read_blob:\n"
         f"    def __call__(self, video: {annotation}) -> int:\n"
         f"        return 0\n"
-        if class_udf
+        if class_function
         else f"def read_blob(video: {annotation}) -> int:\n    return 0\n"
     )
     module = helper_package(
@@ -202,9 +659,9 @@ def test_blob_reader_annotations_resolve_in_the_artifact(
                 + "import lancedb\n"
                 "from typing import Optional\n"
                 "from lancedb import BlobReader, BlobReader as Reader\n"
-                "from lancedb.functions import udf\n"
+                "from lancedb.functions import function\n"
                 "MaybeReader = Optional[Reader]\n\n"
-                f"@udf\n{definition}"
+                f"@function\n{definition}"
             )
         },
     )
@@ -221,7 +678,7 @@ def test_blob_reader_annotations_resolve_in_the_artifact(
     namespace = {}
     exec(compile(artifact(module.read_blob), "user_function.py", "exec"), namespace)
     packaged = namespace["read_blob"]
-    if class_udf:
+    if class_function:
         packaged = packaged.__call__
     assert get_type_hints(packaged) == {
         "video": Optional[worker.BlobReader] if nullable else worker.BlobReader,
@@ -237,11 +694,11 @@ def test_blob_reader_annotation_does_not_shadow_body_globals(
         {
             "__init__.py": """
                 from lancedb import BlobReader
-                from lancedb.functions import udf
+                from lancedb.functions import function
 
                 _lance_blob_reader = 7
 
-                @udf
+                @function
                 def read_blob(video: BlobReader) -> int:
                     return _lance_blob_reader
             """
@@ -280,14 +737,14 @@ def test_class_function_rejects_unsupported_initialization(init, message):
         namespace,
     )
     with pytest.raises((TypeError, ValueError), match=message):
-        udf(namespace["bad"])
+        function(namespace["bad"])
 
 
 def test_class_function_requires_call_and_a_plain_close():
     with pytest.raises(TypeError, match="synchronous __call__"):
-        udf(NoCall)
+        function(NoCall)
     with pytest.raises(TypeError, match="close must be a method taking no"):
-        udf(BadClose)
+        function(BadClose)
 
 
 def test_nested_class_and_closure_are_rejected_with_the_reason():
@@ -299,15 +756,273 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
         return nested
 
     with pytest.raises(ValueError, match="defined at module level"):
-        udf(build())
+        function(build())
 
     factor = 3
 
     with pytest.raises(ValueError, match="capture closure values"):
 
-        @udf
+        @function
         def closes_over(value: int) -> int:
             return value * factor
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "builtins",
+        "importlib",
+        "inspect",
+        "gc",
+        "ctypes",
+        "types",
+        "ctypes.util",
+    ],
+)
+@pytest.mark.parametrize("import_style", ["import", "from", "global"])
+@pytest.mark.parametrize("class_function", [False, True])
+def test_namespace_module_errors_explain_the_rule_and_remedy(
+    helper_package, module_name, import_style, class_function
+):
+    statement = f"import {module_name} as namespace_module"
+    body = f"{statement}\nreturn value\n"
+    preamble = ""
+    if import_style == "from":
+        body = f"from {module_name} import __name__\nreturn value\n"
+    elif import_style == "global":
+        preamble = statement + "\n"
+        body = "return str(namespace_module)\n"
+    if class_function:
+        definition = "class blocked:\n    def __call__(self, value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "        ")
+    else:
+        definition = "def blocked(value: str) -> str:\n"
+        source = preamble + definition + textwrap.indent(body, "    ")
+    module = helper_package("fx_namespace_import", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert "imports from namespace-access modules" in message
+    assert repr(module_name) in message
+    assert "builtins, ctypes, gc, importlib, inspect, sys, types" in message
+    assert "including submodules" in message
+    assert "reconstructed module namespace" in message
+    assert "importable helper module" in message
+    assert "code=, pip=, or conda=" in message
+    assert "dynamic namespace access" not in message
+
+
+@pytest.mark.parametrize("module_level", [False, True], ids=["body", "module"])
+@pytest.mark.parametrize(
+    ("import_statement", "expression"),
+    [
+        ("import sys", "sys.stderr"),
+        ("import sys as diagnostic", "diagnostic.stderr"),
+        ("from sys import stderr", "stderr"),
+        ("from sys import stderr as error_stream", "error_stream"),
+        ("import sys", "sys.version_info"),
+        ("import sys as diagnostic", "diagnostic.version_info"),
+        ("from sys import version_info", "version_info"),
+        ("from sys import version_info as python_version", "python_version"),
+        ("import importlib.metadata", "importlib.metadata.version('pytest')"),
+        ("import importlib.metadata as diagnostic", "diagnostic.version('pytest')"),
+        ("from importlib import metadata", "metadata.version('pytest')"),
+        (
+            "from importlib import metadata as diagnostic",
+            "diagnostic.version('pytest')",
+        ),
+        ("from importlib.metadata import version", "version('pytest')"),
+        (
+            "from importlib.metadata import version as diagnostic",
+            "diagnostic('pytest')",
+        ),
+    ],
+)
+def test_diagnostic_namespace_operations_package_and_run(
+    helper_package, module_level, import_statement, expression
+):
+    if module_level:
+        source = (
+            f"{import_statement}\n\n"
+            "def probe(value: str) -> str:\n"
+            f"    return str({expression}) + value\n"
+        )
+    else:
+        source = (
+            "def probe(value: str) -> str:\n"
+            f"    {import_statement}\n"
+            f"    return str({expression}) + value\n"
+        )
+    module = helper_package("fx_diagnostic_operation", {"__init__.py": source})
+
+    packaged = artifact(function(module.probe)).decode()
+    namespace = {}
+    exec(compile(packaged, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!").endswith("!")
+
+
+@pytest.mark.parametrize(
+    ("body", "operation"),
+    [
+        ("import sys\nreturn str(sys.modules)", "sys.modules"),
+        ("import sys as s\nreturn str(s.path)", "s.path"),
+        ("import sys\nreturn str(sys.version)", "sys.version"),
+        ("import sys\nreturn str(sys.stdout)", "sys.stdout"),
+        ("import sys\nreturn str(getattr(sys, 'stderr'))", "sys"),
+        ("import sys\nstream = sys\nreturn str(stream)", "sys"),
+        ("import sys\nsys = object()\nreturn str(sys)", "sys"),
+        ("from sys import path\nreturn str(path)", "sys.path"),
+        (
+            "import importlib.metadata\n"
+            "return importlib.metadata.distribution('pytest').version",
+            "importlib.metadata.distribution",
+        ),
+        (
+            "import importlib.metadata as m\nreturn m.distribution('pytest').version",
+            "m.distribution",
+        ),
+        (
+            "from importlib.metadata import distribution\n"
+            "return distribution('pytest').version",
+            "importlib.metadata.distribution",
+        ),
+        (
+            "from importlib.metadata import version\nreturn str(version.__globals__)",
+            "version.__globals__",
+        ),
+        (
+            "import importlib\nreturn str(importlib.import_module('os'))",
+            "importlib",
+        ),
+        (
+            "from importlib import import_module\nreturn str(import_module('os'))",
+            "importlib",
+        ),
+        (
+            "import importlib.resources\nreturn str(importlib.resources.files('x'))",
+            "importlib.resources",
+        ),
+        ("import inspect\nreturn str(inspect.currentframe())", "inspect"),
+        (
+            "from ctypes import util\nreturn str(util.find_library('c'))",
+            "ctypes",
+        ),
+        ("import gc\nreturn str(gc.get_objects())", "gc"),
+        ("import builtins\nreturn str(builtins)", "builtins"),
+        ("import types\nreturn str(types.SimpleNamespace())", "types"),
+    ],
+)
+def test_unsupported_namespace_operations_are_rejected(helper_package, body, operation):
+    source = "def blocked(value: str) -> str:\n" + textwrap.indent(body, "    ")
+    module = helper_package(
+        "fx_unsupported_namespace_operation", {"__init__.py": source}
+    )
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert repr(operation) in message
+    assert "supported diagnostic operations" in message
+
+
+@pytest.mark.parametrize(
+    ("preamble", "body", "operation"),
+    [
+        (
+            "import sys as diagnostic",
+            "return str(diagnostic.modules)",
+            "diagnostic.modules",
+        ),
+        (
+            "import importlib.metadata as diagnostic",
+            "return diagnostic.distribution('pytest').version",
+            "diagnostic.distribution",
+        ),
+        ("from sys import stderr", "return str(stderr.__class__)", "stderr.__class__"),
+    ],
+)
+def test_module_level_diagnostic_alias_rejects_unsupported_use(
+    helper_package, preamble, body, operation
+):
+    source = f"{preamble}\n\ndef blocked(value: str) -> str:\n    {body}\n"
+    module = helper_package("fx_diagnostic_alias", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    assert repr(operation) in str(error.value)
+
+
+@pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")
+def test_udf_namespace_import_error_explains_the_helper_alternative():
+    with pytest.raises(ValueError, match="ctypes.util.*importable helper module"):
+
+        @udf
+        def probe(value: str) -> str:
+            import ctypes.util
+
+            return str(ctypes.util.find_library(value))
+
+
+@pytest.mark.parametrize(
+    "operation", ["globals", "locals", "vars", "eval", "exec", "compile", "__import__"]
+)
+def test_dynamic_namespace_errors_name_the_operation_and_remedy(
+    helper_package, operation
+):
+    module = helper_package(
+        "fx_namespace_operation",
+        {
+            "__init__.py": (
+                f"def blocked(value: str) -> str:\n    return str({operation})\n"
+            )
+        },
+    )
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert f"dynamic namespace access: ['{operation}']" in message
+    assert "Reference dependencies explicitly" in message
+    assert "importable helper module" in message
+
+
+@pytest.mark.parametrize("ship_source", [False, True])
+def test_namespace_access_in_importable_helpers_keeps_its_module_namespace(
+    helper_package, ship_source
+):
+    helpers = helper_package(
+        "fx_namespace_helper",
+        {
+            "__init__.py": """
+                import ctypes.util
+
+                def module_name():
+                    return ctypes.util.__name__
+            """,
+        },
+    )
+    entry = helper_package(
+        "fx_namespace_entry",
+        {
+            "__init__.py": """
+                from fx_namespace_helper import module_name
+
+                def probe(value: str) -> str:
+                    return module_name() + value
+            """,
+        },
+    )
+    options = {"code": [helpers]} if ship_source else {"pip": ["fx-namespace-helper"]}
+    definition = function(**options)(entry.probe)
+    if ship_source:
+        files = bundle_files(definition)
+        assert "import ctypes.util" in files["fx_namespace_helper/__init__.py"]
+        source = files["user_function.py"]
+    else:
+        source = artifact(definition).decode()
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!") == "ctypes.util!"
 
 
 def test_binding_passes_initialization_as_constants():
@@ -352,6 +1067,102 @@ def test_binding_passes_initialization_as_constants():
         version(text=col("body"), model=object())
 
 
+def test_vendored_package_resources_survive_an_isolated_import(
+    tmp_path, helper_package
+):
+    package = helper_package(
+        "fx_vendor",
+        {
+            "__init__.py": "from .vendor.model import predict",
+            "vendor/__init__.py": "",
+            "vendor/model.py": """
+                import hashlib
+                import json
+                from importlib.resources import files
+
+                def predict(value):
+                    root = files("fx_vendor")
+                    payload = root.joinpath("label-maps/payload.bin").read_bytes()
+                    metadata = json.loads(root.joinpath("models.json").read_text())
+                    source = root.joinpath("vendor/model.py").read_bytes()
+                    source_digest = hashlib.sha256(source).hexdigest()
+                    assert source_digest == metadata["source_sha256"]
+                    assert hashlib.sha256(payload).hexdigest() == metadata["sha256"]
+                    return value + metadata["offset"]
+            """,
+            "models.json": "{}",
+        },
+    )
+    payload = b"\x00\xff\r\nvendored model data"
+    package_root = Path(package.__file__).parent
+    (package_root / "label-maps").mkdir()
+    (package_root / "label-maps/payload.bin").write_bytes(payload)
+    module_path = package_root / "vendor/model.py"
+    module_bytes = (
+        module_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+    module_path.write_bytes(module_bytes)
+    (package_root / "models.json").write_bytes(
+        json.dumps(
+            {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "source_sha256": hashlib.sha256(module_bytes).hexdigest(),
+                "offset": 7,
+            }
+        ).encode()
+        + b"\r\n"
+    )
+
+    entry = helper_package(
+        "fx_vendor_entry",
+        {
+            "__init__.py": """
+        import fx_vendor
+        from lancedb import function
+
+        @function(code=[fx_vendor])
+        def vendored(value: int) -> int:
+            return fx_vendor.predict(value)
+    """
+        },
+    )
+    vendored = entry.vendored
+
+    first_digest = vendored.registration_request.artifact.digest
+    bundle = json.loads(artifact(vendored))
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    for name, content in bundle["files"].items():
+        target = isolated / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content.encode("utf-8"))
+    for name, content in bundle["resources"].items():
+        target = isolated / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(content))
+    assert (isolated / "fx_vendor/models.json").read_bytes().endswith(b"\r\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from user_function import vendored; assert vendored(3) == 10",
+            str(isolated),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    (package_root / "models.json").write_text('{"offset": 8}')
+    assert (
+        function(code=[package])(
+            vendored._function
+        ).registration_request.artifact.digest
+        != first_digest
+    )
+
+
 def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
     tmp_path, helper_package
 ):
@@ -372,10 +1183,10 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
             """
             import fx_helpers
             from fx_helpers.rate import TokenBucket
-            from lancedb import udf
+            from lancedb import function
 
 
-            @udf(code=[fx_helpers])
+            @function(code=[fx_helpers])
             class limited:
                 def __init__(self, tpm: int):
                     self.limiter = TokenBucket(tpm)
@@ -396,14 +1207,13 @@ def test_code_packages_ship_as_a_bundle_and_version_with_their_source(
         first = define()
     assert len(caught) == 1
     warning = str(caught[0].message)
-    assert "fx_helpers/fixtures/data.json" in warning
+    assert "fx_helpers/fixtures/data.json" not in warning
     assert "fx_helpers/not-a-module.py" in warning
-    assert warning.index("fx_helpers/fixtures/data.json") < warning.index(
-        "fx_helpers/not-a-module.py"
-    )
-    assert "remove 'fx_helpers' from code=" in warning
-    assert "pip=" in warning
-    assert "conda=" in warning
+
+    assert "safe relative names" in warning
+    assert "importable Python module names" in warning
+    resources = json.loads(artifact(first))["resources"]
+    assert base64.b64decode(resources["fx_helpers/fixtures/data.json"]) == b"{}"
     assert "__pycache__" not in warning
     assert ".pyc" not in warning
     shipped = bundle_files(first)
@@ -445,7 +1255,7 @@ def test_code_package_cache_artifacts_do_not_warn(helper_package):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
 
-        @udf(code=[cache])
+        @function(code=[cache])
         def cache_only(value: int) -> int:
             return value
 
@@ -456,7 +1266,7 @@ def test_code_package_cache_artifacts_do_not_warn(helper_package):
     ]
 
 
-def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_package):
+def test_code_package_resources_keep_nonidentifier_directories(helper_package):
     resources = helper_package(
         "fx_resources",
         {
@@ -468,15 +1278,13 @@ def test_code_package_nonidentifier_resource_dir_warns_at_boundary(helper_packag
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
 
-        @udf(code=[resources])
+        @function(code=[resources])
         def resource_boundary(value: int) -> int:
             return value
 
-    assert len(caught) == 1
-    warning = str(caught[0].message)
-    assert "fx_resources/label-maps/" in warning
-    assert "remove 'fx_resources' from code=" in warning
-    assert "labels.json" not in warning
+    assert not caught
+    resources = json.loads(artifact(resource_boundary))["resources"]
+    assert base64.b64decode(resources["fx_resources/label-maps/labels.json"]) == b"{}"
     assert sorted(bundle_files(resource_boundary)) == [
         "fx_resources/__init__.py",
         "user_function.py",
@@ -495,7 +1303,7 @@ def test_code_rejects_submodules_duplicates_and_non_modules(helper_package):
     ]:
         with pytest.raises((TypeError, ValueError), match=message):
 
-            @udf(code=code)
+            @function(code=code)
             def f(value: int) -> int:
                 return value
 
@@ -514,10 +1322,10 @@ def test_local_module_outside_code_warns_at_registration(tmp_path, helper_packag
             textwrap.dedent(
                 f"""
                 from fx_local import normalize
-                from lancedb import udf
+                from lancedb import function
 
 
-                @udf({options})
+                @function({options})
                 def {name}(value: int) -> int:
                     return normalize(value)
                 """
@@ -551,10 +1359,10 @@ def test_local_module_imported_in_function_body_warns_at_registration(
         (tmp_path / f"{name}.py").write_text(
             textwrap.dedent(
                 f"""
-                from lancedb import udf
+                from lancedb import function
 
 
-                @udf({options})
+                @function({options})
                 def {name}(value: int) -> int:
                     import fx_body_local
 
@@ -573,6 +1381,94 @@ def test_local_module_imported_in_function_body_warns_at_registration(
         warnings.simplefilter("error")
         installed = define("fx_body_uses_installed", "pip=['fx-body-local==1.0']")
     assert "import fx_body_local" in artifact(installed).decode()
+
+
+def test_missing_module_without_declared_package_warns_at_registration(
+    tmp_path, monkeypatch
+):
+    package = "fx_missing_remote_package_ent3448"
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def define(name):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                from lancedb import function
+
+
+                @function(pip=())
+                def {name}(value: int) -> int:
+                    import {package}.plugin
+
+                    return value
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with pytest.warns(UserWarning) as caught:
+        definition = define("fx_uses_missing_package")
+
+    message = str(caught[0].message)
+    assert f"imports {package!r}" in message
+    assert "unavailable in the client environment" in message
+    assert "no declared pip/conda dependencies" in message
+    assert "Remote availability cannot be verified" in message
+    assert "confirm that the base image provides it" in message
+    assert "cannot import" not in message
+    assert f"import {package}.plugin" in artifact(definition).decode()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        with pytest.raises(UserWarning, match="Remote availability cannot be verified"):
+            define("fx_missing_package_as_error")
+
+
+def test_resolved_or_declared_module_imports_do_not_warn(tmp_path, helper_package):
+    package = "fx_missing_remote_package_ent3448"
+    helper_package("fx_declared_code_package", {"__init__.py": ""})
+
+    def define(name, body, options, imports=""):
+        (tmp_path / f"{name}.py").write_text(
+            textwrap.dedent(
+                f"""
+                {imports}
+                from lancedb import function
+
+
+                @function({options})
+                def {name}(value: int) -> int:
+                    {body}
+                    return value
+                """
+            )
+        )
+        importlib.invalidate_caches()
+        return getattr(importlib.import_module(name), name)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        define("fx_imports_stdlib", "import os.path", "")
+        # Distribution names need not match the imported top-level module.
+        define(
+            "fx_imports_declared_pip",
+            f"import {package}.plugin",
+            "pip=['Pillow>=10']",
+        )
+        define(
+            "fx_imports_declared_conda",
+            f"import {package}.plugin",
+            "conda=['numpy']",
+        )
+        define(
+            "fx_imports_shipped_code",
+            "import fx_declared_code_package",
+            "code=[fx_declared_code_package]",
+            "import fx_declared_code_package",
+        )
+
+    assert not caught
 
 
 MMLB_HELPERS = {
@@ -610,20 +1506,20 @@ import pyarrow as pa
 
 import fx_mmlb
 from fx_mmlb.embedding import OpenAIEmbedder
-from lancedb import udf
+from lancedb import function
 
 TEXT = pa.schema([pa.field("text", pa.string())])
 EMBEDDING = pa.list_(pa.field("item", pa.float64(), nullable=False))
 
 
-@udf(code=[fx_mmlb], input_schema=TEXT, output_schema=EMBEDDING)
+@function(code=[fx_mmlb], input_schema=TEXT, output_schema=EMBEDDING)
 class openai_embedding_batch(OpenAIEmbedder):
     def __call__(self, text: pa.Array) -> pa.Array:
         item = pa.field("item", pa.float64(), nullable=False)
         return pa.array(self.embed(text.to_pylist()), pa.list_(item))
 
 
-@udf(code=[fx_mmlb])
+@function(code=[fx_mmlb])
 class openai_embedding(OpenAIEmbedder):
     def __call__(self, text: str) -> list[float]:
         return self.embed([text])[0]
@@ -695,7 +1591,7 @@ def test_main_definitions_travel_by_source(tmp_path):
             import math
             from dataclasses import dataclass
 
-            from lancedb import udf
+            from lancedb import function
 
             SCALE = 2
 
@@ -714,7 +1610,7 @@ def test_main_definitions_travel_by_source(tmp_path):
                     return helper(value) * self.settings.factor
 
 
-            @udf
+            @function
             class scaled(Base):
                 def __init__(self, factor: int):
                     self.settings = Settings(factor)
@@ -750,11 +1646,11 @@ def test_main_lambdas_are_rejected(tmp_path):
     script.write_text(
         textwrap.dedent(
             """
-            from lancedb import udf
+            from lancedb import function
 
             double = lambda value: value * 2
 
-            @udf
+            @function
             def uses_lambda(value: int) -> int:
                 return double(value)
             """
@@ -765,3 +1661,33 @@ def test_main_lambdas_are_rejected(tmp_path):
     )
     assert result.returncode != 0
     assert "not lambdas, closures, or nested definitions" in result.stderr
+
+
+def test_udf_alias_warns_and_packages_like_function(helper_package):
+    def source(decorator: str) -> str:
+        return f"""
+            import lancedb
+            from lancedb import function, udf
+
+            @{decorator}
+            def double(value: int) -> int:
+                return value * 2
+        """
+
+    current = helper_package("fx_alias_current", {"__init__.py": source("function")})
+    expected = current.double.registration_request.artifact.digest
+    for name, decorator in (("fx_alias_bare", "udf"), ("fx_alias_attr", "lancedb.udf")):
+        with pytest.warns(DeprecationWarning, match="lancedb.udf is deprecated"):
+            module = helper_package(name, {"__init__.py": source(decorator)})
+        assert isinstance(module.double, FunctionDefinition)
+        assert "udf" not in artifact(module.double).decode()
+        assert module.double.registration_request.artifact.digest == expected
+
+
+def test_udf_definition_alias_warns():
+    with pytest.warns(DeprecationWarning, match="UdfDefinition is deprecated"):
+        from lancedb import UdfDefinition
+    assert UdfDefinition is FunctionDefinition
+    with pytest.warns(DeprecationWarning, match="UdfDefinition is deprecated"):
+        from lancedb.functions import UdfDefinition as module_alias
+    assert module_alias is FunctionDefinition

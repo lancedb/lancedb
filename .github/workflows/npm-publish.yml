@@ -4,9 +4,7 @@ env:
   MACOSX_DEPLOYMENT_TARGET: '10.13'
   CARGO_INCREMENTAL: '0'
 
-permissions:
-  contents: write
-  id-token: write
+permissions: {}
 
 on:
   push:
@@ -33,6 +31,8 @@ concurrency:
 
 jobs:
   build-lancedb:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +66,8 @@ jobs:
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
           - target: x86_64-unknown-linux-gnu
-            host: ubuntu-latest
+            # Fat LTO reached 15.1 GiB before rustc was killed on the 15 GiB runner.
+            host: ubuntu-2404-8x-x64
             features: fp16kernels
             # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
@@ -161,8 +162,12 @@ jobs:
         working-directory: nodejs
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Windows dependencies
+        if: runner.os == 'Windows'
+        # Cargo also checks out Lance test fixtures below its git cache path.
+        run: git config --global core.longpaths true
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.1
       - name: Setup node
@@ -173,7 +178,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: nodejs/pnpm-lock.yaml
       - name: Install
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: ${{ !matrix.settings.docker }}
         with:
           toolchain: stable
@@ -189,7 +194,7 @@ jobs:
       # re-runs regardless, since the local crate changes every time, so the
       # win is larger on the non-LTO jobs than here.
       - name: Cache cargo (native builds)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !matrix.settings.docker }}
         with:
           # The release profile and per-target dirs differ from what the test
@@ -211,7 +216,7 @@ jobs:
       # that built these artifacts -- safe, since cargo fingerprints the real
       # one; a base-image bump just costs one cold build.
       - name: Cache cargo (docker builds)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ matrix.settings.docker }}
         with:
           key: docker-${{ matrix.settings.target }}
@@ -220,17 +225,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
           version: 0.14.1
       - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
           tool: cargo-zigbuild
       - name: Build in docker
-        uses: addnab/docker-run-action@v3
+        uses: addnab/docker-run-action@4f65fabd2431ebc8d299f8e5a018d79a769ae185 # v3
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
@@ -321,6 +326,8 @@ jobs:
             nodejs/dist/*
             !nodejs/dist/*.node
   test-lancedb:
+    permissions:
+      contents: read
     name: "Test: ${{ matrix.settings.target }} - node@${{ matrix.node }}"
     needs:
       - build-lancedb
@@ -347,7 +354,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.1
       - name: Setup Node.js 24 for install
@@ -389,6 +396,10 @@ jobs:
         run: node_modules/.bin/jest --verbose
   publish:
     name: Publish
+    permissions:
+      contents: read
+      # npm provenance
+      id-token: write
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -399,7 +410,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.1
       - name: Setup node

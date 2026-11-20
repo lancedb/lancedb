@@ -149,6 +149,8 @@ def _http_error_class(
             return input_class
     if error_code == "already_exists":
         return AlreadyExistsError
+    if status_code == 409:
+        return ConflictError
     if error_code != "not_found" or resource_kind is None:
         return None
     return {
@@ -266,6 +268,80 @@ class NamespaceNotFoundError(HttpError):
 
 class AlreadyExistsError(HttpError):
     """A remote resource already exists."""
+
+
+class ConflictError(HttpError):
+    """A remote operation conflicts with the current state of a resource.
+
+    For example, deleting a branch whose files are still needed by another
+    branch raises this error. The server's reason is included in the message.
+
+    Examples
+    --------
+    >>> error = HttpError("main depends on the branch's files", "req-1", 409)
+    >>> isinstance(error, ConflictError)
+    True
+    >>> error.status_code
+    409
+    """
+
+
+class ResponseInterruptedError(HttpError):
+    """A streamed query response stopped before the server finished sending it.
+
+    The batches already returned are valid, but the result is incomplete. The
+    query is not retried automatically, because a new attempt would return those
+    rows a second time. To read the same data in a new attempt, check out
+    ``table_version`` first.
+
+    Attributes
+    ----------
+    batches: int
+        The number of batches returned before the interruption.
+    rows: int
+        The number of rows in those batches.
+    table_version: int or None
+        The table version the response reflected, if the server reported it.
+
+    Examples
+    --------
+    >>> error = ResponseInterruptedError("interrupted", "req-1", 2, 2048, 7)
+    >>> isinstance(error, HttpError)
+    True
+    >>> (error.rows, error.table_version)
+    (2048, 7)
+    """
+
+    # HttpError.__new__ takes HttpError's arguments, to choose a subclass.
+    def __new__(cls, *args, **kwargs):
+        return RuntimeError.__new__(cls)
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        batches: int,
+        rows: int,
+        table_version: Optional[int] = None,
+        is_transport_error: bool = False,
+    ):
+        super().__init__(message, request_id, is_transport_error=is_transport_error)
+        self.batches = batches
+        self.rows = rows
+        self.table_version = table_version
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.batches,
+                self.rows,
+                self.table_version,
+                self.is_transport_error,
+            ),
+        )
 
 
 class TableNotFoundError(HttpError, ValueError, _NamespaceTableNotFoundError):

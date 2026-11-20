@@ -18,7 +18,7 @@ jobs:
     name: Label PR
     runs-on: ubuntu-latest
     steps:
-      - uses: srvaroa/labeler@v1
+      - uses: srvaroa/labeler@9c29ad1ef33d169f9ef33c52722faf47a566bcf3 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   commitlint:
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.1.1
       # These rules are disabled because Github will always ensure there

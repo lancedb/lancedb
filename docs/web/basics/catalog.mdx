@@ -53,7 +53,7 @@ a nested `search` namespace:
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
-  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart TD
     catalog["root catalog"] --> database["ai_data · database"]
@@ -75,7 +75,7 @@ flowchart TD
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
-  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart TD
     catalog["root catalog"] --> database["ai_data · database"]
@@ -157,6 +157,24 @@ reach a database and the catalog separately.
 list, create and drop databases across the whole deployment. Its
 `connect_database(name)` and `create_database(name)` then return the same
 kind of database connection `lancedb.connect()` does.
+
+In Python, `connect_catalog` and `connect_catalog_async` accept the same
+connection settings as their database counterparts. Use `host_override` to
+share settings that include a `db://` URI; the catalog connection targets
+the root of that deployment and ignores the database name. An explicitly
+supplied `region` is ignored with a warning, since the HTTP(S) endpoint
+selects the deployment. Embedded-only session and namespace settings are
+unsupported.
+
+```python
+settings = {
+    "uri": "db://analytics",
+    "api_key": "secret",
+    "host_override": "https://my-server.example",
+}
+db = lancedb.connect(**settings)
+catalog = lancedb.connect_catalog(**settings)
+```
 
 This connection is for database administration, not table or query work:
 list, create and drop databases through it, then switch to a **database**

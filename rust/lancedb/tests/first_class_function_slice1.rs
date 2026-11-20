@@ -182,13 +182,17 @@ fn unknown_fields_and_discriminators_are_forward_decodable() {
     let version = FunctionVersion::from_json(&result.to_string()).expect("future remote value");
     assert_eq!(version.image().descriptor["future_interface"]["version"], 2);
     assert_eq!(version.signature().output.kind, "future_output_shape");
-    assert_eq!(
-        serde_json::from_str::<Value>(
-            &version.to_canonical_json().expect("canonical future value")
-        )
-        .expect("canonical JSON")["image"]["descriptor"]["future_interface"],
-        serde_json::json!({"version": 2})
-    );
+    let canonical: Value =
+        serde_json::from_str(&version.to_canonical_json().expect("canonical future value"))
+            .expect("canonical JSON");
+
+    let mut expected: Value =
+        serde_json::from_str(fixture("remote_function_version.canonical.json").trim())
+            .expect("canonical FunctionVersion fixture");
+    expected["image"]["descriptor"]["future_interface"] = serde_json::json!({"version": 2});
+    expected["signature"]["output"]["kind"] = Value::String("future_output_shape".to_string());
+    assert_eq!(canonical, expected);
+    assert!(canonical.get("future_version_metadata").is_none());
 }
 
 #[test]

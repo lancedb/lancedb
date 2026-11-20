@@ -1,5 +1,6 @@
 ---
 title: "Adaptive Execution"
+tag: "Early access"
 sidebarTitle: "Adaptive Execution"
 description: "How a Function refresh's part size, resource class, worker count and checkpoint frequency adjust themselves to observed behavior."
 icon: "gauge-high"
@@ -7,6 +8,8 @@ availability:
   embedded: unavailable
   enterprise: available
 ---
+
+<Badge color="purple">Early access</Badge>
 
 When a [computed column](/feature-engineering/add-computed-column) or
 [materialized view](/feature-engineering/materialized-views) is filled by
@@ -44,7 +47,7 @@ invocation runs with more resources, fewer, or the same:
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
   "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
-  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     I["Invocation runs<br/>wall time, CPU, memory, GPU measured"] --> D{"Saturated?"}
@@ -66,7 +69,7 @@ flowchart LR
 %%{init: {"theme": "base", "themeVariables": {
   "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
   "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
-  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "15px"
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
 }}}%%
 flowchart LR
     I["Invocation runs<br/>wall time, CPU, memory, GPU measured"] --> D{"Saturated?"}
@@ -132,8 +135,5 @@ part sizing described above still decides how many rows each part covers.
   </Card>
   <Card title="Checkpointing" icon="floppy-disk" href="/enterprise/checkpointing">
     How a part's progress survives a failure or restart.
-  </Card>
-  <Card title="GPU Refresh Execution" icon="microchip" href="/enterprise/gpu-refresh-execution">
-    How a GPU-bound Function's worker gets placed, for a refresh specifically.
   </Card>
 </CardGroup>

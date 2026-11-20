@@ -29,6 +29,8 @@ from lancedb._lancedb import PyExpr, expr_col, expr_lit, expr_func
 
 __all__ = ["Expr", "col", "lit", "func"]
 
+_NOT_LITERAL = object()
+
 _STR_TO_PA_TYPE: dict = {
     "bool": pa.bool_(),
     "boolean": pa.bool_(),
@@ -92,9 +94,16 @@ class Expr:
     # for dict keys / set membership.
     __hash__ = None  # type: ignore[assignment]
 
-    def __init__(self, inner: PyExpr, *, column_path: str | None = None) -> None:
+    def __init__(
+        self,
+        inner: PyExpr,
+        *,
+        column_path: str | None = None,
+        literal_value: object = _NOT_LITERAL,
+    ) -> None:
         self._inner = inner
         self._column_path = column_path
+        self._literal_value = literal_value
 
     def __bool__(self) -> bool:
         # An Expr describes a predicate that the query engine evaluates per row,
@@ -301,14 +310,16 @@ def col(name: str) -> Expr:
     return Expr(expr_col(name), column_path=name)
 
 
-def lit(value: Union[bool, int, float, str, bytes, date, datetime, Decimal]) -> Expr:
+def lit(
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal, None],
+) -> Expr:
     """Create a literal (constant) value expression.
 
     Parameters
     ----------
     value:
         A Python ``bool``, ``int``, ``float``, ``str``, ``bytes``, ``date``,
-        ``datetime``, or ``Decimal``.
+        ``datetime``, ``Decimal``, or ``None`` for SQL NULL.
 
     Examples
     --------
@@ -316,10 +327,12 @@ def lit(value: Union[bool, int, float, str, bytes, date, datetime, Decimal]) -> 
     >>> col("price") * lit(1.1)
     Expr((price * 1.1))
     """
-    if not isinstance(value, (bool, int, float, str, bytes, date, datetime, Decimal)):
+    if value is not None and not isinstance(
+        value, (bool, int, float, str, bytes, date, datetime, Decimal)
+    ):
         raise TypeError(f"Unsupported literal type: {type(value).__name__}")
 
-    return Expr(expr_lit(value))
+    return Expr(expr_lit(value), literal_value=value)
 
 
 def func(name: str, *args: ExprLike) -> Expr:

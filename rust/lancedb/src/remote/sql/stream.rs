@@ -55,6 +55,7 @@ pub(super) struct StreamingQuery {
     cancelled: Notify,
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
+    job_id: StdMutex<Option<String>>,
 }
 
 struct PreparedStream {
@@ -125,6 +126,7 @@ pub(super) enum Submission {
 pub(super) struct OpenedSubmission {
     pub(super) submission: Submission,
     pub(super) materialized_view_job_handle_supported: bool,
+    pub(super) job_id: Option<String>,
 }
 
 impl StreamingQuery {
@@ -190,6 +192,7 @@ impl StreamingQuery {
         }
         .map_err(|_| sql_error(&request_id, "SQL query submission timed out"))?
         .map_err(|error| sql_status_error(&request_id, &error))?;
+        let response_job_id = super::sql_job_id_from_metadata(response.metadata());
         let negotiated = response
             .metadata()
             .get(PROTOCOL_HEADER)
@@ -233,6 +236,7 @@ impl StreamingQuery {
                 return Ok(OpenedSubmission {
                     submission: Submission::Deferred(info),
                     materialized_view_job_handle_supported,
+                    job_id: response_job_id,
                 });
             }
         }
@@ -245,8 +249,10 @@ impl StreamingQuery {
                 stream,
                 request_id,
                 read_timeout,
+                job_id: None,
             }),
             materialized_view_job_handle_supported: false,
+            job_id: response_job_id,
         })
     }
 
@@ -254,6 +260,7 @@ impl StreamingQuery {
         id: Uuid,
         client: Arc<SqlClientInner>,
         response: ResultEndpointStream,
+        job_id: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -263,6 +270,7 @@ impl StreamingQuery {
             cancelled: Notify::new(),
             terminal_at: OnceLock::new(),
             last_accessed: StdMutex::new(Instant::now()),
+            job_id: StdMutex::new(job_id.filter(|job_id| !job_id.is_empty())),
         }
     }
 
@@ -291,6 +299,7 @@ impl StreamingQuery {
         };
         Ok(QueryDescription {
             id: self.id,
+            job_id: self.job_id(),
             status,
             progress: (status == QueryStatus::Finished).then_some(1.0),
             expires_at: None,
@@ -324,6 +333,29 @@ impl StreamingQuery {
 
     fn is_cancelled(&self) -> bool {
         *self.lifecycle.lock().unwrap() == Lifecycle::Cancelled
+    }
+
+    fn job_id(&self) -> Option<String> {
+        self.job_id.lock().unwrap().clone()
+    }
+
+    fn observe_job_id(&self, job_id: Option<&str>) -> Result<()> {
+        let Some(job_id) = job_id.filter(|job_id| !job_id.is_empty()) else {
+            return Ok(());
+        };
+        let mut current = self.job_id.lock().unwrap();
+        match current.as_deref() {
+            None => *current = Some(job_id.to_string()),
+            Some(existing) if existing == job_id => {}
+            Some(existing) => {
+                return Err(Error::Runtime {
+                    message: format!(
+                        "SQL query changed durable job identity from {existing} to {job_id}"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn cancelled_error(&self) -> Error {
@@ -373,6 +405,7 @@ impl StreamingQuery {
             .ok_or_else(|| Error::Runtime {
                 message: "SQL result stream did not include a schema".to_string(),
             })?;
+        self.observe_job_id(super::sql_job_id_from_schema(&schema).as_deref())?;
         if first.is_none() {
             self.settle(Lifecycle::Finished);
         }
@@ -476,6 +509,10 @@ impl QueryHandle for StreamingQueryHandle {
         self.query.id
     }
 
+    fn job_id(&self) -> Option<String> {
+        self.query.job_id()
+    }
+
     async fn describe(&self) -> Result<QueryDescription> {
         self.query.describe()
     }
@@ -526,7 +563,12 @@ impl QueryHandle for StreamingQueryHandle {
             receiver.recv().await.map(|item| (item, receiver))
         });
         result_start.commit();
-        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
+        let stream: SendableRecordBatchStream =
+            Box::pin(SimpleRecordBatchStream::new(stream, schema));
+        Ok(match self.job_id() {
+            Some(job_id) => super::attach_sql_job_id(stream, &job_id),
+            None => stream,
+        })
     }
 
     async fn cancel(&self) -> Result<()> {

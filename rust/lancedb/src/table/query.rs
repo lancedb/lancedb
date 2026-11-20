@@ -12,6 +12,7 @@ use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
+use crate::index::scalar::{FtsQuery, Operator as FullTextOperator};
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
@@ -36,12 +37,13 @@ use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
+use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
-    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery, StructuredFtsQuery,
 };
 
 #[derive(Debug, Clone)]
@@ -118,10 +120,24 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
-    // For use_rte that is worse than a tuning miss: RTE read routing lives only
-    // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_rte.is_some() || query.base().take_offsets.is_some() {
+    // The namespace QueryTable request cannot represent approx_mode, search_effort,
+    // use_rte, order_by or scan_in_order. For use_rte that is worse than a tuning miss:
+    // RTE read routing lives only in `create_plan`, so a pushed-down query would return
+    // stale base-only data. A dropped order_by would return the wrong top-K rows, and a
+    // dropped ordered scan would silently stop guaranteeing manifest order.
+    if query.base().use_rte.is_some()
+        || query.base().has_take()
+        || query.base().scan_in_order == Some(true)
+        || query
+            .base()
+            .order_by
+            .as_ref()
+            .is_some_and(|order_by| !order_by.is_empty())
+    {
+        return true;
+    }
+    if matches!(query, AnyQuery::Query(query) if query.fast_search && query.full_text_search.is_some())
+    {
         return true;
     }
     matches!(
@@ -138,6 +154,47 @@ pub async fn analyze_query_plan(
 ) -> Result<String> {
     let plan = create_plan(table, query, options).await?;
     Ok(lance_analyze_plan(plan, Default::default()).await?)
+}
+
+/// Reject requests that ask for storage order in a query shape that cannot
+/// preserve it, or that also define a different result order.
+fn validate_scan_in_order(query: &AnyQuery) -> Result<()> {
+    if query.base().scan_in_order != Some(true) {
+        return Ok(());
+    }
+
+    let ranked = match query {
+        AnyQuery::VectorQuery(_) => true,
+        AnyQuery::Query(query) => {
+            query.full_text_search.is_some() || query.reranker.is_some() || query.norm.is_some()
+        }
+    };
+    if ranked {
+        return Err(Error::InvalidInput {
+            message: "scan_in_order(true) is only supported for ordinary scans; vector, \
+                      full-text, hybrid, and reranked queries return ranked results"
+                .to_string(),
+        });
+    }
+
+    if query
+        .base()
+        .order_by
+        .as_ref()
+        .is_some_and(|order_by| !order_by.is_empty())
+    {
+        return Err(Error::InvalidInput {
+            message: "scan_in_order(true) conflicts with a nonempty order_by; remove the \
+                      ordering to keep manifest order, or remove scan_in_order(true) to sort"
+                .to_string(),
+        });
+    }
+
+    if query.base().has_take() {
+        return crate::query::validate_take_scan_in_order(query.base());
+    }
+
+    Ok(())
 }
 
 /// Local Execution Path (DataFusion)
@@ -163,10 +220,11 @@ pub async fn create_plan(
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let query = query.canonicalized()?;
+    validate_scan_in_order(&query)?;
     if let AnyQuery::Query(request) = &query
-        && let Some(offsets) = &request.take_offsets
+        && request.has_take()
     {
-        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
+        return crate::query::create_take_plan(table, request, options, request.preserve_order)
             .await;
     }
 
@@ -419,6 +477,17 @@ pub async fn create_plan(
 
     if let Some(order_by) = &query.base.order_by {
         scanner.order_by(Some(order_by.clone()))?;
+    }
+
+    if let Some(scan_in_order) = query.base.scan_in_order {
+        scanner.scan_in_order(scan_in_order);
+        if scan_in_order {
+            // Legacy scalar-index plans can union materialized index rows with
+            // unindexed fragments and emit a different sequence. Explicit
+            // storage order must come from the manifest scan, so filters fall
+            // back to evaluating over the ordered fragments.
+            scanner.use_scalar_index(false);
+        }
     }
 
     let mut plan = scanner
@@ -859,6 +928,33 @@ async fn execute_namespace_query(
     parse_arrow_ipc_response(response_bytes).await
 }
 
+fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableRequestFullTextQuery>> {
+    if !matches!(&fts.query, FtsQuery::Match(query) if query.operator == FullTextOperator::Or) {
+        let query = serde_json::to_value(&fts.query)
+            .and_then(serde_json::from_value)
+            .map_err(|error| Error::InvalidInput {
+                message: format!("Cannot serialize namespace full-text query: {error}"),
+            })?;
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: None,
+            structured_query: Some(Box::new(StructuredFtsQuery::new(query))),
+        }))
+    } else {
+        let columns = fts.columns();
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: Some(Box::new(StringFtsQuery {
+                query: fts.query.query().clone(),
+                columns: if columns.is_empty() {
+                    None
+                } else {
+                    Some(columns.into_iter().collect())
+                },
+            })),
+            structured_query: None,
+        }))
+    }
+}
+
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
@@ -913,21 +1009,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             }
 
             // Convert FTS query if present
-            let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
-                let columns = fts.columns();
-                let columns_vec = if columns.is_empty() {
-                    None
-                } else {
-                    Some(columns.into_iter().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = vq
+                .base
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             Ok(NsQueryTableRequest {
                 id: None, // Will be set in namespace_query
@@ -964,7 +1051,6 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
 
             let k = match q.limit {
                 Some(limit) => limit as i32,
-                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
                 None => i32::MAX,
             };
 
@@ -996,20 +1082,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Handle full text search if present
-            let full_text_query = q.full_text_search.as_ref().map(|fts| {
-                let columns_vec = if fts.columns().is_empty() {
-                    None
-                } else {
-                    Some(fts.columns().iter().cloned().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = q
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             // Empty vector for non-vector queries
             let vector = Box::new(QueryTableRequestVector {
@@ -1024,6 +1101,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
+                fast_search: Some(q.fast_search),
                 offset: q.offset.map(|o| o as i32),
                 vector_column: None, // No vector column for plain queries
                 with_row_id: Some(q.with_row_id),
@@ -1148,6 +1226,7 @@ async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBa
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
+    use crate::index::scalar::MatchQuery;
     use arrow_array::{
         ArrayRef, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
         StructArray,
@@ -1165,6 +1244,21 @@ mod tests {
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
+    }
+
+    fn collect_i32(batches: &[RecordBatch]) -> Vec<i32> {
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -1415,7 +1509,45 @@ mod tests {
 
         let ns_request = convert_to_namespace_query(&any_query).unwrap();
 
-        assert_eq!(ns_request.k, 10);
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_namespace_fts_operators_and_unbounded_counts() {
+        for columns in [
+            vec!["text".to_string()],
+            vec!["title".to_string(), "body".to_string()],
+        ] {
+            let fts = FullTextSearchQuery::new_query(
+                MatchQuery::new("gripper closed".to_string())
+                    .with_operator(FullTextOperator::And)
+                    .into(),
+            )
+            .with_columns(&columns)
+            .unwrap();
+            let request = convert_to_namespace_query(&AnyQuery::Query(QueryRequest {
+                full_text_search: Some(fts),
+                ..Default::default()
+            }))
+            .unwrap();
+            assert_eq!(request.k, i32::MAX);
+            let full_text_query = request.full_text_query.unwrap();
+            assert!(full_text_query.string_query.is_none());
+            let query =
+                serde_json::to_value(full_text_query.structured_query.unwrap().query).unwrap();
+            if columns.len() == 1 {
+                assert_eq!(query["match"]["operator"], "And");
+                assert_eq!(query["match"]["column"], "text");
+            } else {
+                let leaves = query["multi_match"]["match_queries"].as_array().unwrap();
+                assert_eq!(leaves.len(), 2);
+                assert!(leaves.iter().all(|leaf| leaf["operator"] == "And"));
+            }
+        }
+        let request =
+            namespace_fts_query(&FullTextSearchQuery::new("gripper closed".to_string())).unwrap();
+        assert_eq!(request.string_query.unwrap().query, "gripper closed");
+        assert!(request.structured_query.is_none());
     }
 
     #[tokio::test]
@@ -1802,6 +1934,60 @@ mod tests {
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
         assert_eq!(count, 1);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_order_by_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        // Insertion order differs from ascending id, so a pushed-down query that
+        // drops order_by would return 3 instead of the correct top-1 row 1.
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![3, 1, 2]))]).unwrap();
+
+        let table = conn
+            .create_table("test_order_by_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            limit: Some(1),
+            order_by: Some(vec![ColumnOrdering::asc_nulls_first("id".to_string())]),
+            ..Default::default()
+        });
+
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let ids: Vec<i32> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+
+        assert_eq!(ids, vec![1]);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -2345,5 +2531,301 @@ mod tests {
             find_ann_approx_mode(plan.as_ref()),
             Some(ApproxMode::Accurate)
         );
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_local_multi_fragment_contract() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+
+        let table = conn
+            .create_table("scan_in_order_contract", batch(vec![0, 1]))
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch(vec![2, 3])).execute().await.unwrap();
+        table.add(batch(vec![4, 5])).execute().await.unwrap();
+
+        let fragments = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .get_fragments()
+            .len();
+        assert_eq!(fragments, 3, "the test needs real multi-fragment data");
+
+        // An ordered scan must not introduce a global sort.
+        let plan = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(true)
+            .explain_plan(false)
+            .await
+            .unwrap();
+        assert!(
+            !plan.contains("SortExec"),
+            "scan_in_order(true) must not add a sort, got:\n{plan}"
+        );
+
+        // Pin one version so repeated executions describe the same manifest.
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        for _ in 0..2 {
+            let batches = table
+                .query()
+                .select(Select::columns(&["id"]))
+                .scan_in_order(true)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(collect_i32(&batches), vec![0, 1, 2, 3, 4, 5]);
+        }
+
+        // The default keeps the ordered local behavior.
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![0, 1, 2, 3, 4, 5]);
+
+        // Allowing unordered scans changes no membership.
+        let mut unordered = collect_i32(
+            &table
+                .query()
+                .select(Select::columns(&["id"]))
+                .scan_in_order(false)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap(),
+        );
+        unordered.sort();
+        assert_eq!(unordered, vec![0, 1, 2, 3, 4, 5]);
+
+        // An explicit sort still wins when storage order is not required.
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(false)
+            .order_by(Some(vec![ColumnOrdering::desc_nulls_last(
+                "id".to_string(),
+            )]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![5, 4, 3, 2, 1, 0]);
+
+        // Deletions keep manifest order, and small output batches plus
+        // limit/offset must not disturb it.
+        table.checkout_latest().await.unwrap();
+        table.delete("id = 3").await.unwrap();
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(true)
+            .offset(1)
+            .limit(2)
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(
+            batches.iter().all(|batch| batch.num_rows() <= 1),
+            "max_batch_length must stay bounded"
+        );
+        assert_eq!(collect_i32(&batches), vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_rejects_ranked_and_sorted_queries() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let vector = fixed_size_list_array(vec![0.0, 0.0, 1.0, 0.0, 2.0, 0.0], 2);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vector.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(vector)],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("scan_in_order_conflicts", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_last("id".to_string())]))
+            .execute()
+            .await
+            .err()
+            .expect("ranked and sorted scans must be rejected");
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("nonempty order_by")),
+            "unexpected error: {err}"
+        );
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .nearest_to(vec![0.0f32, 0.0])
+            .unwrap()
+            .execute()
+            .await
+            .err()
+            .expect("ranked scans must be rejected");
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("ranked results")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+        // Insertion order differs from sorted order so a dropped scan order or
+        // an accidental sort changes the result.
+        let table = conn
+            .create_table("scan_in_order_namespace", batch(vec![3, 1]))
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch(vec![2])).execute().await.unwrap();
+
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql("id >= 1".to_string())),
+            select: Select::columns(&["id"]),
+            limit: Some(2),
+            scan_in_order: Some(true),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&query));
+
+        let batches = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![3, 1]);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+
+        // Allowing unordered scans does not require local execution.
+        let allow_unordered = AnyQuery::Query(QueryRequest {
+            scan_in_order: Some(false),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&allow_unordered));
+
+        // An explicit sort is already local because the namespace request has
+        // no order_by field.
+        let sorted = AnyQuery::Query(QueryRequest {
+            order_by: Some(vec![ColumnOrdering::asc_nulls_last("id".to_string())]),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&sorted));
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_true_rejected_on_rte() {
+        use crate::connect;
+        use crate::table::RTEWriteSpec;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![0, 1]))]).unwrap();
+        let table = conn
+            .create_table("scan_in_order_rte", batch)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .execute()
+            .await
+            .err()
+            .expect("RTE scans cannot guarantee manifest order");
+        assert!(
+            matches!(&err, Error::NotSupported { message }
+                if message.contains("scan_in_order(true)") && message.contains("use_rte(false)")),
+            "unexpected error: {err}"
+        );
+
+        // The base table can still be read in storage order explicitly.
+        let batches = table
+            .query()
+            .scan_in_order(true)
+            .use_rte(false)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![0, 1]);
     }
 }
