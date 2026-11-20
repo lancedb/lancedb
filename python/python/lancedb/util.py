@@ -781,16 +781,46 @@ def _arrow_column_to_tensor(array: pa.Array, field: pa.Field, torch, column_name
     return _leaf_to_tensor(array, field, torch, column_name).reshape((len(array),))
 
 
-def _batch_column_tensors(batch: pa.RecordBatch):
+def _is_nullable_numeric_scalar(array: pa.Array) -> bool:
+    data_type = array.type
+    if isinstance(data_type, pa.ExtensionType) or array.null_count == 0:
+        return False
+    return pa.types.is_integer(data_type) or pa.types.is_floating(data_type)
+
+
+def _nullable_numeric_scalar_to_tensor(array: pa.Array, torch, column_name: str):
+    try:
+        numpy_values = array.to_numpy(zero_copy_only=False)
+    except pa.ArrowInvalid as err:
+        raise ValueError(
+            f"Cannot convert nullable column `{column_name}` of type {array.type} "
+            f"to a torch tensor: {err}"
+        ) from err
+    try:
+        return torch.from_numpy(numpy_values)
+    except (TypeError, RuntimeError) as err:
+        raise ValueError(
+            f"Cannot convert nullable column `{column_name}` of type {array.type} "
+            f"to a torch tensor: {err}"
+        ) from err
+
+
+def _batch_column_tensors(batch: pa.RecordBatch, allow_scalar_nulls: bool = False):
     torch = attempt_import_or_raise("torch", "torch")
-    return torch, [
-        (field.name, _arrow_column_to_tensor(column, field, torch, field.name))
-        for field, column in zip(batch.schema, batch.columns)
-    ]
+    columns = []
+    for field, column in zip(batch.schema, batch.columns):
+        if allow_scalar_nulls and _is_nullable_numeric_scalar(column):
+            tensor = _nullable_numeric_scalar_to_tensor(column, torch, field.name)
+        else:
+            tensor = _arrow_column_to_tensor(column, field, torch, field.name)
+        columns.append((field.name, tensor))
+    return torch, columns
 
 
-def _uniform_column_tensors(batch: pa.RecordBatch, format_name: str):
-    torch, columns = _batch_column_tensors(batch)
+def _uniform_column_tensors(
+    batch: pa.RecordBatch, format_name: str, allow_scalar_nulls: bool = False
+):
+    torch, columns = _batch_column_tensors(batch, allow_scalar_nulls=allow_scalar_nulls)
     if len(columns) <= 1:
         return torch, columns
 
@@ -851,7 +881,8 @@ def batch_to_tensor_rows(batch: pa.RecordBatch):
 
     Fails if torch is not installed.
     Fails if a column's data type is not supported by PyTorch.
-    Fails if a column contains nulls.
+    Nulls in ordinary integer or floating scalar columns become ``NaN``.
+    Nulls in nested fixed-size-list or tensor columns are rejected.
 
     Parameters
     ----------
@@ -864,7 +895,9 @@ def batch_to_tensor_rows(batch: pa.RecordBatch):
         One tensor per row, each with shape ``(columns, *sample_shape)``. A
         one-column scalar batch produces ``(1,)`` tensors.
     """
-    torch, columns = _uniform_column_tensors(batch, "torch_row")
+    torch, columns = _uniform_column_tensors(
+        batch, "torch_row", allow_scalar_nulls=True
+    )
     if not columns:
         return [torch.empty((0,)) for _ in range(batch.num_rows)]
 

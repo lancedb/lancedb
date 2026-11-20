@@ -1049,9 +1049,10 @@ class Permutation:
 
         The format can be one of:
         - "numpy" - a single NumPy ndarray built with
-          ``batch.to_pandas().to_numpy()``. Numeric columns are usually
-          zero-copy. Nested or mixed-type columns produce an object array rather
-          than a numeric array.
+          ``batch.to_pandas().to_numpy()``. This conversion may copy data and
+          may promote mixed numeric columns to a common numeric dtype, for
+          example int64 and float32 to float64. Nested or incompatible columns
+          produce an object array.
         - "python" - the batch will be a list of dicts (one per row)
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
@@ -1076,8 +1077,11 @@ class Permutation:
         ``S = ()``. A fixed-size-list column of width ``D`` contributes a
         dimension ``D``, and nested fixed-size lists contribute one dimension
         per level. Fixed-shape tensors use their logical shape, including any
-        axis permutation. Torch formats reject nulls; use the "python" or
-        "arrow" format for nullable columns.
+        axis permutation. "torch_dict", "torch", and "torch_col" reject nulls;
+        use the "python" or "arrow" format for nullable columns. "torch_row"
+        preserves the previous NaN behavior for nullable scalar integer and
+        floating columns, but rejects nulls in nested fixed-size-list and tensor
+        columns.
 
         ``lance.bfloat16`` values become ``torch.bfloat16`` tensors when the
         leaf field is ``fixed_size_binary[2]`` and carries the

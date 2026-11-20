@@ -807,6 +807,57 @@ def test_torch_row_uses_pytorch_numeric_promotion(mem_db):
     assert rows[2].tolist() == [2.0, 1.0, 2.0]
 
 
+def test_torch_row_preserves_nullable_numeric_scalar_nan(mem_db):
+    nullable_int = mem_db.create_table(
+        "nullable_int",
+        pa.table({"value": pa.array([1, None, 3], type=pa.int64())}),
+    )
+    rows = next(
+        Permutation.identity(nullable_int)
+        .with_format("torch_row")
+        .iter(3, skip_last_batch=False)
+    )
+    assert rows[0].shape == (1,)
+    assert rows[0].dtype == torch.float64
+    assert rows[0].tolist() == [1.0]
+    assert torch.isnan(rows[1]).all()
+    assert rows[2].tolist() == [3.0]
+
+    nullable_float = mem_db.create_table(
+        "nullable_float",
+        pa.table({"value": pa.array([0.5, None, 2.5], type=pa.float32())}),
+    )
+    rows = next(
+        Permutation.identity(nullable_float)
+        .with_format("torch_row")
+        .iter(3, skip_last_batch=False)
+    )
+    assert rows[0].dtype == torch.float32
+    assert rows[0].tolist() == [0.5]
+    assert torch.isnan(rows[1]).all()
+    assert rows[2].tolist() == [2.5]
+
+    nullable_mixed = mem_db.create_table(
+        "nullable_mixed",
+        pa.table(
+            {
+                "id": pa.array([1, None, 3], type=pa.int64()),
+                "score": pa.array([0.5, 1.5, 2.5], type=pa.float32()),
+            }
+        ),
+    )
+    rows = next(
+        Permutation.identity(nullable_mixed)
+        .with_format("torch_row")
+        .iter(3, skip_last_batch=False)
+    )
+    assert rows[0].dtype == torch.float64
+    assert rows[0].tolist() == [1.0, 0.5]
+    assert torch.isnan(rows[1][0])
+    assert rows[1][1].item() == 1.5
+    assert rows[2].tolist() == [3.0, 2.5]
+
+
 def test_permutation_torch_formats_fixed_shape_tensor_permutation(mem_db):
     physical_values = np.arange(2 * 2 * 3 * 4, dtype=np.float32).reshape(2, 2, 3, 4)
     tensor_array = _fixed_shape_tensor_array(
@@ -950,3 +1001,6 @@ def test_torch_formats_reject_nulls(mem_db):
             .with_format("torch_dict")
             .iter(2, skip_last_batch=False)
         )
+    leaf_only = Permutation.identity(leaf_nulls).select_columns(["values"])
+    with pytest.raises(ValueError, match="contains 1 null"):
+        next(leaf_only.with_format("torch_row").iter(2, skip_last_batch=False))

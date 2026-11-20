@@ -69,13 +69,16 @@ have the same sample shape. `torch_row` combines numeric dtypes with `torch.prom
 supported mixed numeric dtypes through `torch.stack`. If they see mixed scalar and vector columns, they name the
 mismatched fields and shapes and point you to `torch_dict`.
 
-The torch formats reject null values. Use the `"python"` or `"arrow"` format for nullable columns, or drop/fill the
-nulls first. `lance.bfloat16` values are supported when the leaf field is `fixed_size_binary[2]` with the
-`ARROW:extension:name` metadata set to `lance.bfloat16`; these become `torch.bfloat16` tensors. An unmarked binary
-column is rejected rather than guessed to be bfloat16.
+`torch_dict`, `torch`, and `torch_col` reject null values. `torch_row` preserves the previous NaN behavior for
+nullable scalar integer and floating columns, but rejects nulls in nested fixed-size-list and tensor columns. Use the
+`"python"` or `"arrow"` format for other nullable columns, or drop/fill the nulls first. `lance.bfloat16` values are
+supported when the leaf field is `fixed_size_binary[2]` with the `ARROW:extension:name` metadata set to
+`lance.bfloat16`; these become `torch.bfloat16` tensors. An unmarked binary column is rejected rather than guessed to
+be bfloat16.
 
-The `numpy` format returns one ndarray built with `batch.to_pandas().to_numpy()`. Numeric columns are usually
-zero-copy, but tables with nested, list, or mixed-type columns produce an object ndarray rather than a numeric array.
+The `numpy` format returns one ndarray built with `batch.to_pandas().to_numpy()`. The pandas conversion may copy data
+and may promote mixed numeric columns to a common numeric dtype, for example int64 and float32 to float64. Nested,
+list, or incompatible columns produce an object ndarray rather than a numeric array.
 
 ### Using torch_dict with a torch data loader {#using-torch-dict-with-a-torch-data-loader}
 
