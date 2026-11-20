@@ -65,6 +65,13 @@ impl CreateTableBuilder {
     /// Set [`BasePath::id`] to `0` to let Lance assign an ID, or to a unique
     /// non-zero value. Pass an empty list to leave the request unchanged.
     ///
+    /// When supplying IDs for multiple bases, use distinct explicit non-zero
+    /// IDs. The pinned Lance release can collide when one base asks for
+    /// automatic allocation (`0`) and another supplies an explicit ID: the
+    /// create fails, the table name can remain listed but unopenable, and
+    /// retrying with distinct explicit IDs succeeds. Automatic allocation for
+    /// every base is supported.
+    ///
     /// LanceDB Embedded only.
     ///
     /// [`Table::fetch_blobs`]: crate::table::Table::fetch_blobs
@@ -80,6 +87,9 @@ impl CreateTableBuilder {
     ///
     /// The row keeps a reference, so the object has to stay readable.
     /// [`Table::fetch_blobs`] reads from that location. Defaults to `false`.
+    ///
+    /// The opt-in covers only the rows written by this create. A later `add`
+    /// must enable it again.
     ///
     /// LanceDB Embedded only.
     ///

@@ -5652,10 +5652,15 @@ class LanceTable(Table):
             commit that creates it. Each entry can be a
             [BasePath][lancedb.schema.BasePath], a dict with `path`, `name`,
             `is_dataset_root`, and `id` keys, or a `lance.DatasetBasePath`.
-            Blob URIs under a registered base are stored relative to it.
+            Blob URIs under a registered base are stored relative to it. When
+            supplying IDs for multiple bases, use distinct explicit non-zero
+            IDs; [BasePath][lancedb.schema.BasePath] describes the pinned-Lance
+            limitation.
         allow_external_blob_outside_bases: bool, default False
             Store blob URIs that do not fall under a registered base. The row
-            keeps a reference, so the objects have to stay readable.
+            keeps a reference, so the objects have to stay readable. The
+            opt-in applies only to the initial data; a later `add()` must
+            enable it again.
         """
         if namespace_path is None:
             namespace_path = []

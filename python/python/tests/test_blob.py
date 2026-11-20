@@ -3228,9 +3228,12 @@ async def test_create_table_initial_bases_store_relative_blob_ranges(
         table = db.create_table("videos", data=batch, initial_bases=bases)
         assert table.version == 1
         created_schema = table.schema
-        registered = table.to_lance().base_paths()[1]
-        assert registered.path == base_dir.as_uri()
-        assert registered.is_dataset_root is False
+        # Manifest introspection needs pylance; the lightweight and dict
+        # variants must still prove registration through the reopen and bytes.
+        if lance is not None:
+            registered = table.to_lance().base_paths()[1]
+            assert registered.path == base_dir.as_uri()
+            assert registered.is_dataset_root is False
         reopened = db.open_table("videos")
         hits = reopened.search().with_row_id(True).to_arrow()
         row_id = hits["_rowid"][0].as_py()

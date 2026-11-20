@@ -61,6 +61,13 @@ class BasePath:
         Base ID used by scoped storage options such as ``base_<id>.region``.
         ``None`` lets Lance assign a non-zero ID. ``0`` is reserved for
         absolute (unregistered) URIs and is rejected.
+
+        When supplying IDs for multiple bases, use distinct explicit non-zero
+        IDs. The pinned Lance release can collide when one base uses automatic
+        allocation and another supplies an explicit ID; the create fails, the
+        table name can remain listed but unopenable, and retrying with distinct
+        explicit IDs succeeds. Automatic allocation for every base is
+        supported.
     """
 
     path: str
@@ -436,9 +443,10 @@ def blob_uri_array(
     A row without ``position`` and ``size`` references the whole object; a
     row with both reads exactly that byte range. Register the object prefix
     with [BasePath][lancedb.schema.BasePath] at table creation to store a
-    matched URI relative to a base, or set
-    ``allow_external_blob_outside_bases=True`` on create to keep the
-    absolute URI when no base matches.
+    matched URI relative to a base, or enable
+    ``allow_external_blob_outside_bases`` on the write that inserts the row to
+    keep the absolute URI when no base matches. The opt-in covers that one
+    write; a later ``add()`` must enable it again.
 
     Parameters
     ----------

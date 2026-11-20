@@ -946,7 +946,11 @@ Register the object prefix with [BasePath][lancedb.BasePath] on
 relative to a base and to scope credentials with `base_<id>.<option>` storage
 options. A create with data stays a single atomic request; without a matching
 base, pass `allow_external_blob_outside_bases=True` to keep the absolute URI
-instead. That opt-in still expects a valid absolute URI.
+instead. That opt-in still expects a valid absolute URI and applies to one
+write; a later `add()` needs its own opt-in. When registering several bases,
+supply distinct explicit non-zero IDs: the pinned Lance release can collide
+when automatic and explicit IDs are mixed, leaving a listed but unopenable name
+after a failed create; retrying with distinct explicit IDs succeeds.
 
 ```python
 from lancedb import BasePath, blob, blob_uri_array

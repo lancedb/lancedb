@@ -580,12 +580,15 @@ class DBConnection(EnforceOverrides):
             `lance.DatasetBasePath`. Blob URIs that fall under a registered
             base are stored relative to it; other URIs need
             `allow_external_blob_outside_bases=True`. `None` and an empty
-            list are equivalent.
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
         allow_external_blob_outside_bases: bool, default False
             Store blob URIs that do not fall under a registered base. The row
             keeps a reference, so the objects have to stay readable. Set
             `initial_bases` instead when the URIs share a registered prefix.
-            Defaults to rejecting such URIs.
+            Defaults to rejecting such URIs. The opt-in applies only to the
+            initial data; a later `add()` must enable it again.
         Returns
         -------
         LanceTable
@@ -3348,12 +3351,15 @@ class AsyncConnection(object):
             `lance.DatasetBasePath`. Blob URIs that fall under a registered
             base are stored relative to it; other URIs need
             `allow_external_blob_outside_bases=True`. `None` and an empty
-            list are equivalent.
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
         allow_external_blob_outside_bases: bool, default False
             Store blob URIs that do not fall under a registered base. The row
             keeps a reference, so the objects have to stay readable. Requires
-            initial `data`; pass the flag to `add` for later writes. Defaults
-            to rejecting such URIs.
+            initial `data`; the opt-in applies only to that initial write, and
+            a later `add()` must enable it again. Defaults to rejecting such
+            URIs.
 
         Returns
         -------
