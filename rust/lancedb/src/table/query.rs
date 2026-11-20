@@ -480,6 +480,13 @@ pub async fn create_plan(
 
     if let Some(scan_in_order) = query.base.scan_in_order {
         scanner.scan_in_order(scan_in_order);
+        if scan_in_order {
+            // Legacy scalar-index plans can union materialized index rows with
+            // unindexed fragments and emit a different sequence. Explicit
+            // storage order must come from the manifest scan, so filters fall
+            // back to evaluating over the ordered fragments.
+            scanner.use_scalar_index(false);
+        }
     }
 
     let mut plan = scanner

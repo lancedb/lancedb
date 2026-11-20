@@ -1901,7 +1901,7 @@ impl Table {
     /// returned by this method can be used to control the query using filtering,
     /// vector similarity, sorting, and more.
     ///
-    /// An ordinary local base-only scan of a fixed table version returns
+    /// An ordinary base-only scan of a fixed table version in Embedded returns
     /// manifest order: fragments in manifest order, then rows in fragment
     /// order. RTE tables scan the LSM by default; use `use_rte(false)` for the
     /// base table guarantee. Compaction, updates, and newer versions can change
@@ -1975,8 +1975,8 @@ impl Table {
     /// ## Full scan
     ///
     /// This query returns everything in the table. On an Embedded table, an
-    /// ordinary local base-only scan of a fixed version returns manifest order.
-    /// RTE tables scan the LSM by default and need `use_rte(false)` for base
+    /// ordinary base-only scan of a fixed version returns manifest order. RTE
+    /// tables scan the LSM by default and need `use_rte(false)` for base
     /// manifest order.
     ///
     /// ```no_run

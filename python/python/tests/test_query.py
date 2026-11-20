@@ -1164,17 +1164,18 @@ async def test_scan_in_order_async_query(tmp_db_async: AsyncConnection):
         await table.query().scan_in_order().nearest_to([0.0, 0.0]).to_arrow()
 
 
-def test_scan_in_order_pandas_scanner_path(tmp_db, monkeypatch):
+@pytest.mark.parametrize("ordered", [False, True])
+def test_scan_in_order_pandas_scanner_path(tmp_db, monkeypatch, ordered):
     pytest.importorskip("lance")
     data = _blob_query_data()
     table = tmp_db.create_table(
-        "scan_in_order_scanner",
+        f"scan_in_order_scanner_{ordered}",
         data.slice(0, 2),
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     table.add(data.slice(2, 2))
 
-    query = table.search().select(["id", "blob"]).scan_in_order(False)
+    query = table.search().select(["id", "blob"]).scan_in_order(ordered)
 
     def fail_to_arrow(*args, **kwargs):
         raise AssertionError("scanner-backed pandas must not collect through to_arrow")
@@ -1194,8 +1195,88 @@ def test_scan_in_order_pandas_scanner_path(tmp_db, monkeypatch):
 
     df = query.to_pandas(blob_mode="descriptions", flatten=True)
 
-    assert captured["scan_in_order"] is False
+    assert captured["scan_in_order"] is ordered
+    assert captured.get("use_scalar_index") is (False if ordered else None)
     assert sorted(df["id"].tolist()) == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("storage_version", ["legacy", "stable"])
+def test_scan_in_order_indexed_filter_preserves_manifest_order(
+    tmp_path, storage_version
+):
+    lance = pytest.importorskip("lance")
+    data = pa.table({"id": list(range(20)), "value": list(range(20))})
+    dataset = lance.write_dataset(
+        data,
+        tmp_path / "t.lance",
+        data_storage_version=storage_version,
+        max_rows_per_file=10,
+    )
+    dataset.create_scalar_index("value", "BTREE")
+    version_before_update = dataset.version
+    dataset.update({"value": "100"}, where="id = 0")
+
+    table = lancedb.connect(str(tmp_path)).open_table("t")
+    for version in (version_before_update, dataset.version):
+        table.checkout(version)
+        base = table.search().scan_in_order(True).select(["id"]).limit(100)
+        expected = base.to_arrow()["id"].to_pylist()
+        actual = base.where("value < 1000").to_arrow()["id"].to_pylist()
+        assert actual == expected
+
+
+def test_scan_in_order_fragments_use_manifest_order(tmp_db):
+    pytest.importorskip("lance")
+    data = _blob_query_data()
+    table = tmp_db.create_table(
+        "scan_in_order_fragments",
+        data.slice(0, 2),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+    table.add(data.slice(2, 2))
+    table.checkout(table.version)
+
+    fragments = table.to_lance().get_fragments()
+    reversed_fragments = fragments[::-1]
+    query = table.search().scan_in_order().select(["id", "blob"])
+
+    df = query.with_fragments(reversed_fragments).to_pandas(
+        blob_mode="descriptions", flatten=True
+    )
+    assert df["id"].tolist() == [1, 2, 3, 4]
+
+    # fragment_ids is already resolved from the manifest and stays ordered.
+    df_by_id = (
+        table.search()
+        .scan_in_order()
+        .select(["id", "blob"])
+        .fragment_ids([fragment.fragment_id for fragment in reversed_fragments])
+        .to_pandas(blob_mode="descriptions", flatten=True)
+    )
+    assert df_by_id["id"].tolist() == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_async_scan_in_order_fragments_use_manifest_order(tmp_db_async):
+    pytest.importorskip("lance")
+    data = _blob_query_data()
+    table = await tmp_db_async.create_table(
+        "scan_in_order_fragments_async",
+        data.slice(0, 2),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+    await table.add(data.slice(2, 2))
+    await table.checkout(await table.version())
+
+    fragments = (await table.to_lance()).get_fragments()
+    df = await (
+        table.query()
+        .scan_in_order()
+        .with_fragments(fragments[::-1])
+        .select(["id", "blob"])
+        .to_pandas(blob_mode="descriptions", flatten=True)
+    )
+    assert df["id"].tolist() == [1, 2, 3, 4]
 
 
 def test_order_by_rejects_invalid_input_early(mem_db):

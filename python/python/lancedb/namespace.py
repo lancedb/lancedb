@@ -510,8 +510,8 @@ class LanceNamespaceDBConnection(DBConnection):
 
             - "QueryTable": Execute queries on the namespace server via
               namespace.query_table() instead of locally. Queries with a
-              nonempty ``order_by`` execute locally and require the client to
-              access the table storage.
+              nonempty ``order_by`` or an explicit ``scan_in_order(True)``
+              execute on the client and require access to the table storage.
             - "CreateTable": Execute table creation on the namespace server via
               namespace.create_table() instead of using declare_table + local write.
 
@@ -1215,8 +1215,8 @@ class AsyncLanceNamespaceDBConnection:
 
             - "QueryTable": Execute queries on the namespace server via
               namespace.query_table() instead of locally. Queries with a
-              nonempty ``order_by`` execute locally and require the client to
-              access the table storage.
+              nonempty ``order_by`` or an explicit ``scan_in_order(True)``
+              execute on the client and require access to the table storage.
             - "CreateTable": Execute table creation on the namespace server via
               namespace.create_table() instead of using declare_table + local write.
 
@@ -1824,8 +1824,8 @@ def connect_namespace(
 
         - "QueryTable": Execute queries on the namespace server via
           namespace.query_table() instead of locally. Queries with a nonempty
-          ``order_by`` execute locally and require the client to access the
-          table storage.
+          ``order_by`` or an explicit ``scan_in_order(True)`` execute on the
+          client and require access to the table storage.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 
@@ -1917,8 +1917,8 @@ def connect_namespace_async(
 
         - "QueryTable": Execute queries on the namespace server via
           namespace.query_table() instead of locally. Queries with a nonempty
-          ``order_by`` execute locally and require the client to access the
-          table storage.
+          ``order_by`` or an explicit ``scan_in_order(True)`` execute on the
+          client and require access to the table storage.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 

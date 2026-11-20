@@ -1328,8 +1328,8 @@ impl<S: HttpSend> RemoteTable<S> {
         params.check_filter()?;
         if params.scan_in_order == Some(true) {
             return Err(Error::NotSupported {
-                message: "scan_in_order(true) requires an ordered local scan; LanceDB Enterprise \
-                          remote tables do not support storage-order scans yet"
+                message: "scan_in_order(true) requires an ordered scan of Embedded storage; \
+                          LanceDB Enterprise tables do not support storage-order scans yet"
                     .to_string(),
             });
         }
@@ -6734,7 +6734,7 @@ mod tests {
         assert!(
             matches!(&err, Error::NotSupported { message }
                 if message.contains("scan_in_order(true)")
-                    && message.contains("remote tables")),
+                    && message.contains("Enterprise tables")),
             "unexpected error: {err}"
         );
     }

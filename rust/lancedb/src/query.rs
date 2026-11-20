@@ -743,11 +743,11 @@ pub trait ExecutableQuery {
     /// access the [`arrow_schema::Schema`] without polling the stream).
     ///
     /// Note: The size of the returned batches is not deterministic. Row order
-    /// depends on the query shape: an ordinary local base-only scan of a fixed
-    /// table version returns manifest order unless [`Query::scan_in_order`] is
-    /// set to `false` or a nonempty [`QueryBase::order_by`] adds a sort. RTE
+    /// depends on the query shape: an ordinary base-only scan of a fixed table
+    /// version in Embedded returns manifest order unless [`Query::scan_in_order`]
+    /// is set to `false` or a nonempty [`QueryBase::order_by`] adds a sort. RTE
     /// tables scan the LSM by default; use `use_rte(false)` for the base-only
-    /// guarantee. Ranked searches return rank order, while remote and
+    /// guarantee. Ranked searches return rank order, while Enterprise and
     /// namespace-pushed scans have no order guarantee.
     ///
     /// LanceDb will use many threads to calculate results and, when
@@ -1050,19 +1050,24 @@ impl Query {
     /// Require the results to follow storage order instead of allowing an
     /// unordered scan.
     ///
-    /// A plain local base-only scan of an Embedded table, pinned to one dataset
+    /// A plain base-only scan of an Embedded table, pinned to one dataset
     /// version, returns rows in that version's manifest order: fragments in
-    /// manifest order, then rows in fragment order. Ordinary local base-only
-    /// scans already use Lance's ordered scan by default, so leaving this unset
+    /// manifest order, then rows in fragment order. Ordinary base-only scans
+    /// already use Lance's ordered scan by default, so leaving this unset
     /// preserves that behavior. RTE tables scan the LSM by default and do not
     /// provide this guarantee unless `use_rte(false)` selects the base table.
     /// Use `true` when a caller assigns meaning to row positions and must fail
     /// instead of silently receiving a different order.
     ///
+    /// Explicit `true` also disables scalar-index filter planning. Legacy
+    /// scalar-index plans can materialize index rows in a different sequence,
+    /// so filters are evaluated over the manifest-ordered scan instead. The
+    /// filter result is unchanged, but the scan can read more data.
+    ///
     /// Leaving this unset preserves the backend default. In particular, a
     /// namespace-backed native table configured for `QueryTable` pushdown may
     /// not preserve order because the request has no order field; request
-    /// `true` to force local execution.
+    /// `true` to execute against Embedded storage.
     ///
     /// The order is fixed only for the dataset version being scanned.
     /// Compaction, updates, or opening a newer version can change it, so pin a
@@ -1073,11 +1078,22 @@ impl Query {
     ///   [`QueryBase::order_by`], take query, vector, full-text, hybrid, or
     ///   reranked query conflicts with storage order and fails with
     ///   [`Error::InvalidInput`].
-    ///   Remote tables and RTE/LSM reads fail with [`Error::NotSupported`]
+    ///   Enterprise tables and RTE/LSM reads fail with [`Error::NotSupported`]
     ///   because they cannot uphold the requirement; set `use_rte(false)` to
     ///   read the RTE base table in storage order. Namespace-backed native
-    ///   tables execute locally instead of using `QueryTable` pushdown, which
-    ///   has no order field, and fail if local storage cannot be read.
+    ///   tables execute against Embedded storage instead of using `QueryTable`
+    ///   pushdown, which has no order field, and fail if that storage cannot be
+    ///   read.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use lancedb::query::ExecutableQuery;
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let rows = table.query().scan_in_order(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     /// - `false` allows the backend to scan without preserving order. An
     ///   explicit nonempty `order_by` still applies its sort.
     ///
