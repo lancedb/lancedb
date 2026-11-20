@@ -32,6 +32,7 @@ import {
   runWithSignal,
 } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { bindErrorTranslator } from "./errors";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
 import { validateNonNegativeInteger } from "./materialized_view";
@@ -1483,7 +1484,7 @@ export class LocalTable extends Table {
 
   constructor(inner: _NativeTable) {
     super();
-    this.inner = inner;
+    this.inner = bindErrorTranslator(inner);
   }
   get name(): string {
     return this.inner.name;
@@ -2311,7 +2312,7 @@ export class Branches {
    * @hidden
    */
   constructor(inner: NativeBranches) {
-    this.#inner = inner;
+    this.#inner = bindErrorTranslator(inner);
   }
 
   /** List all branches, mapping name to branch metadata. */

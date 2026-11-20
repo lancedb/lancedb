@@ -16,6 +16,7 @@ import {
   makeEmptyTable,
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { bindErrorTranslator } from "./errors";
 import { Job } from "./job";
 import { Listing, ListingOptions, validateListingOptions } from "./listing";
 import {
@@ -626,7 +627,7 @@ export class LocalConnection extends Connection {
   /** @hidden */
   constructor(inner: LanceDbConnection) {
     super();
-    this.inner = inner;
+    this.inner = bindErrorTranslator(inner);
   }
 
   isOpen(): boolean {
