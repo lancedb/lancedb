@@ -1832,13 +1832,20 @@ def test_fetch_and_transform_time_positive_after_iteration(lance_table):
 
 
 def test_fetch_time_excludes_transform(lance_table):
-    """fetch_time does not include transform time: fetch + transform < total wall time,
-    and neither counter bleeds into the other."""
+    """Time spent in the transform is counted in transform_time, not fetch_time."""
     import pyarrow as pa
     import time
 
+    # Long enough that the total dwarfs a slow fetch on a loaded CI runner.
+    # Comparing the two counters directly with a short sleep was flaky: the
+    # fetch of this small table sometimes took longer than the transform.
+    transform_sleep_s = 0.1
+    calls = 0
+
     def slow_transform(batch: pa.RecordBatch) -> list:
-        time.sleep(0.01)  # 10 ms of artificial transform work
+        nonlocal calls
+        calls += 1
+        time.sleep(transform_sleep_s)
         return batch.to_pydict()["id"]
 
     ds = StreamingDataset(
@@ -1849,8 +1856,11 @@ def test_fetch_time_excludes_transform(lance_table):
     )
     list(ds)
 
-    # The slow transform should dominate transform_time.
-    assert ds.transform_time > ds.fetch_time
+    slept = calls * transform_sleep_s
+    assert calls > 0
+    assert ds.transform_time >= slept
+    # Had the fetch timer covered the transform, it would hold all of the sleep.
+    assert ds.fetch_time < slept
 
 
 def test_bytes_loaded_increases_after_iteration(lance_table):
