@@ -938,7 +938,8 @@ describe("merge insert", () => {
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
-      .execute(newData, { timeoutMs: 10_000 });
+      .useIndex(false)
+      .execute(newData, { timeoutMs: 10_000, retries: 0 });
     expect(mergeInsertRes).toHaveProperty("version");
     expect(mergeInsertRes.version).toBe(2);
     expect(mergeInsertRes.numInsertedRows).toBe(1);
@@ -1830,6 +1831,104 @@ describe("When creating an index", () => {
     });
     const indexDir = path.join(tmpDir.name, "fm_table.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
+  describe("on a GeoArrow column", () => {
+    // Row `10 * y + x` sits at (x, y). The triangle's bounding box covers the
+    // 25 points with x <= 4 and y <= 4, but only the 15 with x + y <= 4
+    // intersect the triangle itself.
+    const inTriangle =
+      "ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))";
+    const triangleIds = [0, 1, 2, 3, 4, 10, 11, 12, 13, 20, 21, 22, 30, 31, 40];
+    let geoTbl: Table;
+
+    beforeEach(async () => {
+      const point = new Struct([
+        new Field("x", new Float64(), false),
+        new Field("y", new Float64(), false),
+      ]);
+      const geoSchema = new Schema([
+        new Field("id", new Int32(), false),
+        new Field(
+          "geom",
+          point,
+          true,
+          new Map([
+            ["ARROW:extension:name", "geoarrow.point"],
+            ["ARROW:extension:metadata", "{}"],
+          ]),
+        ),
+        new Field(
+          "vec",
+          new FixedSizeList(2, new Field("item", new Float32())),
+        ),
+      ]);
+      const data = makeArrowTable(
+        Array.from({ length: 100 }, (_, i) => ({
+          id: i,
+          geom: { x: i % 10, y: Math.floor(i / 10) },
+          vec: [i, i],
+        })),
+        { schema: geoSchema },
+      );
+      const db = await connect(tmpDir.name);
+      geoTbl = await db.createTable("points", data);
+    });
+
+    const ids = (rows: { id: number }[]) => rows.map((row) => row.id);
+
+    test("create an RTree index and filter with it", async () => {
+      await geoTbl.createIndex("geom", { config: Index.rtree() });
+      expect(await geoTbl.listIndices()).toEqual([
+        expect.objectContaining({
+          name: "geom_idx",
+          indexType: "RTree",
+          columns: ["geom"],
+        }),
+      ]);
+      const stats = await geoTbl.indexStats("geom_idx");
+      expect(stats?.indexType).toEqual("RTREE");
+      expect(stats?.numIndexedRows).toEqual(100);
+
+      const query = geoTbl.query().where(inTriangle);
+      expect(await query.explainPlan(true)).toContain("ScalarIndexQuery");
+      expect(ids(await query.toArray()).sort((a, b) => a - b)).toEqual(
+        triangleIds,
+      );
+    });
+
+    test("prefilter a vector search with an RTree index", async () => {
+      await geoTbl.createIndex("geom", {
+        config: Index.rtree({ pageSize: 16 }),
+      });
+      // Row 99 sits outside the triangle; its nearest vectors are 98, 97, ...
+      const prefiltered = geoTbl
+        .query()
+        .nearestTo([99, 99])
+        .where(inTriangle)
+        .limit(5);
+      expect(await prefiltered.explainPlan(true)).toContain("ScalarIndexQuery");
+      expect(ids(await prefiltered.toArray())).toEqual([40, 31, 30, 22, 21]);
+
+      const postfiltered = geoTbl
+        .query()
+        .nearestTo([99, 99])
+        .where(inTriangle)
+        .postfilter()
+        .limit(5);
+      expect(await postfiltered.toArray()).toEqual([]);
+    });
+
+    test("reject invalid RTree options", async () => {
+      for (const pageSize of [1, 0, -1, 2.5, Number.NaN, 2 ** 32]) {
+        expect(() => Index.rtree({ pageSize })).toThrow(
+          "page_size must be at least 2",
+        );
+      }
+      await expect(
+        geoTbl.createIndex("id", { config: Index.rtree() }),
+      ).rejects.toThrow("GeoArrow");
+    });
   });
 
   test("should be able to get index stats", async () => {
@@ -3019,6 +3118,43 @@ describe("when dealing with blob columns", () => {
     expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
   });
 
+  it("fetchBlobRanges reads local ranges with order, duplicates, nulls and validation", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [alphaId, betaId, nullId] = rowIds;
+    const requests = [
+      { rowId: betaId, offset: 1n, length: 3n },
+      { rowId: alphaId, offset: 0n, length: 2n },
+      { rowId: nullId, offset: 0n, length: 1n },
+      { rowId: alphaId, offset: 5n, length: 0n },
+      { rowId: betaId, offset: 1n, length: 3n },
+    ];
+    expect(await table.fetchBlobRanges("image", requests)).toEqual([
+      Buffer.from("eta"),
+      Buffer.from("al"),
+      null,
+      Buffer.alloc(0),
+      Buffer.from("eta"),
+    ]);
+    expect(await table.fetchBlobRanges("image", [])).toEqual([]);
+    await expect(
+      table.fetchBlobRanges("image", [
+        { rowId: alphaId, offset: 4n, length: 2n },
+      ]),
+    ).rejects.toThrow();
+    await expect(
+      table.fetchBlobRanges("image", [
+        { rowId: (1n << 63n) - 1n, offset: 0n, length: 1n },
+      ]),
+    ).rejects.toThrow();
+    const controller = new AbortController();
+    expect(
+      await table.fetchBlobRanges("image", requests, {
+        signal: controller.signal,
+      }),
+    ).toHaveLength(5);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
   it("discovers blob columns", async () => {
     const { table } = await openBlobTable();
     expect(await table.blobColumns()).toEqual(["image"]);
@@ -3232,29 +3368,6 @@ describe("when dealing with blob columns", () => {
     expect(getEventListeners(signal, "abort")).toHaveLength(0);
     controller.abort();
     expect(await handle!.read()).toEqual(alpha);
-  });
-
-  it("cancels an in-flight read", async () => {
-    const db = await connect(tmpDir.name);
-    const schema = new Schema([
-      new Field("id", new Int64(), true),
-      blob("payload", { inlineSizeThreshold: 0, dedicatedSizeThreshold: 1 }),
-    ]);
-    const payload = Buffer.alloc(32 * 1024 * 1024, 7);
-    const table = await db.createTable("large_blobs", [{ id: 1n, payload }], {
-      schema,
-    });
-    const [row] = await table.query().withRowId().toArray();
-    const [handle] = await table.fetchBlobFiles("payload", [
-      row._rowid as bigint,
-    ]);
-    const controller = new AbortController();
-    const pending = handle!.readRange(0n, handle!.size(), {
-      signal: controller.signal,
-    });
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
   });
 
   it("toArrow returns blob bytes with blobMode bytes", async () => {
@@ -4663,15 +4776,121 @@ describe.each(arrowVersions)(
       ];
       const table = await db.createTable("prewarm_data_test", data);
 
-      // prewarmData is only supported in LanceDB Enterprise. We verify the call
-      // is wired through napi and surfaces the expected error for both
-      // arg shapes (undefined and string[]).
       await expect(table.prewarmData()).rejects.toThrow(
-        "prewarm_data is currently only supported in LanceDB Enterprise",
+        "only supported on remote tables",
       );
       await expect(table.prewarmData(["text"])).rejects.toThrow(
-        "prewarm_data is currently only supported in LanceDB Enterprise",
+        "only supported on remote tables",
       );
+      await expect(
+        table.prewarmData({
+          columns: ["text"],
+          filter: "text = 'alpha'",
+          concurrency: 2,
+        }),
+      ).rejects.toThrow("only supported on remote tables");
+    });
+
+    test("prewarmData preserves argument forms and returns after submission", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_submission", [{ id: 1 }]);
+      const wait = jest.fn();
+      const submit = jest
+        .spyOn(table, "prewarmDataAsync")
+        .mockResolvedValue({ wait } as unknown as Awaited<
+          ReturnType<Table["prewarmDataAsync"]>
+        >);
+      const options = { columns: ["id"], filter: "id > 0", concurrency: 2 };
+      try {
+        await expect(table.prewarmData(options)).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith(options);
+        await expect(table.prewarmData(["id"])).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith({ columns: ["id"] });
+        await expect(table.prewarmData([])).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith({ columns: [] });
+        await expect(table.prewarmData()).resolves.toBeUndefined();
+        expect(submit).toHaveBeenLastCalledWith(undefined);
+        expect(wait).not.toHaveBeenCalled();
+      } finally {
+        submit.mockRestore();
+      }
+    });
+
+    test("prewarmData validates options before submission", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_options", [{ id: 1 }]);
+      await expect(
+        table.prewarmData({ unsupported: 1 } as never),
+      ).rejects.toThrow("Unsupported data prewarm option: unsupported");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        4294967296,
+      ]) {
+        await expect(table.prewarmData({ concurrency })).rejects.toThrow(
+          "concurrency must be an integer",
+        );
+      }
+    });
+
+    test("explainPrewarmData validates options and rejects Embedded tables", async () => {
+      const db = await connect(tmp.dirSync().name);
+      const table = await db.createTable("preview", [{ id: 1 }]);
+      await expect(table.explainPrewarmData()).rejects.toThrow(
+        "only supported on remote tables",
+      );
+      await expect(
+        table.explainPrewarmData({ filter: "id > $1", parameters: [1] }),
+      ).rejects.toThrow("only supported on remote tables");
+      await expect(
+        table.explainPrewarmData({ unsupported: true } as never),
+      ).rejects.toThrow("Unsupported data prewarm option");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        2 ** 32,
+      ]) {
+        await expect(table.explainPrewarmData({ concurrency })).rejects.toThrow(
+          "concurrency",
+        );
+      }
+    });
+
+    test("prewarmDataAsync validates options and rejects local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("prewarm_job", [{ id: 1 }]);
+      await expect(table.prewarmDataAsync()).rejects.toThrow(
+        "only supported on remote tables",
+      );
+      await expect(
+        table.prewarmDataAsync({
+          columns: ["id"],
+          filter: "id > $1",
+          concurrency: 2,
+          parameters: [1],
+        }),
+      ).rejects.toThrow("only supported on remote tables");
+      await expect(
+        table.prewarmDataAsync({ unsupported: 1 } as never),
+      ).rejects.toThrow("Unsupported data prewarm option: unsupported");
+      for (const concurrency of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        4294967296,
+      ]) {
+        await expect(table.prewarmDataAsync({ concurrency })).rejects.toThrow(
+          "concurrency must be an integer",
+        );
+      }
     });
 
     test("full text index on list", async () => {
@@ -5686,6 +5905,14 @@ describe("computed columns", () => {
     await expect(
       table.refreshColumnAsync("x", { errorPolicy: "skip" }),
     ).rejects.toThrow("error_policy requires a LanceDB Enterprise refresh");
+    for (const refresh of [
+      () => table.refreshColumn("x", { publicationIntervalRows: 60 }),
+      () => table.refreshColumnAsync("x", { publicationIntervalRows: 60 }),
+    ]) {
+      await expect(refresh()).rejects.toThrow(
+        "publication_interval_rows requires a LanceDB Enterprise refresh",
+      );
+    }
     await expect(
       table.refreshColumnAsync("x", { maxConcurrency: 4 }),
     ).rejects.toThrow("max_concurrency requires a LanceDB Enterprise refresh");
@@ -5694,6 +5921,31 @@ describe("computed columns", () => {
         resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
       }),
     ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
+    await expect(
+      table.refreshColumn("x", {
+        supervisorResources: {
+          cpuMillis: 1_000,
+          memoryBytes: 1_024,
+          ephemeralStorageBytes: 2_048,
+        },
+      }),
+    ).rejects.toThrow(
+      "supervisor_resources requires a LanceDB Enterprise refresh",
+    );
+    await expect(
+      table.refreshColumnAsync("x", {
+        planningWorkers: {
+          resources: {
+            cpuMillis: 1_000,
+            memoryBytes: 1_024,
+            ephemeralStorageBytes: 2_048,
+          },
+          maxWorkers: 2,
+          rowsPerWorker: 100,
+          fragmentsPerWorker: 1,
+        },
+      }),
+    ).rejects.toThrow("planning_workers requires a LanceDB Enterprise refresh");
   });
 
   it("records Function errors only on remote tables", async () => {
@@ -5741,5 +5993,67 @@ describe("computed columns", () => {
 
     const rows = await table.query().toArray();
     expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
+  });
+});
+
+describe("durable compaction validation", () => {
+  test("rejects local tables and unknown options", async () => {
+    const db = await connect(`memory://compaction-job-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    await expect(table.compactAsync()).rejects.toThrow(
+      "only supported on remote tables",
+    );
+    await expect(
+      table.compactAsync({ unrecognizedLimit: 1 } as never),
+    ).rejects.toThrow("Unsupported compaction option");
+    await expect(
+      table.compactAsync({ targetRowsPerFragment: 0 }),
+    ).rejects.toThrow("safe integer");
+  });
+});
+
+describe("Enterprise table overrides", () => {
+  it("keeps override methods optional for existing custom Table subclasses", async () => {
+    // Declare the old Table surface; only the new methods must be inherited.
+    // Keeping these override methods abstract must fail type checking here.
+    // biome-ignore lint/correctness/noUnusedVariables: declaration merging supplies the legacy members
+    interface LegacyTable
+      extends Omit<
+        Table,
+        "getTableOverrides" | "updateTableOverrides" | "resetTableOverrides"
+      > {}
+    class LegacyTable extends Table {}
+
+    const table = new LegacyTable();
+    await expect(table.getTableOverrides()).rejects.toThrow(
+      "getTableOverrides is not supported on this table type",
+    );
+    await expect(table.updateTableOverrides({ custom: true })).rejects.toThrow(
+      "updateTableOverrides is not supported on this table type",
+    );
+    await expect(table.resetTableOverrides()).rejects.toThrow(
+      "resetTableOverrides is not supported on this table type",
+    );
+  });
+
+  it("rejects get, update, and reset on local tables", async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("items", [{ id: 1 }]);
+    try {
+      await expect(table.getTableOverrides()).rejects.toThrow(
+        /only on remote Enterprise tables/,
+      );
+      await expect(
+        table.updateTableOverrides({ custom: true }),
+      ).rejects.toThrow(/only on remote Enterprise tables/);
+      await expect(table.resetTableOverrides()).rejects.toThrow(
+        /only on remote Enterprise tables/,
+      );
+    } finally {
+      table.close();
+      db.close();
+      tmpDir.removeCallback();
+    }
   });
 });

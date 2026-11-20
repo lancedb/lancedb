@@ -1,9 +1,9 @@
 ---
 title: "Tables"
 sidebarTitle: "Table"
-description: "The object most operations act on: creating, opening, renaming, cloning and dropping one."
+description: "The object most operations act on: creating, opening, renaming, cloning and dropping one, changing its schema, and documenting its columns with field metadata."
 icon: table
-keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
+keywords: ["table", "create_table", "open_table", "clone", "rename", "drop", "schema", "field metadata", "update_field_metadata", "column description", "tags"]
 availability:
   embedded: available
   enterprise: available
@@ -141,6 +141,19 @@ import {
     PyQueryToPandasKwargs as QueryToPandasKwargs,
 } from '/snippets/blob_pylance.mdx';
 
+import {
+    PyPhotoFiles,
+    PyPhotoConnectEmbedded,
+    PyPhotoConnectEnterprise,
+    PyPhotoIngest,
+    PyPhotoFetch,
+    PyPhotoBytes,
+    PyPhotoRanges,
+    PyPhotoCopyEmbedded,
+    PyPhotoCopySql,
+    PyPhotoVerify,
+} from '/snippets/photo_tutorial.mdx';
+
 A table stores data in rows and columns and keeps a history of committed
 versions. Queries read table data, writes update it, and indexes accelerate
 searches over its columns.{/* Draft until branching reaches early access: restore "Branches let you make changes separately from the
@@ -201,7 +214,7 @@ setting. See [Limits](/basics/limits#schema).
 <CodeGroup>
 ```python Python icon="python"
 tbl = db.open_table("documents")
-db.table_names()
+names = list(db.list_tables())
 ```
 
 ```typescript TypeScript icon="square-js"
@@ -230,6 +243,27 @@ listing. A missing table raises `ValueError` on a local directory and
 A listing returns one page of names at a time, so check every page. TypeScript
 has no `tableExists`.
 
+{/*
+Draft for the table-existence lookup release (#4974). Once released, replace
+the two table-existence paragraphs above with this guidance:
+
+For Python local, remote, and namespace connections, use
+`db.table_exists(["documents"])` or `"documents" in db` to check whether a root
+table exists. For an async connection, use
+`await db.table_exists(["documents"])`. Include namespace segments before the
+table name, for example `["analytics", "documents"]`. These checks return
+`False` when the table is missing and propagate other errors, including
+permission errors. They look up the table directly, regardless of the number
+of tables in the database.
+
+When migrating from `name in db.table_names()`, use `name in db` or
+`db.table_exists([name])`. To collect every table name, use
+`list(db.list_tables())`, or `[name async for name in db.list_tables()]` on an
+async connection. The `.tables` attribute holds only one page (100 names by
+default), so membership checks against it can miss existing tables. TypeScript
+has no `tableExists`.
+*/}
+
 ## Rename and clone tables {#rename-clone}
 
 <CodeGroup>
@@ -248,6 +282,18 @@ db.clone_table(
 Renaming is not supported on a local directory connection. In LanceDB Enterprise,
 whether a table can be renamed or cloned at all depends on how the deployment
 stores its catalog.
+
+{/* Draft for the table-clone exist_ok release.
+
+Pass `exist_ok=True` to keep an existing target table, including its data and
+version history, instead of reporting a duplicate. The source is used only when
+the target is missing. Remote use requires a deployment that supports this option.
+
+```python
+db.clone_table("docs_snapshot", source_uri="s3://bucket/db/documents.lance", exist_ok=True)
+```
+
+*/}
 
 A **shallow** clone (the default) references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
@@ -349,18 +395,192 @@ file, up to 64 KiB by default, and larger values are stored outside it.
 
 ### Blob columns {#multimodal-blob-v2}
 
-<Badge color="purple">Early access</Badge>
+Filter rows by their metadata first. Then read the matching blob bytes in
+Python, or copy the matching rows to another table with Enterprise SQL.
 
-A `blob` column keeps metadata separate from the payload bytes, so queries can
-filter rows without loading the blobs.
+Starting with LanceDB Enterprise 1.15.0, Blob v2 is generally available on
+ordinary tables. Tables with Realtime Engine or MemWAL enabled are outside
+this support scope.
 
-Most queries return descriptors, which contain metadata about the blob instead
-of its bytes. You can
-[read the bytes in the query results](#multimodal-blob-query-results) or
-[fetch them by row ID](#multimodal-read-blobs).
+#### From image files to a filtered table {#photo-tutorial}
 
-In Python, plain `to_pandas()` scans can also return `BlobFile` handles when
-`pylance` is installed.
+Start in an empty working directory and an empty database. This Python tutorial
+creates `photos` with `id`, `label`, and Blob v2 `image` columns, saves one
+matching image, and copies that row into a fresh `photo_subset` table. It uses
+ordinary tables, with Realtime Engine disabled. Avoid other writers while
+running the examples.
+
+Install a Python SDK that provides `lancedb.blob`. For preview builds, use the
+[installation instructions](/quickstart#python-pre-release-builds). The examples
+need `lancedb` and `pyarrow`; generating the images uses only Python's standard
+library.
+
+##### 1. Create two image files {#photo-files}
+
+Generate tiny red and blue PNG images with known pixel contents. Open these
+files in an image viewer. To use your own photos later, replace the file paths
+and the expected bytes in the checks.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoFiles}
+    </CodeBlock>
+</CodeGroup>
+
+##### 2. Choose a connection {#photo-connection}
+
+For LanceDB Embedded, create a local database:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoConnectEmbedded}
+    </CodeBlock>
+</CodeGroup>
+
+For LanceDB Enterprise, use an empty development database where you can create
+ordinary tables. Get the API and Flight SQL endpoints from your administrator;
+set these environment variables using the
+[Enterprise connection instructions](/basics/catalog#enterprise) and
+[SQL connection settings](/basics/sql#sql-is-remote). Choose this connection
+instead of the Embedded connection to run the SQL copy later:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoConnectEnterprise}
+    </CodeBlock>
+</CodeGroup>
+
+##### 3. Define the schema and insert the images {#photo-ingest}
+
+The explicit schema makes `image` a Blob v2 field. The table metadata opts into
+ordinary Blob storage. Table creation fails if `photos` already exists; use a
+new database for another run.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoIngest}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning>
+If table creation or ingestion loses its response, check whether `photos`
+exists and inspect its IDs and image bytes before repeating the write. An
+ambiguous result can mean the write committed. Repeating `add` can duplicate
+rows. See [write recovery](/ingestion/insert#performance) and
+[large upload recovery](/ingestion/insert#bulk-ingests-into-a-remote-table).
+</Warning>
+
+##### 4. Filter metadata, save an image, and check its contents {#photo-read}
+
+First select at most ten matching rows without loading their images. Fetch only
+those rows' bytes, save the red image, and compare the complete saved file with
+the original. This row-ID path works with Enterprise 1.12.0:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoFetch}
+    </CodeBlock>
+</CodeGroup>
+
+`id` is the application's photo ID; `_rowid` is the table's row identifier used
+by `fetch_blobs`. Keep the source unchanged between the metadata query and the
+fetch. Row IDs alone do not bind the fetch to the query's snapshot. Stable row
+IDs across compaction do not protect against an overwrite or a same-name table
+replacement.
+
+With a Python SDK and Enterprise deployment that support **snapshot-bound blob
+reads**, request the bytes in the query instead:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoBytes}
+    </CodeBlock>
+</CodeGroup>
+
+The bytes then come from the same table version as the filtered rows. Keep that
+version available until the read finishes. Enterprise 1.12.0 users should use
+the row-ID example above; support for snapshot-bound reads depends on both the
+SDK and the serving deployment. See
+[troubleshoot Enterprise blob reads](/deployment/support#blob-query-bytes).
+LanceDB Embedded also supports this query mode; use a reader checked out to a
+fixed version if concurrent writers can overwrite the source.
+
+##### Choose a read method for larger media {#photo-read-method}
+
+| Task | Method |
+| --- | --- |
+| Save a small, bounded set of complete images | `fetch_blobs`, or query with `blob_mode="bytes"` on a supporting deployment |
+| Read a header or part of a large video | `fetch_blob_files`, then `read_range` or `read_ranges` |
+| Seek through a video in server-side processing | A LanceDB Function parameter annotated with `lancedb.BlobReader` |
+| Copy rows inside Enterprise | SQL `INSERT INTO ... SELECT`, without downloading images to the client |
+
+A row limit bounds the number of images, not their total size. Avoid fetching
+whole videos just to inspect their headers. Here is a range read against the
+same red PNG; it verifies the eight-byte PNG signature:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoRanges}
+    </CodeBlock>
+</CodeGroup>
+
+For multiple slices, see [range reads](#multimodal-read-blobs). For a seekable
+video reader inside a Function, see
+[read a blob incrementally](/curation/create-function#incremental).
+
+#### Copy a subset of blob rows {#multimodal-copy-subset}
+
+Continue with the same `photos`, selecting the same red image. Choose one copy
+path below, then run the shared verification. Neither path overwrites an
+existing `photo_subset`.
+
+##### Enterprise SQL {#photo-copy-sql}
+
+On the Enterprise connection, create a fresh destination with a Blob column,
+then copy matching rows on the server. `execute_query` submits one statement
+per call; consume each result before continuing:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoCopySql}
+    </CodeBlock>
+</CodeGroup>
+
+Enterprise 1.12.0 supports this SQL copy. Selecting a Blob v2 column directly
+in SQL returns the payload as `large_binary`. Select `image` itself for the
+copy; use [`blob_descriptor(image)`](/sql/dql/blob-descriptor) to inspect storage
+metadata instead.
+
+`lancedb.blob("image")` is a Python schema helper, not a SQL value constructor.
+SQL has no `blob(local_path)` constructor to upload a client-side image file.
+Ingest file bytes with the SDK as above, then use SQL to copy stored rows.
+If the copy response is lost, inspect `photo_subset` before repeating the
+`INSERT`; the same [write recovery rules](/ingestion/insert#performance) apply.
+
+##### LanceDB Embedded {#photo-copy-embedded}
+
+SQL requires Enterprise. With the Embedded connection, materialize this small
+selection and give the destination the explicit Blob schema:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoCopyEmbedded}
+    </CodeBlock>
+</CodeGroup>
+
+##### Verify the destination {#photo-copy-verify}
+
+Reopen `photo_subset`, check its row count and application ID, and compare its
+image bytes with the original local file. The destination has its own row IDs,
+so query them again instead of reusing the source's `_rowid` values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyPhotoVerify}
+    </CodeBlock>
+</CodeGroup>
+
+#### Blob storage layouts {#blob-storage-layouts}
 
 When you write raw bytes, Lance chooses a storage layout based on the payload
 size. A descriptor's `kind` tells you which one was used:
@@ -459,70 +679,23 @@ methods `to_pandas()`, `to_arrow()`, `to_list()`, and `to_batches()` accept a
 
 | `blob_mode` | `to_pandas()` | `to_arrow()` and `to_list()` |
 | --- | --- | --- |
-| `"lazy"` | Default. Plain scans return seekable `BlobFile` handles. Vector, full-text, hybrid, and ordered queries return descriptor dicts. | Default. Returns descriptors carrying `_lance_row_id` so the result table can be passed to `fetch_blobs` or `fetch_blob_files`. |
+| `"lazy"` | Default. Local plain scans return seekable `BlobFile` handles; local vector, full-text, hybrid, and ordered queries return descriptor dicts. Enterprise queries raise `NotImplementedError`. | Default. Returns descriptors carrying `_lance_row_id` so the result table can be passed to `fetch_blobs` or `fetch_blob_files`. |
 | `"descriptions"` | Returns descriptor dicts with `kind`, `position`, `size`, `blob_id`, and `blob_uri`. | Returns the 5-field descriptor without `_lance_row_id`. |
 | `"bytes"` | Materializes each blob as `bytes` in the DataFrame. | Materializes each blob as `large_binary` in Arrow or `bytes` in Python dicts. |
 
-For supported local v2 blob projections, `to_pandas(blob_mode="bytes")` and
+For supported v2 blob projections, `to_pandas(blob_mode="bytes")` and
 `to_pandas(blob_mode="descriptions")` use native Arrow conversion without
 pylance. Eligible local plain scans also convert row-addressable legacy blob
 bytes without pylance. Pandas conversions that need the Lance scanner,
-including plain-scan `"lazy"` handles and scanner-only options, still require
-pylance. `to_arrow()`, `to_list()`, `to_batches()`, and the fetch methods do
-not require pylance for supported local queries.
+including local plain-scan `"lazy"` handles and scanner-only options, still
+require pylance. `to_arrow()`, `to_list()`, `to_batches()`, and the fetch
+methods do not require pylance for supported queries.
 
-`blob_mode="bytes"` requires a LanceDB Embedded table snapshot, so Enterprise
-and in-memory tables raise `NotImplementedError`. On an Enterprise table,
-`Table.to_pandas()` and
-`Table.to_arrow()` aren't supported, and a query's `to_pandas()` also raises in
-the default `"lazy"` mode because it would open `BlobFile` handles. Query with
-`blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
-`fetch_blob_files`.
-
-###### Copy a subset of blob rows {#multimodal-copy-subset}
-
-Blob query results describe the stored payload; they are not the bytes to
-insert into another table. These APIs return different values:
-
-| Read path | Value |
-| --- | --- |
-| SQL or an Arrow query in `"descriptions"` mode | Descriptor struct identifying the stored blob. Treat it as opaque. |
-| `table.fetch_blobs(column, row_ids)` | Arrow `large_binary` array; `.to_pylist()` gives `bytes` or `None` in the requested order. |
-| A Function parameter annotated `lancedb.BlobReader` | Lazy, seekable reader over the input blob, available inside the Function. |
-
-For an Enterprise source table, select the rows and fetch their bytes explicitly.
-The following example copies up to 100 rows from an existing `images` table with
-an integer `id` and a blob `image` column. Keep the source unchanged during this
-operation: selection and fetching are separate requests.
-
-```python
-import lancedb
-import pyarrow as pa
-
-source = db.open_table("images")
-hits = (
-    source.search()
-    .where("id < 100")
-    .select(["id"])
-    .with_row_id(True)
-    .limit(100)
-    .to_arrow()
-)
-payloads = source.fetch_blobs("image", hits["_rowid"]).to_pylist()
-subset = db.create_table(
-    "image_subset",
-    schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
-)
-if hits.num_rows:
-    subset.add([
-        {"id": image_id, "image": payload}
-        for image_id, payload in zip(hits["id"].to_pylist(), payloads, strict=True)
-    ])
-```
-
-Empty blobs remain `b""` and null blobs remain `None`. Fetch bounded batches
-for larger subsets; `fetch_blobs` materializes all requested bytes in memory.
-For incremental decoding, use `fetch_blob_files` instead.
+On Enterprise tables, call `table.search()` for `blob_mode="bytes"`. The sync
+`Table.to_pandas()` and `Table.to_arrow()` conversions are unsupported. For
+Realtime/MemWAL tables or historical versions without a native transaction
+identity, request descriptors. In-memory tables and namespace `QueryTable`
+pushdown do not support bytes mode.
 
 `blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
 raises `ValueError` when the selected columns include blobs
@@ -551,12 +724,13 @@ five-field descriptors. Both `"bytes"` and `"descriptions"` hide automatic row
 IDs; explicitly requested row IDs remain visible.
 
 Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
-including no blobs inside lists, Enterprise tables, namespace `QueryTable`
-pushdown, or query shapes that cannot preserve their row results. Legacy v1
-bytes are limited to eligible local plain scans. If concurrent writers can
-overwrite the table, use a separate reader checked out to a fixed version
-before querying. Otherwise, an overwrite can invalidate the row IDs used to
-fetch bytes and raise `ValueError`.
+including no blobs inside lists, in-memory tables, namespace `QueryTable`
+pushdown, or query shapes that cannot preserve their row results. Each Enterprise
+batch reads blob bytes from the snapshot that produced the rows. Legacy v1
+bytes are limited to eligible local plain scans. For
+local queries, if concurrent writers can overwrite the table, use a separate
+reader checked out to a fixed version before querying. Otherwise, an overwrite
+can invalidate the row IDs used to fetch bytes and raise `ValueError`.
 
 ###### Optional pandas examples {#multimodal-blob-pandas}
 
@@ -595,6 +769,25 @@ table changes while the query runs, the query runs again, up to three times:
     </CodeBlock>
 </CodeGroup>
 
+{/* Draft for the Enterprise TypeScript bytes release. Replace the retry guidance above only after SDK and serving-node rollout.
+
+Local queries retry up to three times if the table changes while they run.
+Remote queries instead bind payload fetches to the version and immutable
+snapshot identity from the executed query response. They do not rerun the query
+against a newer version to recover missing payloads. Both `toArray()` and
+`toArrow()` discover Blob fields from that response, including fields added
+after the table handle was opened.
+
+Every serving node must support `x-lancedb-query-version` and
+`x-lancedb-query-snapshot`, enforce the requested identity when fetching bytes,
+and echo it in the fetch response. Proxies must forward these headers. Missing
+or mismatched provenance fails explicitly; use `blobMode: "descriptions"` until
+the rollout is complete. Keep queried versions available for deferred reads:
+snapshot identities do not prevent version deletion. Dropping and recreating a
+table cannot substitute the replacement's bytes, even if its version is reused.
+Hybrid byte queries require matching snapshot provenance from both responses.
+*/}
+
 #### Read blobs on demand {#multimodal-read-blobs}
 
 Query the rows you want and pass their `_rowid` values to a fetch method.
@@ -623,6 +816,10 @@ The other fetch methods load bytes directly:
 | Whole payloads for a set of rows | `fetch_blobs` | `fetchBlobs` | `fetch_blobs` |
 | Byte slices across many rows in one call | `fetch_blob_ranges` | Not available. Use `fetchBlobFiles` and `readRanges`. | `fetch_blob_ranges` |
 
+{/* Draft for the TypeScript cross-row Blob range release. Replace the row above:
+| Byte slices across many rows in one call | `fetch_blob_ranges` | `fetchBlobRanges` | `fetch_blob_ranges` |
+*/}
+
 - `fetch_blobs` returns the full bytes for each row ID in order. Null blobs
   produce null entries, and empty blobs produce empty byte strings.
 - `fetch_blob_files` loads bytes when you call `read`, `read_range`, or
@@ -646,6 +843,21 @@ The other fetch methods load bytes directly:
     </CodeBlock>
 </CodeGroup>
 
+{/* Draft for the TypeScript cross-row Blob range release.
+<Info>
+Upcoming-release draft: TypeScript adds `fetchBlobRanges` for cross-row slices.
+Until that SDK release is available, use `fetchBlobFiles` and `readRanges`.
+Server-side batching requires a deployment with the validated range capability;
+older servers continue using the descriptor and Range path selected before the
+read. An error from the selected batched endpoint is returned without fallback.
+A batched call keeps the native snapshot identity from its first range response
+across every partition and requires each serving node to verify it. Missing identity
+support or a replaced/deleted snapshot fails the whole call; upgrade all serving
+nodes before selecting the batched endpoint with a new SDK.
+Custom TypeScript `Table` subclasses must implement the new abstract method.
+</Info>
+*/}
+
 Python and Rust read slices across rows with `fetch_blob_ranges`. On a handle,
 `read_ranges` reads more than one slice of one blob. Python takes
 `(offset, length)` pairs, TypeScript takes `{ start, end }` ranges with an
@@ -657,6 +869,14 @@ exclusive `end`, and Rust takes `start..end` ranges:
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {/* Draft for the TypeScript cross-row Blob range release.
+    {`// Upcoming-release draft: slices from more than one row.
+const slices = await blobTable.fetchBlobRanges("image", [
+  { rowId: rowIds[0]!, offset: 0n, length: 6n },
+  { rowId: rowIds[1]!, offset: 7n, length: 5n },
+]);
+`}{"\n"}
+    */}
     {TsBlobApiRanges}
     </CodeBlock>
 
@@ -1619,7 +1839,10 @@ mixing in lower-level Lance file operations.
 System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
 In LanceDB Embedded, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
 which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
-when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
+when its configuration enables [cleanup](/maintenance/cleanup). With compatible
+releases, Enterprise `optimize()` submits [manual compaction](/maintenance/compaction#enterprise-manual-compaction)
+only; it does not prune old versions. Submission returns before workers finish,
+so observe the completed job and resulting table state before expecting a new version.
 
 **Tagged versions are never pruned.** A version with a tag pointing at it is
 retained regardless of age. When a tagged version is older than the retention window and

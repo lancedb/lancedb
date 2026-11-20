@@ -14,7 +14,6 @@ use arrow_flight::{
     FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use arrow_schema::{DataType, Field, Schema};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use tonic::metadata::MetadataMap;
@@ -24,6 +23,7 @@ use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::Connection;
 use crate::database::Database;
+use crate::embeddings::MemoryRegistry;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
@@ -32,6 +32,53 @@ use crate::remote::db::RemoteDatabase;
 use crate::remote::table::RemoteTable;
 use crate::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
 use crate::table::BaseTable;
+
+#[test]
+fn server_info_survives_flight_error_and_job_wrapping() {
+    for with_job in [false, true] {
+        let mut status = tonic::Status::invalid_argument("invalid query");
+        status
+            .metadata_mut()
+            .insert("x-lancedb-error-code", "invalid_query".parse().unwrap());
+        let build = serde_json::json!({
+            "release": "1.2.3", "git_sha": "0123456789ab", "build_date": "2024-01-01T00:00:00Z"
+        })
+        .to_string();
+        status.metadata_mut().insert_bin(
+            "x-lancedb-server-build-bin",
+            tonic::metadata::MetadataValue::from_bytes(build.as_bytes()),
+        );
+        if with_job {
+            status
+                .metadata_mut()
+                .insert(SQL_JOB_ID_METADATA_KEY, "job-original".parse().unwrap());
+        }
+        let error = sql_status_error("request-original", &status);
+        let text = error.to_string();
+        assert!(text.contains("invalid query"), "{text}");
+        assert!(text.contains("1.2.3"), "{text}");
+        assert!(text.contains("0123456789ab"), "{text}");
+        assert!(text.contains("2024-01-01T00:00:00Z"), "{text}");
+        assert_eq!(
+            error.remote_error_metadata().unwrap().error_code.as_deref(),
+            Some("invalid_query")
+        );
+        match error {
+            Error::JobFailed { job_id, .. } if with_job => {
+                assert_eq!(job_id.as_deref(), Some("job-original"))
+            }
+            Error::Sql {
+                grpc_code,
+                request_id,
+                ..
+            } if !with_job => {
+                assert_eq!(grpc_code, tonic::Code::InvalidArgument as i32);
+                assert_eq!(request_id, "request-original");
+            }
+            other => panic!("unexpected error classification: {other}"),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct DelayedHeaderProvider {
@@ -95,6 +142,9 @@ struct TestSqlService {
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
     materialized_view_job_handle_supported: bool,
+    optimize_error: Option<Status>,
+    prewarm_error: Option<Status>,
+    prewarm_azure_supported: bool,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -269,6 +319,9 @@ impl Default for TestSqlService {
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
             materialized_view_job_handle_supported: false,
+            optimize_error: None,
+            prewarm_error: None,
+            prewarm_azure_supported: false,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
             large_result,
@@ -303,9 +356,30 @@ impl FlightService for TestSqlService {
 
     async fn get_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info"))
+        self.capture_headers(request.metadata());
+        assert!(
+            request
+                .metadata()
+                .get("x-azure-storage-account-name")
+                .is_some()
+        );
+        let schema = if self.prewarm_azure_supported {
+            self.result
+                .schema()
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::from([(
+                    "lancedb.prewarm.azure_storage_account_name".into(),
+                    "true".into(),
+                )]))
+        } else {
+            self.result.schema().as_ref().clone()
+        };
+        Ok(Response::new(
+            FlightInfo::new().try_with_schema(&schema).unwrap(),
+        ))
     }
 
     async fn poll_flight_info(
@@ -439,6 +513,17 @@ impl FlightService for TestSqlService {
             .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
         if let Some(command) = &initial {
             self.statements.lock().unwrap().push(command.query.clone());
+            if command.query.starts_with("OPTIMIZE ")
+                && let Some(error) = &self.optimize_error
+            {
+                return Err(error.clone());
+            }
+            if (command.query.starts_with("PREWARM")
+                || command.query.starts_with("EXPLAIN (FORMAT JSON) PREWARM"))
+                && let Some(error) = &self.prewarm_error
+            {
+                return Err(error.clone());
+            }
             if command.query == "SELECT rejected" {
                 return Err(Status::invalid_argument("invalid statement"));
             }
@@ -600,7 +685,15 @@ impl FlightService for TestSqlService {
             ));
         }
         if query == "SELECT exchange stall" {
-            return Ok(Response::new(futures::stream::pending().boxed()));
+            let dropped = DropSignal(self.exchange_drops.clone());
+            return Ok(Response::new(
+                futures::stream::pending()
+                    .map(move |message| {
+                        let _dropped = &dropped;
+                        message
+                    })
+                    .boxed(),
+            ));
         }
         let rows =
             parameters.ok_or_else(|| Status::invalid_argument("exchange without parameters"))?;
@@ -983,13 +1076,26 @@ async fn an_abandoned_reader_leaves_the_rows_for_the_next_one() {
 async fn a_reader_that_times_out_reports_the_failure() {
     let mut client_config = ClientConfig::default();
     client_config.timeout_config.timeout = Some(Duration::from_millis(200));
-    let (client, _shutdown) = start_sql_service(TestSqlService::default(), client_config).await;
+    let service = TestSqlService::default();
+    let drops = service.exchange_drops.clone();
+    let (client, _shutdown) = start_sql_service(service, client_config).await;
 
-    let stalled = client
-        .execute(parameterized("SELECT exchange stall", parameter_row()))
-        .await
-        .unwrap();
+    // Real loopback I/O must finish before the clock can advance to the timeout.
+    // A blocking task inhibits Tokio's automatic clock advance during submission.
+    tokio::time::pause();
+    let submission_client = client.clone();
+    let stalled = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(
+            submission_client.execute(parameterized("SELECT exchange stall", parameter_row())),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
     assert_overall_timeout(stalled.reader().await, "result");
+    tokio::time::resume();
+    wait_for(&drops, 1, "a timed-out reader must end the call").await;
     let Err(retried) = stalled.reader().await else {
         panic!("the rows are gone, so a second reader cannot succeed");
     };
@@ -1063,6 +1169,61 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
 }
 
 #[tokio::test]
+async fn remote_query_builder_sends_the_complete_query() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let connection = crate::connect("db://analytics")
+        .region("us-east-1")
+        .api_key("test-key")
+        .host_override("http://127.0.0.1:1")
+        .sql_host_override(&format!("grpc://{address}"))
+        .execute()
+        .await
+        .unwrap();
+    for query in [
+        "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        "SELECT id, c.text FROM docs, chunk(body) AS c",
+        "SELECT id, tag FROM events, UNNEST(tags) AS tag",
+        "SELECT a.id FROM a JOIN b ON a.id = b.id",
+    ] {
+        connection
+            .create_materialized_view_from_query("result", query)
+            .auto_refresh_enabled(false)
+            .execute_async()
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            statements.lock().unwrap().last().unwrap(),
+            &format!(
+                "CREATE MATERIALIZED VIEW \"result\" WITH (auto_refresh_enabled = false) AS {query}"
+            )
+        );
+    }
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
     for defer in [false, true] {
         let service = TestSqlService {
@@ -1089,6 +1250,7 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec!["team".into(), "reports".into()],
                     query: "SELECT * FROM people".into(),
@@ -1171,6 +1333,7 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
             query: "SELECT * FROM people".into(),
@@ -1196,6 +1359,63 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
             .all(|header| header.namespace_path == "team$reports")
     );
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry_job() {
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            materialized_view_job_handle_supported: true,
+            ..Default::default()
+        };
+        let statement = "CREATE MATERIALIZED VIEW IF NOT EXISTS \"adults\" AS SELECT * FROM people";
+        service.result_overrides.lock().unwrap().insert(
+            statement.into(),
+            RecordBatch::try_from_iter([
+                (
+                    "status",
+                    Arc::new(StringArray::from(vec!["already_exists"])) as arrow_array::ArrayRef,
+                ),
+                (
+                    "job_id",
+                    Arc::new(StringArray::from(vec![""])) as arrow_array::ArrayRef,
+                ),
+            ])
+            .unwrap(),
+        );
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!(
+                "a skipped creation must not poll a registry job: {}",
+                request.url()
+            );
+        })
+        .with_sql_client(client);
+        let job = db
+            .create_materialized_view_async(CreateMaterializedViewRequest {
+                exist_ok: true,
+                name: "adults".into(),
+                namespace_path: vec!["team".into()],
+                query: "SELECT * FROM people".into(),
+                with_no_data: false,
+                auto_refresh_enabled: None,
+                auto_refresh_interval_seconds: None,
+            })
+            .await
+            .unwrap();
+        if defer {
+            assert!(job.id().is_none());
+        } else {
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+        }
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert_eq!(*statements.lock().unwrap(), [statement]);
+        shutdown.send(()).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -1263,6 +1483,7 @@ async fn remote_create_registry_handle_reopens_describes_and_cancels() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
             query: "SELECT * FROM people".into(),
@@ -2728,25 +2949,54 @@ async fn remote_optimize_full_rejects_explicit_pruning_options() {
     assert_rejected_before_submission(None, None, Some(true)).await;
 }
 
+fn sql_listing_batch(column: &str, values: &[&str], token: Option<&str>) -> RecordBatch {
+    let mut columns: Vec<(&str, ArrayRef)> = Vec::new();
+    if column == "name" {
+        columns.push((
+            "namespace_path",
+            Arc::new(StringArray::from(vec![
+                r#"["team","reports"]"#;
+                values.len()
+            ])),
+        ));
+    }
+    columns.push((column, Arc::new(StringArray::from(values.to_vec()))));
+    let batch = RecordBatch::try_from_iter(columns).unwrap();
+    let metadata = token
+        .map(|token| HashMap::from([("lancedb.next_page_token".to_owned(), token.to_owned())]))
+        .unwrap_or_default();
+    let schema = Arc::new(batch.schema().as_ref().clone().with_metadata(metadata));
+    RecordBatch::try_new(schema, batch.columns().to_vec()).unwrap()
+}
+
 #[tokio::test]
-async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
+async fn remote_mv_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
-        let result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["a", "b'c", "z"])) as ArrayRef,
-        )])
-        .unwrap();
+        let token = "server'opaque:token";
+        let next_sql =
+            "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
-            result,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
         let headers = service.headers.clone();
-        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
-            panic!("unexpected REST request: {}", request.url().path());
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
         })
         .with_sql_client(client);
         let namespace = vec!["team".to_owned(), "reports".to_owned()];
@@ -2757,41 +3007,31 @@ async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
             )
             .await
             .unwrap();
-        assert_eq!(first.items, ["a", "b'c"]);
-        let token = first.page_token.unwrap();
-        db.list_materialized_views(
-            &namespace,
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(&token),
-        )
-        .await
-        .unwrap();
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
+            .list_materialized_views(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items, ["z"]);
+        assert!(second.page_token.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
             [
-                "SHOW MATERIALIZED VIEWS LIMIT 3",
-                "SHOW MATERIALIZED VIEWS WHERE name > 'b''c' LIMIT 3"
+                "SHOW MATERIALIZED VIEWS IN \"team$reports\" LIMIT 2",
+                next_sql
             ]
         );
-        assert!(
-            headers
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|header| header.namespace_path == "team$reports")
-        );
-        for (path, token) in [(vec![], token), (namespace, "invalid".into())] {
-            assert!(matches!(
-                db.list_materialized_views(
-                    &path,
-                    crate::listing::ListingOptions::default().page_token(token)
-                )
-                .await,
-                Err(Error::InvalidInput { .. })
-            ));
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
         }
-        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }
@@ -2932,7 +3172,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
         let statements = statements.lock().unwrap();
         assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
         assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
-        assert_eq!(statements[2], "SHOW STORAGE INTEGRATIONS");
+        assert_eq!(
+            statements[2],
+            "SHOW STORAGE INTEGRATIONS IN \"platform$aws\" LIMIT 1000"
+        );
         assert_eq!(statements[3], "DROP STORAGE INTEGRATION \"raw\"");
         assert!(statements[4].contains(
             "STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"credentials\".\"key\""
@@ -2956,7 +3199,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
     const REQUEST: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
-    for (defer, with_models) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (defer, with_models, exist_ok) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (false, true, true),
+        (true, false, true),
+        (true, true, true),
+    ] {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
@@ -2971,6 +3223,38 @@ async fn function_creation_and_description_use_sql_query_handles() {
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
+        version_json["runtime"] = request_json["runtime"].clone();
+        version_json["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": [],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
+        version_json["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+            },
+            "linux/arm64": {
+                "packages": []
+            }
+        });
         if with_models {
             let models = serde_json::json!([{
                 "repo": "sentence-transformers/all-MiniLM-L6-v2",
@@ -2982,9 +3266,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let expected_models = version_json["image"].get("models");
         let mut expected_request = request_json.clone();
         expected_request.as_object_mut().unwrap().remove("name");
-        let request =
+        let mut request =
             crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
                 .unwrap();
+        assert!(!request.exist_ok);
+        request.exist_ok = exist_ok;
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
             Arc::new(StringArray::from(vec![version_json.to_string()])) as ArrayRef,
@@ -3015,12 +3301,26 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
+        assert_eq!(created.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            created.resolved_environment().unwrap().packages[0].version,
+            "2.9.0+cu130"
+        );
+        assert_eq!(created.resolved_environments().len(), 2);
+        assert!(
+            created.resolved_environments()["linux/arm64"]
+                .packages
+                .is_empty()
+        );
         // Assert the actual SQL body, after the same native JSON decode used
         // by the Python binding, rather than only the Python declaration.
         {
             let seen = statements.lock().unwrap();
             let encoded = seen[0]
-                .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+                .strip_prefix(&format!(
+                    "CREATE FUNCTION{} \"normalize_score\" FROM '",
+                    if exist_ok { " IF NOT EXISTS" } else { "" }
+                ))
                 .unwrap()
                 .strip_suffix('\'')
                 .unwrap();
@@ -3036,6 +3336,23 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created_json["row_timeout_seconds"], 8.0);
         assert_eq!(created_json["result_stability"], "input_and_context");
         assert_eq!(
+            created_json["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            created_json["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            created_json["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(
             client.describe(id).await.unwrap().status,
             QueryStatus::Finished
         );
@@ -3048,6 +3365,19 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described.max_concurrency(), Some(4));
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
+        assert_eq!(described.runtime().unwrap().kind(), "python");
+        assert_eq!(
+            described
+                .resolved_environment()
+                .unwrap()
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
+        assert_eq!(described.resolved_environments().len(), 2);
         let described_json: serde_json::Value =
             serde_json::from_str(&described.to_canonical_json().unwrap()).unwrap();
         assert_eq!(described_json["image"].get("models"), expected_models);
@@ -3074,6 +3404,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
             listed.items[0].result_stability(),
             Some("input_and_context")
         );
+        assert_eq!(listed.items[0].runtime().unwrap().kind(), "python");
+        assert_eq!(
+            listed.items[0]
+                .resolved_environment()
+                .unwrap()
+                .warnings
+                .len(),
+            1
+        );
+        assert_eq!(listed.items[0].resolved_environments().len(), 2);
         let listed_json: serde_json::Value =
             serde_json::from_str(&listed.items[0].to_canonical_json().unwrap()).unwrap();
         assert_eq!(listed_json["image"].get("models"), expected_models);
@@ -3084,6 +3424,58 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let seen = statements.lock().unwrap();
         assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
         assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn function_creation_refresh_lock_is_forwarded_only_when_true() {
+    const VERSION: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+    );
+    const REQUEST: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+    );
+    for (refresh_lock, expect_field) in [(false, false), (true, true)] {
+        let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        if refresh_lock {
+            request_json["refresh_lock"] = serde_json::json!(true);
+        }
+        let request =
+            crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
+                .unwrap();
+        assert_eq!(request.refresh_lock, refresh_lock);
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![VERSION.to_string()])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer: false,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client.clone());
+        let job = db.create_function_async(request, &[]).await.unwrap();
+        job.wait().await.unwrap();
+        let seen = statements.lock().unwrap();
+        let encoded = seen[0]
+            .strip_prefix(r#"CREATE FUNCTION "normalize_score" FROM '"#)
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&encoded.replace("''", "'")).unwrap();
+        assert_eq!(sent.get("refresh_lock").is_some(), expect_field);
+        if expect_field {
+            assert_eq!(sent["refresh_lock"], serde_json::json!(true));
+        }
+        drop(seen);
         shutdown.send(()).unwrap();
     }
 }
@@ -3207,29 +3599,55 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         };
         let exchanges = service.exchanges.clone();
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
             panic!("unexpected REST request: {}", request.url().path());
         })
         .with_sql_client(client);
-        db.create_secret("api-key", "credential's value", &["team".into()])
+        let connection = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        connection
+            .create_secret("api-key", "credential's value", &["team".into()])
             .await
             .unwrap();
-        db.alter_secret("api-key", "rotated-value", &["team".into()])
+        connection
+            .create_secret("api-key", "ignored-value", &["team".into()])
+            .exist_ok(true)
             .await
             .unwrap();
-        db.drop_secret("api-key", &["team".into()]).await.unwrap();
+        connection
+            .alter_secret("api-key", "rotated-value", &["team".into()])
+            .await
+            .unwrap();
+        connection
+            .drop_secret("api-key", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             ["DROP SECRET IF EXISTS \"api-key\""]
         );
         let seen = exchanges.lock().unwrap();
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3);
         assert_eq!(
             seen[0].0,
             "CREATE SECRET \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
         );
-        assert_eq!(seen[1].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
+        assert_eq!(
+            seen[1].0,
+            "CREATE SECRET IF NOT EXISTS \"api-key\" TYPE = GENERIC_STRING SECRET_STRING = $1"
+        );
+        assert_eq!(seen[2].0, "ALTER SECRET \"api-key\" SET SECRET_STRING = $1");
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
+        );
         assert_eq!(
             seen[0]
                 .1
@@ -3244,6 +3662,18 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
         );
         assert_eq!(
             seen[1]
+                .1
+                .as_ref()
+                .unwrap()
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "ignored-value"
+        );
+        assert_eq!(
+            seen[2]
                 .1
                 .as_ref()
                 .unwrap()
@@ -3292,29 +3722,20 @@ async fn secret_description_uses_the_sql_metadata_projection() {
 }
 
 #[tokio::test]
-async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
+async fn secret_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
-        let first_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["api-key", "hf'prod", "openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let second_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let result_overrides = Arc::new(std::sync::Mutex::new(HashMap::from([
-            ("SHOW SECRETS LIMIT 3".to_string(), first_result),
-            (
-                "SHOW SECRETS WHERE name > 'hf''prod' LIMIT 3".to_string(),
-                second_result,
-            ),
-        ])));
+        let token = "server'opaque:token";
+        let next_sql = "SHOW SECRETS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
-            result_overrides,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW SECRETS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3326,11 +3747,10 @@ async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
         )
         .await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-            panic!("unexpected REST request");
+            panic!("unexpected REST request")
         })
         .with_sql_client(client);
         let namespace = vec!["team".to_owned(), "reports".to_owned()];
-
         let first = db
             .list_secrets(
                 &namespace,
@@ -3338,90 +3758,144 @@ async fn secret_listing_uses_bounded_sql_and_scoped_cursors() {
             )
             .await
             .unwrap();
-        assert_eq!(first.items, ["api-key", "hf'prod"]);
-        let token = first.page_token.expect("a third row must produce a token");
-
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
         let second = db
             .list_secrets(
                 &namespace,
                 crate::listing::ListingOptions::default()
                     .page_limit(2)
-                    .page_token(&token),
+                    .page_token(first.page_token.unwrap()),
             )
             .await
             .unwrap();
-        assert_eq!(second.items, ["openai-prod"]);
+        assert_eq!(second.items, ["z"]);
         assert!(second.page_token.is_none());
-
         assert_eq!(
             *statements.lock().unwrap(),
-            [
-                "SHOW SECRETS LIMIT 3",
-                "SHOW SECRETS WHERE name > 'hf''prod' LIMIT 3"
-            ]
+            ["SHOW SECRETS IN \"team$reports\" LIMIT 2", next_sql]
         );
-        {
-            let headers = headers.lock().unwrap();
-            assert!(!headers.is_empty());
-            for header in headers.iter() {
-                assert_eq!(header.database, "analytics");
-                assert_eq!(header.database_prefix, "tenant/production");
-                assert_eq!(header.namespace_path, "team$reports");
-            }
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
         }
-
-        for (path, token) in [
-            (vec!["other".to_owned()], token),
-            (namespace.clone(), "invalid".to_owned()),
-        ] {
-            assert!(matches!(
-                db.list_secrets(
-                    &path,
-                    crate::listing::ListingOptions::default().page_token(token)
-                )
-                .await,
-                Err(Error::InvalidInput { .. })
-            ));
-        }
-        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }
 
 #[tokio::test]
-async fn secret_listing_handles_empty_pages_and_rejects_invalid_limits() {
-    let empty = RecordBatch::try_from_iter(vec![(
-        "name",
-        Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
-    )])
-    .unwrap();
+async fn storage_integration_listing_uses_server_continuation_tokens() {
+    for defer in [false, true] {
+        let token = "server'opaque:token";
+        let next_sql =
+            "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service_with_prefix(
+            service,
+            ClientConfig::default(),
+            Some("tenant/production"),
+        )
+        .await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
+        })
+        .with_sql_client(client);
+        let namespace = vec!["team".to_owned(), "reports".to_owned()];
+        let first = db
+            .list_storage_integrations(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
+            .list_storage_integrations(
+                &namespace,
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items, ["z"]);
+        assert!(second.page_token.is_none());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW STORAGE INTEGRATIONS IN \"team$reports\" LIMIT 2",
+                next_sql
+            ]
+        );
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
+        }
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn secret_listing_preserves_empty_continuations_and_validates_page_options() {
     let service = TestSqlService {
         adaptive: true,
         defer: true,
-        result: empty,
+        result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+            (
+                "SHOW SECRETS IN \"team$reports\" LIMIT 2".to_owned(),
+                sql_listing_batch("name", &[], Some("continue-empty")),
+            ),
+            (
+                "SHOW SECRETS IN \"team$reports\" LIMIT 2 FROM 'continue-empty'".to_owned(),
+                sql_listing_batch("name", &["last"], None),
+            ),
+        ]))),
         ..Default::default()
     };
     let statements = service.statements.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
     let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-        panic!("unexpected REST request");
+        panic!("unexpected REST request")
     })
     .with_sql_client(client);
     let namespace = vec!["team".to_owned(), "reports".to_owned()];
-
     let page = db
         .list_secrets(
             &namespace,
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(""),
+            crate::listing::ListingOptions::default().page_limit(2),
         )
         .await
         .unwrap();
     assert!(page.items.is_empty());
-    assert!(page.page_token.is_none());
-
-    for limit in [0, i32::MAX as u32 + 1] {
+    assert_eq!(page.page_token.as_deref(), Some("continue-empty"));
+    let last = db
+        .list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default()
+                .page_limit(2)
+                .page_token(page.page_token.unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(last.items, ["last"]);
+    assert!(last.page_token.is_none());
+    for limit in [10_001, u32::MAX] {
         assert!(matches!(
             db.list_secrets(
                 &namespace,
@@ -3431,12 +3905,29 @@ async fn secret_listing_handles_empty_pages_and_rejects_invalid_limits() {
             Err(Error::InvalidInput { .. })
         ));
     }
-    assert_eq!(*statements.lock().unwrap(), ["SHOW SECRETS LIMIT 3"]);
+    assert!(
+        db.list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default().page_token("")
+        )
+        .await
+        .is_err()
+    );
+    let zero = db
+        .list_secrets(
+            &namespace,
+            crate::listing::ListingOptions::default().page_limit(0),
+        )
+        .await
+        .unwrap();
+    assert!(zero.items.is_empty());
+    assert!(zero.page_token.is_none());
+    assert_eq!(statements.lock().unwrap().len(), 2);
     shutdown.send(()).unwrap();
 }
 
 #[tokio::test]
-async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
+async fn function_listing_uses_server_tokens_for_numeric_revision_pages() {
     const VERSION: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
     );
@@ -3446,74 +3937,65 @@ async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     let mut tenth: serde_json::Value = serde_json::from_str(VERSION).unwrap();
     tenth["version"] = serde_json::json!("10");
     let tenth = tenth.to_string();
-    let result = RecordBatch::try_from_iter(vec![(
-        "definition",
-        Arc::new(StringArray::from(vec![
-            VERSION,
-            second.as_str(),
-            tenth.as_str(),
-        ])) as ArrayRef,
-    )])
-    .unwrap();
-    let service = TestSqlService {
-        adaptive: true,
-        defer: true,
-        result,
-        ..Default::default()
-    };
-    service.result_overrides.lock().unwrap().insert(
-        "SHOW FUNCTIONS HISTORY WITH (limit = 3, include_definition = true, after_name = 'embed', after_version = '2')".into(),
-        RecordBatch::try_from_iter(vec![("definition", Arc::new(StringArray::from(vec![tenth.as_str()])) as ArrayRef)]).unwrap(),
-    );
-    let statements = service.statements.clone();
-    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-        panic!("unexpected REST request");
-    })
-    .with_sql_client(client);
-    let first = db
-        .list_functions(
-            &["team".into()],
-            crate::listing::ListingOptions::default().page_limit(2),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        first
-            .items
-            .iter()
-            .map(|item| item.version())
-            .collect::<Vec<_>>(),
-        ["1", "2"]
-    );
-    let token = first.page_token.unwrap();
-    let second = db
-        .list_functions(
-            &["team".into()],
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(token.clone()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(second.items.len(), 1);
-    assert_eq!(second.items[0].version(), "10");
-    assert!(second.page_token.is_none());
-    assert!(
-        db.list_functions(
-            &["other".into()],
-            crate::listing::ListingOptions::default()
-                .page_limit(2)
-                .page_token(token)
-        )
-        .await
-        .is_err()
-    );
-    let seen = statements.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert!(seen[0].starts_with("SHOW FUNCTIONS HISTORY WITH (limit = 3,"));
-    assert!(seen[1].contains("after_version = '2'"));
-    shutdown.send(()).unwrap();
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2".to_owned(),
+                    sql_listing_batch("definition", &[VERSION, &second], Some("revision-cursor")),
+                ),
+                (
+                    "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2 FROM 'revision-cursor'".to_owned(),
+                    sql_listing_batch("definition", &[&tenth], None),
+                ),
+            ]))),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request")
+        })
+        .with_sql_client(client);
+        let first = db
+            .list_functions(
+                &["team".into()],
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|item| item.version())
+                .collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+        assert_eq!(first.page_token.as_deref(), Some("revision-cursor"));
+        let last = db
+            .list_functions(
+                &["team".into()],
+                crate::listing::ListingOptions::default()
+                    .page_limit(2)
+                    .page_token(first.page_token.unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(last.items.len(), 1);
+        assert_eq!(last.items[0].version(), "10");
+        assert!(last.page_token.is_none());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2",
+                "SHOW FUNCTIONS HISTORY IN \"team\" LIMIT 2 FROM 'revision-cursor'"
+            ]
+        );
+        shutdown.send(()).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -3542,25 +4024,48 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             ..Default::default()
         };
         let statements = service.statements.clone();
+        let headers = service.headers.clone();
         let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
             panic!("unexpected REST request");
         })
         .with_sql_client(client);
-        let created = db
+        let connection = Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+        let created = connection
             .create_view("adults", "SELECT name FROM people", &["team".into()])
             .await
             .unwrap();
-        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        let existing = connection
+            .create_view(
+                "adults",
+                "SELECT replacement FROM other_people",
+                &["team".into()],
+            )
+            .exist_ok(true)
+            .await
+            .unwrap();
+        let described = connection
+            .describe_view("adults", &["team".into()])
+            .await
+            .unwrap();
         assert_eq!(created, described);
+        assert_eq!(existing, described);
         assert_eq!(created.schema.fields()[0].name(), "name");
         assert_eq!(created.default_namespace_path, ["team"]);
         assert_eq!(
             statements.lock().unwrap().as_slice(),
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
                 "DESCRIBE VIEW \"adults\""
             ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team")
         );
         shutdown.send(()).unwrap();
     }
@@ -3598,29 +4103,20 @@ async fn view_drop_uses_a_repeatable_query_job() {
 }
 
 #[tokio::test]
-async fn view_listing_uses_bounded_sql_and_scoped_cursors() {
+async fn view_listing_uses_server_continuation_tokens() {
     for defer in [false, true] {
-        let first_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["adults", "hf'prod", "openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let second_result = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["openai-prod"])) as ArrayRef,
-        )])
-        .unwrap();
-        let result_overrides = Arc::new(std::sync::Mutex::new(HashMap::from([
-            ("SHOW VIEWS LIMIT 3".to_string(), first_result),
-            (
-                "SHOW VIEWS WHERE name > 'hf''prod' LIMIT 3".to_string(),
-                second_result,
-            ),
-        ])));
+        let token = "server'opaque:token";
+        let next_sql = "SHOW VIEWS IN \"team$reports\" LIMIT 2 FROM 'server''opaque:token'";
         let service = TestSqlService {
             adaptive: true,
             defer,
-            result_overrides,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "SHOW VIEWS IN \"team$reports\" LIMIT 2".to_owned(),
+                    sql_listing_batch("name", &["a", "b"], Some(token)),
+                ),
+                (next_sql.to_owned(), sql_listing_batch("name", &["z"], None)),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3632,107 +4128,39 @@ async fn view_listing_uses_bounded_sql_and_scoped_cursors() {
         )
         .await;
         let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
-            panic!("unexpected REST request");
+            panic!("unexpected REST request")
         })
         .with_sql_client(client);
-        let connection = Connection::new(
-            Arc::new(db),
-            Arc::new(crate::embeddings::MemoryRegistry::new()),
-        );
         let namespace = vec!["team".to_owned(), "reports".to_owned()];
-
-        let first = connection
+        let first = db
             .list_views(
                 &namespace,
                 crate::listing::ListingOptions::default().page_limit(2),
             )
-            .next_page()
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(first.items, ["adults", "hf'prod"]);
-        let token = first.page_token.expect("a third row must produce a token");
-
-        let second = connection
+        assert_eq!(first.items, ["a", "b"]);
+        assert_eq!(first.page_token.as_deref(), Some(token));
+        let second = db
             .list_views(
                 &namespace,
                 crate::listing::ListingOptions::default()
                     .page_limit(2)
-                    .page_token(&token),
+                    .page_token(first.page_token.unwrap()),
             )
-            .next_page()
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(second.items, ["openai-prod"]);
+        assert_eq!(second.items, ["z"]);
         assert!(second.page_token.is_none());
-
         assert_eq!(
             *statements.lock().unwrap(),
-            [
-                "SHOW VIEWS LIMIT 3",
-                "SHOW VIEWS WHERE name > 'hf''prod' LIMIT 3"
-            ]
+            ["SHOW VIEWS IN \"team$reports\" LIMIT 2", next_sql]
         );
-        {
-            let headers = headers.lock().unwrap();
-            assert!(!headers.is_empty());
-            for header in headers.iter() {
-                assert_eq!(header.database, "analytics");
-                assert_eq!(header.database_prefix, "tenant/production");
-                assert_eq!(header.namespace_path, "team$reports");
-            }
+        for header in headers.lock().unwrap().iter() {
+            assert_eq!(header.database, "analytics");
+            assert_eq!(header.database_prefix, "tenant/production");
+            assert_eq!(header.namespace_path, "team$reports");
         }
-
-        let encode_token =
-            |kind: &str, database: &str, prefix: Option<&str>, path: &[String], last: &str| {
-                URL_SAFE_NO_PAD.encode(
-                    serde_json::to_vec(&(kind, database, prefix, path.to_vec(), last)).unwrap(),
-                )
-            };
-        for forged in [
-            encode_token(
-                "secret",
-                "analytics",
-                Some("tenant/production"),
-                &namespace,
-                "hf'prod",
-            ),
-            encode_token(
-                "view",
-                "billing",
-                Some("tenant/production"),
-                &namespace,
-                "hf'prod",
-            ),
-            encode_token("view", "analytics", Some("other"), &namespace, "hf'prod"),
-            encode_token(
-                "view",
-                "analytics",
-                Some("tenant/production"),
-                &["other".to_owned()],
-                "hf'prod",
-            ),
-            "not-a-json-token".to_string(),
-        ] {
-            let mut listing = connection.list_views(
-                &namespace,
-                crate::listing::ListingOptions::default().page_token(forged),
-            );
-            assert!(matches!(
-                listing.next_page().await,
-                Err(Error::InvalidInput { .. })
-            ));
-        }
-        let mut listing = connection.list_views(
-            &["other".to_owned()],
-            crate::listing::ListingOptions::default().page_token(&token),
-        );
-        assert!(matches!(
-            listing.next_page().await,
-            Err(Error::InvalidInput { .. })
-        ));
-        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }
@@ -3928,6 +4356,589 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
         assert_eq!(
             *statements.lock().unwrap(),
             [format!("OPTIMIZE \"events\" REWRITE DATA{suffix}")]
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
+    use crate::table::optimize::CompactionOverrides;
+    for (code, message, unsupported) in [
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError(\"Expected: end of statement, found: REWRITE at Line: 1\")",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: Expected: TABLE, found: events",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "Unknown OPTIMIZE option 'io_buffer_size'",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: future grammar diagnostic",
+            true,
+        ),
+        (
+            tonic::Code::InvalidArgument,
+            "Unknown OPTIMIZE option 'future_option'",
+            true,
+        ),
+        (
+            tonic::Code::PermissionDenied,
+            "ParserError: future grammar diagnostic",
+            false,
+        ),
+        (tonic::Code::PermissionDenied, "permission denied", false),
+        (tonic::Code::NotFound, "table not found", false),
+        (tonic::Code::Unavailable, "transport error", false),
+        (
+            tonic::Code::InvalidArgument,
+            "invalid table configuration",
+            false,
+        ),
+    ] {
+        let status = Status::new(code, message);
+        let service = TestSqlService {
+            adaptive: true,
+            optimize_error: Some(status),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client =
+            client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql_client),
+        );
+        let error = table
+            .compact(CompactionOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(error, Error::NotSupported { .. }),
+            unsupported,
+            "{error:?}"
+        );
+        assert!(error.to_string().contains(message));
+        assert!(error.to_string().contains("request_id"));
+        assert_eq!(statements.lock().unwrap().len(), 1);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_branch_options_are_not_dropped() {
+    let service = TestSqlService {
+        adaptive: true,
+        optimize_error: Some(Status::invalid_argument(
+            "ParserError: Expected: ), found: , at Line: 1",
+        )),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let client = client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        Some(sql_client),
+    )
+    .with_branch(Some("exp".into()));
+    let error = table
+        .compact(crate::table::optimize::CompactionOverrides {
+            io_buffer_size: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("compatible release"));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'exp', io_buffer_size = 0)"]
+    );
+    shutdown.send(()).unwrap();
+}
+
+fn prewarm_result() -> RecordBatch {
+    RecordBatch::try_from_iter([
+        (
+            "job_id",
+            Arc::new(StringArray::from(vec!["warming-job"])) as ArrayRef,
+        ),
+        (
+            "table_version",
+            Arc::new(arrow_array::UInt64Array::from(vec![42])) as ArrayRef,
+        ),
+    ])
+    .unwrap()
+}
+
+#[tokio::test]
+async fn remote_prewarm_data_returns_the_durable_job_without_polling() {
+    use crate::table::PrewarmDataOptions;
+    for branch in [None, Some("experiment"), Some("o'brien")] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let client = client_with_handler(move |request| -> http::Response<String> {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let value: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(value["job_id"], "warming-job");
+            observed.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                "job_id":"warming-job", "job_type":"prewarm_page_cache", "job_state":"DONE",
+                "creation_ms":1,"spec":{"table_version":42},
+                "result":{"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4},
+                "operation_progress":{"phase":"reading","executors_completed":2}})
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clip\"name".into(),
+            vec!["team".into(), "inner".into()],
+            "team$inner$clip\"name".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(branch.map(str::to_string));
+        let job = table
+            .prewarm_data_async(
+                PrewarmDataOptions::new()
+                    .columns(["attrs.score", "`caption.text`", "attrs.score"])
+                    .filter("quality > 0.7")
+                    .concurrency(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("warming-job"));
+        assert_eq!(
+            polls.load(Ordering::SeqCst),
+            0,
+            "acceptance must not eagerly poll HTTP"
+        );
+        let branch_sql = branch
+            .map(|b| format!("branch = '{}', ", b.replace('\'', "''")))
+            .unwrap_or_default();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!(
+                "PREWARM WITH ({branch_sql}concurrency = 4) AS SELECT \"attrs\".\"score\", \"caption.text\" FROM \"clip\"\"name\" WHERE quality > 0.7"
+            )]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team$inner" && h.database == "analytics")
+        );
+        job.wait().await.unwrap();
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        job.refresh().await.unwrap();
+        assert_eq!(job.spec().unwrap()["table_version"], 42);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
+    for columns in [None, Some(vec![]), Some(vec!["payload".into()])] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|r| -> http::Response<String> {
+                panic!(
+                    "legacy prewarm must neither submit nor poll REST: {}",
+                    r.url()
+                );
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        table.prewarm_data(columns.clone()).await.unwrap();
+        let projection = if columns.as_ref().is_some_and(|c| !c.is_empty()) {
+            "\"payload\""
+        } else {
+            "*"
+        };
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("PREWARM AS SELECT {projection} FROM \"clips\"")]
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_data_rejects_bad_receipts_without_resubmission() {
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|r| -> http::Response<String> {
+            panic!("must not retry malformed receipt through REST: {}", r.url());
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    );
+    let error = table.prewarm_data(None).await.unwrap_err();
+    assert!(error.to_string().contains("inspect jobs before retrying"));
+    assert_eq!(statements.lock().unwrap().len(), 1);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_prewarm_errors_preserve_diagnostics_and_never_fall_back() {
+    for (status, unsupported) in [
+        (
+            Status::invalid_argument("Unknown PREWARM option 'branch'"),
+            true,
+        ),
+        (Status::permission_denied("source Select denied"), false),
+        (
+            Status::invalid_argument("ParserError: expected expression, found invalid_filter"),
+            false,
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            prewarm_error: Some(status),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|r| -> http::Response<String> {
+                panic!("must not retry through REST: {}", r.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        let error = table.prewarm_data(None).await.unwrap_err();
+        assert_eq!(
+            matches!(error, Error::NotSupported { .. }),
+            unsupported,
+            "{error}"
+        );
+        let preview_error = table
+            .explain_prewarm_data(Default::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(preview_error, Error::NotSupported { .. }),
+            unsupported,
+            "{preview_error}"
+        );
+        assert_eq!(statements.lock().unwrap().len(), 2);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_requires_azure_ack_before_execution() {
+    for supported in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            prewarm_azure_supported: supported,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let mut config = ClientConfig::default();
+        config.extra_headers.insert(
+            "x-azure-storage-account-name".into(),
+            "sourceaccount".into(),
+        );
+        let (sql, shutdown) = start_sql_service(service, config).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|r| -> http::Response<String> {
+                panic!("must not use REST: {}", r.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        let result = table.prewarm_data(None).await;
+        assert_eq!(result.is_ok(), supported, "{result:?}");
+        assert_eq!(statements.lock().unwrap().len(), usize::from(supported));
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_wait_surfaces_warming_job_failure_or_cancellation() {
+    for state in ["FAILED", "CANCELLED"] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let client = client_with_handler(move |r| -> http::Response<String> {
+            assert_eq!(r.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                "job_id":"warming-job","job_type":"prewarm_page_cache","job_state":state,
+                "creation_ms":1,"spec":{"table_version":42},
+                "result":{"table_version":42,"executors_targeted":2,"executors_completed":2,"fragments_selected":4},
+                "operation_progress":{"phase":"reading","executors_completed":2}})
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        );
+        let job = table.prewarm_data_async(Default::default()).await.unwrap();
+        assert_eq!(job.id(), Some("warming-job"));
+        let error = job.wait().await.unwrap_err();
+        if state == "FAILED" {
+            assert!(matches!(error, Error::JobFailed { .. }), "{error}");
+        } else {
+            assert!(matches!(error, Error::JobCancelled { .. }), "{error}");
+        }
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
+    let service = TestSqlService {
+        adaptive: true,
+        result: prewarm_result(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|r| -> http::Response<String> {
+            assert_eq!(r.url().path(), "/v1/table/clips/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version":7,"schema":{"fields":[]}}"#.to_string())
+                .unwrap()
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    );
+    table.checkout(7).await.unwrap();
+    let error = table.prewarm_data(None).await.unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("historical version 7"));
+    let error = table
+        .explain_prewarm_data(Default::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("historical version 7"));
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_compaction_tracks_registry_job_and_real_result() {
+    use crate::table::optimize::CompactionOverrides;
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["compacting-job"])) as ArrayRef,
+        )])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let polls = Arc::new(AtomicUsize::new(0));
+    let observed = polls.clone();
+    let client = client_with_handler(move |request| {
+        assert_eq!(request.url().path(), "/v1/jobs/describe");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["job_id"], "compacting-job");
+        observed.fetch_add(1, Ordering::SeqCst);
+        http::Response::builder()
+            .status(200)
+            .body(
+                serde_json::json!({
+            "job_id":"compacting-job","job_type":"compact","job_state":"DONE",
+            "result":{"partial_commit":false,"rows_succeeded":12,"rows_failed":0,
+                "completion_percentage":100.0,"files_added":1,"files_removed":3,
+                "fragments_added":1,"fragments_removed":3}})
+                .to_string(),
+            )
+            .unwrap()
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "inner".into()],
+        "team$inner$events".into(),
+        Default::default(),
+        Some(sql),
+    )
+    .with_branch(Some("experiment".into()));
+    let job = table
+        .compact_async(CompactionOverrides {
+            target_rows_per_fragment: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("compacting-job"));
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    let result = job.wait().await.unwrap();
+    assert_eq!(result.rows_succeeded, 12);
+    assert_eq!(result.fragments_removed, Some(3));
+    assert!(!result.more_work);
+    assert_eq!(
+        *statements.lock().unwrap(),
+        [
+            "OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'experiment', target_rows_per_fragment = 100)"
+        ]
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_prewarm_preview_uses_sql_without_any_http_jobs() {
+    use crate::table::PrewarmDataOptions;
+    for azure in [false, true] {
+        let preview = serde_json::json!({
+            "format_version":1,"table_version":42,"plan":"metadata preview",
+            "pruning":{"mode":"zonemap_ranges","input_fragments":4,
+                "selected_fragments":1,"pruned_fragments":3,"selected_row_ranges":2}
+        });
+        let service = TestSqlService {
+            adaptive: true,
+            result: RecordBatch::try_from_iter([
+                (
+                    "plan_type",
+                    Arc::new(StringArray::from(vec!["logical_plan"])) as ArrayRef,
+                ),
+                (
+                    "plan",
+                    Arc::new(StringArray::from(vec![preview.to_string()])) as ArrayRef,
+                ),
+            ])
+            .unwrap(),
+            prewarm_azure_supported: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let mut config = ClientConfig::default();
+        if azure {
+            config.extra_headers.insert(
+                "x-azure-storage-account-name".into(),
+                "sourceaccount".into(),
+            );
+        }
+        let (sql, shutdown) = start_sql_service(service, config).await;
+        let client = client_with_handler(|_| -> http::Response<String> {
+            panic!("preview must not use HTTP job APIs or REST fallback")
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clips".into(),
+            vec!["team".into()],
+            "team$clips".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("experiment".into()));
+        let plan = table
+            .explain_prewarm_data(
+                PrewarmDataOptions::new()
+                    .columns(["attrs.score"])
+                    .filter("id > 0")
+                    .concurrency(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.table_version, 42);
+        assert_eq!(plan.pruning.selected_row_ranges, Some(2));
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "EXPLAIN (FORMAT JSON) PREWARM WITH (branch = 'experiment', concurrency = 4) AS SELECT \"attrs\".\"score\" FROM \"clips\" WHERE id > 0"
+            ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team" && h.database == "analytics")
         );
         shutdown.send(()).unwrap();
     }

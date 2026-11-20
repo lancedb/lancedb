@@ -4,6 +4,7 @@
 
 import contextlib
 import inspect
+import pickle
 import re
 import sys
 from datetime import timedelta
@@ -67,6 +68,29 @@ def test_basic(tmp_path):
     assert len(db) == 1
 
     assert db.open_table("test").name == db["test"].name
+
+
+def test_lance_db_connection_pickle_roundtrip(tmp_path):
+    interval = timedelta(seconds=2)
+    db = lancedb.connect(tmp_path, read_consistency_interval=interval)
+    db.create_table("pickle_conn", pa.table({"id": [1, 2]}))
+
+    restored = pickle.loads(pickle.dumps(db))
+
+    assert restored.uri == str(tmp_path)
+    assert restored.read_consistency_interval == interval
+    assert restored.open_table("pickle_conn").to_arrow()["id"].to_pylist() == [1, 2]
+
+
+def test_lance_db_connection_pickle_preserves_zero_read_consistency(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("pickle_zero", pa.table({"id": [1]}))
+
+    restored_db, restored_table = pickle.loads(pickle.dumps((db, table)))
+    lancedb.connect(tmp_path).open_table("pickle_zero").add(pa.table({"id": [2]}))
+
+    assert restored_db.read_consistency_interval == timedelta(0)
+    assert restored_table.to_arrow()["id"].to_pylist() == [1, 2]
 
 
 def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeypatch):
@@ -282,9 +306,7 @@ async def test_table_listing_defaults_and_zero_limit(tmp_path):
     assert empty.page_token is None
 
 
-def test_db_contains_stops_after_matching_table_page(
-    tmp_db: lancedb.DBConnection, monkeypatch
-):
+def test_db_len_includes_all_table_pages(tmp_db: lancedb.DBConnection, monkeypatch):
     calls = []
     pages = {
         None: SimpleNamespace(tables=["table_0", "table_1"], page_token="next"),
@@ -297,16 +319,42 @@ def test_db_contains_stops_after_matching_table_page(
 
     monkeypatch.setattr(tmp_db, "list_tables", list_tables)
 
-    assert "table_1" in tmp_db
-    assert calls == [None]
-
-    calls.clear()
-    assert "table_2" in tmp_db
-    assert calls == [None, "next"]
-
-    calls.clear()
     assert len(tmp_db) == 3
     assert calls == [None, "next"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_path", [[], ["analytics", "nested"]])
+async def test_local_table_exists_without_listing(
+    tmp_path, monkeypatch, namespace_path
+):
+    db = lancedb.connect(tmp_path)
+    for depth in range(1, len(namespace_path) + 1):
+        db.create_namespace(namespace_path[:depth])
+    db.create_table("events", data=[{"id": 1}], namespace_path=namespace_path)
+    if not namespace_path:
+        for idx in range(100):
+            (tmp_path / f"a{idx:03}.lance").mkdir()
+        assert "events" not in db.list_tables().tables
+    adb = await lancedb.connect_async(tmp_path)
+
+    def fail_listing(*args, **kwargs):
+        raise AssertionError("Existence checks must not list tables")
+
+    monkeypatch.setattr(db, "list_tables", fail_listing)
+    monkeypatch.setattr(adb, "list_tables", fail_listing)
+    table_id = namespace_path + ["events"]
+    assert db.table_exists(table_id) is True
+    assert await adb.table_exists(table_id) is True
+    assert db.table_exists(namespace_path + ["missing"]) is False
+    assert await adb.table_exists(namespace_path + ["missing"]) is False
+    assert ("events" in db) is (not namespace_path)
+    assert "missing" not in db
+    assert table_id == namespace_path + ["events"]
+
+    db.drop_table("events", namespace_path=namespace_path)
+    assert db.table_exists(table_id) is False
+    assert await adb.table_exists(table_id) is False
 
 
 @pytest.mark.asyncio

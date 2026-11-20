@@ -7,8 +7,10 @@ icon: rocket
 import { PyConnect, TsConnect, RsConnect, PyConnectObjectStorage, TsConnectObjectStorage, RsConnectObjectStorage, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
 import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartCurateSample, PyQuickstartCurateDedupeSetup, PyQuickstartCurateDedupe, PyQuickstartCurateDedupeQuery, PyQuickstartFlattenStats, PyQuickstartAddFeature, PyQuickstartAddFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
 
-This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
-LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
+This quickstart walks you through creating a table, searching your data, and preparing it for training.
+By default, it uses LanceDB Embedded with a local database, so no account or API key is required.
+To follow along with an existing LanceDB Enterprise deployment, use the
+[Enterprise connection instructions](#connect-to-lancedb-enterprise).
 
 ## 1\. Install LanceDB {#1-install-lancedb}
 
@@ -365,7 +367,11 @@ Store images, audio, or other binary data alongside vectors and metadata, in a c
     </CodeBlock>
 </CodeGroup>
 
-See [Multimodal data types](/management/table#multimodal) for larger payloads and the Blob v2 column type, which avoids loading binary data on every scan.
+For image files and larger payloads, follow the
+[Blob photo tutorial](/management/table#photo-tutorial) to create an ordinary
+Blob table, filter its metadata, save and check an image, and copy matching rows.
+The tutorial covers LanceDB Embedded and Enterprise SQL. Blob v2 is generally
+available on ordinary tables starting with LanceDB Enterprise 1.15.0.
 
 ## 8\. Train on your data {#8-train}
 

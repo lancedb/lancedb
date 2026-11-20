@@ -6,6 +6,7 @@ import ctypes
 import gc
 import json
 import os
+import pickle
 import sys
 import threading
 import warnings
@@ -1228,6 +1229,128 @@ def test_list_versions_timestamp_precision_remote():
     assert versions[0]["timestamp"].microsecond == 274000
 
 
+def test_lance_table_is_picklable(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_table", pa.table({"id": [1, 2, 3]}))
+    payload = pickle.dumps(table)
+
+    # A standard-mode handle must reopen at latest, not freeze the version that
+    # happened to be current when pickle.dumps ran.
+    tmp_db.open_table("pickle_table").add(pa.table({"id": [4]}))
+
+    restored = pickle.loads(payload)
+    assert restored.name == "pickle_table"
+    assert restored.count_rows() == 4
+    assert restored.to_arrow()["id"].to_pylist() == [1, 2, 3, 4]
+
+
+def test_lance_table_pickle_preserves_checkout(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_checkout", pa.table({"id": [1]}))
+    table.add(pa.table({"id": [2]}))
+    table.checkout(1)
+    payload = pickle.dumps(table)
+
+    tmp_db.open_table("pickle_checkout").add(pa.table({"id": [3]}))
+
+    restored = pickle.loads(payload)
+    assert restored.version == 1
+    assert restored.to_arrow()["id"].to_pylist() == [1]
+
+    restored.checkout_latest()
+    assert restored.version == 3
+    assert restored.to_arrow()["id"].to_pylist() == [1, 2, 3]
+
+
+def test_lance_table_pickle_preserves_cross_branch_tag_checkout(tmp_path):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("pickle_tag_branch", pa.table({"id": [0]}))
+    branch = main.branches.create("exp")
+    branch.add(pa.table({"id": [1]}))
+    branch.tags.create("exp_tag", branch.version)
+
+    # Advance main independently, then resolve a tag that points into exp.
+    main.add(pa.table({"id": [9]}))
+    main.checkout("exp_tag")
+    assert main.current_branch() == "exp"
+    assert main.version == 2
+    assert main.to_arrow()["id"].to_pylist() == [0, 1]
+
+    restored = pickle.loads(pickle.dumps(main))
+    assert restored.current_branch() == "exp"
+    assert restored.version == 2
+    assert restored.to_arrow()["id"].to_pylist() == [0, 1]
+
+
+def test_lance_table_pickle_preserves_branch_and_version(tmp_path):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("pickle_branch", pa.table({"id": [0]}))
+    branch = main.branches.create("exp")
+    branch.add(pa.table({"id": [1]}))
+    branch_version = branch.version
+
+    branch_payload = pickle.dumps(branch)
+    pinned = db.open_table("pickle_branch", branch="exp", version=branch_version)
+    pinned_payload = pickle.dumps(pinned)
+
+    db.open_table("pickle_branch", branch="exp").add(pa.table({"id": [2]}))
+
+    restored_branch = pickle.loads(branch_payload)
+    assert restored_branch.current_branch() == "exp"
+    assert restored_branch.to_arrow()["id"].to_pylist() == [0, 1, 2]
+
+    restored_pinned = pickle.loads(pinned_payload)
+    assert restored_pinned.current_branch() == "exp"
+    assert restored_pinned.version == branch_version
+    assert restored_pinned.to_arrow()["id"].to_pylist() == [0, 1]
+    assert main.count_rows() == 1
+
+
+def test_lance_table_pickle_memory_uses_arrow_snapshot(mem_db: DBConnection):
+    table = mem_db.create_table("pickle_memory", pa.table({"id": [1, 2]}))
+    payload = pickle.dumps(table)
+
+    table.add(pa.table({"id": [3]}))
+
+    restored = pickle.loads(payload)
+    assert restored.name == "pickle_memory"
+    assert restored.to_arrow()["id"].to_pylist() == [1, 2]
+
+
+def test_memory_connection_pickle_requires_a_table_snapshot(mem_db: DBConnection):
+    with pytest.raises(TypeError, match="in-memory LanceDBConnection"):
+        pickle.dumps(mem_db)
+
+
+def test_pickle_rejects_session_backed_connection(tmp_path):
+    db = lancedb.connect(tmp_path, session=lancedb.Session())
+    table = db.create_table("pickle_session", pa.table({"id": [1]}))
+
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(db)
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(table)
+
+
+def test_pickle_rejects_custom_namespace_client(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_custom_ns", pa.table({"id": [1]}))
+    table._namespace_client = threading.Lock()
+
+    with pytest.raises(TypeError, match="namespace_client"):
+        pickle.dumps(table)
+
+
+def test_lance_table_pickle_preserves_namespace_path(tmp_path):
+    pytest.importorskip("lance")
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["ns1"])
+    table = db.create_table("pickle_ns", pa.table({"id": [1]}), namespace_path=["ns1"])
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    assert restored.namespace == ["ns1"]
+    assert restored.count_rows() == 1
+    assert restored._conn._namespace_client_properties == {"root": str(tmp_path)}
+
+
 def test_versioning(mem_db: DBConnection):
     table = mem_db.create_table(
         "test",
@@ -1837,6 +1960,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # Test with target_partition_size
@@ -1862,6 +1986,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # target_partition_size has a default value,
@@ -1886,6 +2011,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1902,6 +2028,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1922,6 +2049,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     table.create_index(
@@ -1942,6 +2070,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
 
@@ -2073,6 +2202,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name="my_custom_index",
         train=True,
+        exist_ok=False,
     )
 
     # Test with train=False
@@ -2084,6 +2214,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name=None,
         train=False,
+        exist_ok=False,
     )
 
     # Test with both name and train
@@ -2095,6 +2226,7 @@ def test_create_index_name_and_train_parameters(
         wait_timeout=None,
         name="my_index_name",
         train=True,
+        exist_ok=False,
     )
 
 
@@ -2132,6 +2264,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # Scalar index via new API
@@ -2143,6 +2276,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
     # FTS index via new API
@@ -2154,6 +2288,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         wait_timeout=None,
         name=None,
         train=True,
+        exist_ok=False,
     )
 
 
@@ -3436,7 +3571,8 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a")
         .when_matched_update_all()
         .when_not_matched_insert_all()
-        .execute(new_data, timeout=timedelta(seconds=10))
+        .use_index(False)
+        .execute(new_data, timeout=timedelta(seconds=10), retries=0)
     )
     assert merge_insert_res.version == 2
     assert merge_insert_res.num_inserted_rows == 1
@@ -3515,7 +3651,7 @@ def test_merge_insert(mem_db: DBConnection):
     # timeout
     with pytest.raises(Exception, match="merge insert timed out"):
         table.merge_insert("a").when_matched_update_all().execute(
-            new_data, timeout=timedelta(0)
+            new_data, timeout=timedelta(0), retries=255
         )
 
 
@@ -6001,6 +6137,31 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
             {"resource_budget": {"cpu_millis": 1000, "memory_bytes": 1024}},
             "resource_budget",
         ),
+        (
+            {
+                "supervisor_resources": {
+                    "cpu_millis": 1000,
+                    "memory_bytes": 1024,
+                    "ephemeral_storage_bytes": 2048,
+                }
+            },
+            "supervisor_resources",
+        ),
+        (
+            {
+                "planning_workers": {
+                    "resources": {
+                        "cpu_millis": 1000,
+                        "memory_bytes": 1024,
+                        "ephemeral_storage_bytes": 2048,
+                    },
+                    "max_workers": 2,
+                    "rows_per_worker": 100,
+                    "fragments_per_worker": 1,
+                }
+            },
+            "planning_workers",
+        ),
         ({"num_workers": 2}, "num_workers"),
         ({"max_executor_processes_per_worker": 2}, "max_executor_processes_per_worker"),
     ],
@@ -6292,3 +6453,108 @@ async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     metadata = (await table.schema()).field("doubled").metadata
     assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
     assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["create_index", "create_index_async", "create_scalar_index", "create_fts_index"],
+)
+@pytest.mark.parametrize("name", [None, "kept_index"])
+def test_index_exist_ok_preserves_definition_and_version(mem_db, method, name):
+    table = mem_db.create_table(
+        "keep_index", [{"id": i, "text": f"document {i}"} for i in range(20)]
+    )
+    column = "text" if method == "create_fts_index" else "id"
+    config = FTS() if column == "text" else BTree()
+    table.create_index(column, config=config, name=name, exist_ok=True)
+    before = table.version
+    original = table.list_indices()
+    kwargs = dict(name=name, exist_ok=True)
+    if method in ("create_index", "create_index_async"):
+        kwargs["config"] = config
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = getattr(table, method)(column, **kwargs)
+    if method == "create_index_async":
+        result.wait()
+    assert table.version == before
+    assert [(index.name, index.index_type) for index in table.list_indices()] == [
+        (index.name, index.index_type) for index in original
+    ]
+    with pytest.raises((ValueError, RuntimeError), match="already exists"):
+        table.create_index(column, config=config, name=name, replace=False)
+    table.create_index(column, config=config, name=name)
+    assert table.version > before
+
+
+@pytest.mark.parametrize(
+    "column,name,existing",
+    [
+        ("vector", "kept", "kept"),
+        ("`docs`.`nested.dot`", None, "docs.`nested.dot`_idx"),
+    ],
+)
+def test_accelerated_index_exist_ok_skips_gpu_validation(column, name, existing):
+    dataset = MagicMock()
+    dataset.list_indices.return_value = [{"name": existing}]
+    with patch("lancedb.table._validate_index_accelerator") as validate:
+        table_module._create_accelerated_index(
+            dataset, column=column, accelerator="cuda", name=name, exist_ok=True
+        )
+    validate.assert_not_called()
+    dataset.create_index.assert_not_called()
+
+
+def test_accelerated_index_exist_ok_preserves_concurrent_winner():
+    dataset = MagicMock()
+    dataset.list_indices.side_effect = [[], [{"name": "vector_idx"}]]
+    dataset.create_index.side_effect = RuntimeError("concurrent create")
+    with patch("lancedb.table._validate_index_accelerator"):
+        table_module._create_accelerated_index(
+            dataset, column="vector", accelerator="cuda", replace=True, exist_ok=True
+        )
+    assert dataset.create_index.call_args.kwargs["replace"] is False
+    assert dataset.create_index.call_args.kwargs["name"] == "vector_idx"
+
+
+@pytest.mark.parametrize("column", ["`user-id`", "`user:id`", "nested.`user-id`"])
+def test_index_exist_ok_matches_lance_default_name(mem_db, column):
+    table = mem_db.create_table(
+        "quoted_index",
+        [{"user-id": 1, "user:id": 2, "nested": {"user-id": 4}}],
+    )
+    table.create_index(column, config=BTree())
+    before = table.version
+    table.create_index(column, config=BTree(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1
+
+
+def test_fts_exist_ok_matches_quoted_default_name(mem_db):
+    table = mem_db.create_table("quoted_fts", [{"body-text": "keep this document"}])
+    table.create_index("`body-text`", config=FTS())
+    before = table.version
+    table.create_index("`body-text`", config=FTS(), exist_ok=True)
+    assert table.version == before
+    assert len(table.list_indices()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "method", ["prewarm_data", "prewarm_data_async", "explain_prewarm_data"]
+)
+async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous, method):
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            await getattr(table, method)(filter="id > 0", concurrency=2)
+    else:
+        table = lancedb.connect(tmp_path).create_table("prewarm", [{"id": 1}])
+        with pytest.raises(
+            NotImplementedError, match="only supported on remote tables"
+        ):
+            getattr(table, method)(filter="id > 0", concurrency=2)

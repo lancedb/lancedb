@@ -104,6 +104,106 @@ impl FunctionWorkerResourceBudget {
     }
 }
 
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+///
+/// This sizes the supervisor or planning worker pod for a registered
+/// Function refresh. LanceDB Embedded rejects it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: u64,
+    /// Memory limit in bytes.
+    pub memory_bytes: u64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: u64,
+}
+
+impl FunctionRefreshPodResources {
+    /// Create positive CPU, memory, and ephemeral-storage limits.
+    pub fn new(cpu_millis: u64, memory_bytes: u64, ephemeral_storage_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            ephemeral_storage_bytes,
+        }
+    }
+
+    fn validate(&self, prefix: &str) -> Result<()> {
+        for (name, value) in [
+            ("cpu_millis", self.cpu_millis),
+            ("memory_bytes", self.memory_bytes),
+            ("ephemeral_storage_bytes", self.ephemeral_storage_bytes),
+        ] {
+            if value == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!("{prefix}.{name} must be greater than zero"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resources and sizing policy for the CPU-only planning fleet of one
+/// registered Function refresh.
+///
+/// `resources` describes one planning worker pod. The remaining fields bound
+/// how many workers may run and how much work each worker receives. LanceDB
+/// Embedded rejects this option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: usize,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: u64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: u64,
+}
+
+impl FunctionRefreshPlanningConfig {
+    /// Create a planning configuration; every value must be positive.
+    pub fn new(
+        resources: FunctionRefreshPodResources,
+        max_workers: usize,
+        rows_per_worker: u64,
+        fragments_per_worker: u64,
+    ) -> Self {
+        Self {
+            resources,
+            max_workers,
+            rows_per_worker,
+            fragments_per_worker,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.resources.validate("planning_workers.resources")?;
+        if self.max_workers == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.max_workers must be greater than zero".into(),
+            });
+        }
+        if self.rows_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.rows_per_worker must be greater than zero".into(),
+            });
+        }
+        if self.fragments_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.fragments_per_worker must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Options for refreshing a computed column.
 ///
 /// Serializes to the Enterprise backfill request body, one key per set
@@ -112,6 +212,24 @@ impl FunctionWorkerResourceBudget {
 #[derive(Debug, Clone, Default, Serialize)]
 #[non_exhaustive]
 pub struct RefreshColumnOptions {
+    /// Select exactly the current failed rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_errors: Option<bool>,
+    /// Restrict retry selection to this job. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_job_id: Option<String>,
+    /// Restrict retry selection to this exception class. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_error_type: Option<String>,
+    /// Explicitly release and retry quarantined rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_quarantined: Option<bool>,
+    /// Upgrade the bound Function to this exact version. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_version: Option<String>,
+    /// Rows recomputed by a Function upgrade. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recompute: Option<crate::function::FunctionRecompute>,
     /// Only refresh the rows matching this SQL filter. Enterprise only.
     #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
     pub where_clause: Option<String>,
@@ -167,6 +285,14 @@ pub struct RefreshColumnOptions {
     /// Function refresh. Cannot be combined with `gpu_count`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    /// CPU, memory, and ephemeral-storage limits for the Function refresh
+    /// supervisor pod. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing limits for the Function refresh planning fleet.
+    /// Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
     /// GPU class for Function workers in LanceDB Enterprise.
     ///
     /// `None` keeps the Function's registered class, or the deployment default
@@ -182,6 +308,40 @@ pub struct RefreshColumnOptions {
 }
 
 impl RefreshColumnOptions {
+    /// Retry only current failures, using the server's row identities.
+    pub fn retry_errors(mut self, enabled: bool) -> Self {
+        self.retry_errors = Some(enabled);
+        self
+    }
+
+    /// Restrict a failed-row retry to one recorded job.
+    pub fn retry_job_id(mut self, job_id: impl Into<String>) -> Self {
+        self.retry_job_id = Some(job_id.into());
+        self
+    }
+
+    /// Restrict a failed-row retry to one exception class.
+    pub fn retry_error_type(mut self, error_type: impl Into<String>) -> Self {
+        self.retry_error_type = Some(error_type.into());
+        self
+    }
+
+    /// Release quarantine when explicitly retrying failures.
+    pub fn include_quarantined(mut self, include: bool) -> Self {
+        self.include_quarantined = Some(include);
+        self
+    }
+
+    /// Change the Function version and select the upgrade's recomputation policy.
+    pub fn upgrade(
+        mut self,
+        version: impl Into<String>,
+        recompute: crate::function::FunctionRecompute,
+    ) -> Self {
+        self.function_version = Some(version.into());
+        self.recompute = Some(recompute);
+        self
+    }
     /// Only refresh the rows matching `filter`.
     pub fn where_clause(mut self, filter: impl Into<String>) -> Self {
         self.where_clause = Some(filter.into());
@@ -264,6 +424,18 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Set the Function refresh supervisor pod resources.
+    pub fn supervisor_resources(mut self, resources: FunctionRefreshPodResources) -> Self {
+        self.supervisor_resources = Some(resources);
+        self
+    }
+
+    /// Set the Function refresh planning fleet resources and sizing.
+    pub fn planning_workers(mut self, planning: FunctionRefreshPlanningConfig) -> Self {
+        self.planning_workers = Some(planning);
+        self
+    }
+
     /// Request Function workers from `gpu_class`.
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.gpu_class = Some(gpu_class.into());
@@ -279,6 +451,12 @@ impl RefreshColumnOptions {
     /// The first set option a LanceDB Embedded refresh cannot honor, if any.
     pub fn enterprise_only_option(&self) -> Option<&'static str> {
         [
+            ("retry_errors", self.retry_errors.is_some()),
+            ("retry_job_id", self.retry_job_id.is_some()),
+            ("retry_error_type", self.retry_error_type.is_some()),
+            ("include_quarantined", self.include_quarantined.is_some()),
+            ("function_version", self.function_version.is_some()),
+            ("recompute", self.recompute.is_some()),
             ("where", self.where_clause.is_some()),
             ("retry_policy", self.retry_policy.is_some()),
             ("error_policy", self.error_policy.is_some()),
@@ -297,6 +475,8 @@ impl RefreshColumnOptions {
                 self.publication_interval_rows.is_some(),
             ),
             ("resource_budget", self.resource_budget.is_some()),
+            ("supervisor_resources", self.supervisor_resources.is_some()),
+            ("planning_workers", self.planning_workers.is_some()),
         ]
         .into_iter()
         .find_map(|(name, set)| set.then_some(name))
@@ -304,6 +484,31 @@ impl RefreshColumnOptions {
 
     /// Validate client-side constraints before any request is sent.
     pub fn validate(&self) -> Result<()> {
+        let retry = self.retry_errors == Some(true);
+        if (retry || self.function_version.is_some()) && self.where_clause.is_some() {
+            return Err(Error::InvalidInput {
+                message: "retry_errors and Function upgrades cannot be combined with where".into(),
+            });
+        }
+        if !retry
+            && (self.retry_job_id.is_some()
+                || self.retry_error_type.is_some()
+                || self.include_quarantined == Some(true))
+        {
+            return Err(Error::InvalidInput {
+                message: "retry filters require retry_errors=true".into(),
+            });
+        }
+        if self
+            .function_version
+            .as_ref()
+            .is_some_and(|version| version.is_empty())
+            || (self.recompute.is_some() && self.function_version.is_none())
+        {
+            return Err(Error::InvalidInput {
+                message: "recompute requires a nonempty function_version".into(),
+            });
+        }
         if self
             .where_clause
             .as_deref()
@@ -366,6 +571,12 @@ impl RefreshColumnOptions {
         }
         if let Some(budget) = &self.resource_budget {
             budget.validate()?;
+        }
+        if let Some(resources) = &self.supervisor_resources {
+            resources.validate("supervisor_resources")?;
+        }
+        if let Some(planning) = &self.planning_workers {
+            planning.validate()?;
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;
@@ -525,7 +736,10 @@ async fn execute_refresh_column_with_source(
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
-        Operation::DataReplacement { replacements },
+        Operation::DataReplacement {
+            replacements,
+            data_change: true,
+        },
         Some(source_version),
         None,
         None,
@@ -649,11 +863,14 @@ pub(crate) async fn execute_refresh_column_async(
         let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
         Ok(crate::function::RefreshColumnResult {
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
             rows_assigned: execution.result.rows_filled,
             rows_failed: 0,
             rows_remaining: 0,
             source_version: execution.source_version,
             published_version: execution.published_version,
+            plan: None,
         })
     })))
 }

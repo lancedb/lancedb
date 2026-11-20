@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -41,7 +42,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
-from .util import _validate_query_vector, flatten_columns, get_uri_scheme
+from .util import _validate_query_vector, add_note, flatten_columns, get_uri_scheme
 from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
@@ -194,20 +195,57 @@ def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     )
 
 
-def _supports_local_blob_fetch(
+def _supports_blob_fetch(
     async_table: "AsyncTable", pushdown_operations: Iterable[str]
 ) -> bool:
-    # Remote tables and QueryTable pushdown answer queries on a server, so a
-    # fetch through this handle could read another version.
-    return async_table._inner._is_native() and "QueryTable" not in pushdown_operations
+    # Remote queries carry their producing snapshot in response metadata.
+    # Namespace QueryTable pushdown has no equivalent snapshot contract.
+    return (
+        not async_table._inner._is_native() or "QueryTable" not in pushdown_operations
+    )
+
+
+def _remote_blob_snapshot(schema: pa.Schema) -> tuple[int, str]:
+    value = (schema.metadata or {}).get(b"lancedb:query_version", b"")
+    if not value.isdigit() or not 0 < int(value) < 2**64:
+        raise NotImplementedError(
+            "blob_mode='bytes' requires a stable table snapshot: the query response "
+            "has a missing, invalid, or inconsistent x-lancedb-query-version header. "
+            "Upgrade the server and use a table without Realtime/MemWAL, or use "
+            "blob_mode='descriptions'."
+        )
+    identity = (schema.metadata or {}).get(b"lancedb:query_snapshot", b"")
+    if not re.fullmatch(rb"v1:[0-9a-f]{64}", identity):
+        raise NotImplementedError(
+            "blob_mode='bytes' requires a trustworthy query snapshot identity: "
+            "missing or unsupported x-lancedb-query-snapshot. Upgrade the server "
+            "on every serving node, or use blob_mode='descriptions'."
+        )
+    return int(value), identity.decode("ascii")
+
+
+def _merge_query_snapshot(result: pa.Table, *sources: pa.Table) -> pa.Table:
+    """Preserve a snapshot only when every query leg used the same identity."""
+    keys = (b"lancedb:query_version", b"lancedb:query_snapshot")
+    snapshots = {
+        tuple((source.schema.metadata or {}).get(key) for key in keys)
+        for source in sources
+    }
+    metadata = dict(result.schema.metadata or {})
+    for key in keys:
+        metadata.pop(key, None)
+    snapshot = next(iter(snapshots)) if len(snapshots) == 1 else None
+    if snapshot is not None and all(value is not None for value in snapshot):
+        metadata.update(zip(keys, snapshot))
+    return result.replace_schema_metadata(metadata)
 
 
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. LanceDB Enterprise and namespace QueryTable pushdown "
-        "run the query on a server, so the blob fetch could read another table "
-        "version. Use blob_mode='descriptions' to inspect descriptors. To read "
+        "stable table snapshot. Namespace QueryTable pushdown does not bind "
+        "the query and blob fetches to one table version. "
+        "Use blob_mode='descriptions' to inspect descriptors. To read "
         "payloads, select row IDs with with_row_id(True), then call "
         "table.fetch_blobs(column, row_ids) or table.fetch_blob_files(column, "
         "row_ids). Keep the source unchanged between selection and fetching."
@@ -232,6 +270,24 @@ def _query_needs_lance_scanner(builder: Any) -> bool:
         query.fragments is not None
         or query.fragment_ids is not None
         or bool(query.with_row_address)
+    )
+
+
+def _raise_unsupported_fragment_constraints(
+    fragments: Optional[Any],
+    fragment_ids: Optional[List[int]],
+    *,
+    operation: str,
+) -> None:
+    """Reject fragment selection where execution would silently scan everything."""
+    if fragments is None and fragment_ids is None:
+        return
+    raise NotImplementedError(
+        "with_fragments() and fragment_ids() are only supported for embedded "
+        "plain-scan blob queries executed through to_pandas(). "
+        f"{operation} would ignore the fragment selection and scan the full "
+        "table. Remove the fragment constraint, or use table.to_lance() with "
+        "a Lance scanner for this query shape."
     )
 
 
@@ -533,9 +589,105 @@ def ensure_vector_query(
 
 
 class ColumnOrdering(pydantic.BaseModel):
+    """A single sort key for ``order_by``.
+
+    Attributes
+    ----------
+    column_name: str
+        The column to sort by.
+    ascending: bool, default True
+        Sort ascending when true, descending otherwise.
+    nulls_first: bool, default False
+        Place null values before non-null values when true.
+    """
+
     column_name: str
     ascending: bool = True
     nulls_first: bool = False
+
+
+_OrderingItem = Union[str, Tuple[str, str], ColumnOrdering, Dict[str, Any]]
+_OrderingInput = Optional[Union[_OrderingItem, List[_OrderingItem]]]
+_COLUMN_ORDERING_KEYS = frozenset({"column_name", "ascending", "nulls_first"})
+_ORDERING_EXAMPLE = '[{"column_name": "uris", "ascending": True}]'
+
+
+def _normalize_ordering(ordering: _OrderingInput) -> Optional[List[ColumnOrdering]]:
+    """Normalize the accepted ``order_by`` inputs into ``ColumnOrdering`` models.
+
+    ``None`` and an empty list clear the ordering. A tuple is always a single
+    ``(column_name, "asc"|"desc")`` pair, while a list is always a sequence of
+    separate orderings, so ``("a", "desc")`` and ``["a", "desc"]`` differ.
+    """
+    if ordering is None:
+        return None
+    if isinstance(ordering, tuple):
+        items: List[Any] = [ordering]
+    elif isinstance(ordering, list):
+        items = ordering
+    else:
+        items = [ordering]
+
+    normalized = [
+        _normalize_ordering_item(item, index) for index, item in enumerate(items)
+    ]
+    return normalized or None
+
+
+def _normalize_ordering_item(item: Any, index: int) -> ColumnOrdering:
+    prefix = f"order_by entry {index}"
+    if isinstance(item, ColumnOrdering):
+        if not item.column_name:
+            raise ValueError(f"{prefix} has an empty column_name")
+        return item
+    if isinstance(item, str):
+        if not item:
+            raise ValueError(f"{prefix} is an empty column name")
+        return ColumnOrdering(column_name=item)
+    if isinstance(item, tuple):
+        if len(item) != 2:
+            raise ValueError(
+                f"{prefix} must be a (column_name, 'asc'|'desc') tuple; got {item!r}"
+            )
+        column_name, direction = item
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError(
+                f"{prefix} must start with a non-empty column name; got {item!r}"
+            )
+        if not isinstance(direction, str) or direction.lower() not in ("asc", "desc"):
+            raise ValueError(
+                f"{prefix} has invalid direction {direction!r}; "
+                "expected 'asc' or 'desc'"
+            )
+        return ColumnOrdering(
+            column_name=column_name, ascending=direction.lower() == "asc"
+        )
+    if isinstance(item, dict):
+        unknown_keys = set(item) - _COLUMN_ORDERING_KEYS
+        if unknown_keys:
+            raise ValueError(
+                f"{prefix} has unsupported key(s) {sorted(map(str, unknown_keys))}; "
+                f"expected keys: {sorted(_COLUMN_ORDERING_KEYS)}. "
+                f"Example: {_ORDERING_EXAMPLE}"
+            )
+        if "column_name" not in item:
+            raise ValueError(
+                f"{prefix} is missing 'column_name'. Example: {_ORDERING_EXAMPLE}"
+            )
+        try:
+            normalized = ColumnOrdering(**item)
+        except pydantic.ValidationError as err:
+            raise ValueError(
+                f"{prefix} is not a valid ordering: {err}. Example: {_ORDERING_EXAMPLE}"
+            ) from err
+        if not normalized.column_name:
+            raise ValueError(f"{prefix} has an empty column_name")
+        return normalized
+    raise TypeError(
+        f"{prefix} must be a column name, a (column_name, 'asc'|'desc') tuple, "
+        f"a ColumnOrdering, or a dict with 'column_name'; "
+        f"got {type(item).__name__}"
+    )
 
 
 class FullTextQueryType(str, Enum):
@@ -835,10 +987,29 @@ class FullTextSearchQuery(pydantic.BaseModel):
     query: str | FullTextQuery
         If a string, it is treated as a MatchQuery.
         If a FullTextQuery object, it is used directly.
+    operator: FullTextOperator, optional
+        Combine terms in a string query using AND or OR (the default).
+        Quoted strings keep phrase semantics regardless of the operator.
     """
 
     columns: Optional[List[str]] = None
     query: Union[str, FullTextQuery]
+    operator: Optional[FullTextOperator] = None
+
+    @pydantic.model_validator(mode="after")
+    def _validate_operator(self) -> Self:
+        if self.operator is not None and not isinstance(self.query, str):
+            raise ValueError("operator requires a string full-text query")
+        return self
+
+
+def _add_fts_position_error_note(error: Exception) -> None:
+    if "position is not found but required for phrase queries" in str(error):
+        add_note(
+            error,
+            "Phrase queries require an index built with positions. Rebuild it with "
+            "table.create_index(column, config=FTS(with_position=True), replace=True).",
+        )
 
 
 class Query(pydantic.BaseModel):
@@ -1109,6 +1280,7 @@ class LanceQueryBuilder(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: bool = None,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Self:
         """
         Create a query builder based on the given query and query type.
@@ -1133,6 +1305,10 @@ class LanceQueryBuilder(ABC):
         fast_search: bool
             Skip flat search of unindexed data.
         """
+        if operator is not None:
+            operator = FullTextOperator(operator)
+            if not isinstance(query, str) or query_type not in ("auto", "fts"):
+                raise ValueError("operator requires a string full-text query")
         if query_type != "fts":
             _validate_query_vector(query)
 
@@ -1163,6 +1339,9 @@ class LanceQueryBuilder(ABC):
             table, query, query_type, vector_column_name
         )
 
+        if operator is not None and query_type != "fts":
+            raise ValueError("operator requires a string full-text query")
+
         if query_type == "hybrid":
             return LanceHybridQueryBuilder(
                 table, query, vector_column_name, fts_columns=fts_columns
@@ -1176,7 +1355,7 @@ class LanceQueryBuilder(ABC):
                 ordering_field_name=ordering_field_name,
                 fts_columns=fts_columns,
                 fast_search=fast_search,
-            )
+            ).operator(operator)
 
         if isinstance(query, (list, tuple)):
             query = np.array(query, dtype=np.float32)
@@ -1297,9 +1476,9 @@ class LanceQueryBuilder(ABC):
             columns without pylance. Other local blob v2 queries return
             descriptors in ``"lazy"`` and ``"descriptions"`` modes, or payloads
             in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
-            stable
-            table snapshot can bind the query and blob fetches.
+            Enterprise queries support ``"bytes"`` at the query response's
+            snapshot and ``"descriptions"`` without payload reads. Remote
+            ``"lazy"`` handles are not supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -1307,6 +1486,10 @@ class LanceQueryBuilder(ABC):
         validate_blob_mode(blob_mode)
         if _is_remote_query_table(self._table):
             blob_sources = self._validated_blob_sources(blob_mode)
+            if blob_mode == "bytes":
+                return flatten_columns(
+                    self.to_arrow(timeout=timeout, blob_mode=blob_mode), flatten
+                ).to_pandas(**kwargs)
             return _finish_remote_pandas(
                 self.to_arrow(timeout=timeout),
                 blob_mode=blob_mode,
@@ -1578,6 +1761,10 @@ class LanceQueryBuilder(ABC):
         -----
         Calling this multiple times combines the filters with a logical AND
         rather than replacing the previous filter.
+
+        Spatial predicates such as ``ST_Intersects(geom, ST_GeomFromText(...))``
+        work on GeoArrow columns and use an [RTree][lancedb.index.RTree] index
+        when one exists.
         """
         self._where = _combine_where(self._where, where)
         self._postfilter = not prefilter
@@ -1613,10 +1800,18 @@ class LanceQueryBuilder(ABC):
         return self._user_requested_row_id() or self._blob_auto_row_id_enabled()
 
     def _query_for_scan(self, blob_sources: Optional[dict[str, str]] = None) -> Query:
+        self._ensure_fragment_constraints_supported("this query")
         query = self.to_query_object()
         if self._scan_needs_row_id() or blob_sources:
             query.with_row_id = True
         return query
+
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
 
     def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
         if blob_mode != "bytes":
@@ -1629,7 +1824,8 @@ class LanceQueryBuilder(ABC):
             _query_is_plain_blob_scan(query)
             and getattr(self, "_reranker", None) is None
             and not _query_needs_lance_scanner(self)
-            and _supports_local_blob_fetch(
+            and self._table._table._inner._is_native()
+            and _supports_blob_fetch(
                 self._table._table,
                 getattr(self._table, "_pushdown_operations", ()),
             )
@@ -1650,11 +1846,12 @@ class LanceQueryBuilder(ABC):
         if blob_mode != "bytes":
             return blob_sources
         reject_unfetchable_blob_columns(schema, self._columns, blob_sources)
-        if blob_sources and not _supports_local_blob_fetch(
+        if blob_sources and not _supports_blob_fetch(
             self._table._table, getattr(self._table, "_pushdown_operations", ())
         ):
             raise _blob_bytes_without_snapshot_error()
-        reject_unmatched_blob_outputs(self._blob_output_schema(), blob_sources)
+        if not _is_remote_query_table(self._table):
+            reject_unmatched_blob_outputs(self._blob_output_schema(), blob_sources)
         return blob_sources
 
     def _blob_output_schema(self) -> pa.Schema:
@@ -1667,9 +1864,20 @@ class LanceQueryBuilder(ABC):
             return tbl
         if blob_mode == "descriptions":
             return strip_auto_row_ids(tbl, blob_sources)
-        return replace_blob_columns_with_bytes_sync(
-            tbl, blob_sources, self._table.fetch_blobs
-        )
+        reject_unmatched_blob_outputs(tbl.schema, blob_sources)
+        if _is_remote_query_table(self._table) and blob_sources:
+            version, identity = _remote_blob_snapshot(tbl.schema)
+
+            async def fetch_at_version(column, row_ids):
+                return await self._table._table._inner.fetch_blobs(
+                    column, row_ids, version=version, snapshot_identity=identity
+                )
+
+            def fetch_blobs(column, row_ids):
+                return LOOP.run(fetch_at_version(column, row_ids))
+        else:
+            fetch_blobs = self._table.fetch_blobs
+        return replace_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
 
     def _finalize_blob_query_table(
         self,
@@ -1740,12 +1948,51 @@ class LanceQueryBuilder(ABC):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """Set the Lance fragments to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. Other terminals and remote tables raise ``NotImplementedError``
+        before scanning instead of silently scanning the full table.
+        Blob-specific ``to_pandas()`` fallbacks keep their existing validation
+        errors.
+
+        Parameters
+        ----------
+        fragments : list[lance.Fragment]
+            Fragments from ``table.to_lance().get_fragments()``. Pass fragments
+            from the same dataset snapshot.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """Set the Lance fragment ids to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
+
+        Parameters
+        ----------
+        fragment_ids : list[int]
+            Fragment ids from ``table.to_lance().get_fragments()``.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragment_ids = fragment_ids
         return self
 
@@ -1801,24 +2048,40 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
-    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
         """
         Set the ordering for the results.
 
         Parameters
         ----------
-        ordering: Optional[List[ColumnOrdering]]
-            The ordering to use for the results.  If None, then the default ordering
-            will be used.
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            The ordering to use for the results. Each entry can be a column
+            name, a ``(column_name, "asc"|"desc")`` tuple, a
+            [ColumnOrdering][lancedb.query.ColumnOrdering], or a dict with a
+            ``column_name`` key. A bare tuple is a single direction pair, while
+            a list contains separate orderings, so ``("a", "desc")`` sorts by
+            ``a`` descending and ``["a", "desc"]`` sorts by both columns.
+            Pass ``None`` or an empty list to clear the ordering.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("ordering", [{"name": "b"}, {"name": "a"}])
+        >>> table.search().order_by(["name"]).to_list()
+        [{'name': 'a'}, {'name': 'b'}]
+        >>> table.search().order_by([("name", "desc")]).to_list()
+        [{'name': 'b'}, {'name': 'a'}]
         """
-        self._order_by = ordering
+        self._order_by = _normalize_ordering(ordering)
         return self
 
     def analyze_plan(
@@ -1875,6 +2138,7 @@ class LanceQueryBuilder(ABC):
         plan : str
             The physical query execution plan with runtime metrics.
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return self._table._analyze_plan(
             self.to_query_object(), distributed_metrics=distributed_metrics
         )
@@ -2303,10 +2567,24 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             columns and raises for blobs inside lists.
         """
         blob_sources = self._validated_blob_sources(blob_mode)
+        if blob_mode != "lazy":
+            return self._finalize_blob_query_table(
+                self.to_batches(timeout=timeout).read_all(),
+                blob_mode=blob_mode,
+                blob_sources=blob_sources,
+            )
+
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        results = self._table._execute_arrow(
+            self._query_for_scan(blob_sources), timeout=timeout
+        )
+        if self._reranker is not None:
+            source = results
+            results = self._reranker.rerank_vector(self._str_query, results)
+            check_reranker_result(results)
+            results = _merge_query_snapshot(results, source)
         return self._finalize_blob_query_table(
-            self.to_batches(timeout=timeout).read_all(),
-            blob_mode=blob_mode,
-            blob_sources=blob_sources,
+            results, blob_mode=blob_mode, blob_sources=blob_sources
         )
 
     def to_query_object(self) -> Query:
@@ -2386,6 +2664,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             rs_table = result_set.read_all()
             result_set = self._reranker.rerank_vector(self._str_query, rs_table)
             check_reranker_result(result_set)
+            result_set = _merge_query_snapshot(result_set, rs_table)
             # convert result_set back to RecordBatchReader
             result_set = pa.RecordBatchReader.from_batches(
                 result_set.schema, result_set.to_batches()
@@ -2507,6 +2786,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
+        self._operator: Optional[FullTextOperator] = None
         # Deprecated compatibility parameter. Native FTS ordering is now
         # configured through order_by(); LanceQueryBuilder.create emits the warning.
         _ = ordering_field_name
@@ -2515,6 +2795,37 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
+
+    def operator(
+        self, operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]]
+    ) -> LanceFtsQueryBuilder:
+        """Combine terms in a string query with ``"AND"`` or ``"OR"``.
+
+        The default is OR. AND requires every term to match. For example,
+        ``table.search("gripper closed", query_type="fts").operator("AND")``.
+        Structured queries specify their own operators. Quoted strings and
+        ``phrase_query()`` retain their phrase semantics.
+        """
+        if operator is not None and not isinstance(self._query, str):
+            raise ValueError("operator requires a string full-text query")
+        self._operator = FullTextOperator(operator) if operator is not None else None
+        return self
+
+    def count_rows(self) -> int:
+        """Count all full-text matches satisfying the query's filter.
+
+        Ignores limit, offset, selection, ordering, and reranking. ``fast_search``
+        still restricts the count to indexed data. This streams matching scores
+        without loading document columns and may scan every match.
+
+        For example, ``table.search("gripper closed", query_type="fts",``
+        ``operator="AND").where("active = true").count_rows()``.
+        """
+        self._ensure_fragment_constraints_supported("count_rows()")
+        self._table._ensure_no_legacy_fts_index()
+        query = self._table._table._sync_query_to_async(self.to_query_object())
+        assert isinstance(query, AsyncFTSQuery)
+        return LOOP.run(query.count_rows())
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -2572,7 +2883,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             fragment_ids=self._fragment_ids,
             use_rte=self._use_rte,
             full_text_query=FullTextSearchQuery(
-                query=self._query_with_phrase_semantics(), columns=self._fts_columns
+                query=self._query_with_phrase_semantics(),
+                columns=self._fts_columns,
+                operator=self._operator,
             ),
             offset=self._offset,
             fast_search=self._fast_search,
@@ -2596,11 +2909,17 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         blob_sources = self._validated_blob_sources(blob_mode)
         self._table._ensure_no_legacy_fts_index()
 
+        self._ensure_fragment_constraints_supported("to_arrow()")
         query = self._query_for_scan(blob_sources)
-        results = self._table._execute_query(query, timeout=timeout).read_all()
+        if blob_mode == "lazy":
+            results = self._table._execute_arrow(query, timeout=timeout)
+        else:
+            results = self._table._execute_query(query, timeout=timeout).read_all()
         if self._reranker is not None:
+            source = results
             results = self._reranker.rerank_fts(self._query, results)
             check_reranker_result(results)
+            results = _merge_query_snapshot(results, source)
         return self._finalize_blob_query_table(
             results, blob_mode=blob_mode, blob_sources=blob_sources
         )
@@ -2644,8 +2963,18 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         blob_sources = self._validated_blob_sources(blob_mode)
         if blob_mode == "bytes" and blob_sources:
             return self.to_batches(timeout=timeout, blob_mode=blob_mode).read_all()
+        if blob_mode != "lazy":
+            return self._finalize_blob_query_table(
+                self.to_batches(timeout=timeout).read_all(),
+                blob_mode=blob_mode,
+                blob_sources=blob_sources,
+            )
+
+        self._ensure_fragment_constraints_supported("to_arrow()")
         return self._finalize_blob_query_table(
-            self.to_batches(timeout=timeout).read_all(),
+            self._table._execute_arrow(
+                self._query_for_scan(blob_sources), timeout=timeout
+            ),
             blob_mode=blob_mode,
             blob_sources=blob_sources,
         )
@@ -2739,6 +3068,29 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # `_with_row_id` is also turned on by `rerank(return_score="all")` for
         # the reranker's own use, so it cannot answer "did the caller ask?".
         self._caller_requested_row_id = False
+
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
+        """
+        Set the ordering for the results.
+
+        Hybrid results are fused and reranked, so ordering the two search legs
+        does not define the final result order. Order the returned rows after
+        reranking instead.
+
+        Parameters
+        ----------
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            Must be ``None`` or an empty list. Any non-empty ordering raises
+            ``NotImplementedError``.
+        """
+        normalized = _normalize_ordering(ordering)
+        if normalized:
+            raise NotImplementedError(
+                "order_by is not supported for hybrid queries; "
+                "sort the returned results after reranking instead."
+            )
+        self._order_by = None
+        return self
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -2847,6 +3199,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             with_row_ids=True,
             offset=self._offset,
         )
+        results = _merge_query_snapshot(results, fts_results, vector_results)
         return self._finish_hybrid_results(
             results, blob_mode=blob_mode, blob_sources=blob_sources
         )
@@ -3399,6 +3752,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def _create_query_builders(self):
         """Set up and configure the vector and FTS query builders."""
+        self._ensure_fragment_constraints_supported("this hybrid query")
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
@@ -3517,6 +3871,19 @@ class AsyncQueryBase(object):
     def _user_requested_row_id(self) -> bool:
         return self._with_row_id is True
 
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
+
+    def _inherit_fragment_constraints(self, query: Any) -> Any:
+        """Carry a fragment selection across an async query conversion."""
+        query._fragments = self._fragments
+        query._fragment_ids = self._fragment_ids
+        return query
+
     def _blob_auto_row_id_enabled(self) -> bool:
         return self._blob_auto_row_id
 
@@ -3559,9 +3926,8 @@ class AsyncQueryBase(object):
             _query_is_plain_blob_scan(query)
             and getattr(self, "_reranker", None) is None
             and not _query_needs_lance_scanner(self)
-            and _supports_local_blob_fetch(
-                self._table, self._table._pushdown_operations
-            )
+            and self._table._inner._is_native()
+            and _supports_blob_fetch(self._table, self._table._pushdown_operations)
         )
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
@@ -3628,15 +3994,30 @@ class AsyncQueryBase(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. The constraint is preserved when converting between async
+        query types. Other terminals and remote tables raise
+        ``NotImplementedError`` before scanning instead of silently scanning
+        the full table. Blob-specific ``to_pandas()`` fallbacks keep their
+        existing validation errors.
         """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._fragment_ids = fragment_ids
         return self
@@ -3709,6 +4090,17 @@ class AsyncQueryBase(object):
 
         return AsyncRecordBatchReader._from_batches(schema, batches())
 
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute with the native eager collector used by ``to_arrow``."""
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        await self._maybe_add_blob_row_id()
+        reader = await self._inner.execute_to_reader(None, timeout)
+        return pa.Table.from_batches(reader, schema=reader.schema)
+
     async def _execute_batches(
         self,
         *,
@@ -3716,6 +4108,7 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        self._ensure_fragment_constraints_supported("to_batches()")
         if (
             blob_sources
             and not self._user_requested_row_id()
@@ -3766,11 +4159,14 @@ class AsyncQueryBase(object):
         if blob_mode != "bytes":
             return blob_sources
         reject_unfetchable_blob_columns(schema, projection, blob_sources)
-        if blob_sources and not _supports_local_blob_fetch(
+        if blob_sources and not _supports_blob_fetch(
             self._table, self._table._pushdown_operations
         ):
             raise _blob_bytes_without_snapshot_error()
-        reject_unmatched_blob_outputs(await self._blob_output_schema(), blob_sources)
+        if self._table._inner._is_native():
+            reject_unmatched_blob_outputs(
+                await self._blob_output_schema(), blob_sources
+            )
         return blob_sources
 
     async def _blob_output_schema(self) -> pa.Schema:
@@ -3783,9 +4179,21 @@ class AsyncQueryBase(object):
             return tbl
         if blob_mode == "descriptions":
             return strip_auto_row_ids(tbl, blob_sources)
-        return await replace_blob_columns_with_bytes(
-            tbl, blob_sources, self._table.fetch_blobs
-        )
+        reject_unmatched_blob_outputs(tbl.schema, blob_sources)
+        if (
+            self._table is not None
+            and not self._table._inner._is_native()
+            and blob_sources
+        ):
+            version, identity = _remote_blob_snapshot(tbl.schema)
+
+            async def fetch_blobs(column, row_ids):
+                return await self._table._inner.fetch_blobs(
+                    column, row_ids, version=version, snapshot_identity=identity
+                )
+        else:
+            fetch_blobs = self._table.fetch_blobs
+        return await replace_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
 
     async def to_arrow(
         self,
@@ -3811,16 +4219,24 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes for supported row-addressable blob
             columns and raises for blobs inside lists.
-            LanceDB Enterprise and namespace query pushdown refuse ``"bytes"``.
+            Enterprise queries fetch bytes at the version reported by the query
+            response. Namespace query pushdown refuses ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         if blob_mode == "bytes" and blob_sources:
             reader = await self.to_batches(timeout=timeout, blob_mode=blob_mode)
             return pa.Table.from_batches(await reader.read_all(), schema=reader.schema)
-        batch_iter = await self.to_batches(timeout=timeout)
-        tbl = self._finalize_blob_query_table(
-            pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
-        )
+        if blob_mode != "lazy":
+            batch_iter = await self.to_batches(timeout=timeout)
+            tbl = self._finalize_blob_query_table(
+                pa.Table.from_batches(
+                    await batch_iter.read_all(), schema=batch_iter.schema
+                )
+            )
+        else:
+            tbl = self._finalize_blob_query_table(
+                await self._execute_eager(timeout=timeout)
+            )
         return await self._apply_arrow_blob_mode(tbl, blob_mode, blob_sources)
 
     async def to_list(
@@ -3893,9 +4309,9 @@ class AsyncQueryBase(object):
             columns without pylance. Other local blob v2 queries return
             descriptors in ``"lazy"`` and ``"descriptions"`` modes, or payloads
             in ``"bytes"`` mode, through :meth:`to_arrow`.
-            LanceDB Enterprise blob queries support only ``"descriptions"`` until a
-            stable
-            table snapshot can bind the query and blob fetches.
+            Enterprise queries support ``"bytes"`` at the query response's
+            snapshot and ``"descriptions"`` without payload reads. Remote
+            ``"lazy"`` handles are not supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -3903,6 +4319,9 @@ class AsyncQueryBase(object):
         validate_blob_mode(blob_mode)
         if self._table is not None and not self._table._inner._is_native():
             await self._validated_blob_sources(blob_mode)
+            if blob_mode == "bytes":
+                tbl = await self.to_arrow(timeout=timeout, blob_mode=blob_mode)
+                return flatten_columns(tbl, flatten).to_pandas(**kwargs)
             return await self._remote_to_pandas(
                 flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
             )
@@ -4104,6 +4523,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return await self._inner.explain_plan(verbose)
 
     async def analyze_plan(
@@ -4121,6 +4541,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return await self._inner.analyze_plan(distributed_metrics)
 
 
@@ -4156,9 +4577,11 @@ class AsyncStandardQuery(AsyncQueryBase):
         >>> predicate = "x > 10"
         >>> predicate = "y > 0 AND y < 100"
         >>> predicate = "x > 5 OR y = 'test'"
+        >>> predicate = "ST_Intersects(geom, ST_GeomFromText('POINT (1 2)'))"
 
         Filtering performance can often be improved by creating a scalar index
-        on the filter column(s).
+        on the filter column(s). Spatial predicates on GeoArrow columns use an
+        [RTree][lancedb.index.RTree] index.
 
         Calling this multiple times combines the filters with a logical AND
         rather than replacing the previous filter.
@@ -4191,20 +4614,36 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.offset(offset)
         return self
 
-    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
         """
         Set the ordering for the results.
 
         Parameters
         ----------
-        ordering: Optional[List[ColumnOrdering]]
-            The ordering to use for the results.  If None, then the default ordering
-            will be used.
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            The ordering to use for the results. Each entry can be a column
+            name, a ``(column_name, "asc"|"desc")`` tuple, a
+            [ColumnOrdering][lancedb.query.ColumnOrdering], or a dict with a
+            ``column_name`` key. A bare tuple is a single direction pair, while
+            a list contains separate orderings, so ``("a", "desc")`` sorts by
+            ``a`` descending and ``["a", "desc"]`` sorts by both columns.
+            Pass ``None`` or an empty list to clear the ordering.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = await lancedb.connect_async("memory://")  # doctest: +SKIP
+        >>> table = await db.create_table(  # doctest: +SKIP
+        ...     "ordering", [{"name": "b"}, {"name": "a"}]
+        ... )
+        >>> await table.query().order_by(["name"]).to_list()  # doctest: +SKIP
+        [{'name': 'a'}, {'name': 'b'}]
         """
-        if ordering is None:
+        normalized = _normalize_ordering(ordering)
+        if normalized is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by([o.model_dump() for o in ordering])
+            self._inner.order_by([o.model_dump() for o in normalized])
         return self
 
     def fast_search(self) -> Self:
@@ -4358,15 +4797,25 @@ class AsyncQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncVectorQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(new_self, self._table)
+            )
         else:
-            return AsyncVectorQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     def nearest_to_text(
-        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
+        self,
+        query: str | FullTextQuery,
+        columns: Union[str, List[str], None] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -4387,19 +4836,33 @@ class AsyncQuery(AsyncStandardQuery):
         columns: str or list of str, default None
             The columns to search in. If None, all indexed columns are searched.
             For now only one column can be searched at a time.
+        operator: "AND" or "OR", optional
+            Combine terms in a string query. Defaults to OR. Quoted strings use
+            phrase semantics and require an index built with positions.
         """
+        fts_query = FullTextSearchQuery(query=query, operator=operator)
         if isinstance(columns, str):
             columns = [columns]
         if columns is None:
             columns = []
 
         if isinstance(query, str):
-            return AsyncFTSQuery(
-                self._inner.nearest_to_text({"query": query, "columns": columns}),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncFTSQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        return self._inherit_fragment_constraints(
+            AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        )
 
 
 class AsyncFTSQuery(AsyncStandardQuery):
@@ -4409,6 +4872,23 @@ class AsyncFTSQuery(AsyncStandardQuery):
         super().__init__(inner, table)
         self._inner = inner
         self._reranker = None
+
+    async def count_rows(self) -> int:
+        """Count all full-text matches satisfying the query's filter.
+
+        Ignores limit, offset, selection, ordering, and reranking. ``fast_search``
+        still restricts the count to indexed data. Matching scores are streamed
+        without loading document columns, so counting may scan every match.
+
+        For example, ``await table.query().nearest_to_text("gripper closed",``
+        ``operator="AND").where("active = true").count_rows()``.
+        """
+        self._ensure_fragment_constraints_supported("count_rows()")
+        try:
+            return await self._inner.count_rows()
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
 
     def get_query(self) -> str:
         return self._inner.get_query()
@@ -4489,12 +4969,34 @@ class AsyncFTSQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncHybridQuery(new_self, self._table)
-        else:
-            return AsyncHybridQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(new_self, self._table)
             )
+        else:
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
+            )
+
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        try:
+            results = await super()._execute_eager(timeout=timeout)
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
+        if self._reranker:
+            source = results
+            results = self._reranker.rerank_fts(self.get_query(), results)
+            results = _merge_query_snapshot(results, source)
+        return results
 
     async def _execute_batches(
         self,
@@ -4503,12 +5005,20 @@ class AsyncFTSQuery(AsyncStandardQuery):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
-        reader = await super()._execute_batches(
-            timeout=timeout, blob_sources=blob_sources
-        )
-        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
+        try:
+            reader = await super()._execute_batches(
+                max_batch_length=max_batch_length,
+                timeout=timeout,
+                blob_sources=blob_sources,
+            )
+            results = pa.Table.from_batches(await reader.read_all(), reader.schema)
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
         if self._reranker:
+            source = results
             results = self._reranker.rerank_fts(self.get_query(), results)
+            results = _merge_query_snapshot(results, source)
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
@@ -4782,7 +5292,11 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         return self
 
     def nearest_to_text(
-        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
+        self,
+        query: str | FullTextQuery,
+        columns: Union[str, List[str], None] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery:
         """
         Find the documents that are most relevant to the given text query,
@@ -4807,21 +5321,44 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         columns: str or list of str, default None
             The columns to search in. If None, all indexed columns are searched.
             For now only one column can be searched at a time.
+        operator: "AND" or "OR", optional
+            Combine terms in a string query. Defaults to OR.
         """
+        fts_query = FullTextSearchQuery(query=query, operator=operator)
         if isinstance(columns, str):
             columns = [columns]
         if columns is None:
             columns = []
 
         if isinstance(query, str):
-            return AsyncHybridQuery(
-                self._inner.nearest_to_text({"query": query, "columns": columns}),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query}), self._table
+        return self._inherit_fragment_constraints(
+            AsyncHybridQuery(self._inner.nearest_to_text({"query": query}), self._table)
         )
+
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        results = await super()._execute_eager(timeout=timeout)
+        if self._reranker:
+            source = results
+            results = self._reranker.rerank_vector(self._query_string, results)
+            results = _merge_query_snapshot(results, source)
+        return results
 
     async def _execute_batches(
         self,
@@ -4831,11 +5368,17 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
         reader = await super()._execute_batches(
-            timeout=timeout, blob_sources=blob_sources
+            max_batch_length=max_batch_length,
+            timeout=timeout,
+            blob_sources=blob_sources,
         )
+        if self._reranker is None:
+            return reader
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
+            source = results
             results = self._reranker.rerank_vector(self._query_string, results)
+            results = _merge_query_snapshot(results, source)
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
@@ -4906,6 +5449,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the hybrid query itself. The key the legs are fused on, if any, is left
         on `self._pk_fusion`.
         """
+        self._ensure_fragment_constraints_supported("this hybrid query")
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 
@@ -4954,6 +5498,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         vec_query.offset(0)
 
         return fts_query, vec_query, limit, offset
+
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        reader = await self._execute_batches(timeout=timeout)
+        return pa.Table.from_batches(await reader.read_all(), schema=reader.schema)
 
     async def _execute_batches(
         self,
@@ -5027,6 +5580,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ):
             result = result.drop(["_rowid"])
 
+        result = _merge_query_snapshot(result, fts_results, vector_results)
         return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 
     async def explain_plan(self, verbose: Optional[bool] = False):
@@ -5201,15 +5755,26 @@ class BaseQueryBuilder(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict execution to the given Lance fragments.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._inner.with_fragments(fragments)
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict execution to the given Lance fragment ids.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. On that path, an empty list selects no
+        rows and missing ids raise ``ValueError``. Other terminals and remote
+        tables raise ``NotImplementedError`` before scanning instead of
+        silently scanning the full table. Blob-specific ``to_pandas()``
+        fallbacks keep their existing validation errors.
         """
         self._inner.fragment_ids(fragment_ids)
         return self

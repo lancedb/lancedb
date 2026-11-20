@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { CompactionResult, decodeCompactionResult } from "./compaction";
+import {
+  PrewarmDataPlan,
+  PrewarmDataResult,
+  decodePrewarmDataPlan,
+  decodePrewarmDataResult,
+} from "./prewarm";
+
 import {
   Table as ArrowTable,
   Data,
@@ -17,7 +25,12 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
+import {
+  BlobFile,
+  BlobRangeRequest,
+  BlobReadOptions,
+  runWithSignal,
+} from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -58,6 +71,7 @@ import {
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
+import { QueryParameters, toParameterBuffer } from "./sql";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 export {
@@ -137,6 +151,13 @@ export interface AddDataOptions {
    * when the blob is read later.
    */
   allowExternalBlobOutsideBases?: boolean;
+
+  /**
+   * Override the remote retry budget for this call (0 to 255). Zero disables
+   * retries, including multipart parts. Ambiguous commits are never replayed.
+   * Ignored by LanceDB Embedded.
+   */
+  retries?: number;
 }
 
 export interface UpdateOptions {
@@ -151,6 +172,18 @@ export interface UpdateOptions {
    * of 0 in a column with some other default value.
    */
   where: string;
+}
+
+/** Settings for data-cache prewarm submissions and metadata previews. */
+export interface PrewarmDataOptions {
+  /** Lance field paths to warm; omitted or empty means every column. */
+  columns?: string[];
+  /** A single SQL predicate for conservative metadata pruning. */
+  filter?: string;
+  /** Typed positional or named filter values, sent separately from SQL. */
+  parameters?: QueryParameters;
+  /** Positive per-executor concurrency, at most 4294967295. */
+  concurrency?: number;
 }
 
 /** Per-invocation compaction settings. Values must be safe integers. */
@@ -550,21 +583,82 @@ export abstract class Table {
   /**
    * Prewarm one or more columns of data in the table.
    *
-   * @param columns The columns to prewarm. If undefined, all columns are prewarmed.
-   *
    * This will load the column data into the page cache so that future queries that
    * read those columns avoid the initial cold-start latency.  This call initiates
    * prewarming and returns once the request is accepted; the warming itself may
-   * continue in the background.  Calling it on already-prewarmed columns is a
-   * no-op on the server.
+   * continue in the background. Submission uses SQL PREWARM and needs Flight
+   * SQL connectivity. Use {@link prewarmDataAsync} to retain the job handle.
    *
    * Prewarming is generally useful for columns used in filters or projections.
    * Large columns (e.g. high-dimensional vectors or binary data) may not be
    * practical to prewarm.
    *
    * This feature is currently only supported in LanceDB Enterprise.
+   *
+   * @param options Columns, a metadata-pruning filter, and per-executor concurrency.
+   * Omitted or empty columns warm every column.
+   *
+   * @example
+   * await table.prewarmData({
+   *   columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+   * });
+   */
+  abstract prewarmData(options?: PrewarmDataOptions): Promise<void>;
+
+  /**
+   * Submit data prewarm using the columns-array form and return after acceptance.
+   * @param columns Columns to warm; omitted or empty means every column.
    */
   abstract prewarmData(columns?: string[]): Promise<void>;
+
+  /**
+   * Submit data prewarm through SQL and return its durable warming-job handle.
+   *
+   * The table handle supplies the branch and namespace. Requires a compatible
+   * SQL PREWARM server and Flight SQL connectivity. Standard authorization
+   * requires table Select and database/namespace Usage. Status/wait use generic
+   * HTTP job APIs; events and cancellation retain their own privileges.
+   * No REST fallback or option-dropping retry is performed. Historical-version
+   * handles are unsupported; call `checkoutLatest()` first.
+   *
+   * Submission returns after acceptance. Use `job.wait()` for completion, or
+   * save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+   * the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+   *
+   * @example
+   * const job = await table.prewarmDataAsync({
+   *   columns: ["video"], filter: "quality > $minimum",
+   *   parameters: { minimum: 0.7 }, concurrency: 4,
+   * });
+   * await job.wait();
+   */
+  abstract prewarmDataAsync(
+    options?: PrewarmDataOptions,
+  ): Promise<Job<PrewarmDataResult>>;
+
+  /**
+   * Preview prewarm with the same options as {@link prewarmDataAsync}, without
+   * submitting a warming job. Requires LanceDB Enterprise with structured SQL
+   * previews, table Select and database/namespace Usage. Reads metadata and
+   * returns the source version, readable plan, and conservative pruning summary.
+   * A later submission plans its own snapshot. Historical and Embedded handles
+   * are unsupported. Unknown measurements remain null.
+   * Custom table implementations can override this method; its default rejects
+   * with an unsupported-operation error.
+   *
+   * @example
+   * const plan = await table.explainPrewarmData({
+   *   columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+   * });
+   * console.log(plan.pruning.selectedFragments);
+   */
+  async explainPrewarmData(
+    _options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan> {
+    throw new Error(
+      "data prewarm previews are not supported by this table implementation",
+    );
+  }
 
   /**
    * Waits for asynchronous indexing to complete on the table.
@@ -673,6 +767,31 @@ export abstract class Table {
   abstract fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]>;
+
+  /**
+   * Materializes row-specific byte ranges at the table's current checkout.
+   * Preserves request order, duplicates, and nulls. Zero length returns an empty
+   * buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+   * call. See {@link Table.fetchBlobs} for row-ID validity across versions.
+   *
+   * Remote tables use the batched endpoint when the server advertises support,
+   * splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+   * Older servers use descriptor queries and BlobFile range reads. Both protocols
+   * use one exact branch and version. Errors from an advertised endpoint propagate
+   * without switching protocols. All output bytes occupy memory.
+   *
+   * @example
+   * ```ts
+   * const bytes = await table.fetchBlobRanges("image", [
+   *   { rowId: 10n, offset: 0n, length: 1024n },
+   * ]);
+   * ```
+   */
+  abstract fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
     options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]>;
 
@@ -794,12 +913,18 @@ export abstract class Table {
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
    * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
-   * `maxConcurrency`, `resourceBudget` and
-   * `maxExecutorProcessesPerWorker` size registered Function refreshes.
+   * `maxConcurrency`, `resourceBudget`, `supervisorResources`,
+   * `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
+   * Function refreshes. `retryPolicy` overrides user-code retries only when
+   * repeating partial work is safe; set `maxAttempts: 1` to disable retries.
    * `maxConcurrency` overrides the registered default for this logical
    * execution only and is a positive integer; it is not an account-wide
    * quota. A `resourceBudget` requires `cpuMillis` and
    * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
+   * `supervisorResources` and each `planningWorkers.resources` entry require
+   * positive `cpuMillis`, `memoryBytes` and `ephemeralStorageBytes`.
+   * `planningWorkers` also requires positive `maxWorkers`,
+   * `rowsPerWorker` and `fragmentsPerWorker`.
    * The budget applies only to this explicit refresh and does not configure
    * a later automatic refresh.
    * `gpuCount` at the top level is the shorthand that preserves the
@@ -808,6 +933,11 @@ export abstract class Table {
    * `resourceBudget` for registered Functions. All are LanceDB Enterprise
    * only; a LanceDB Embedded refresh rejects every option other than
    * `batchSize`, `gpuClass` and `gpuCount`.
+   * `publicationIntervalRows` opts into publishing completed Function split
+   * ranges once their accumulated unpublished rows reach the threshold.
+   * It must be a positive safe integer and requires non-Blob Function outputs.
+   * Omit it for whole-fragment publication. Publications can exceed the
+   * threshold, and remaining rows publish at completion.
    * @example
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
@@ -817,6 +947,7 @@ export abstract class Table {
    *     memoryBytes: 16 * 1024 ** 3,
    *   },
    *   maxConcurrency: 4,
+   *   publicationIntervalRows: 10000,
    *   errorPolicy: "skip",
    *   maxFailedFraction: 0.01,
    *   rowTimeoutSeconds: 30,
@@ -1009,6 +1140,56 @@ export abstract class Table {
    */
   abstract getRTESpec(): Promise<RTEWriteSpec | undefined>;
   /**
+   * Read the stored overrides for a remote Enterprise table.
+   *
+   * Overrides configure background behavior such as automatic compaction,
+   * cleanup, and reindex execution. Keys use the server's snake_case names.
+   * Returns an empty object when no overrides are set. Local tables are unsupported.
+   * Custom table implementations inherit a default rejection unless they override
+   * this method.
+   */
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("getTableOverrides is not supported on this table type");
+  }
+
+  /**
+   * Recursively merge overrides into a remote Enterprise table's stored overrides.
+   *
+   * Fetches the current overrides, merges nested objects locally, then sends the
+   * complete replacement using REST PUT. Other values replace existing values;
+   * unrelated fields from the read snapshot are preserved. This read-modify-write
+   * is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+   * Coordinate writers when concurrent edits must be preserved. An empty update
+   * only reads and returns the current overrides.
+   *
+   * Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+   * without merging. Use {@link Table.resetTableOverrides} to clear all overrides.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
+   *
+   * @example
+   * ```ts
+   * await table.updateTableOverrides({
+   *   job_types: { compaction: { enabled: false } },
+   * });
+   * ```
+   */
+  async updateTableOverrides(
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    overrides: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    throw new Error("updateTableOverrides is not supported on this table type");
+  }
+
+  /**
+   * Clear a remote Enterprise table's overrides and return an empty object.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
+   */
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("resetTableOverrides is not supported on this table type");
+  }
+  /**
    * Drain and close any cached RTE shard writers held for this table.
    *
    * When an {@link RTEWriteSpec} is installed, `mergeInsert` opens RTE
@@ -1160,6 +1341,28 @@ export abstract class Table {
    * out state and the read_consistency_interval, if any, will apply.
    */
   abstract restore(): Promise<void>;
+  /**
+   * Submit remote compaction and return its durable job after acceptance.
+   *
+   * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+   * a compatible remote server and table Ownership plus parent Usage. Local and
+   * historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+   * Waiting tracks the rewrite itself and returns actual row/file statistics.
+   * Missing result payloads are errors; older workers can omit file counts.
+   * Status, progress, events and cancellation reuse the generic HTTP job APIs.
+   * Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+   *
+   * @example
+   * const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+   * const result = await job.wait();
+   * console.log(result.rowsSucceeded, result.fragmentsRemoved);
+   */
+  async compactAsync(
+    _options?: CompactionOptions,
+  ): Promise<Job<CompactionResult>> {
+    throw new Error("compaction jobs are only supported on remote tables");
+  }
+
   /**
    * Optimize the on-disk data and indices for better performance.
    *
@@ -1314,6 +1517,14 @@ export class LocalTable extends Table {
   }
 
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {
+    if (
+      options?.retries !== undefined &&
+      (!Number.isInteger(options.retries) ||
+        options.retries < 0 ||
+        options.retries > 255)
+    ) {
+      throw new Error("retries must be an integer between 0 and 255");
+    }
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
 
@@ -1336,6 +1547,7 @@ export class LocalTable extends Table {
       mode,
       progress,
       options?.allowExternalBlobOutsideBases,
+      options?.retries,
     );
   }
 
@@ -1447,8 +1659,37 @@ export class LocalTable extends Table {
     await this.inner.prewarmIndex(name);
   }
 
-  async prewarmData(columns?: string[]): Promise<void> {
-    await this.inner.prewarmData(columns);
+  async prewarmData(options?: PrewarmDataOptions): Promise<void>;
+  async prewarmData(columns?: string[]): Promise<void>;
+  async prewarmData(
+    columnsOrOptions?: string[] | PrewarmDataOptions,
+  ): Promise<void> {
+    await this.prewarmDataAsync(
+      Array.isArray(columnsOrOptions)
+        ? { columns: columnsOrOptions }
+        : columnsOrOptions,
+    );
+  }
+
+  async prewarmDataAsync(
+    options?: PrewarmDataOptions,
+  ): Promise<Job<PrewarmDataResult>> {
+    return new Job(
+      await this.inner.prewarmDataAsync(
+        await toNativePrewarmDataOptions(options),
+      ),
+      decodePrewarmDataResult,
+    );
+  }
+
+  async explainPrewarmData(
+    options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan> {
+    return decodePrewarmDataPlan(
+      await this.inner.explainPrewarmData(
+        await toNativePrewarmDataOptions(options),
+      ),
+    );
   }
 
   async waitForIndex(
@@ -1485,6 +1726,23 @@ export class LocalTable extends Table {
       this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobRanges(
+    column: string,
+    requests: readonly BlobRangeRequest[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]> {
+    const rowIds = rowIdsToBigInts(requests.map((request) => request.rowId));
+    const ranges = requests.map((request, i) => ({
+      rowId: rowIds[i],
+      offset: request.offset,
+      length: request.length,
+    }));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobRanges(column, ranges, signal),
+    );
     return values.map((value) => value ?? null);
   }
 
@@ -1748,6 +2006,20 @@ export class LocalTable extends Table {
       | undefined;
   }
 
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    return await this.inner.getTableOverrides();
+  }
+
+  async updateTableOverrides(
+    overrides: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return await this.inner.updateTableOverrides(overrides);
+  }
+
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    return await this.inner.resetTableOverrides();
+  }
+
   async closeRTEWriters(): Promise<void> {
     return await this.inner.closeRTEWriters();
   }
@@ -1809,20 +2081,18 @@ export class LocalTable extends Table {
     return this.inner.currentBranch() ?? null;
   }
 
+  async compactAsync(
+    options?: CompactionOptions,
+  ): Promise<Job<CompactionResult>> {
+    validateCompactionOptions(options);
+    return new Job(
+      await this.inner.compactAsync(options),
+      decodeCompactionResult,
+    );
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    // JavaScript callers can supply extra keys that TypeScript would reject.
-    // Refuse them before the native binding can silently discard a work limit.
-    const supported = new Set([
-      "targetRowsPerFragment",
-      "maxSourceRows",
-      "ioBufferSize",
-      "batchSize",
-    ]);
-    for (const key of Object.keys(options?.compactionOptions ?? {})) {
-      if (!supported.has(key)) {
-        throw new Error(`Unsupported compaction option: ${key}`);
-      }
-    }
+    validateCompactionOptions(options?.compactionOptions);
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
@@ -2121,4 +2391,41 @@ function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
     }
     return BigInt(id);
   });
+}
+
+function validateCompactionOptions(options?: CompactionOptions): void {
+  // JavaScript callers can supply extra keys that TypeScript would reject.
+  // Refuse them before the native binding can silently discard a work limit.
+  const supported = new Set([
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+  ]);
+  for (const key of Object.keys(options ?? {})) {
+    if (!supported.has(key)) {
+      throw new Error(`Unsupported compaction option: ${key}`);
+    }
+  }
+}
+
+async function toNativePrewarmDataOptions(options?: PrewarmDataOptions) {
+  validatePrewarmDataOptions(options);
+  return options === undefined
+    ? undefined
+    : {
+        ...options,
+        parameters:
+          options.parameters === undefined
+            ? undefined
+            : await toParameterBuffer(options.parameters),
+      };
+}
+
+function validatePrewarmDataOptions(options?: PrewarmDataOptions): void {
+  for (const key of Object.keys(options ?? {})) {
+    if (!["columns", "filter", "concurrency", "parameters"].includes(key)) {
+      throw new Error(`Unsupported data prewarm option: ${key}`);
+    }
+  }
 }

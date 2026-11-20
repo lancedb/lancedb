@@ -29,7 +29,6 @@ from ._lancedb import (
 )
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
-from ._lancedb import FunctionErrors as FunctionErrors
 from ._lancedb import GpuClass as GpuClass
 from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
@@ -46,16 +45,25 @@ from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
 from .functions import (
+    FunctionErrors as FunctionErrors,
+    AsyncFunctionErrors as AsyncFunctionErrors,
+    FunctionErrorGroup as FunctionErrorGroup,
+    FunctionProvenance as FunctionProvenance,
+    FunctionValueProvenance as FunctionValueProvenance,
     AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
     FunctionDefinition as FunctionDefinition,
+    FunctionEnvironment as FunctionEnvironment,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionRetryPolicy as FunctionRetryPolicy,
     FunctionVersion as FunctionVersion,
     HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
+    ResolvedEnvironment as ResolvedEnvironment,
+    ResolvedEnvironmentProvenance as ResolvedEnvironmentProvenance,
+    ResolvedPackage as ResolvedPackage,
     RefreshColumnResult as RefreshColumnResult,
     function as function,
     udf as udf,
@@ -71,6 +79,7 @@ from .materialized_view import (
 from .view import ViewDescription as ViewDescription
 from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
+from .query import ColumnOrdering as ColumnOrdering
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -674,6 +683,11 @@ __all__ = [
     "FunctionColumnLastRefreshJob",
     "FunctionColumnStatus",
     "FunctionColumnVersionStatus",
+    "FunctionErrors",
+    "AsyncFunctionErrors",
+    "FunctionErrorGroup",
+    "FunctionProvenance",
+    "FunctionValueProvenance",
     "col",
     "Expr",
     "func",

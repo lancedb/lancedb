@@ -44,12 +44,66 @@ table.add_columns({"doubled": version(value=col("value"))})
 immutable version, so changing one produces a new version rather than
 altering rows a previous version already filled.
 
+## Supported Function signatures {#signature-types}
+
+A table's [Arrow schema](/sql/data-types#supported) can contain types that a
+Function cannot accept or return. The matrix below describes the Python SDK
+`0.42.0-beta.12` source contract. Nested schemas and list-Blob outputs require
+a matching Enterprise server; an SDK upgrade alone does not enable them.
+
+| Arrow type | Function input/output support |
+| --- | --- |
+| Boolean; signed/unsigned 8, 16, 32, 64-bit integers; float16/32/64 | Supported. Ordinary `int` and `float` annotations infer int64 and float64. |
+| utf8 / large_utf8; binary / large_binary | Supported. `str` and `bytes` infer utf8 and binary. Plain binary does not carry Blob semantics. |
+| date32 / date64 | Supported; Python `date` infers date32. |
+| timestamp, with or without timezone; time32/64; duration; interval | Unsupported by the Function signature grammar. A Python `datetime` annotation can resolve to an Arrow timestamp but registration still rejects it. |
+| decimal; map; dictionary; union; fixed-size binary | Unsupported. Decode dictionary values and use supported scalar/list/struct representations. |
+| struct; list / large_list; positive-length fixed-size list | Supported with supported children. Explicit schemas preserve child nullability; annotation-only `list[T]` uses non-nullable elements. Struct fields must be nonempty and uniquely named. |
+| Blob v2 at top level or in a struct | Supported in inputs and outputs; use `lancedb.blob(...)` in the schema. |
+| Blob v2 under list / large_list | Output only on supporting SDK/server versions. Inputs are rejected. |
+| Blob v2 under fixed-size list or map | Unsupported in both directions. |
+
+For times, pass an int64 epoch value with an explicit unit such as microseconds,
+or a UTF-8 ISO 8601 string with its timezone. Convert inside the Function and
+cast the result in SQL if needed. Use scaled integers with a declared scale
+when exact decimal values matter; converting to float can lose precision.
+Represent a map as a list of key/value structs when that fits the calculation.
+
+A scalar output is non-nullable because physical NULL represents an unfilled
+computed output. For an optional value, return a named struct with a nullable
+field, for example:
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+@function(
+    input_schema=pa.schema([pa.field("text", pa.string(), nullable=False)]),
+    output_schema=pa.schema([pa.field("score", pa.float64(), nullable=True)]),
+)
+def optional_score(text: str):
+    return {"score": float(len(text)) if text else None}
+```
+
+Return a dictionary by field name. A successfully computed nullable field can
+be NULL; `score IS NULL` alone cannot distinguish it from pending work or a
+skipped failure. Use the job result and error diagnostics. Do not assume an
+explicit assignment-state flag is available on every deployment.
+
+List-nested Blob outputs are queryable as descriptors, but row-ID blob fetch
+APIs and `blob_mode="bytes"` do not fetch payloads inside lists. Prefer a
+separate row per media item when you need independent reads, retries or
+re-scoring. A plain struct shaped like a Blob without its extension metadata
+is not a substitute for `lancedb.blob`.
+
 ## Batch: once per call, many rows at a time {#batch}
 
-A function is called once per batch instead of once per row when its
-parameters are annotated `pyarrow.Array`, or when it takes a single
-`pyarrow.RecordBatch` parameter to read more than one column together. The
-same doubling logic, vectorized over a whole batch at once:
+A function is called once per batch instead of once per row when all of its
+parameters are annotated `pyarrow.Array`. Those annotations say that a whole
+column arrives in one call, but not which Arrow type the column holds, so a
+batch function also passes `input_schema` and `output_schema`; every field of
+`input_schema` matches a parameter by name and by order. The same doubling
+logic, vectorized over a whole batch at once:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -59,6 +113,8 @@ from lancedb import function
 
 @function(
     pip=["numpy==2.2.0"],
+    input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
+    output_schema=pa.float64(),
     batch_size=32,
     max_concurrency=4,
     row_timeout_seconds=90,
@@ -67,6 +123,27 @@ def score_batch(value: pa.Array) -> pa.Array:
     return pc.multiply(value, 2)
 ```
 </CodeGroup>
+
+Read several columns in one call by taking one `pa.Array` parameter per
+column, with one schema field for each:
+
+```python
+@function(
+    input_schema=pa.schema([
+        pa.field("value", pa.float64(), nullable=False),
+        pa.field("weight", pa.float64(), nullable=False),
+    ]),
+    output_schema=pa.float64(),
+)
+def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+    return pc.multiply(value, weight)
+```
+
+A single `pyarrow.RecordBatch` parameter is also a batch function, but it does
+not read several columns at once: `input_schema` declares one field per
+parameter, so a `RecordBatch` parameter binds one input column and receives
+that column as a batch. A schema with more fields than the callable has
+parameters is rejected at decoration.
 
 Batching amortizes per-call overhead across many rows, which matters most
 once a function also does something with real fixed cost per call -- loading
@@ -133,6 +210,8 @@ gpu_class = next(
     gpu=True,
     gpu_class=gpu_class,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
+    input_schema=pa.schema([pa.field("text", pa.string(), nullable=True)]),
+    output_schema=pa.list_(pa.float32(), 384),
 )
 class embed_text:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
@@ -170,9 +249,12 @@ in the function's source. A Secret is a database-scoped named credential:
 puts it in the environment variable the function reads, without ever
 returning it from any API or recording it in the function's own definition.
 Combine it with the stateful form so the HTTP client -- and any rate limiter
-around it -- is built once, not reopened on every row. There is no built-in
-retry or per-row error-skip policy -- a function that calls a flaky service
-should handle timeouts and retries itself, inside `__call__`.
+around it -- is built once, not reopened on every row. Configure HTTP timeouts
+inside `__call__`. Refresh-level `error_policy='skip'` can record row failures;
+see [handling failures](/management/function#failures). Native retry policies
+need matching SDK, server and Function-image support; on other deployments,
+handle bounded retries inside the Function only when repeating the request is
+safe.
 
 See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
 full worked example, how the bound value actually reaches a running
@@ -240,11 +322,12 @@ extract_frame_version = db.create_function_async(extract_frame).wait(
 ```
 </CodeGroup>
 
-An empty byte string is a filled result. A scalar output cannot be nullable,
-because a physical NULL marks an unfilled computed row. To return a nullable
-blob as a value, use a named-struct output schema with a nullable blob field;
-the struct itself records whether the result has been filled. Read a nested
-blob with `table.fetch_blobs("payload.image", hits)`.
+An empty byte string is a filled result. A top-level Blob v2 output cannot be
+nullable; to return a nullable blob as a value, use a named-struct output
+schema with a nullable blob field. The struct itself records whether the
+result has been filled. A nullable non-Blob scalar output is declared with
+`Optional[T]` or `T | None`; see [Functions](/management/function#define).
+Read a nested blob with `table.fetch_blobs("payload.image", hits)`.
 
 A list or large-list output may also contain Blob v2 elements; inputs and
 fixed-size lists do not support this layout. List-nested values are queryable

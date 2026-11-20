@@ -57,6 +57,9 @@ export {
   AddResult,
   AddColumnsResult,
   RefreshColumnOptions,
+  FunctionRefreshPlanningConfig,
+  FunctionRefreshPodResources,
+  FunctionRetryPolicy,
   FunctionWorkerResourceBudget,
   RefreshColumnResult,
   FunctionErrors,
@@ -91,6 +94,7 @@ export type {
   BlobInput,
   BlobOptions,
   BlobRange,
+  BlobRangeRequest,
   BlobReadOptions,
   BlobUri,
 } from "./blob";
@@ -114,7 +118,7 @@ export {
   Job,
   JobEventsOptions,
 } from "./job";
-export type { JobProgress, JobProgressCallback } from "./job";
+export type { JobProgress, JobProgressCallback, JobWaitOptions } from "./job";
 
 export {
   AutoQuery,
@@ -149,6 +153,7 @@ export {
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
+  RTreeOptions,
   BaseTokenizer,
 } from "./indices";
 
@@ -171,6 +176,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   CompactionOptions,
+  PrewarmDataOptions,
   Version,
   WriteProgress,
   FtsToken,
@@ -660,3 +666,13 @@ export {
 } from "./catalog";
 
 export { Listing, ListingOptions } from "./listing";
+
+export type { CompactionResult } from "./compaction";
+
+export type {
+  PrewarmDataPlan,
+  PrewarmDataResult,
+  PrewarmPruningSummary,
+} from "./prewarm";
+
+export type { QueryParameters, QueryParameterValue } from "./sql";

@@ -134,6 +134,16 @@ def _quote_identifier(name: str) -> str:
     return f"`{escaped}`"
 
 
+def _validate_create_materialized_view(source, query, select, where, limit):
+    if query is not None:
+        if any(value is not None for value in (source, select, where, limit)):
+            raise ValueError(
+                "query cannot be combined with source, select, where or limit"
+            )
+    elif source is None:
+        raise ValueError("either source or query must be provided")
+
+
 def normalize_select(select: SelectArg) -> Optional[List[Tuple[str, str]]]:
     """``select`` items may be a column name, an ``(alias, expression)`` pair,
     or a dict of the same. A bare name projects itself and is quoted, so any

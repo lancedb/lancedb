@@ -30,8 +30,9 @@ use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
-    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionWorkerResourceBudget, IndexRemapMode,
-    NewColumnTransform, Ref, RefreshColumnOptions, Table as LanceDbTable,
+    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources, FunctionWorkerResourceBudget, IndexRemapMode, NewColumnTransform,
+    Ref, RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -47,11 +48,19 @@ mod scannable;
 
 /// Keyword arguments shared by `refresh_column` and `refresh_column_async`.
 struct RefreshColumnArgs {
+    retry_errors: bool,
+    retry_job_id: Option<String>,
+    retry_error_type: Option<String>,
+    include_quarantined: bool,
+    function_version: Option<String>,
+    recompute: Option<String>,
     where_clause: Option<String>,
     batch_size: Option<i64>,
     max_concurrency: Option<u32>,
     publication_interval_rows: Option<i64>,
     resource_budget: Option<FunctionWorkerResourceBudget>,
+    supervisor_resources: Option<FunctionRefreshPodResources>,
+    planning_workers: Option<FunctionRefreshPlanningConfig>,
     gpu_class: Option<String>,
     gpu_count: Option<i64>,
     retry_policy: Option<String>,
@@ -159,13 +168,116 @@ fn parse_resource_budget(
     ))
 }
 
+fn structured_integer(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u64> {
+    if value.is_none() || value.is_instance_of::<PyBool>() {
+        return Err(PyValueError::new_err(format!("{name} must be an integer")));
+    }
+    let parsed = value
+        .extract::<u64>()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be an integer")))?;
+    if parsed == 0 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than zero"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn parse_pod_resources(
+    resources: &Bound<'_, PyDict>,
+    prefix: &str,
+) -> PyResult<FunctionRefreshPodResources> {
+    for key in resources.keys() {
+        let key = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err(format!("{prefix} keys must be strings")))?;
+        if !matches!(
+            key.as_str(),
+            "cpu_millis" | "memory_bytes" | "ephemeral_storage_bytes"
+        ) {
+            return Err(PyValueError::new_err(format!(
+                "{prefix} contains unsupported key '{key}'"
+            )));
+        }
+    }
+    let get = |name: &str| -> PyResult<u64> {
+        let value = resources
+            .get_item(name)?
+            .ok_or_else(|| PyValueError::new_err(format!("{prefix}.{name} is required")))?;
+        structured_integer(&value, &format!("{prefix}.{name}"))
+    };
+    Ok(FunctionRefreshPodResources::new(
+        get("cpu_millis")?,
+        get("memory_bytes")?,
+        get("ephemeral_storage_bytes")?,
+    ))
+}
+
+fn parse_supervisor_resources(
+    resources: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Option<FunctionRefreshPodResources>> {
+    resources
+        .map(|resources| parse_pod_resources(resources, "supervisor_resources"))
+        .transpose()
+}
+
+fn parse_planning_workers(
+    planning: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Option<FunctionRefreshPlanningConfig>> {
+    let Some(planning) = planning else {
+        return Ok(None);
+    };
+    for key in planning.keys() {
+        let key = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err("planning_workers keys must be strings"))?;
+        if !matches!(
+            key.as_str(),
+            "resources" | "max_workers" | "rows_per_worker" | "fragments_per_worker"
+        ) {
+            return Err(PyValueError::new_err(format!(
+                "planning_workers contains unsupported key '{key}'"
+            )));
+        }
+    }
+    let resources = planning
+        .get_item("resources")?
+        .ok_or_else(|| PyValueError::new_err("planning_workers.resources is required"))?;
+    let resources = resources
+        .cast::<PyDict>()
+        .map_err(|_| PyValueError::new_err("planning_workers.resources must be a dict"))?;
+    let resources = parse_pod_resources(resources, "planning_workers.resources")?;
+    let get = |name: &str| -> PyResult<u64> {
+        let value = planning
+            .get_item(name)?
+            .ok_or_else(|| PyValueError::new_err(format!("planning_workers.{name} is required")))?;
+        structured_integer(&value, &format!("planning_workers.{name}"))
+    };
+    let max_workers = usize::try_from(get("max_workers")?)
+        .map_err(|_| PyValueError::new_err("planning_workers.max_workers is too large"))?;
+    Ok(Some(FunctionRefreshPlanningConfig::new(
+        resources,
+        max_workers,
+        get("rows_per_worker")?,
+        get("fragments_per_worker")?,
+    )))
+}
+
 fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOptions> {
     let RefreshColumnArgs {
+        retry_errors,
+        retry_job_id,
+        retry_error_type,
+        include_quarantined,
+        function_version,
+        recompute,
         where_clause,
         batch_size,
         max_concurrency,
         publication_interval_rows,
         resource_budget,
+        supervisor_resources,
+        planning_workers,
         gpu_class,
         gpu_count,
         retry_policy,
@@ -178,6 +290,17 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         max_executor_processes_per_worker,
     } = args;
     let mut options = RefreshColumnOptions::default();
+    options.retry_errors = retry_errors.then_some(true);
+    options.retry_job_id = retry_job_id;
+    options.retry_error_type = retry_error_type;
+    options.include_quarantined = include_quarantined.then_some(true);
+    options.function_version = function_version;
+    options.recompute = recompute
+        .map(|value| {
+            serde_json::from_value(serde_json::Value::String(value))
+                .map_err(|_| PyValueError::new_err("recompute must be failed, all, or none"))
+        })
+        .transpose()?;
     options.where_clause = where_clause;
     options.max_failed_fraction = max_failed_fraction;
     options.max_failed_rows = max_failed_rows
@@ -211,6 +334,8 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
     options.publication_interval_rows =
         positive_count(publication_interval_rows, "publication_interval_rows")?;
     options.resource_budget = resource_budget;
+    options.supervisor_resources = supervisor_resources;
+    options.planning_workers = planning_workers;
     options.gpu_class = gpu_class;
     options.gpu_count = gpu_count
         .map(|count| {
@@ -370,6 +495,16 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
 
     for (key, value) in options.iter() {
         let key: String = key.extract()?;
+        // Python bool is an int subclass: never turn True into a one-row budget.
+        if matches!(
+            key.as_str(),
+            "target_rows_per_fragment" | "max_source_rows" | "io_buffer_size" | "batch_size"
+        ) && value.is_instance_of::<PyBool>()
+        {
+            return Err(PyValueError::new_err(format!(
+                "{key} must be an integer, not a bool"
+            )));
+        }
         match key.as_str() {
             "target_rows_per_fragment" => {
                 parsed.target_rows_per_fragment = positive_u32(&value, &key)?
@@ -770,6 +905,10 @@ impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
 #[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FunctionErrorRecord {
+    pub first_seen_at_millis: Option<i64>,
+    pub last_seen_at_millis: Option<i64>,
+    pub quarantined: bool,
+    pub input: Option<String>,
     pub attempts: Option<u32>,
     pub job_id: String,
     pub fragment_id: u64,
@@ -813,6 +952,10 @@ impl FunctionErrorRecord {
 impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
     fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
         Self {
+            first_seen_at_millis: record.first_seen_at_millis,
+            last_seen_at_millis: record.last_seen_at_millis,
+            quarantined: record.quarantined,
+            input: record.input.map(|value| value.to_string()),
             attempts: record.attempts,
             job_id: record.job_id,
             fragment_id: record.fragment_id,
@@ -866,6 +1009,8 @@ impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
 #[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FunctionErrors {
+    pub workflow_version: Option<u16>,
+    pub error_groups_json: String,
     pub records: Vec<FunctionErrorRecord>,
     pub fragments: Vec<FunctionErrorFragment>,
     pub truncated: bool,
@@ -886,6 +1031,9 @@ impl FunctionErrors {
 impl From<lancedb::function::FunctionErrors> for FunctionErrors {
     fn from(errors: lancedb::function::FunctionErrors) -> Self {
         Self {
+            workflow_version: errors.workflow_version,
+            error_groups_json: serde_json::to_string(&errors.error_groups)
+                .expect("serializable Function error groups"),
             records: errors.records.into_iter().map(Into::into).collect(),
             fragments: errors.fragments.into_iter().map(Into::into).collect(),
             truncated: errors.truncated,
@@ -1243,6 +1391,15 @@ impl PyBlobFile {
             .map_err(|e| blob_file_error("tell", e))
     }
 
+    fn set_buffer_size(self_: PyRef<'_, Self>, size: usize) -> PyResult<()> {
+        self_.ensure_open()?;
+        let inner = self_.inner.clone();
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.set_buffer_size(size).await }))
+            .map_err(|e| blob_file_error("set_buffer_size", e))
+    }
+
     fn size(self_: PyRef<'_, Self>) -> u64 {
         self_.inner.size()
     }
@@ -1462,7 +1619,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false, retries=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
@@ -1470,6 +1627,7 @@ impl Table {
         progress: Option<Py<PyAny>>,
         write_parallelism: Option<usize>,
         allow_external_blob_outside_bases: bool,
+        retries: Option<u8>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_
             .inner_ref()?
@@ -1481,6 +1639,9 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(retries) = retries {
+            op = op.retries(retries);
         }
         if let Some(write_parallelism) = write_parallelism {
             op = op.write_parallelism(write_parallelism);
@@ -1615,7 +1776,8 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None, exist_ok=false))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
@@ -1624,6 +1786,7 @@ impl Table {
         wait_timeout: Option<Bound<'_, PyAny>>,
         name: Option<String>,
         train: Option<bool>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
         let timeout = wait_timeout
@@ -1632,6 +1795,7 @@ impl Table {
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
+        op = op.exist_ok(exist_ok);
         if let Some(replace) = replace {
             op = op.replace(replace);
         }
@@ -1648,7 +1812,8 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None, exist_ok=false))]
     pub fn create_index_async<'a>(
         self_: PyRef<'a, Self>,
         column: String,
@@ -1657,6 +1822,7 @@ impl Table {
         wait_timeout: Option<Bound<'_, PyAny>>,
         name: Option<String>,
         train: Option<bool>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
         let timeout = wait_timeout
@@ -1665,6 +1831,7 @@ impl Table {
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
+        op = op.exist_ok(exist_ok);
         if let Some(replace) = replace {
             op = op.replace(replace);
         }
@@ -1725,6 +1892,46 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner.prewarm_data(columns).await.infer_error()?;
             Ok(())
+        })
+    }
+
+    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None))]
+    pub fn prewarm_data_async<'py>(
+        self_: PyRef<'py, Self>,
+        columns: Option<Vec<String>>,
+        filter: Option<String>,
+        concurrency: Option<&Bound<'py, PyAny>>,
+        parameters: Option<PyArrowType<arrow::record_batch::RecordBatch>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options =
+            lancedb::table::PrewarmDataOptions::new().columns(columns.unwrap_or_default());
+        options.filter = filter;
+        options.parameters = parameters.map(|parameters| parameters.0);
+        options.concurrency = positive_u32_integer(concurrency, "concurrency")?;
+        future_into_py(self_.py(), async move {
+            let job = inner.prewarm_data_async(options).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None))]
+    pub fn explain_prewarm_data<'py>(
+        self_: PyRef<'py, Self>,
+        columns: Option<Vec<String>>,
+        filter: Option<String>,
+        concurrency: Option<&Bound<'py, PyAny>>,
+        parameters: Option<PyArrowType<arrow::record_batch::RecordBatch>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options =
+            lancedb::table::PrewarmDataOptions::new().columns(columns.unwrap_or_default());
+        options.filter = filter;
+        options.parameters = parameters.map(|parameters| parameters.0);
+        options.concurrency = positive_u32_integer(concurrency, "concurrency")?;
+        future_into_py(self_.py(), async move {
+            let plan = inner.explain_prewarm_data(options).await.infer_error()?;
+            serde_json::to_string(&plan).map_err(|error| PyRuntimeError::new_err(error.to_string()))
         })
     }
 
@@ -1965,14 +2172,28 @@ impl Table {
     }
 
     /// Read blob bytes for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    #[pyo3(signature = (column, row_ids, *, version=None, snapshot_identity=None))]
     pub fn fetch_blobs(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        version: Option<u64>,
+        snapshot_identity: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
+            let inner = match (version, snapshot_identity) {
+                (None, None) => inner,
+                (Some(version), Some(identity)) => inner
+                    .query_snapshot_with_identity(version, &identity)
+                    .await
+                    .infer_error()?,
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "deferred blob reads require both query version and snapshot identity",
+                    ));
+                }
+            };
             let blobs: LargeBinaryArray = inner
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
@@ -2019,11 +2240,12 @@ impl Table {
     }
 
     /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    #[pyo3(signature = (column, row_ids, buffer_size=None))]
     pub fn fetch_blob_files(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        buffer_size: Option<usize>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2031,6 +2253,13 @@ impl Table {
                 .fetch_blob_files(column.as_str(), &row_ids)
                 .await
                 .infer_error()?;
+            if let Some(size) = buffer_size {
+                for file in handles.iter().flatten() {
+                    file.set_buffer_size(size)
+                        .await
+                        .map_err(|e| blob_file_error("set_buffer_size", e))?;
+                }
+            }
             Ok(handles
                 .into_iter()
                 .map(|handle| {
@@ -2043,20 +2272,49 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (descriptor))]
+    #[pyo3(signature = (descriptor, buffer_size=None))]
     pub fn open_blob_file<'py>(
         self_: PyRef<'py, Self>,
         descriptor: &str,
+        buffer_size: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let descriptor: BlobDescriptor = serde_json::from_str(descriptor)
             .map_err(|error| PyValueError::new_err(format!("invalid blob descriptor: {error}")))?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let file = inner.open_blob_file(&descriptor).await.infer_error()?;
+            if let Some(size) = buffer_size {
+                file.set_buffer_size(size)
+                    .await
+                    .map_err(|e| blob_file_error("set_buffer_size", e))?;
+            }
             Ok(PyBlobFile {
                 inner: Arc::new(file),
                 closed: AtomicBool::new(false),
             })
+        })
+    }
+
+    /// Submit remote compaction and retain its durable job and actual result.
+    #[pyo3(signature = (compaction_options=None))]
+    pub fn compact_async<'py>(
+        self_: PyRef<'py, Self>,
+        compaction_options: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let target_specified = compaction_options
+            .map(|options| options.contains("target_rows_per_fragment"))
+            .transpose()?
+            .unwrap_or(false);
+        let options = parse_compaction_options(compaction_options)?;
+        let mut overrides =
+            lancedb::table::optimize::CompactionOverrides::try_from(options).infer_error()?;
+        if !target_specified {
+            overrides.target_rows_per_fragment = None;
+        }
+        future_into_py(self_.py(), async move {
+            let job = inner.compact_async(overrides).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
         })
     }
 
@@ -2120,10 +2378,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, parameters, retries=None))]
     pub fn execute_merge_insert<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'a, PyAny>,
         parameters: MergeInsertParams,
+        retries: Option<u8>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
@@ -2145,6 +2405,9 @@ impl Table {
         }
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
+        }
+        if let Some(retries) = retries {
+            builder.retries(retries);
         }
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
@@ -2445,7 +2708,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column<'py>(
         self_: PyRef<'py, Self>,
@@ -2455,6 +2718,8 @@ impl Table {
         max_concurrency: Option<Bound<'py, PyAny>>,
         publication_interval_rows: Option<i64>,
         resource_budget: Option<Bound<'py, PyDict>>,
+        supervisor_resources: Option<Bound<'py, PyDict>>,
+        planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2465,13 +2730,27 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
+        retry_errors: bool,
+        retry_job_id: Option<String>,
+        retry_error_type: Option<String>,
+        include_quarantined: bool,
+        function_version: Option<String>,
+        recompute: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let options = refresh_column_options(RefreshColumnArgs {
+            retry_errors,
+            retry_job_id,
+            retry_error_type,
+            include_quarantined,
+            function_version,
+            recompute,
             where_clause: r#where,
             batch_size,
             max_concurrency: positive_u32_integer(max_concurrency.as_ref(), "max_concurrency")?,
             publication_interval_rows,
             resource_budget: parse_resource_budget(resource_budget.as_ref())?,
+            supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
+            planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
             gpu_count,
             retry_policy,
@@ -2493,7 +2772,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async<'py>(
         self_: PyRef<'py, Self>,
@@ -2503,6 +2782,8 @@ impl Table {
         max_concurrency: Option<Bound<'py, PyAny>>,
         publication_interval_rows: Option<i64>,
         resource_budget: Option<Bound<'py, PyDict>>,
+        supervisor_resources: Option<Bound<'py, PyDict>>,
+        planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
         gpu_count: Option<i64>,
         retry_policy: Option<String>,
@@ -2513,13 +2794,27 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
+        retry_errors: bool,
+        retry_job_id: Option<String>,
+        retry_error_type: Option<String>,
+        include_quarantined: bool,
+        function_version: Option<String>,
+        recompute: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let options = refresh_column_options(RefreshColumnArgs {
+            retry_errors,
+            retry_job_id,
+            retry_error_type,
+            include_quarantined,
+            function_version,
+            recompute,
             where_clause: r#where,
             batch_size,
             max_concurrency: positive_u32_integer(max_concurrency.as_ref(), "max_concurrency")?,
             publication_interval_rows,
             resource_budget: parse_resource_budget(resource_budget.as_ref())?,
+            supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
+            planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
             gpu_count,
             retry_policy,
@@ -2541,22 +2836,71 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (job_id=None, column=None, limit=None))]
+    #[pyo3(signature = (job_id=None, column=None, limit=None, history=false))]
     pub fn function_errors(
         self_: PyRef<'_, Self>,
         job_id: Option<String>,
         column: Option<String>,
         limit: Option<usize>,
+        history: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let request = lancedb::function::FunctionErrorsRequest {
             job_id,
             column,
             limit,
+            history,
         };
         future_into_py(self_.py(), async move {
             let errors = inner.function_errors(request).await.infer_error()?;
             Ok(FunctionErrors::from(errors))
+        })
+    }
+
+    #[pyo3(signature = (column, *, quarantined=true, job_id=None, error_type=None, after_attempts=None))]
+    pub fn quarantine_function_errors(
+        self_: PyRef<'_, Self>,
+        column: String,
+        quarantined: bool,
+        job_id: Option<String>,
+        error_type: Option<String>,
+        after_attempts: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .quarantine_function_errors(
+                    &column,
+                    lancedb::function::FunctionQuarantineOptions {
+                        quarantined,
+                        job_id,
+                        error_type,
+                        after_attempts,
+                    },
+                )
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (column, *, limit=None, version=None))]
+    pub fn function_provenance(
+        self_: PyRef<'_, Self>,
+        column: String,
+        limit: Option<usize>,
+        version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .function_provenance(
+                    &column,
+                    lancedb::function::FunctionProvenanceOptions { limit, version },
+                )
+                .await
+                .infer_error()?;
+            serde_json::to_string(&result)
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))
         })
     }
 

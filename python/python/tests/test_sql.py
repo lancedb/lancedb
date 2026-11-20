@@ -293,6 +293,56 @@ def test_parameters_reach_the_server_as_the_values_that_were_sent():
     assert echoed.column("k").to_pylist() == [10]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("exist_ok", "status"),
+    [
+        (None, "created"),
+        (False, "created"),
+        (True, "created"),
+        (True, "already_exists"),
+    ],
+)
+async def test_create_secret_exist_ok_reaches_sql(asynchronous, exist_ok, status):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class SecretServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.writes = []
+
+        def do_exchange(self, context, descriptor, reader, writer):
+            self.writes.append((descriptor.command, reader.read_all()))
+            result = pa.table({"status": [status]})
+            writer.begin(result.schema)
+            writer.write_table(result)
+            writer.close()
+
+    with SecretServer() as server:
+        options = {
+            "api_key": "test-key",
+            "host_override": "http://localhost:10024",
+            "sql_host_override": f"grpc://127.0.0.1:{server.port}",
+        }
+        kwargs = {"namespace_path": ["team", "production"]}
+        if exist_ok is not None:
+            kwargs["exist_ok"] = exist_ok
+        if asynchronous:
+            db = await lancedb.connect_async("db://analytics", **options)
+            await db.create_secret("api-key", "credential's value", **kwargs)
+        else:
+            db = lancedb.connect("db://analytics", **options)
+            db.create_secret("api-key", "credential's value", **kwargs)
+        ((command, parameters),) = server.writes
+
+    prefix = "CREATE SECRET IF NOT EXISTS" if exist_ok else "CREATE SECRET"
+    sql = f'{prefix} "api-key" TYPE = GENERIC_STRING SECRET_STRING = $1'
+    assert sql.encode() in command
+    assert b"credential's value" not in command
+    assert parameters.column(0).to_pylist() == ["credential's value"]
+
+
 @pytest.mark.parametrize("job_id", [None, "sql-job-1"])
 def test_sql_input_error_metadata_crosses_native_boundary(job_id):
     flight = pytest.importorskip("pyarrow.flight")

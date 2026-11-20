@@ -40,14 +40,18 @@ from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
     _normalize_blob_row_ids,
+    _validate_blob_buffer_size,
     _wrap_blob_files,
     strip_auto_row_ids,
     validate_blob_mode,
 )
 from .types import BlobMode
 from lancedb.arrow import peek_reader
+from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
+from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
+from lancedb.compaction import CompactionResult
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -76,6 +80,7 @@ from .index import (
     Fm,
     NGram,
     ZoneMap,
+    RTree,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -83,6 +88,9 @@ from .index import (
 )
 from .expr import Expr
 from .functions import (
+    FunctionErrors,
+    AsyncFunctionErrors,
+    FunctionProvenance,
     FunctionRetryPolicy,
     FunctionApplication,
     RefreshColumnResult as RefreshColumnJobResult,
@@ -90,6 +98,7 @@ from .functions import (
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    FullTextOperator,
     AnalyzePlanDistributedMetrics,
     AsyncFTSQuery,
     AsyncHybridQuery,
@@ -137,6 +146,14 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        # The namespace QueryTable request has no order_by field. Pushing a
+        # nonempty ordering down would drop it and return the wrong top-K rows.
+        or bool(query.order_by)
+        or (
+            query.full_text_query is not None
+            and query.fast_search is True
+            and query.vector is None
+        )
     )
 
 
@@ -165,6 +182,36 @@ def _validate_index_accelerator(accelerator: Any) -> None:
         torch.cuda.init()
     except (RuntimeError, AssertionError) as err:
         raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
+
+
+def _create_accelerated_index(dataset, *, exist_ok=False, name=None, **options):
+    if exist_ok:
+        parts = _parse_field_path(options["column"])
+        default_name = ".".join(parts)
+        if any("." in part for part in parts):
+            default_name = ".".join(
+                "`" + part.replace("`", "``") + "`"
+                if any(
+                    not character.isalnum() and character != "_" for character in part
+                )
+                else part
+                for part in parts
+            )
+        name = name or f"{default_name}_idx"
+        dataset.checkout_latest()
+        if any(index["name"] == name for index in dataset.list_indices()):
+            return
+        options["replace"] = False
+        options["name"] = name
+    _validate_index_accelerator(options.get("accelerator"))
+    try:
+        dataset.create_index(**options)
+    except Exception:
+        if exist_ok:
+            dataset.checkout_latest()
+            if any(index["name"] == name for index in dataset.list_indices()):
+                return
+        raise
 
 
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
@@ -255,7 +302,7 @@ def _maybe_add_fts_error_note(
 
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
+    from .db import DBConnection, LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -263,7 +310,6 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
-        FunctionErrors,
         RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
@@ -302,6 +348,7 @@ IndexConfigType = Union[
     Fm,
     NGram,
     ZoneMap,
+    RTree,
     FTS,
 ]
 
@@ -1113,7 +1160,14 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             if not any(child.name in ("data", "uri") for child in source_type):
                 raise ValueError(
                     f"blob struct input for column '{field.name}' must contain "
-                    "a 'data' or 'uri' child"
+                    "a 'data' or 'uri' child. A blob query returns an SDK "
+                    "descriptor in this shape, and a descriptor is not payload "
+                    "bytes. Use blob_mode='bytes' to materialize payloads, or "
+                    "inspect descriptors with blob_mode='descriptions'. To copy "
+                    "payloads, select row IDs with with_row_id(True), then call "
+                    "table.fetch_blobs(column, row_ids) or "
+                    "table.fetch_blob_files(column, row_ids). Keep the source "
+                    "unchanged between selection and fetching."
                 )
         elif not _can_coerce_to_blob(source_type) and not isinstance(
             source_type, pa.ExtensionType
@@ -1833,6 +1887,7 @@ class Table(ABC):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -1858,6 +1913,7 @@ class Table(ABC):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -1889,6 +1945,7 @@ class Table(ABC):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -1909,9 +1966,12 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             LanceDB Enterprise only: how long to wait for the index build to finish.
             If not set, the call returns once the build is scheduled.
@@ -1959,6 +2019,106 @@ class Table(ABC):
         """
         raise NotImplementedError("create_index is not supported for this table type")
 
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> None:
+        """Submit remote data prewarm and return after acceptance.
+
+        Omitted or empty ``columns`` warm all fields. ``filter`` is a single
+        SQL predicate for conservative metadata pruning; ``concurrency`` is
+        a positive per-executor integer, or omitted for the server default.
+        The table handle supplies the namespace and branch. Requires a
+        compatible SQL PREWARM server and Flight SQL connectivity.
+
+        The operation continues in the background. Use
+        [prewarm_data_async][lancedb.table.Table.prewarm_data_async] to retain
+        the job handle and wait for completion.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
+        """
+        self.prewarm_data_async(
+            columns, filter=filter, concurrency=concurrency, parameters=parameters
+        )
+
+    def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> PrewarmDataPlan:
+        """Preview data prewarm without creating a warming job.
+
+        Accepts the same columns, filter, parameters, and concurrency as
+        ``prewarm_data_async`` and uses the table handle's namespace and branch.
+        Requires LanceDB Enterprise with structured SQL previews, table Select,
+        and database/namespace Usage. Historical-version and Embedded handles
+        are unsupported.
+
+        Returns the source version, readable plan, and conservative pruning summary.
+        Unknown metrics remain None; selected ranges are not exact matching rows.
+        The preview reads metadata. A later submission plans its own snapshot.
+
+        Examples
+        --------
+        >>> plan = table.explain_prewarm_data(  # doctest: +SKIP
+        ...     ["video"], filter="quality > $minimum", parameters={"minimum": 0.7})
+        >>> print(plan.pruning.selected_fragments)  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "data prewarm previews are only supported on remote tables"
+        )
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> Job[PrewarmDataResult]:
+        """Submit a remote data-cache prewarm and return its durable job.
+
+        Requires a compatible SQL PREWARM server and Flight SQL connectivity.
+        The table handle supplies the branch and namespace. ``columns`` uses
+        Lance field paths; an omitted/empty list warms all columns. ``filter``
+        is one SQL predicate for conservative metadata pruning, not a row scan.
+        ``parameters`` binds ``$1``/``$name`` values using a sequence, mapping,
+        or one-row Arrow batch/table. Values are sent separately from SQL.
+        ``concurrency`` is a positive per-executor integer. Historical-version
+        handles are unsupported; call ``checkout_latest()`` first.
+
+        Submission requires table Select and database/namespace Usage under
+        Standard authorization. Status/wait use the generic HTTP job API;
+        events and cancellation have their own privileges. Unsupported servers
+        are not retried through REST or with settings removed.
+
+        Returns once accepted. ``job.wait()`` waits for warming to finish and
+        returns [PrewarmDataResult][lancedb.prewarm.PrewarmDataResult].
+        Save ``job.id`` to resume with ``db.open_job(id)``. A wait timeout does
+        not cancel the operation. After ``job.refresh()``,
+        ``job.spec["table_version"]`` identifies the pinned source version.
+
+        Examples
+        --------
+        >>> job = table.prewarm_data_async(  # doctest: +SKIP
+        ...     ["video"], filter="quality > $min", parameters={"min": 0.7},
+        ...     concurrency=4)
+        >>> job.wait()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "data prewarm jobs are only supported on remote tables"
+        )
+
     def create_index_async(
         self,
         column: str,
@@ -1967,6 +2127,7 @@ class Table(ABC):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -1997,8 +2158,16 @@ class Table(ABC):
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated existing
-        overrides are preserved by the remote service update flow.
+        Fetches the current overrides, recursively merges nested objects locally,
+        then sends the complete replacement using REST PUT. Other values replace
+        existing values; unrelated fields from the read snapshot are preserved.
+        This read-modify-write is not atomic: concurrent edits can be overwritten,
+        even to unrelated fields. Coordinate writers when concurrent edits must
+        be preserved. An empty update only reads and returns the current overrides.
+
+        Unlike this SDK method, CLI ``set`` and REST PUT replace the overrides
+        object without merging. Use ``reset_table_overrides()`` to clear all
+        overrides. Supported only on remote Enterprise tables.
         """
         raise NotImplementedError
 
@@ -2059,6 +2228,7 @@ class Table(ABC):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -2143,6 +2313,7 @@ class Table(ABC):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on the table.
 
@@ -2255,6 +2426,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -2315,6 +2487,10 @@ class Table(ABC):
             Store blob URIs that sit outside registered blob bases. The row
             keeps a reference, so the object has to stay readable. Local
             tables only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -2398,6 +2574,8 @@ class Table(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -2460,6 +2638,10 @@ class Table(ABC):
 
             - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
+
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
 
         Returns
         -------
@@ -2655,8 +2837,12 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        LanceDB Enterprise reads the requested ranges through version-pinned blob
-        handles using HTTP byte-range requests.
+        LanceDB Enterprise uses the batched endpoint when the server advertises
+        support, partitioning at 1024 ranges and 64 MiB, including individual
+        larger ranges. Older servers use descriptor queries and BlobFile range
+        reads. Both protocols read one exact branch and version without changing
+        the table's checkout. Errors from an advertised endpoint propagate without
+        switching protocols. The final output occupies memory.
         """
 
     @abstractmethod
@@ -2664,6 +2850,8 @@ class Table(ABC):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
@@ -2673,6 +2861,8 @@ class Table(ABC):
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
         ``None``. LanceDB Enterprise requires server version 0.5.0 or newer.
+        ``buffer_size`` controls sequential read-ahead in bytes (default 512 KiB).
+        Set it to 0 for sparse reads. Explicit range reads bypass this buffer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2682,7 +2872,10 @@ class Table(ABC):
 
     @abstractmethod
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a seekable file from a SQL ``blob_descriptor`` result.
 
@@ -2691,6 +2884,7 @@ class Table(ABC):
         not change this table's checkout. Null descriptors return ``None``.
         Payload bytes load only when the returned handle is read. An external
         blob with an unspecified size may require a metadata request on opening.
+        ``buffer_size`` controls sequential read-ahead (default 512 KiB; 0 disables).
 
         ```python
         rows = db.execute_query(
@@ -2701,7 +2895,9 @@ class Table(ABC):
         ```
         """
 
-    def open_blob_files(self, descriptors: Iterable) -> Iterator[Optional[BlobFile]]:
+    def open_blob_files(
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
+    ) -> Iterator[Optional[BlobFile]]:
         """Iterate over lazy files from descriptor dictionaries or Arrow scalars.
 
         Accepts an Arrow array/chunked array or any iterable. Opens each handle
@@ -2716,7 +2912,10 @@ class Table(ABC):
         ```
         """
         for descriptor in descriptors:
-            yield self.open_blob_file(descriptor)
+            if buffer_size is None:
+                yield self.open_blob_file(descriptor)
+            else:
+                yield self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @abstractmethod
     def _execute_query(
@@ -2726,6 +2925,15 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
+
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute a query and collect the whole result eagerly."""
+        return self._execute_query(query, timeout=timeout).read_all()
 
     @abstractmethod
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
@@ -2748,6 +2956,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult: ...
 
     @abstractmethod
@@ -2939,6 +3148,33 @@ class Table(ABC):
         This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        """Submit remote compaction and return a durable job after acceptance.
+
+        Uses SQL OPTIMIZE with the table handle's branch and namespace. Supports
+        the four per-job settings in
+        [CompactionOptions][lancedb.table.CompactionOptions].
+        Requires a compatible remote server, table Ownership and parent Usage.
+        Local and historical-version handles are unsupported. Existing
+        ``optimize()`` retains its return-on-submission behavior remotely.
+
+        ``job.wait()`` waits for the actual rewrite and returns
+        [CompactionResult][lancedb.compaction.CompactionResult]. Partial/bounded
+        runs report uncommitted rows and ``more_work``; unknown file statistics
+        are None. Servers without a result payload raise an error rather than
+        returning fabricated zero statistics. Wait timeouts do not cancel work.
+        Save ``job.id`` and reopen with ``db.open_job(id)``. Monitoring and
+        cancellation use generic HTTP job APIs and their existing permissions.
+
+        >>> job = table.compact_async(  # doctest: +SKIP
+        ...     compaction_options={"target_rows_per_fragment": 1000})
+        >>> result = job.wait()  # doctest: +SKIP
+        >>> print(result.rows_succeeded)  # doctest: +SKIP
+        """
+        raise NotImplementedError("compaction jobs are only supported on remote tables")
 
     @abstractmethod
     def optimize(
@@ -3196,6 +3432,8 @@ class Table(ABC):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3206,6 +3444,12 @@ class Table(ABC):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
@@ -3253,6 +3497,17 @@ class Table(ABC):
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3270,6 +3525,9 @@ class Table(ABC):
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -3287,6 +3545,23 @@ class Table(ABC):
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -3305,6 +3580,8 @@ class Table(ABC):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -3315,6 +3592,12 @@ class Table(ABC):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -3361,6 +3644,17 @@ class Table(ABC):
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -3378,6 +3672,9 @@ class Table(ABC):
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -3395,6 +3692,23 @@ class Table(ABC):
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -3417,22 +3731,104 @@ class Table(ABC):
         'finished'
         """
 
+    def retry_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        **options: Any,
+    ) -> Job[RefreshColumnJobResult]:
+        """Start a job for exactly the current failed rows.
+
+        Stable row identities survive compaction. Set ``function_version`` to
+        upgrade and retry failures atomically. ``include_quarantined=True``
+        explicitly releases quarantined rows before retrying them.
+
+        >>> job = table.retry_failed("sharpness")  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        """
+        return self.refresh_column_async(
+            column,
+            retry_errors=True,
+            retry_error_type=error_type,
+            retry_job_id=job_id,
+            include_quarantined=include_quarantined,
+            function_version=function_version,
+            recompute="failed" if function_version is not None else None,
+            **options,
+        )
+
+    def upgrade_column(
+        self,
+        column: str,
+        *,
+        version: str,
+        recompute: Literal["failed", "all", "none"] = "all",
+        **options: Any,
+    ) -> Job[RefreshColumnJobResult]:
+        """Upgrade a Function binding while keeping its columns available.
+
+        ``failed`` recomputes current failures, ``all`` recomputes all live rows,
+        and ``none`` preserves existing values. New and changed rows use the new
+        version; ``function_provenance`` identifies each value's producing version.
+        """
+        return self.refresh_column_async(
+            column, function_version=version, recompute=recompute, **options
+        )
+
+    def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        """Quarantine current failures, or release them with ``quarantined=False``.
+
+        Normal and automatic refreshes skip quarantined rows. ``after_attempts``
+        restricts the selection to rows with at least that many failed calls.
+        Returns the number of selected rows. LanceDB Enterprise only.
+        """
+        raise NotImplementedError("Function quarantine requires LanceDB Enterprise")
+
+    def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        """Read each returned row's producing Function version and job.
+
+        ``version`` selects a table snapshot. Check ``truncated`` before treating
+        the returned records as a complete snapshot. LanceDB Enterprise only.
+        """
+        raise NotImplementedError("Function provenance requires LanceDB Enterprise")
+
     @abstractmethod
     def function_errors(
         self,
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
     ) -> "FunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
 
-        A refresh running under a skip policy records each row it skipped
-        with the input that failed and the error. This lists those records,
-        newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Enterprise only; reading errors
-        needs read access to the table, since a message carries the value
-        that failed.
+        A refresh running under a skip policy records each row it skipped.
+        On servers advertising workflow version 1 or later, the default lists
+        current unresolved failures, deduplicated by row and Function column,
+        with attempt counts and first/last failure times. ``history=True``
+        returns retained observations, including repaired failures. Older servers
+        keep their legacy listing behavior and reject explicit history requests.
+        LanceDB Enterprise only; reading errors needs table read access because
+        messages can include the input that failed.
 
         Parameters
         ----------
@@ -3442,6 +3838,10 @@ class Table(ABC):
             Only errors on this column.
         limit: int, optional
             At most this many records (server default 10000, cap 100000).
+        history: bool, default False
+            Include retained historical errors instead of current failures.
+            Requires Enterprise workflow version 1 or later. Historical records
+            cannot be used with the current-input ``rows()`` helper.
 
         Returns
         -------
@@ -3803,7 +4203,10 @@ class LanceTable(Table):
             namespace_path = []
         self._conn = connection
         self._namespace_path = namespace_path
+        self._storage_options = storage_options
+        self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
+        self._managed_versioning = managed_versioning
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         # When the connection built the namespace client natively (e.g. an
@@ -3830,6 +4233,154 @@ class LanceTable(Table):
             )
         # Take queries read the pushdown set from the inner table.
         self._table._pushdown_operations = self._pushdown_operations
+        # These coordinates live on the Python wrapper: the native table only
+        # reports its current branch and version, not whether it is pinned.
+        self._branch = self._table.current_branch()
+        self._checkout_version: Optional[int] = None
+
+    def _pickle_connection_state(self) -> str:
+        """Serialize the connection, rejecting state a worker cannot recreate."""
+        connection = self._conn
+        namespace_client = getattr(connection, "_namespace_client", None)
+        namespace_impl = getattr(connection, "_namespace_client_impl", None)
+        if namespace_client is not None and namespace_impl is None:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r} backed by a namespace "
+                "connection whose custom namespace_client cannot be "
+                "reconstructed. Connect through connect_namespace(impl, "
+                "properties) or provide a picklable worker-side namespace "
+                "connection instead."
+            )
+
+        pickle_state = getattr(connection, "_pickle_state", None)
+        if pickle_state is not None:
+            return pickle_state()
+
+        session = getattr(connection, "session", None)
+        if session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceTable whose connection was created with a "
+                "Session; Session objects are not serializable. Create the "
+                "Session in each worker process instead."
+            )
+        return connection.serialize()
+
+    def _namespace_client_for_pickle(self) -> Optional[Any]:
+        """Keep a table-level namespace client only when pickle can carry it."""
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            return None
+        if namespace_client is getattr(self._conn, "_namespace_client", None):
+            # The serialized connection rebuilds its own namespace client.
+            return None
+        if namespace_client is getattr(self._conn, "_cached_namespace_client", None):
+            # Local manifest-mode connections cache their namespace client here.
+            return None
+
+        import pickle
+
+        try:
+            pickle.dumps(namespace_client)
+        except Exception as error:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r}: its custom "
+                f"namespace_client ({type(namespace_client).__name__}) is not "
+                "serializable. Reopen the table in the worker through a "
+                "picklable namespace connection instead."
+            ) from error
+        return namespace_client
+
+    @classmethod
+    def _open_from_pickle_state(
+        cls, connection: "DBConnection", state: dict[str, Any]
+    ) -> "LanceTable":
+        """Reopen a table from the state returned by ``__getstate__``."""
+        async_connection = getattr(connection, "_conn", None)
+        if async_connection is None:
+            async_connection = connection._inner
+
+        # Only a table-level explicit client travels in the state. A connection
+        # namespace client must reopen through its own provider path so caller
+        # storage options keep their layering; passing the reconstructed client
+        # here would turn it into an explicit table provider.
+        namespace_client = state.get("namespace_client")
+
+        async_table = LOOP.run(
+            async_connection.open_table(
+                state["name"],
+                namespace_path=state["namespace_path"],
+                storage_options=state["storage_options"],
+                index_cache_size=state["index_cache_size"],
+                location=state["location"],
+                namespace_client=namespace_client,
+                managed_versioning=state["managed_versioning"],
+            )
+        )
+        table = cls(
+            connection,
+            state["name"],
+            namespace_path=state["namespace_path"],
+            storage_options=state["storage_options"],
+            index_cache_size=state["index_cache_size"],
+            location=state["location"],
+            namespace_client=namespace_client,
+            managed_versioning=state["managed_versioning"],
+            pushdown_operations=state["pushdown_operations"],
+            route_pushdown_to_rust=state["route_pushdown_to_rust"],
+            _async=async_table,
+        )
+
+        version = state["checkout_version"]
+        if state["branch"] is not None:
+            table = table.branches.checkout(state["branch"], version)
+        elif version is not None:
+            table.checkout(version)
+        return table
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return a process-independent state for pickle-based workers."""
+        if self._conn.uri.startswith("memory://"):
+            # In-memory databases cannot be reopened by name in another process.
+            # Keep the established behavior of exporting the visible table.
+            return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
+
+        # The native handle is authoritative: a tag checkout can move this
+        # wrapper onto another branch, so never trust the branch captured at
+        # construction time.
+        self._branch = self.current_branch()
+        return {
+            "kind": "lance",
+            "connection_state": self._pickle_connection_state(),
+            "name": self.name,
+            "namespace_path": list(self._namespace_path),
+            # Only caller-supplied overrides are safe to replay. Namespace-provided
+            # initial options may contain rotating credentials and must be fetched
+            # again by the reopened connection's storage-options provider.
+            "storage_options": self._storage_options,
+            "index_cache_size": self._index_cache_size,
+            "location": self._location,
+            "namespace_client": self._namespace_client_for_pickle(),
+            "managed_versioning": self._managed_versioning,
+            "pushdown_operations": set(self._pushdown_operations),
+            "route_pushdown_to_rust": self._route_pushdown_to_rust,
+            "branch": self._branch,
+            "checkout_version": self._checkout_version,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Rebuild a table from ``__getstate__`` in the current process."""
+        if state.get("kind") == "memory":
+            from . import connect
+
+            rebuilt = connect("memory://").create_table(state["name"], state["data"])
+            self.__dict__.update(rebuilt.__dict__)
+            return
+
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["connection_state"], for_worker=True)
+        reopened = type(self)._open_from_pickle_state(connection, state)
+        self.__dict__.update(reopened.__dict__)
 
     @property
     def name(self) -> str:
@@ -3998,13 +4549,20 @@ class LanceTable(Table):
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+        return LOOP.run(
+            self._table.fetch_blob_files(column, row_ids, buffer_size=buffer_size)
+        )
 
     def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
-        return LOOP.run(self._table.open_blob_file(descriptor))
+        return LOOP.run(self._table.open_blob_file(descriptor, buffer_size=buffer_size))
 
     @property
     def tags(self) -> Tags:
@@ -4061,18 +4619,23 @@ class LanceTable(Table):
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
-        # version is unused locally: the pin already lives on async_table and a
-        # local handle is not reopened via a serialized connection.
-        return LanceTable(
+        table = LanceTable(
             self._conn,
             async_table.name,
             namespace_path=self._namespace_path,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
             namespace_client=self._namespace_client,
+            managed_versioning=self._managed_versioning,
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
+        # The native handle knows its branch but not whether this wrapper is a
+        # pinned branch version, so carry that coordinate explicitly.
+        table._checkout_version = version
+        return table
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -4111,6 +4674,8 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         LOOP.run(self._table.checkout(version))
+        self._checkout_version = self.version
+        self._branch = self.current_branch()
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -4119,6 +4684,8 @@ class LanceTable(Table):
         version of the table.
         """
         LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
+        self._branch = self.current_branch()
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -4167,6 +4734,8 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+        self._checkout_version = None
+        self._branch = self.current_branch()
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -4288,6 +4857,7 @@ class LanceTable(Table):
         replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
     ) -> None: ...
 
@@ -4313,6 +4883,7 @@ class LanceTable(Table):
         *,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
+        exist_ok: bool = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
     ) -> None: ...
@@ -4344,6 +4915,7 @@ class LanceTable(Table):
         config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
@@ -4364,9 +4936,12 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
+        exist_ok : bool, default False
+            Preserve the existing index with the requested or derived name.
+            Takes precedence over replace and keeps its definition and build.
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
         name : str, optional
@@ -4435,8 +5010,10 @@ class LanceTable(Table):
             # Handle accelerator through pylance
             if accelerator is not None:
                 dataset = self.to_lance()
-                _validate_index_accelerator(accelerator)
-                dataset.create_index(
+                _create_accelerated_index(
+                    dataset,
+                    exist_ok=exist_ok,
+                    name=name,
                     column=column,
                     index_type=index_type,
                     metric=metric,
@@ -4462,7 +5039,6 @@ class LanceTable(Table):
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
                     dataset = self.to_lance()
-                    _validate_index_accelerator(acc)
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
                         "IvfSq": "IVF_SQ",
@@ -4479,7 +5055,10 @@ class LanceTable(Table):
                     if num_bits is not None:
                         quantization_kwargs["num_bits"] = num_bits
 
-                    dataset.create_index(
+                    _create_accelerated_index(
+                        dataset,
+                        exist_ok=exist_ok,
+                        name=name,
                         column=column,
                         index_type=lance_index_type,
                         metric=getattr(config, "distance_type", "l2"),
@@ -4501,6 +5080,7 @@ class LanceTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -4516,6 +5096,7 @@ class LanceTable(Table):
         replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> Job:
         """Create an index, returning a handle to the indexing job.
@@ -4534,6 +5115,7 @@ class LanceTable(Table):
                 self._table.create_index_async(
                     column,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     wait_timeout=wait_timeout,
                     name=name,
@@ -4575,7 +5157,14 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> None:
         """
         Prewarm data for the table.
 
@@ -4584,7 +5173,8 @@ class LanceTable(Table):
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -4595,8 +5185,62 @@ class LanceTable(Table):
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        parameters: sequence, mapping, or one-row Arrow batch/table, optional
+            Scalar values for ``$1``/``$name`` placeholders in ``filter``.
+            Values are sent separately from SQL; requires server support.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        return LOOP.run(self._table.prewarm_data(columns))
+        return LOOP.run(
+            self._table.prewarm_data(
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
+        )
+
+    def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> PrewarmDataPlan:
+        """Preview prewarm without submitting a warming job.
+
+        See [Table.explain_prewarm_data][lancedb.table.Table.explain_prewarm_data]
+        for options, permissions, snapshot semantics, and limitations.
+        """
+        return LOOP.run(
+            self._table.explain_prewarm_data(
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
+        )
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> Job[PrewarmDataResult]:
+        return Job(
+            LOOP.run(
+                self._table.prewarm_data_async(
+                    columns,
+                    filter=filter,
+                    concurrency=concurrency,
+                    parameters=parameters,
+                )
+            )
+        )
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -4654,6 +5298,7 @@ class LanceTable(Table):
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a scalar index on a column.
 
@@ -4680,6 +5325,7 @@ class LanceTable(Table):
             self._table.create_index(
                 column,
                 replace=replace,
+                exist_ok=exist_ok,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -4717,6 +5363,7 @@ class LanceTable(Table):
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
     ):
         """Create a full-text search index on a column.
 
@@ -4778,6 +5425,7 @@ class LanceTable(Table):
                 self._table.create_index(
                     field_names,
                     replace=replace,
+                    exist_ok=exist_ok,
                     config=config,
                     name=name,
                     wait_timeout=wait_timeout,
@@ -4800,6 +5448,7 @@ class LanceTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -4831,6 +5480,10 @@ class LanceTable(Table):
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         Returns
         -------
@@ -4848,6 +5501,7 @@ class LanceTable(Table):
                     progress=progress,
                     write_parallelism=write_parallelism,
                     allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                    retries=retries,
                 )
             )
         finally:
@@ -4942,6 +5596,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -4953,6 +5609,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -4966,6 +5624,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -4977,6 +5637,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -4989,6 +5651,8 @@ class LanceTable(Table):
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
         fast_search: Optional[bool] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -5049,6 +5713,10 @@ class LanceTable(Table):
             If None then the search is performed on all indexed columns.
             For now, only one column can be searched at a time.
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         LanceQueryBuilder
@@ -5074,6 +5742,7 @@ class LanceTable(Table):
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
             fast_search=fast_search,
+            operator=operator,
         )
 
     @classmethod
@@ -5156,7 +5825,9 @@ class LanceTable(Table):
         self = cls.__new__(cls)
         self._conn = db
         self._namespace_path = namespace_path
+        self._index_cache_size = None
         self._location = location
+        self._managed_versioning = None
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         self._route_pushdown_to_rust = route_pushdown_to_rust
@@ -5184,6 +5855,7 @@ class LanceTable(Table):
                 enable_v2_manifest_paths
             ).lower()
 
+        self._storage_options = storage_options
         self._table = LOOP.run(
             self._conn._conn.create_table(
                 name,
@@ -5200,6 +5872,8 @@ class LanceTable(Table):
                 namespace_client=namespace_client,
             )
         )
+        self._branch = self._table.current_branch()
+        self._checkout_version = None
         return self
 
     def delete(self, where: Union[str, Expr]) -> DeleteResult:
@@ -5303,6 +5977,26 @@ class LanceTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        # Keep the Python namespace pushdown path, including its branch rule.
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and self.current_branch() is None
+            and not _requires_local_namespace_execution(query)
+        ):
+            return self._execute_query(query, timeout=timeout).read_all()
+
+        async_query = self._table._sync_query_to_async(query)
+        return LOOP.run(async_query._execute_eager(timeout=timeout))
+
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
@@ -5325,9 +6019,10 @@ class LanceTable(Table):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         return LOOP.run(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value, retries)
         )
 
     @property
@@ -5388,6 +6083,13 @@ class LanceTable(Table):
         stats = self.to_lance().optimize.compact_files(*args, **kwargs)
         self.checkout_latest()
         return stats
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        return Job(
+            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+        )
 
     def optimize(
         self,
@@ -5540,6 +6242,8 @@ class LanceTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5550,6 +6254,12 @@ class LanceTable(Table):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed. See
@@ -5562,6 +6272,8 @@ class LanceTable(Table):
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=retry_policy,
@@ -5572,6 +6284,12 @@ class LanceTable(Table):
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
+                retry_errors=retry_errors,
+                retry_job_id=retry_job_id,
+                retry_error_type=retry_error_type,
+                include_quarantined=include_quarantined,
+                function_version=function_version,
+                recompute=recompute,
             )
         )
 
@@ -5584,6 +6302,8 @@ class LanceTable(Table):
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -5594,6 +6314,12 @@ class LanceTable(Table):
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows and recompute those whose
         inputs changed, returning a handle to the refresh job. See
@@ -5608,6 +6334,8 @@ class LanceTable(Table):
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
                     resource_budget=resource_budget,
+                    supervisor_resources=supervisor_resources,
+                    planning_workers=planning_workers,
                     gpu_class=gpu_class,
                     gpu_count=gpu_count,
                     retry_policy=retry_policy,
@@ -5618,6 +6346,12 @@ class LanceTable(Table):
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
+                    retry_errors=retry_errors,
+                    retry_job_id=retry_job_id,
+                    retry_error_type=retry_error_type,
+                    include_quarantined=include_quarantined,
+                    function_version=function_version,
+                    recompute=recompute,
                 )
             )
         )
@@ -5627,11 +6361,44 @@ class LanceTable(Table):
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
     ) -> "FunctionErrors":
         """The per-row errors Function refreshes recorded on this table. See
         [`Table.function_errors`][lancedb.table.Table.function_errors]."""
         return LOOP.run(
-            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+            self._table.function_errors(
+                job_id=job_id, column=column, limit=limit, history=history
+            )
+        ).as_sync(self)
+
+    def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        return LOOP.run(
+            self._table.quarantine_failed(
+                column,
+                error_type=error_type,
+                job_id=job_id,
+                after_attempts=after_attempts,
+                quarantined=quarantined,
+            )
+        )
+
+    def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        return LOOP.run(
+            self._table.function_provenance(column, limit=limit, version=version)
         )
 
     def column_statuses(
@@ -5692,8 +6459,16 @@ class LanceTable(Table):
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated overrides
-        from the current read snapshot are preserved.
+        Fetches the current overrides, recursively merges nested objects locally,
+        then sends the complete replacement using REST PUT. Other values replace
+        existing values; unrelated fields from the read snapshot are preserved.
+        This read-modify-write is not atomic: concurrent edits can be overwritten,
+        even to unrelated fields. Coordinate writers when concurrent edits must
+        be preserved. An empty update only reads and returns the current overrides.
+
+        Unlike this SDK method, CLI ``set`` and REST PUT replace the overrides
+        object without merging. Use ``reset_table_overrides()`` to clear all
+        overrides. Supported only on remote Enterprise tables.
 
         Examples
         --------
@@ -6471,8 +7246,16 @@ class AsyncTable:
     async def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated overrides
-        from the current read snapshot are preserved.
+        Fetches the current overrides, recursively merges nested objects locally,
+        then sends the complete replacement using REST PUT. Other values replace
+        existing values; unrelated fields from the read snapshot are preserved.
+        This read-modify-write is not atomic: concurrent edits can be overwritten,
+        even to unrelated fields. Coordinate writers when concurrent edits must
+        be preserved. An empty update only reads and returns the current overrides.
+
+        Unlike this SDK method, CLI ``set`` and REST PUT replace the overrides
+        object without merging. Use ``reset_table_overrides()`` to clear all
+        overrides. Supported only on remote Enterprise tables.
 
         Examples
         --------
@@ -6765,11 +7548,13 @@ class AsyncTable:
                 Fm,
                 NGram,
                 ZoneMap,
+                RTree,
                 FTS,
             ]
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ):
         """Create an index to speed up queries
@@ -6800,6 +7585,9 @@ class AsyncTable:
             If not set, the call returns once the build is scheduled.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
+        exist_ok: bool, default False
+            Preserve an existing index with the requested or derived name. This
+            takes precedence over replace and keeps its definition and build.
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
@@ -6842,19 +7630,21 @@ class AsyncTable:
                     Fm,
                     NGram,
                     ZoneMap,
+                    RTree,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, or FTS, but got "
-                    + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, or FTS,"
+                    " but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
                 column,
                 index=config,
                 replace=replace,
+                exist_ok=exist_ok,
                 wait_timeout=wait_timeout,
                 name=name,
                 train=train,
@@ -6887,11 +7677,13 @@ class AsyncTable:
                 Fm,
                 NGram,
                 ZoneMap,
+                RTree,
                 FTS,
             ]
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
+        exist_ok: bool = False,
         train: bool = True,
     ) -> AsyncJob:
         """Create an index, returning a handle to the indexing job.
@@ -6910,6 +7702,7 @@ class AsyncTable:
             column,
             index=config,
             replace=replace,
+            exist_ok=exist_ok,
             wait_timeout=wait_timeout,
             name=name,
             train=train,
@@ -6958,7 +7751,14 @@ class AsyncTable:
         """
         await self._inner.prewarm_index(name)
 
-    async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    async def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> None:
         """
         Prewarm data for the table.
 
@@ -6967,7 +7767,8 @@ class AsyncTable:
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -6978,8 +7779,74 @@ class AsyncTable:
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        parameters: sequence, mapping, or one-row Arrow batch/table, optional
+            Scalar values for ``$1``/``$name`` placeholders in ``filter``.
+            Values are sent separately from SQL; requires server support.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> await table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        await self._inner.prewarm_data(columns)
+        await self.prewarm_data_async(
+            columns, filter=filter, concurrency=concurrency, parameters=parameters
+        )
+
+    async def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> PrewarmDataPlan:
+        """Preview prewarm without submitting a warming job.
+
+        See [Table.explain_prewarm_data][lancedb.table.Table.explain_prewarm_data]
+        for options, permissions, snapshot semantics, and limitations.
+        """
+        return PrewarmDataPlan.from_json(
+            await self._inner.explain_prewarm_data(
+                columns,
+                filter=filter,
+                concurrency=concurrency,
+                parameters=to_parameter_batch(parameters),
+            )
+        )
+
+    async def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> AsyncJob[PrewarmDataResult]:
+        """Submit data prewarm and return a durable handle after acceptance.
+
+        See [Table.prewarm_data_async][lancedb.table.Table.prewarm_data_async]
+        for options, permissions, and compatibility. Awaiting this method does
+        not wait for warming; use ``await job.wait()`` for completion.
+
+        Examples
+        --------
+        >>> job = await table.prewarm_data_async(  # doctest: +SKIP
+        ...     ["video"], filter="quality > 0.7", concurrency=4)
+        >>> await job.wait()  # doctest: +SKIP
+        """
+        return _typed_job(
+            await self._inner.prewarm_data_async(
+                columns,
+                filter=filter,
+                concurrency=concurrency,
+                parameters=to_parameter_batch(parameters),
+            ),
+            PrewarmDataResult.from_json,
+        )
 
     async def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -7059,6 +7926,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
         allow_external_blob_outside_bases: bool = False,
+        retries: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
@@ -7097,6 +7965,10 @@ class AsyncTable:
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
             LanceDB Embedded only.
+        retries: int, optional
+            Override the remote retry budget for this call (0 to 255). Zero
+            disables retries, including multipart parts. Ambiguous commits are
+            never replayed. Ignored by LanceDB Embedded.
 
         """
         schema = await self.schema()
@@ -7151,6 +8023,7 @@ class AsyncTable:
                 progress=progress,
                 write_parallelism=write_parallelism,
                 allow_external_blob_outside_bases=allow_external_blob_outside_bases,
+                retries=retries,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):
@@ -7235,6 +8108,8 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncQuery: ...
 
     @overload
@@ -7245,6 +8120,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
 
     @overload
@@ -7255,6 +8132,8 @@ class AsyncTable:
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncHybridQuery: ...
 
     @overload
@@ -7265,6 +8144,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     @overload
@@ -7275,6 +8156,8 @@ class AsyncTable:
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncFTSQuery: ...
 
     @overload
@@ -7285,6 +8168,8 @@ class AsyncTable:
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> AsyncVectorQuery: ...
 
     async def search(
@@ -7296,6 +8181,8 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        *,
+        operator: Optional[Union[FullTextOperator, Literal["AND", "OR"]]] = None,
     ) -> Union[AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -7339,12 +8226,20 @@ class AsyncTable:
             - If `query` is a string, then the query type is "vector" if the
               table has embedding functions else the query type is "fts"
 
+        operator: "AND" or "OR", optional
+            Combine terms in a string full-text query; the default is OR.
+            Use ``query_type="fts"`` when the table also has embeddings.
+
         Returns
         -------
         AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, or AsyncVectorQuery
             A query builder object representing the query.
         """
 
+        if operator is not None:
+            operator = FullTextOperator(operator)
+            if not isinstance(query, str) or query_type not in ("auto", "fts"):
+                raise ValueError("operator requires a string full-text query")
         if query is None:
             return self.query()
 
@@ -7463,13 +8358,17 @@ class AsyncTable:
                 )
                 vector_query = await make_embedding(embedding_conf, query)
 
+        if operator is not None and query_type != "fts":
+            raise ValueError("operator requires a string full-text query")
         if query_type == "vector":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
                 builder = builder.column(vector_column_name)
             return builder
         elif query_type == "fts":
-            return self.query().nearest_to_text(query, columns=fts_columns)
+            return self.query().nearest_to_text(
+                query, columns=fts_columns, operator=operator
+            )
         elif query_type == "hybrid":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
@@ -7579,7 +8478,9 @@ class AsyncTable:
 
         if query.full_text_query:
             async_query = async_query.nearest_to_text(
-                query.full_text_query.query, query.full_text_query.columns
+                query.full_text_query.query,
+                query.full_text_query.columns,
+                operator=query.full_text_query.operator,
             )
 
         return async_query
@@ -7613,6 +8514,24 @@ class AsyncTable:
             max_batch_length=batch_size, timeout=timeout
         )
 
+    async def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and not _requires_local_namespace_execution(query)
+        ):
+            return (await self._execute_query(query, timeout=timeout)).read_all()
+
+        async_query = self._sync_query_to_async(query)
+        return await async_query._execute_eager(timeout=timeout)
+
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
@@ -7638,6 +8557,7 @@ class AsyncTable:
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
+        retries: Optional[int] = None,
     ) -> MergeResult:
         schema = await self.schema()
         if on_bad_vectors is None:
@@ -7669,6 +8589,7 @@ class AsyncTable:
                 use_rte=merge._use_rte,
                 validate_single_shard=merge._validate_single_shard,
             ),
+            retries=retries,
         )
 
     async def delete(self, where: Union[str, Expr]) -> DeleteResult:
@@ -8004,6 +8925,8 @@ class AsyncTable:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8014,6 +8937,12 @@ class AsyncTable:
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> RefreshColumnResult:
         """
         Fill the rows of a computed column that hold no value yet.
@@ -8061,6 +8990,17 @@ class AsyncTable:
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -8078,6 +9018,9 @@ class AsyncTable:
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -8095,6 +9038,23 @@ class AsyncTable:
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -8108,6 +9068,8 @@ class AsyncTable:
             max_concurrency=max_concurrency,
             publication_interval_rows=publication_interval_rows,
             resource_budget=resource_budget,
+            supervisor_resources=supervisor_resources,
+            planning_workers=planning_workers,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
             retry_policy=None
@@ -8120,6 +9082,77 @@ class AsyncTable:
             init_timeout_seconds=init_timeout_seconds,
             num_workers=num_workers,
             max_executor_processes_per_worker=max_executor_processes_per_worker,
+            retry_errors=retry_errors,
+            retry_job_id=retry_job_id,
+            retry_error_type=retry_error_type,
+            include_quarantined=include_quarantined,
+            function_version=function_version,
+            recompute=recompute,
+        )
+
+    async def retry_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        **options: Any,
+    ) -> AsyncJob[RefreshColumnJobResult]:
+        """Start an exact failed-row retry; see ``Table.retry_failed``."""
+        return await self.refresh_column_async(
+            column,
+            retry_errors=True,
+            retry_error_type=error_type,
+            retry_job_id=job_id,
+            include_quarantined=include_quarantined,
+            function_version=function_version,
+            recompute="failed" if function_version is not None else None,
+            **options,
+        )
+
+    async def upgrade_column(
+        self,
+        column: str,
+        *,
+        version: str,
+        recompute: Literal["failed", "all", "none"] = "all",
+        **options: Any,
+    ) -> AsyncJob[RefreshColumnJobResult]:
+        """Upgrade the Function and choose which rows to recompute."""
+        return await self.refresh_column_async(
+            column, function_version=version, recompute=recompute, **options
+        )
+
+    async def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        """Quarantine current failures or release them for later refreshes."""
+        return await self._inner.quarantine_function_errors(
+            column,
+            quarantined=quarantined,
+            error_type=error_type,
+            job_id=job_id,
+            after_attempts=after_attempts,
+        )
+
+    async def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        """Read per-row producing versions at a table snapshot."""
+        return FunctionProvenance.from_json(
+            await self._inner.function_provenance(column, limit=limit, version=version)
         )
 
     async def function_errors(
@@ -8127,16 +9160,19 @@ class AsyncTable:
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> "FunctionErrors":
+        history: bool = False,
+    ) -> "AsyncFunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
 
-        A refresh running under a skip policy records each row it skipped
-        with the input that failed and the error. This lists those records,
-        newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Enterprise only; reading errors
-        needs read access to the table, since a message carries the value
-        that failed.
+        A refresh running under a skip policy records each row it skipped.
+        On servers advertising workflow version 1 or later, the default lists
+        current unresolved failures, deduplicated by row and Function column,
+        with attempt counts and first/last failure times. ``history=True``
+        returns retained observations, including repaired failures. Older servers
+        keep their legacy listing behavior and reject explicit history requests.
+        LanceDB Enterprise only; reading errors needs table read access because
+        messages can include the input that failed.
 
         Parameters
         ----------
@@ -8146,10 +9182,14 @@ class AsyncTable:
             Only errors on this column.
         limit: int, optional
             At most this many records (server default 10000, cap 100000).
+        history: bool, default False
+            Include retained historical errors instead of current failures.
+            Requires Enterprise workflow version 1 or later. Historical records
+            cannot be used with the current-input ``rows()`` helper.
 
         Returns
         -------
-        FunctionErrors
+        AsyncFunctionErrors
             ``records``, ``fragments`` and ``truncated``, the last saying
             whether the listing stopped at its limit.
 
@@ -8207,9 +9247,10 @@ class AsyncTable:
         >>> if errors.truncated:  # doctest: +SKIP
         ...     print("listing stopped at the limit")
         """
-        return await self._inner.function_errors(
-            job_id=job_id, column=column, limit=limit
+        raw = await self._inner.function_errors(
+            job_id=job_id, column=column, limit=limit, history=history
         )
+        return AsyncFunctionErrors(raw, self, history=history)
 
     async def column_statuses(
         self, column: Optional[str] = None
@@ -8246,6 +9287,8 @@ class AsyncTable:
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
         resource_budget: Optional[Dict[str, int]] = None,
+        supervisor_resources: Optional[Dict[str, int]] = None,
+        planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
@@ -8256,6 +9299,12 @@ class AsyncTable:
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
@@ -8302,6 +9351,17 @@ class AsyncTable:
             CPU-only budget. This budget cannot be combined with the top-level
             ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
             reject it.
+        supervisor_resources: dict[str, int], optional
+            CPU, memory, and ephemeral-storage limits for the Function refresh
+            supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
+            ``ephemeral_storage_bytes``; all are required and positive.
+            LanceDB Enterprise only; local refreshes reject it.
+        planning_workers: dict[str, object], optional
+            Resources and sizing for the Function refresh planning fleet.
+            ``resources`` has the same keys as ``supervisor_resources``; the
+            other keys are ``max_workers``, ``rows_per_worker`` and
+            ``fragments_per_worker``. LanceDB Enterprise only; local refreshes
+            reject it.
         gpu_class: str, optional
             GPU class for Function workers. Must be a lowercase name of 1-63
             letters, digits, or hyphens, without a leading or trailing hyphen.
@@ -8319,6 +9379,9 @@ class AsyncTable:
         error_policy: {"fail", "skip"}, optional
             Action after failure or retry exhaustion. Skip records the error
             and attempt count, subject to the server's failure limits.
+            Workflow version 1 servers default to skip with a 5% failure ceiling
+            and publish successful output before reporting a threshold failure.
+            Older deployments retain their existing defaults.
         max_failed_fraction: float, optional
             Under a skip policy, fail the job once more than this share of
             rows (0 to 1) has failed. LanceDB Enterprise only.
@@ -8336,6 +9399,23 @@ class AsyncTable:
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
+        retry_errors: bool, default False
+            Select current failed rows on the server. Cannot be combined with
+            ``where``. Requires Enterprise workflow version 1 or later.
+        retry_job_id: str, optional
+            Restrict a failed-row retry to errors recorded by this job.
+        retry_error_type: str, optional
+            Restrict a failed-row retry to this exception class.
+        include_quarantined: bool, default False
+            Explicitly release and include quarantined rows in a failed-row retry.
+        function_version: str, optional
+            Atomically rebind this column's Function to the specified immutable
+            version. Requires Enterprise workflow version 1 or later.
+        recompute: {"failed", "all", "none"}, optional
+            Which rows to recompute during an upgrade. Requires
+            ``function_version``; the default is ``all``. ``failed`` selects
+            current failures, and ``none`` preserves existing values. Quarantined
+            rows stay excluded unless explicitly included in a failed-row retry.
 
         Returns
         -------
@@ -8366,6 +9446,8 @@ class AsyncTable:
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
                 resource_budget=resource_budget,
+                supervisor_resources=supervisor_resources,
+                planning_workers=planning_workers,
                 gpu_class=gpu_class,
                 gpu_count=gpu_count,
                 retry_policy=None
@@ -8378,6 +9460,12 @@ class AsyncTable:
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
+                retry_errors=retry_errors,
+                retry_job_id=retry_job_id,
+                retry_error_type=retry_error_type,
+                include_quarantined=include_quarantined,
+                function_version=function_version,
+                recompute=recompute,
             ),
             RefreshColumnJobResult.from_json,
         )
@@ -8614,32 +9702,49 @@ class AsyncTable:
         column: str,
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
+        """Materialize row-specific byte ranges.
+
+        See [Table.fetch_blob_ranges][lancedb.table.Table.fetch_blob_ranges].
+        """
         return await self._inner.fetch_blob_ranges(column, list(requests))
 
     async def fetch_blob_files(
         self,
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> "list[Optional[BlobFile]]":
+        """Open handles with configurable read-ahead.
+
+        See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
+        """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column, _normalize_blob_row_ids(row_ids, column), buffer_size
         )
         return _wrap_blob_files(handles)
 
     async def open_blob_file(
-        self, descriptor: Union[dict, pa.StructScalar, None]
+        self,
+        descriptor: Union[dict, pa.StructScalar, None],
+        *,
+        buffer_size: Optional[int] = None,
     ) -> Optional[BlobFile]:
         """Open a snapshot-bound descriptor as a seekable file.
 
         See [Table.open_blob_file][lancedb.table.Table.open_blob_file].
         """
+        buffer_size = _validate_blob_buffer_size(buffer_size)
         descriptor = _normalize_blob_descriptor(descriptor)
         if descriptor is None:
             return None
-        return BlobFile(await self._inner.open_blob_file(json.dumps(descriptor)))
+        return BlobFile(
+            await self._inner.open_blob_file(json.dumps(descriptor), buffer_size)
+        )
 
     async def open_blob_files(
-        self, descriptors: Iterable
+        self, descriptors: Iterable, *, buffer_size: Optional[int] = None
     ) -> AsyncIterator[Optional[BlobFile]]:
         """Asynchronously iterate over files in descriptor order, preserving nulls.
 
@@ -8654,7 +9759,7 @@ class AsyncTable:
         ```
         """
         for descriptor in descriptors:
-            yield await self.open_blob_file(descriptor)
+            yield await self.open_blob_file(descriptor, buffer_size=buffer_size)
 
     @property
     def tags(self) -> AsyncTags:
@@ -8686,6 +9791,19 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> AsyncJob[CompactionResult]:
+        """Submit remote compaction; await the returned job for actual results.
+
+        See [Table.compact_async][lancedb.table.Table.compact_async] for options,
+        permissions, completion semantics and compatibility requirements.
+        """
+        return _typed_job(
+            await self._inner.compact_async(compaction_options),
+            CompactionResult.from_json,
+        )
 
     async def optimize(
         self,
@@ -8924,6 +10042,7 @@ class IndexStatistics:
         "LABEL_LIST",
         "NGRAM",
         "ZONEMAP",
+        "RTREE",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Field, LargeBinary, Struct, Uint64, Utf8 } from "apache-arrow";
+import {
+  DataType,
+  Field,
+  LargeBinary,
+  Struct,
+  Uint64,
+  Utf8,
+} from "apache-arrow";
 import { BlobFile as NativeBlobFile } from "./native";
 
 const BLOB_V2_EXTENSION_NAME = "lance.blob.v2";
@@ -178,6 +185,39 @@ export function isBlobField(field: Field): boolean {
   return field.metadata?.get("ARROW:extension:name") === BLOB_V2_EXTENSION_NAME;
 }
 
+/** @ignore */
+export function isBlobDescriptorField(field: Field): boolean {
+  // Native descriptor scans replace the logical extension metadata. Require
+  // both the encoding marker and the v2 layout to exclude v1 and plain structs.
+  if (
+    field.metadata?.get("lance-encoding:blob") !== "true" ||
+    !DataType.isStruct(field.type)
+  ) {
+    return false;
+  }
+  const children = field.type.children;
+  const integers = [
+    ["kind", 8],
+    ["position", 64],
+    ["size", 64],
+    ["blob_id", 32],
+  ] as const;
+  return (
+    children.length === 5 &&
+    integers.every(([name, width], index) => {
+      const child = children[index];
+      return (
+        child.name === name &&
+        DataType.isInt(child.type) &&
+        !child.type.isSigned &&
+        child.type.bitWidth === width
+      );
+    }) &&
+    children[4].name === "blob_uri" &&
+    DataType.isUtf8(children[4].type)
+  );
+}
+
 /**
  * A lazy handle to blob bytes. Create one with {@link Table.fetchBlobFiles}.
  *
@@ -304,6 +344,16 @@ export async function runWithSignal<T>(
     signal.removeEventListener("abort", onAbort);
   }
 }
+
+/** One row-specific range for {@link Table.fetchBlobRanges}. */
+export type BlobRangeRequest = {
+  /** A row ID from a query with row IDs enabled. */
+  rowId: bigint | number;
+  /** Byte offset from the beginning of the logical blob, as a uint64. */
+  offset: bigint;
+  /** Number of bytes to read, as a uint64. Zero returns an empty non-null value. */
+  length: bigint;
+};
 
 /** A half-open byte range `[start, end)` for {@link BlobFile.readRanges}. */
 export type BlobRange = {

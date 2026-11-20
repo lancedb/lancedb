@@ -12,17 +12,17 @@ dependencies = [
     "tqdm>=4.27.0",
     "lance-namespace>=0.13.0"
 ]
-description = "lancedb"
+description = "Embedded database for vector, full-text and hybrid search on Lance tables"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = [
-    "data-format",
-    "data-science",
-    "machine-learning",
-    "arrow",
-    "data-analytics",
+    "lance",
+    "vector-search",
+    "full-text-search",
+    "dataset",
+    "versioning",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -64,7 +64,7 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow>=16",
     "pyarrow-stubs>=16.0",
-    "pylance==15.0.0b16",
+    "pylance==15.0.0b25",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",

@@ -12,6 +12,7 @@ use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
+use crate::index::scalar::{FtsQuery, Operator as FullTextOperator};
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
@@ -36,12 +37,13 @@ use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
+use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
-    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery, StructuredFtsQuery,
 };
 
 #[derive(Debug, Clone)]
@@ -118,10 +120,22 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
-    // For use_rte that is worse than a tuning miss: RTE read routing lives only
-    // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_rte.is_some() || query.base().has_take() {
+    // The namespace QueryTable request cannot represent approx_mode, search_effort,
+    // use_rte or order_by. For use_rte that is worse than a tuning miss: RTE read
+    // routing lives only in `create_plan`, so a pushed-down query would return
+    // stale base-only data. A dropped order_by would return the wrong top-K rows.
+    if query.base().use_rte.is_some()
+        || query.base().has_take()
+        || query
+            .base()
+            .order_by
+            .as_ref()
+            .is_some_and(|order_by| !order_by.is_empty())
+    {
+        return true;
+    }
+    if matches!(query, AnyQuery::Query(query) if query.fast_search && query.full_text_search.is_some())
+    {
         return true;
     }
     matches!(
@@ -858,6 +872,33 @@ async fn execute_namespace_query(
     parse_arrow_ipc_response(response_bytes).await
 }
 
+fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableRequestFullTextQuery>> {
+    if !matches!(&fts.query, FtsQuery::Match(query) if query.operator == FullTextOperator::Or) {
+        let query = serde_json::to_value(&fts.query)
+            .and_then(serde_json::from_value)
+            .map_err(|error| Error::InvalidInput {
+                message: format!("Cannot serialize namespace full-text query: {error}"),
+            })?;
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: None,
+            structured_query: Some(Box::new(StructuredFtsQuery::new(query))),
+        }))
+    } else {
+        let columns = fts.columns();
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: Some(Box::new(StringFtsQuery {
+                query: fts.query.query().clone(),
+                columns: if columns.is_empty() {
+                    None
+                } else {
+                    Some(columns.into_iter().collect())
+                },
+            })),
+            structured_query: None,
+        }))
+    }
+}
+
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
@@ -912,21 +953,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             }
 
             // Convert FTS query if present
-            let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
-                let columns = fts.columns();
-                let columns_vec = if columns.is_empty() {
-                    None
-                } else {
-                    Some(columns.into_iter().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = vq
+                .base
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             Ok(NsQueryTableRequest {
                 id: None, // Will be set in namespace_query
@@ -963,7 +995,6 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
 
             let k = match q.limit {
                 Some(limit) => limit as i32,
-                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
                 None => i32::MAX,
             };
 
@@ -995,20 +1026,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Handle full text search if present
-            let full_text_query = q.full_text_search.as_ref().map(|fts| {
-                let columns_vec = if fts.columns().is_empty() {
-                    None
-                } else {
-                    Some(fts.columns().iter().cloned().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = q
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             // Empty vector for non-vector queries
             let vector = Box::new(QueryTableRequestVector {
@@ -1023,6 +1045,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
+                fast_search: Some(q.fast_search),
                 offset: q.offset.map(|o| o as i32),
                 vector_column: None, // No vector column for plain queries
                 with_row_id: Some(q.with_row_id),
@@ -1147,6 +1170,7 @@ async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBa
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
+    use crate::index::scalar::MatchQuery;
     use arrow_array::{
         ArrayRef, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
         StructArray,
@@ -1414,7 +1438,45 @@ mod tests {
 
         let ns_request = convert_to_namespace_query(&any_query).unwrap();
 
-        assert_eq!(ns_request.k, 10);
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_namespace_fts_operators_and_unbounded_counts() {
+        for columns in [
+            vec!["text".to_string()],
+            vec!["title".to_string(), "body".to_string()],
+        ] {
+            let fts = FullTextSearchQuery::new_query(
+                MatchQuery::new("gripper closed".to_string())
+                    .with_operator(FullTextOperator::And)
+                    .into(),
+            )
+            .with_columns(&columns)
+            .unwrap();
+            let request = convert_to_namespace_query(&AnyQuery::Query(QueryRequest {
+                full_text_search: Some(fts),
+                ..Default::default()
+            }))
+            .unwrap();
+            assert_eq!(request.k, i32::MAX);
+            let full_text_query = request.full_text_query.unwrap();
+            assert!(full_text_query.string_query.is_none());
+            let query =
+                serde_json::to_value(full_text_query.structured_query.unwrap().query).unwrap();
+            if columns.len() == 1 {
+                assert_eq!(query["match"]["operator"], "And");
+                assert_eq!(query["match"]["column"], "text");
+            } else {
+                let leaves = query["multi_match"]["match_queries"].as_array().unwrap();
+                assert_eq!(leaves.len(), 2);
+                assert!(leaves.iter().all(|leaf| leaf["operator"] == "And"));
+            }
+        }
+        let request =
+            namespace_fts_query(&FullTextSearchQuery::new("gripper closed".to_string())).unwrap();
+        assert_eq!(request.string_query.unwrap().query, "gripper closed");
+        assert!(request.structured_query.is_none());
     }
 
     #[tokio::test]
@@ -1801,6 +1863,60 @@ mod tests {
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
         assert_eq!(count, 1);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_order_by_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        // Insertion order differs from ascending id, so a pushed-down query that
+        // drops order_by would return 3 instead of the correct top-1 row 1.
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![3, 1, 2]))]).unwrap();
+
+        let table = conn
+            .create_table("test_order_by_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            limit: Some(1),
+            order_by: Some(vec![ColumnOrdering::asc_nulls_first("id".to_string())]),
+            ..Default::default()
+        });
+
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let ids: Vec<i32> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+
+        assert_eq!(ids, vec![1]);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 

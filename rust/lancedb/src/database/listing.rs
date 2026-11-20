@@ -1119,39 +1119,46 @@ impl Database for ListingDatabase {
         };
 
         let target_uri = self.table_uri(&request.target_table_name)?;
-        match DatasetBuilder::from_uri(&target_uri)
+        let exists = match DatasetBuilder::from_uri(&target_uri)
             .with_read_params(read_params.clone())
             .load()
             .await
         {
-            Ok(_) => {
+            Ok(_) if !request.exist_ok => {
                 return Err(Error::TableAlreadyExists {
                     name: request.target_table_name,
                 });
             }
-            Err(lance::Error::DatasetNotFound { .. }) => {}
+            Ok(_) => true,
+            Err(lance::Error::DatasetNotFound { .. }) => false,
             Err(err) => return Err(err.into()),
+        };
+
+        if !exists {
+            let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
+                .with_read_params(read_params.clone())
+                .load()
+                .await
+                .map_err(|e| -> Error { e.into() })?;
+
+            let version_ref = match (request.source_version, request.source_tag) {
+                (Some(v), None) => Ok(Ref::Version(None, Some(v))),
+                (None, Some(tag)) => Ok(Ref::Tag(tag)),
+                (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
+                _ => Err(Error::InvalidInput {
+                    message: "Cannot specify both source_version and source_tag".to_string(),
+                }),
+            }?;
+
+            match source_dataset
+                .shallow_clone(&target_uri, version_ref, Some(storage_params))
+                .await
+            {
+                Ok(_) => {}
+                Err(lance::Error::DatasetAlreadyExists { .. }) if request.exist_ok => {}
+                Err(error) => return Err(error.into()),
+            }
         }
-
-        let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
-            .with_read_params(read_params.clone())
-            .load()
-            .await
-            .map_err(|e| -> Error { e.into() })?;
-
-        let version_ref = match (request.source_version, request.source_tag) {
-            (Some(v), None) => Ok(Ref::Version(None, Some(v))),
-            (None, Some(tag)) => Ok(Ref::Tag(tag)),
-            (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
-            _ => Err(Error::InvalidInput {
-                message: "Cannot specify both source_version and source_tag".to_string(),
-            }),
-        }?;
-
-        source_dataset
-            .shallow_clone(&target_uri, version_ref, Some(storage_params))
-            .await
-            .map_err(|e| -> Error { e.into() })?;
 
         let cloned_table = NativeTable::open_with_params(
             &target_uri,
@@ -2252,6 +2259,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_table".to_string(),
                 target_namespace_path: vec![],
                 source_uri: source_uri.clone(),
@@ -2313,6 +2321,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_with_data".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2375,6 +2384,7 @@ mod tests {
         // Clone should work with storage options
         let cloned = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2412,6 +2422,7 @@ mod tests {
         // Try deep clone (should fail)
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2453,6 +2464,7 @@ mod tests {
         // Try clone with namespace (should fail for listing database)
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec!["namespace".to_string()], // Non-empty namespace
                 source_uri,
@@ -2494,6 +2506,7 @@ mod tests {
         // Try clone with invalid target name
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "invalid/name".to_string(), // Invalid name with slash
                 target_namespace_path: vec![],
                 source_uri,
@@ -2514,6 +2527,7 @@ mod tests {
         // Try to clone from non-existent source
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri: "/nonexistent/table.lance".to_string(),
@@ -2551,6 +2565,7 @@ mod tests {
         // Try clone with both version and tag (should fail)
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2625,6 +2640,7 @@ mod tests {
         // Clone from the initial version (should have only 2 rows)
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_from_version".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2704,6 +2720,7 @@ mod tests {
         // Clone from the tag (should have only 2 rows)
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_from_tag".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2756,6 +2773,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "independent_clone".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2849,6 +2867,7 @@ mod tests {
         // Clone without specifying version or tag (should get latest)
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_latest".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
