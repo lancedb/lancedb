@@ -334,6 +334,9 @@ class Connection(object):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -343,6 +346,8 @@ class Connection(object):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
     ) -> Table: ...
     async def open_table(
         self,

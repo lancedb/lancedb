@@ -5592,6 +5592,8 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
         route_pushdown_to_rust: bool = False,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ):
         """
         Create a new table.
@@ -5645,6 +5647,15 @@ class LanceTable(Table):
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it. Each entry can be a
+            [BasePath][lancedb.schema.BasePath], a dict with `path`, `name`,
+            `is_dataset_root`, and `id` keys, or a `lance.DatasetBasePath`.
+            Blob URIs under a registered base are stored relative to it.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable.
         """
         if namespace_path is None:
             namespace_path = []
@@ -5693,6 +5704,8 @@ class LanceTable(Table):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         )
         return self

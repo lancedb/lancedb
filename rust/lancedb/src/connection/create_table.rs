@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use lance::dataset::WriteParams;
+use lance::table::format::BasePath;
 use lance_io::object_store::StorageOptionsProvider;
 
 use crate::{
@@ -51,6 +53,57 @@ impl CreateTableBuilder {
     pub fn write_options(mut self, write_options: WriteOptions) -> Self {
         self.request.write_options = write_options;
         self
+    }
+
+    /// Register additional base paths in the new table's manifest.
+    ///
+    /// The bases are written in the same commit that creates the table, so a
+    /// create with data stays a single atomic operation. Blob URIs that fall
+    /// under a registered base are stored relative to it instead of as absolute
+    /// URIs; see [`Table::fetch_blobs`].
+    ///
+    /// Set [`BasePath::id`] to `0` to let Lance assign an ID, or to a unique
+    /// non-zero value. Pass an empty list to leave the request unchanged.
+    ///
+    /// LanceDB Embedded only.
+    ///
+    /// [`Table::fetch_blobs`]: crate::table::Table::fetch_blobs
+    pub fn initial_bases(mut self, bases: Vec<BasePath>) -> Self {
+        let empty = bases.is_empty();
+        self.update_lance_write_params(!empty, |params| {
+            params.initial_bases = (!empty).then_some(bases);
+        });
+        self
+    }
+
+    /// Store blob URIs that sit outside registered blob bases.
+    ///
+    /// The row keeps a reference, so the object has to stay readable.
+    /// [`Table::fetch_blobs`] reads from that location. Defaults to `false`.
+    ///
+    /// LanceDB Embedded only.
+    ///
+    /// [`Table::fetch_blobs`]: crate::table::Table::fetch_blobs
+    pub fn allow_external_blob_outside_bases(mut self, allow: bool) -> Self {
+        self.update_lance_write_params(allow, |params| {
+            params.allow_external_blob_outside_bases = allow;
+        });
+        self
+    }
+
+    /// Apply `update` to the Lance write parameters, creating them only when
+    /// `create` is set. A no-op call on a request that has no write parameters
+    /// leaves it that way, so default creation does not look customized.
+    fn update_lance_write_params(&mut self, create: bool, update: impl FnOnce(&mut WriteParams)) {
+        if !create && self.request.write_options.lance_write_params.is_none() {
+            return;
+        }
+        update(
+            self.request
+                .write_options
+                .lance_write_params
+                .get_or_insert_default(),
+        );
     }
 
     /// Set an option for the storage layer.
@@ -215,6 +268,24 @@ mod tests {
         let table = db.create_table("my_table", batch).execute().await.unwrap();
 
         assert_eq!(table.uri().await.unwrap(), "memory://foo/my_table.lance");
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn create_table_with_default_blob_base_options() {
+        // Explicit empty bases and opt-out follow the ordinary create path: no
+        // write parameters are attached just because the fluent methods ran.
+        let db = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+
+        let table = db
+            .create_table("no_bases", batch)
+            .initial_bases(Vec::new())
+            .allow_external_blob_outside_bases(false)
+            .execute()
+            .await
+            .unwrap();
+
         assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 

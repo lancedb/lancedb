@@ -2085,3 +2085,285 @@ async fn blob_layout_rte_merge_normalizes_before_writing() -> Result<()> {
     }
     Ok(())
 }
+
+/// One-row blob v2 batch carrying an external URI with an explicit byte range.
+fn range_uri_batch(
+    ids: &[i64],
+    uris: &[&str],
+    positions: &[Option<u64>],
+    sizes: &[Option<u64>],
+) -> RecordBatch {
+    let image_field = lancedb::blob("image", true);
+    let DataType::Struct(children) = image_field.data_type().clone() else {
+        unreachable!("blob field is a struct");
+    };
+    let values = StructArray::new(
+        children,
+        vec![
+            new_null_array(&DataType::LargeBinary, ids.len()),
+            Arc::new(StringArray::from_iter_values(uris.iter().copied())),
+            Arc::new(UInt64Array::from(positions.to_vec())),
+            Arc::new(UInt64Array::from(sizes.to_vec())),
+        ],
+        None,
+    );
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            image_field,
+        ])),
+        vec![Arc::new(Int64Array::from(ids.to_vec())), Arc::new(values)],
+    )
+    .unwrap()
+}
+
+fn wide_blob_table_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        lancedb::blob("image", true),
+    ]))
+}
+
+fn local_base(id: u32, path: String) -> BasePath {
+    BasePath {
+        id,
+        name: Some(format!("base{id}")),
+        path,
+        is_dataset_root: false,
+    }
+}
+
+fn write_local_payload(dir: &std::path::Path, name: &str, payload: &[u8]) -> (String, String) {
+    let path = dir.join(name);
+    std::fs::write(&path, payload).unwrap();
+    (
+        url::Url::from_file_path(&path).unwrap().to_string(),
+        url::Url::from_directory_path(dir).unwrap().to_string(),
+    )
+}
+
+/// A create with data and `initial_bases` must commit once. Registering the
+/// base in a later commit, or creating empty first, would bump the version and
+/// leave an intermediate table without its storage.
+#[tokio::test]
+async fn create_table_with_data_registers_initial_base_atomically() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload = b"0123456789abcdef";
+    let (clip_uri, base_uri) = write_local_payload(tmp.path(), "clip.mp4", payload);
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    let table = db
+        .create_table(
+            "videos",
+            range_uri_batch(&[1], &[clip_uri.as_str()], &[Some(0)], &[Some(6)]),
+        )
+        .initial_bases(vec![local_base(1, base_uri.clone())])
+        .execute()
+        .await?;
+
+    assert_eq!(table.version().await?, 1);
+    let manifest = table.as_native().unwrap().manifest().await?;
+    let registered = manifest.base_paths.get(&1).expect("base 1 registered");
+    assert_eq!(registered.path, base_uri);
+    assert!(!registered.is_dataset_root);
+
+    let reopened = db.open_table("videos").execute().await?;
+    let ids = collect_row_ids(&reopened).await?;
+    let files = reopened.fetch_blob_files("image", &ids).await?;
+    let file = files[0].as_ref().unwrap();
+    assert_eq!(file.uri(), Some("clip.mp4"));
+    assert_eq!(file.position(), Some(0));
+    assert_eq!(file.size(), 6);
+    let bytes = reopened.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), &payload[..6]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_table_with_data_accepts_unregistered_uri_only_with_opt_in() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload = b"0123456789abcdef";
+    let (clip_uri, _) = write_local_payload(tmp.path(), "clip.mp4", payload);
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let batch = range_uri_batch(&[1], &[clip_uri.as_str()], &[Some(0)], &[Some(6)]);
+
+    let err = db
+        .create_table("videos", batch.clone())
+        .execute()
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("allow_external_blob_outside_bases"),
+        "got: {err}"
+    );
+    assert!(db.open_table("videos").execute().await.is_err());
+
+    let table = db
+        .create_table("videos", batch)
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+    assert_eq!(table.version().await?, 1);
+    let reopened = db.open_table("videos").execute().await?;
+    let ids = collect_row_ids(&reopened).await?;
+    let bytes = reopened.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), &payload[..6]);
+    Ok(())
+}
+
+/// An explicit `id=0` asks Lance to assign the base ID in the create commit.
+#[tokio::test]
+async fn create_empty_table_with_initial_bases_bootstraps_base_with_auto_id() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload = b"payload-bytes";
+    let (clip_uri, base_uri) = write_local_payload(tmp.path(), "clip.mp4", payload);
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    let table = db
+        .create_empty_table("videos", wide_blob_table_schema())
+        .initial_bases(vec![local_base(0, base_uri.clone())])
+        .execute()
+        .await?;
+    let manifest = table.as_native().unwrap().manifest().await?;
+    let registered = manifest
+        .base_paths
+        .values()
+        .find(|base| base.path == base_uri)
+        .expect("base registered with the empty create");
+    assert!(registered.id > 0);
+    assert!(!registered.is_dataset_root);
+
+    table
+        .add(range_uri_batch(
+            &[1],
+            &[clip_uri.as_str()],
+            &[None],
+            &[None],
+        ))
+        .execute()
+        .await?;
+    let reopened = db.open_table("videos").execute().await?;
+    let ids = collect_row_ids(&reopened).await?;
+    let files = reopened.fetch_blob_files("image", &ids).await?;
+    assert_eq!(files[0].as_ref().unwrap().uri(), Some("clip.mp4"));
+    let bytes = reopened.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+/// Scoped `base_<id>.<key>` options travel with the table and keep each base
+/// readable after reopen. Unscoped options stay shared defaults.
+#[tokio::test]
+async fn created_bases_read_back_with_scoped_storage_options() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload_a = b"base-a-payload";
+    let payload_b = b"base-b-payload";
+    let dir_a = tmp.path().join("base-a");
+    let dir_b = tmp.path().join("base-b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let (uri_a, base_a) = write_local_payload(&dir_a, "clip.mp4", payload_a);
+    let (uri_b, base_b) = write_local_payload(&dir_b, "clip.mp4", payload_b);
+    let storage_options = [
+        ("timeout", "7s"),
+        ("base_1.region", "base-one"),
+        ("base_2.region", "base-two"),
+    ];
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    let table = db
+        .create_table(
+            "videos",
+            range_uri_batch(
+                &[1, 2],
+                &[uri_a.as_str(), uri_b.as_str()],
+                &[None, None],
+                &[None, None],
+            ),
+        )
+        .initial_bases(vec![local_base(1, base_a), local_base(2, base_b)])
+        .storage_options(storage_options)
+        .execute()
+        .await?;
+    assert_eq!(table.version().await?, 1);
+
+    let reopened = db
+        .open_table("videos")
+        .storage_options(storage_options)
+        .execute()
+        .await?;
+    let ids = collect_row_ids(&reopened).await?;
+    let files = reopened.fetch_blob_files("image", &ids).await?;
+    assert_eq!(files[0].as_ref().unwrap().uri(), Some("clip.mp4"));
+    assert_eq!(files[1].as_ref().unwrap().uri(), Some("clip.mp4"));
+    let bytes = reopened.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload_a);
+    assert_eq!(bytes.value(1), payload_b);
+    Ok(())
+}
+
+/// Scoped `base_<id>.<key>` options belong to exactly one base. An option
+/// that only base 1 can reject must not change what base 2 reads on reopen.
+#[tokio::test]
+async fn scoped_storage_options_do_not_leak_between_bases_on_reopen() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload_a = b"base-a-payload";
+    let payload_b = b"base-b-payload";
+    let dir_a = tmp.path().join("base-a");
+    let dir_b = tmp.path().join("base-b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let (uri_a, base_a) = write_local_payload(&dir_a, "clip.mp4", payload_a);
+    let (uri_b, base_b) = write_local_payload(&dir_b, "clip.mp4", payload_b);
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    db.create_table(
+        "videos",
+        range_uri_batch(
+            &[1, 2],
+            &[uri_a.as_str(), uri_b.as_str()],
+            &[None, None],
+            &[None, None],
+        ),
+    )
+    .initial_bases(vec![local_base(1, base_a), local_base(2, base_b)])
+    .execute()
+    .await?;
+
+    let reopened = db
+        .open_table("videos")
+        .storage_options([("base_1.scheduler_error_mode", "invalid")])
+        .execute()
+        .await?;
+    let pairs = sorted_id_rowid(&reopened).await?;
+    let row_for = |id: i64| {
+        pairs
+            .iter()
+            .find(|(row_id, _)| *row_id == id)
+            .map(|(_, row_id)| *row_id)
+            .expect("row present")
+    };
+
+    let err = reopened
+        .fetch_blobs("image", &[row_for(1)])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("scheduler_error_mode"),
+        "base 1 should carry its scoped option, got: {err}"
+    );
+    let bytes = reopened.fetch_blobs("image", &[row_for(2)]).await?;
+    assert_eq!(bytes.value(0), payload_b);
+    Ok(())
+}

@@ -640,6 +640,8 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table:
         if namespace_path is None:
             namespace_path = []
@@ -661,6 +663,8 @@ class LanceNamespaceDBConnection(DBConnection):
                 embedding_functions=embedding_functions,
                 namespace_path=namespace_path,
                 storage_options=storage_options,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         )
 
@@ -1302,6 +1306,8 @@ class AsyncLanceNamespaceDBConnection:
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AsyncTable:
         """Create a new table in the namespace."""
         if namespace_path is None:
@@ -1323,6 +1329,8 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path,
             embedding_functions=embedding_functions,
             storage_options=storage_options,
+            initial_bases=initial_bases,
+            allow_external_blob_outside_bases=allow_external_blob_outside_bases,
         )
         return table._set_namespace_context(
             namespace_path=namespace_path,

@@ -6,6 +6,7 @@
 
 import ctypes
 import importlib
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Optional
 
 import pyarrow as pa
@@ -27,6 +28,70 @@ _BLOB_V2_STORAGE_TYPE = pa.struct(
     ]
 )
 _resolved_blob_type = None
+_UINT32_MAX = 0xFFFF_FFFF
+_UINT64_MAX = 0xFFFF_FFFF_FFFF_FFFF
+
+
+@dataclass(frozen=True)
+class BasePath:
+    """A storage base registered on a table at creation time.
+
+    Use with the ``initial_bases`` argument of
+    [create_table][lancedb.db.DBConnection.create_table] to make
+    external blob URIs resolve under a shared prefix: descriptors that fall
+    under ``path`` are stored relative to it instead of as absolute URIs.
+
+    This is a lightweight stand-in for ``lance.DatasetBasePath`` that does
+    not require pylance. Both classes, and equivalent dictionaries, are
+    accepted by the create APIs.
+
+    Parameters
+    ----------
+    path:
+        Full URI of the base (for example ``s3://bucket/prefix`` or a
+        ``file://`` URI). Relative blob URIs are resolved against it.
+    name:
+        Optional human-readable name for the base.
+    is_dataset_root:
+        Whether the base uses the dataset-root layout. Defaults to ``False``.
+        Bases registered here must leave this ``False``: Lance only resolves
+        external blob URIs against non-root bases.
+    id:
+        Base ID used by scoped storage options such as ``base_<id>.region``.
+        ``None`` lets Lance assign a non-zero ID. ``0`` is reserved for
+        absolute (unregistered) URIs and is rejected.
+    """
+
+    path: str
+    name: Optional[str] = None
+    is_dataset_root: bool = False
+    id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str):
+            raise TypeError(f"path must be a string, got {type(self.path).__name__}")
+        if not self.path:
+            raise ValueError("path must not be empty")
+        if self.name is not None and not isinstance(self.name, str):
+            raise TypeError(f"name must be a string, got {type(self.name).__name__}")
+        if not isinstance(self.is_dataset_root, bool):
+            raise TypeError(
+                "is_dataset_root must be a bool, got "
+                f"{type(self.is_dataset_root).__name__}"
+            )
+        if self.id is None:
+            return
+        if isinstance(self.id, bool) or not isinstance(self.id, int):
+            raise TypeError(f"id must be an int or None, got {type(self.id).__name__}")
+        if self.id == 0:
+            raise ValueError(
+                "id=0 is reserved for unregistered blob URIs; "
+                "pass id=None to let Lance assign an ID"
+            )
+        if self.id < 0:
+            raise ValueError("id must be a positive integer")
+        if self.id > _UINT32_MAX:
+            raise ValueError("id must fit in a 32-bit unsigned integer")
 
 
 class _FallbackBlobType(pa.ExtensionType):
@@ -340,6 +405,127 @@ def blob_array(payloads: Iterable[Optional[bytes]]) -> pa.ExtensionArray:
                 f"payloads must contain bytes or None, got {type(payload).__name__}"
             )
         descriptors.append(None if payload is None else {"data": payload})
+    storage = pa.array(descriptors, type=blob_type.storage_type)
+    return pa.ExtensionArray.from_storage(blob_type, storage)
+
+
+def _blob_uint64(value: object, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{what} must be an int, got {type(value).__name__}")
+    if value < 0:
+        raise ValueError(f"{what} must be non-negative")
+    if value > _UINT64_MAX:
+        raise OverflowError(f"{what} must fit in a uint64")
+    return value
+
+
+def blob_uri_array(
+    uris: Iterable[Optional[str]],
+    *,
+    positions: Optional[Iterable[Optional[int]]] = None,
+    sizes: Optional[Iterable[Optional[int]]] = None,
+) -> pa.ExtensionArray:
+    """Build a Lance blob v2 extension array from external URIs.
+
+    Produces the standard four-field blob v2 storage (``data=None``, ``uri``,
+    nullable ``position`` and ``size``) without requiring pylance, so the
+    result can be used directly in Arrow record batches and combined with
+    field metadata such as ``lancedb:logical_type="mp4"``.
+
+    A row without ``position`` and ``size`` references the whole object; a
+    row with both reads exactly that byte range. Register the object prefix
+    with [BasePath][lancedb.schema.BasePath] at table creation to store the
+    URI relative to a base, or set ``allow_external_blob_outside_bases=True``
+    on create to keep the absolute URI.
+
+    Parameters
+    ----------
+    uris:
+        An iterable of URI strings or ``None`` for a null blob. Relative
+        paths are resolved against a registered base and are stored as-is
+        when no base matches.
+    positions:
+        Optional byte offsets, one per URI. Provide together with ``sizes``;
+        each entry is an ``int`` or ``None``. A range requires both fields.
+    sizes:
+        Optional range lengths in bytes, one per URI. Must be positive when
+        ``position`` is set.
+
+    Returns
+    -------
+    pa.ExtensionArray
+        external blob values ready to use in Arrow tables or record batches.
+
+    Raises
+    ------
+    TypeError
+        If a URI, position, or size has the wrong type.
+    ValueError
+        If lengths differ, only one of ``positions``/``sizes`` is given, a
+        range is incomplete, a size is not positive, or a range is given for
+        a null URI.
+    OverflowError
+        If a position or size does not fit in a uint64.
+
+    Examples
+    --------
+    >>> import pyarrow as pa
+    >>> from lancedb.schema import blob, blob_uri_array
+    >>> schema = pa.schema([blob("video")])
+    >>> videos = blob_uri_array(
+    ...     ["s3://bucket/a.mp4", "hf://datasets/org/repo@abc/b.mp4"],
+    ...     positions=[0, 8],
+    ...     sizes=[4, 4],
+    ... )
+    >>> batch = pa.RecordBatch.from_arrays([videos], schema=schema)
+    >>> batch.num_rows
+    2
+    """
+    uri_list = list(uris)
+    if positions is None and sizes is None:
+        ranges = [(None, None)] * len(uri_list)
+    elif positions is None or sizes is None:
+        raise ValueError("positions and sizes must be provided together")
+    else:
+        position_list = list(positions)
+        size_list = list(sizes)
+        if len(position_list) != len(uri_list):
+            raise ValueError(
+                "positions must have the same length as uris, got "
+                f"{len(position_list)} and {len(uri_list)}"
+            )
+        if len(size_list) != len(uri_list):
+            raise ValueError(
+                "sizes must have the same length as uris, got "
+                f"{len(size_list)} and {len(uri_list)}"
+            )
+        ranges = list(zip(position_list, size_list, strict=True))
+
+    descriptors = []
+    for index, (uri, (position, size)) in enumerate(zip(uri_list, ranges, strict=True)):
+        if uri is None:
+            if position is not None or size is not None:
+                raise ValueError(
+                    f"uris[{index}] is None but a position or size was provided"
+                )
+            descriptors.append(None)
+            continue
+        if not isinstance(uri, str):
+            raise TypeError(f"uris[{index}] must be a string, got {type(uri).__name__}")
+        if position is None and size is None:
+            descriptors.append({"uri": uri})
+            continue
+        if position is None or size is None:
+            raise ValueError(
+                f"uris[{index}] must set both position and size or neither"
+            )
+        position = _blob_uint64(position, f"positions[{index}]")
+        size = _blob_uint64(size, f"sizes[{index}]")
+        if size == 0:
+            raise ValueError(f"sizes[{index}] must be positive to read a byte range")
+        descriptors.append({"uri": uri, "position": position, "size": size})
+
+    blob_type = _resolve_blob_type()()
     storage = pa.array(descriptors, type=blob_type.storage_type)
     return pa.ExtensionArray.from_storage(blob_type, storage)
 

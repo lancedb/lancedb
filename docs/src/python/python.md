@@ -936,9 +936,37 @@ PyArrow's `RecordBatch.from_pylist(..., schema=...)` cannot convert raw bytes
 into the blob extension type; use `blob_array` and `RecordBatch.from_arrays`
 when constructing batches explicitly.
 
-For external blob references, construct the descriptor struct described by
-[blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
-Inline `data` and external `uri` representations are mutually exclusive.
+For external blob references, use [blob_uri_array][lancedb.blob_uri_array]. It builds the
+same extension type from URI strings and optional `(position, size)` byte
+ranges without requiring pylance. Inline `data` and external `uri` representations
+are mutually exclusive.
+
+Register the object prefix with [BasePath][lancedb.BasePath] on
+`create_table(..., initial_bases=[...])` to store blob URIs relative to a base
+and to scope credentials with `base_<id>.<option>` storage options. A create
+with data stays a single atomic request; without a matching base, pass
+`allow_external_blob_outside_bases=True` to keep the absolute URI instead.
+
+```python
+from lancedb import BasePath, blob, blob_uri_array
+
+schema = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        blob("video").with_metadata({"lancedb:logical_type": "mp4"}),
+    ]
+)
+videos = blob_uri_array(
+    ["s3://bucket/clip-0.mp4", "s3://bucket/clip-1.mp4"],
+    positions=[0, 0],
+    sizes=[1 << 20, 1 << 20],
+)
+db.create_table(
+    "videos",
+    data=pa.RecordBatch.from_arrays([pa.array([0, 1]), videos], schema=schema),
+    initial_bases=[BasePath("s3://bucket")],
+)
+```
 
 LanceDB Enterprise SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
@@ -999,6 +1027,10 @@ so the fetch APIs cannot read their bytes yet.
 ::: lancedb.blob
 
 ::: lancedb.schema.blob_array
+
+::: lancedb.blob_uri_array
+
+::: lancedb.BasePath
 
 ::: lancedb._blob.BlobFile
     options:
