@@ -244,10 +244,11 @@ class AsyncMaterializedView:
         LanceDB Enterprise SQL refreshes do not support source-version pinning.
 
         ``total_cpu_millis`` (1000 = one core), ``total_memory_bytes``, and
-        ``total_gpu_count`` cap aggregate resources for this execution, including
-        its Function processes. CPU or memory requires all three budget fields;
-        GPU count may be zero for CPU-only views. ``gpu_class`` selects an operator-defined
-        GPU class for this execution only. Omitted options preserve defaults.
+        ``total_gpu_count`` cap aggregate resources for this execution,
+        including its Function processes. CPU or memory requires all three
+        budget fields. GPU count may be zero for CPU-only views.
+        ``gpu_class`` selects an operator-defined GPU class for this execution
+        only. Omitted options preserve defaults.
         These options require an Enterprise backend that enforces isolation;
         Embedded refreshes reject them. Other servers may reject the new options.
 
