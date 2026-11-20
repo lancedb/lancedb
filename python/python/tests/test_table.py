@@ -1442,7 +1442,11 @@ def test_tags_create_defaults_to_visible_version(mem_db: DBConnection):
     assert table.tags.get_version("explicit") == 2
 
     # A tag checkout is still a visible version, not "latest".
+    table.checkout_latest()
+    table.add(data=[{"id": 3}])
+    assert table.version == 3
     table.checkout("live")
+    assert table.version == 2
     table.tags.create("tag-checkout")
     assert table.tags.get_version("tag-checkout") == 2
 
@@ -1520,7 +1524,11 @@ async def test_async_tags_create_defaults_to_visible_version(
     assert await table.tags.get_version("explicit") == 2
 
     # A tag checkout is still a visible version, not "latest".
+    await table.checkout_latest()
+    await table.add(data=[{"id": 3}])
+    assert await table.version() == 3
     await table.checkout("live")
+    assert await table.version() == 2
     await table.tags.create("tag-checkout")
     assert await table.tags.get_version("tag-checkout") == 2
 
@@ -1595,9 +1603,11 @@ def test_branches_create_from_tag_rejects_other_sources(tmp_path):
         table.branches.create("exp", from_version=1, from_tag="baseline")
 
 
-def test_branches_create_from_missing_ref_suggests_from_tag(tmp_path):
+def test_branches_create_from_missing_ref_hint_applies_only_to_branches(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("test", data=[{"i": 0}])
+    base = table.branches.create("base")
+    base.add([{"i": 1}])
     table.tags.create("baseline")
 
     # A tag passed through from_ref is not a branch. Keep the original failure
@@ -1607,6 +1617,15 @@ def test_branches_create_from_missing_ref_suggests_from_tag(tmp_path):
 
     detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
     assert "from_tag='baseline'" in detail
+
+    # An existing branch with an absent version is a version failure, not an
+    # unresolved branch, so it must not suggest from_tag.
+    with pytest.raises(RuntimeError) as exc_info:
+        table.branches.create("exp", from_ref="base", from_version=9999)
+
+    detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
+    assert "9999" in detail
+    assert "from_tag=" not in detail
 
 
 def test_branch_handle_tracks_concurrent_writes(tmp_path):
@@ -1937,9 +1956,13 @@ async def test_async_branches_create_from_tag_rejects_other_sources(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_branches_create_from_missing_ref_suggests_from_tag(tmp_path):
+async def test_async_branches_create_from_missing_ref_hint_applies_only_to_branches(
+    tmp_path,
+):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("test", data=[{"i": 0}])
+    base = await table.branches.create("base")
+    await base.add([{"i": 1}])
     await table.tags.create("baseline")
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -1947,6 +1970,15 @@ async def test_async_branches_create_from_missing_ref_suggests_from_tag(tmp_path
 
     detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
     assert "from_tag='baseline'" in detail
+
+    # An existing branch with an absent version is a version failure, not an
+    # unresolved branch, so it must not suggest from_tag.
+    with pytest.raises(RuntimeError) as exc_info:
+        await table.branches.create("exp", from_ref="base", from_version=9999)
+
+    detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
+    assert "9999" in detail
+    assert "from_tag=" not in detail
 
 
 @pytest.mark.asyncio

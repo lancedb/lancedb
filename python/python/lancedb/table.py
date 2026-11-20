@@ -10217,15 +10217,6 @@ def _validate_branch_source(
         )
 
 
-def _add_from_tag_hint(exception: BaseException, from_ref: Optional[str]) -> None:
-    if from_ref is None or "not found" not in str(exception).lower():
-        return
-    _add_unique_note(
-        exception,
-        f"If '{from_ref}' is a tag, pass from_tag='{from_ref}' instead of from_ref.",
-    )
-
-
 class Tags:
     """
     Table tag manager.
@@ -10332,15 +10323,9 @@ class Branches:
             ``from_version``.
         """
         _validate_branch_source(from_ref, from_version, from_tag)
-        try:
-            async_table = LOOP.run(
-                self._table.branches.create(
-                    name, from_ref, from_version, from_tag=from_tag
-                )
-            )
-        except Exception as exception:
-            _add_from_tag_hint(exception, from_ref)
-            raise
+        async_table = LOOP.run(
+            self._table.branches.create(name, from_ref, from_version, from_tag=from_tag)
+        )
         return self._wrap(async_table)
 
     def checkout(self, name: str, version: Optional[int] = None) -> "Table":
@@ -10499,13 +10484,9 @@ class AsyncBranches:
         # after validating from_tag conflicts so an explicit from_ref is not lost.
         if from_ref == "main":
             from_ref = None
-        try:
-            inner = await self._table.branches.create(
-                name, from_ref, from_version, from_tag=from_tag
-            )
-        except Exception as exception:
-            _add_from_tag_hint(exception, from_ref)
-            raise
+        inner = await self._table.branches.create(
+            name, from_ref, from_version, from_tag=from_tag
+        )
         return AsyncTable(inner)
 
     async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":
