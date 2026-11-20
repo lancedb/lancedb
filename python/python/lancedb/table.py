@@ -4437,10 +4437,40 @@ class LanceTable(Table):
         return self._namespace_path
 
     @classmethod
-    async def from_inner(cls, tbl: LanceDBTable):
+    async def from_inner(
+        cls,
+        tbl: LanceDBTable,
+        *,
+        connection: Optional["DBConnection"] = None,
+        name: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        location: Optional[str] = None,
+    ):
+        async_tbl = AsyncTable(tbl)
+        if connection is not None:
+            # A table created through a Python connection keeps that
+            # connection's explicit options. Reconstructing a bare connection
+            # from the native handle loses namespace, storage, manifest and
+            # Session state needed by pickle.
+            return cls(
+                connection,
+                name or async_tbl.name,
+                namespace_path=namespace_path,
+                storage_options=getattr(connection, "storage_options", None),
+                location=location,
+                namespace_client=getattr(connection, "_namespace_client", None),
+                managed_versioning=getattr(connection, "_managed_versioning", None),
+                pushdown_operations=getattr(
+                    connection, "_namespace_client_pushdown_operations", None
+                ),
+                route_pushdown_to_rust=getattr(
+                    connection, "_route_pushdown_to_rust", False
+                ),
+                _async=async_tbl,
+            )
+
         from .db import AsyncConnection, LanceDBConnection
 
-        async_tbl = AsyncTable(tbl)
         inner_conn = tbl.database()
         read_consistency_interval = await AsyncConnection(
             inner_conn
@@ -4669,6 +4699,16 @@ class LanceTable(Table):
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
+
+    def _pin_current_snapshot(self) -> "LanceTable":
+        """Return an independent handle pinned to this table's current snapshot."""
+
+        async def do_pin():
+            pinned = await self._table._checkout_current()
+            return pinned, await pinned.version()
+
+        pinned, version = LOOP.run(do_pin())
+        return self._wrap_branch_handle(pinned, version)
 
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
@@ -9663,6 +9703,10 @@ class AsyncTable:
         version.
         """
         return await self._inner.version()
+
+    async def _checkout_current(self) -> "AsyncTable":
+        """Return an independent handle pinned to the currently selected snapshot."""
+        return AsyncTable(await self._inner._checkout_current())
 
     async def list_versions(self):
         """

@@ -2120,6 +2120,15 @@ impl Table {
         })
     }
 
+    /// Return an independent handle pinned to the currently selected snapshot.
+    pub fn _checkout_current(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let current = inner.checkout_current().await.infer_error()?;
+            Ok(Table::new(current))
+        })
+    }
+
     #[pyo3(signature = (version=None))]
     pub fn restore(
         self_: PyRef<'_, Self>,
