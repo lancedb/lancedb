@@ -284,13 +284,13 @@ def test_persisted_plan_pickle_uses_captured_main_branch(tmp_path):
     branch_plan.tags.create("exp_v2", 2)
 
     permutation = Permutation.from_tables(tbl, main_plan)
-    payload = pickle.dumps(permutation)
 
     # Move the same passed-in plan handle to the other branch at the same
     # numeric version. Pickle must still reopen the captured main snapshot.
     main_plan.checkout("exp_v2")
     assert main_plan.current_branch() == "exp"
     assert main_plan.version == 2
+    payload = pickle.dumps(permutation)
 
     restored = pickle.loads(payload)
     assert restored.permutation_table.current_branch() is None
