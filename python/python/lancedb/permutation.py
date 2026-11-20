@@ -779,6 +779,20 @@ class Permutation:
         self.reader = None
         self._pid = None
 
+    def __copy__(self) -> "Permutation":
+        """Return a shallow copy without going through the pickle path.
+
+        The ``with_*`` builders use ``copy.copy`` to derive a new permutation.
+        The default copy protocol would use ``__getstate__``/``__setstate__``,
+        which materializes the permutation table with ``to_arrow()`` (not
+        supported for remote tables) and rebuilds the base table and reader.
+        A shallow copy instead keeps the existing table handles and reader;
+        the caller replaces only the attribute it is changing.
+        """
+        new = self.__class__.__new__(self.__class__)
+        new.__dict__ = self.__dict__.copy()
+        return new
+
     def _ensure_open(self) -> None:
         pid = os.getpid()
         if self.reader is not None and getattr(self, "_pid", None) == pid:
