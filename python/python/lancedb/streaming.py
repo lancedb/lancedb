@@ -2011,6 +2011,8 @@ class StreamingDataLoader(DataLoader):
     platform provides it, and to ``spawn`` otherwise. Explicit start-method
     names and context objects are used unchanged. With ``num_workers == 0``,
     no context is selected, leaving PyTorch's single-process behavior intact.
+    Callbacks and worker state must be picklable under the selected start
+    method, following PyTorch's DataLoader rules.
 
     Examples
     --------

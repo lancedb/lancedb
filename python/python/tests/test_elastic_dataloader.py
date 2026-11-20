@@ -1040,58 +1040,54 @@ def _loader_start_method(loader: StreamingDataLoader) -> str:
     return context.get_start_method()
 
 
-def test_streaming_dataloader_defaults_workers_to_forkserver(lance_table):
-    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+def _platform_worker_start_method() -> str:
+    return "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
+
+
+def test_default_worker_start_method_prefers_forkserver():
     with patch.object(
         streaming,
         "get_all_start_methods",
         return_value=["fork", "spawn", "forkserver"],
     ):
-        loader = StreamingDataLoader(dataset, batch_size=2, num_workers=1)
-
-    assert _loader_start_method(loader) == "forkserver"
+        assert streaming._default_worker_start_method() == "forkserver"
 
 
 def test_streaming_dataloader_falls_back_to_spawn_without_forkserver(lance_table):
     dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
-    with patch.object(
-        streaming, "get_all_start_methods", return_value=["fork", "spawn"]
-    ):
+    with patch.object(streaming, "get_all_start_methods", return_value=["spawn"]):
         loader = StreamingDataLoader(dataset, batch_size=2, num_workers=1)
 
     assert _loader_start_method(loader) == "spawn"
 
 
+def test_streaming_dataloader_omitted_context_uses_platform_method(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=1)
+
+    assert _loader_start_method(loader) == _platform_worker_start_method()
+
+
 def test_streaming_dataloader_treats_none_context_as_omitted(lance_table):
     dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
-    with patch.object(
-        streaming,
-        "get_all_start_methods",
-        return_value=["fork", "spawn", "forkserver"],
-    ):
-        loader = StreamingDataLoader(
-            dataset,
-            batch_size=2,
-            num_workers=1,
-            multiprocessing_context=None,
-        )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context=None,
+    )
 
-    assert _loader_start_method(loader) == "forkserver"
+    assert _loader_start_method(loader) == _platform_worker_start_method()
 
 
 def test_streaming_dataloader_preserves_explicit_start_method(lance_table):
     dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
-    with patch.object(
-        streaming,
-        "get_all_start_methods",
-        return_value=["fork", "spawn", "forkserver"],
-    ):
-        loader = StreamingDataLoader(
-            dataset,
-            batch_size=2,
-            num_workers=1,
-            multiprocessing_context="spawn",
-        )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context="spawn",
+    )
 
     assert _loader_start_method(loader) == "spawn"
 
@@ -1099,29 +1095,19 @@ def test_streaming_dataloader_preserves_explicit_start_method(lance_table):
 def test_streaming_dataloader_preserves_explicit_context_object(lance_table):
     dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
     context = mp.get_context("spawn")
-    with patch.object(
-        streaming,
-        "get_all_start_methods",
-        return_value=["fork", "spawn", "forkserver"],
-    ):
-        loader = StreamingDataLoader(
-            dataset,
-            batch_size=2,
-            num_workers=1,
-            multiprocessing_context=context,
-        )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context=context,
+    )
 
     assert loader.multiprocessing_context is context
 
 
 def test_streaming_dataloader_zero_workers_leave_context_unset(lance_table):
     dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
-    with patch.object(
-        streaming,
-        "get_all_start_methods",
-        return_value=["fork", "spawn", "forkserver"],
-    ):
-        loader = StreamingDataLoader(dataset, batch_size=12, num_workers=0)
+    loader = StreamingDataLoader(dataset, batch_size=12, num_workers=0)
 
     assert loader.multiprocessing_context is None
     ids = [row_id for batch in loader for row_id in batch["id"].tolist()]
@@ -1131,8 +1117,7 @@ def test_streaming_dataloader_zero_workers_leave_context_unset(lance_table):
 def test_streaming_dataloader_default_context_runs_real_worker(lance_table):
     dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
     loader = StreamingDataLoader(dataset, batch_size=12, num_workers=1)
-    expected = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
-    assert _loader_start_method(loader) == expected
+    assert _loader_start_method(loader) == _platform_worker_start_method()
 
     iterator = iter(loader)
     try:
