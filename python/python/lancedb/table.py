@@ -2926,6 +2926,15 @@ class Table(ABC):
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
 
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute a query and collect the whole result eagerly."""
+        return self._execute_query(query, timeout=timeout).read_all()
+
     @abstractmethod
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
 
@@ -5968,6 +5977,26 @@ class LanceTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        # Keep the Python namespace pushdown path, including its branch rule.
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and self.current_branch() is None
+            and not _requires_local_namespace_execution(query)
+        ):
+            return self._execute_query(query, timeout=timeout).read_all()
+
+        async_query = self._table._sync_query_to_async(query)
+        return LOOP.run(async_query._execute_eager(timeout=timeout))
+
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
@@ -8484,6 +8513,24 @@ class AsyncTable:
         return await async_query.to_batches(
             max_batch_length=batch_size, timeout=timeout
         )
+
+    async def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and not _requires_local_namespace_execution(query)
+        ):
+            return (await self._execute_query(query, timeout=timeout)).read_all()
+
+        async_query = self._sync_query_to_async(query)
+        return await async_query._execute_eager(timeout=timeout)
 
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
