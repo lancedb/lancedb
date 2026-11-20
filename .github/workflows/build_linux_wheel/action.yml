@@ -54,7 +54,7 @@ runs:
         grep '^name = ' python/pyproject.toml
     - name: Build x86_64 Manylinux wheel
       if: ${{ inputs.arm-build == 'false' }}
-      uses: PyO3/maturin-action@v1
+      uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
       with:
         maturin-version: "1.12.4"
         command: build
@@ -72,7 +72,7 @@ runs:
           /usr/local/bin/protoc --version
     - name: Build Arm Manylinux Wheel
       if: ${{ inputs.arm-build == 'true' }}
-      uses: PyO3/maturin-action@v1
+      uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
       with:
         maturin-version: "1.12.4"
         command: build

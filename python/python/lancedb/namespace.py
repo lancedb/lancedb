@@ -509,7 +509,9 @@ class LanceNamespaceDBConnection(DBConnection):
             Supported values:
 
             - "QueryTable": Execute queries on the namespace server via
-              namespace.query_table() instead of locally.
+              namespace.query_table() instead of locally. Queries with a
+              nonempty ``order_by`` execute locally and require the client to
+              access the table storage.
             - "CreateTable": Execute table creation on the namespace server via
               namespace.create_table() instead of using declare_table + local write.
 
@@ -584,7 +586,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 "storage_options": self.storage_options or None,
                 "read_consistency_interval_seconds": (
                     self.read_consistency_interval.total_seconds()
-                    if self.read_consistency_interval
+                    if self.read_consistency_interval is not None
                     else None
                 ),
             }
@@ -668,6 +670,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -706,6 +709,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -1132,6 +1136,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             location=table_uri,
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
@@ -1205,7 +1210,9 @@ class AsyncLanceNamespaceDBConnection:
             Supported values:
 
             - "QueryTable": Execute queries on the namespace server via
-              namespace.query_table() instead of locally.
+              namespace.query_table() instead of locally. Queries with a
+              nonempty ``order_by`` execute locally and require the client to
+              access the table storage.
             - "CreateTable": Execute table creation on the namespace server via
               namespace.create_table() instead of using declare_table + local write.
 
@@ -1808,7 +1815,9 @@ def connect_namespace(
         Supported values:
 
         - "QueryTable": Execute queries on the namespace server via
-          namespace.query_table() instead of locally.
+          namespace.query_table() instead of locally. Queries with a nonempty
+          ``order_by`` execute locally and require the client to access the
+          table storage.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 
@@ -1899,7 +1908,9 @@ def connect_namespace_async(
         Supported values:
 
         - "QueryTable": Execute queries on the namespace server via
-          namespace.query_table() instead of locally.
+          namespace.query_table() instead of locally. Queries with a nonempty
+          ``order_by`` execute locally and require the client to access the
+          table storage.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 

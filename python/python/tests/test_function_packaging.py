@@ -20,6 +20,7 @@ from typing import Annotated, Optional, get_type_hints
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from lancedb import col
@@ -580,6 +581,48 @@ def test_array_batch_annotations_accept_explicit_schemas():
     assert signature.output.nullable is False
     values = pa.array([1, 2, 3])
     assert identity(values).equals(values)
+
+
+def test_batch_functions_take_one_array_parameter_per_input_column():
+    @function(
+        input_schema=pa.schema(
+            [
+                pa.field("value", pa.float64(), nullable=False),
+                pa.field("weight", pa.float64(), nullable=False),
+            ]
+        ),
+        output_schema=pa.float64(),
+    )
+    def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+        return pc.multiply(value, weight)
+
+    signature = weighted_score.registration_request.signature
+    assert [parameter.name for parameter in signature.inputs] == ["value", "weight"]
+    result = weighted_score(pa.array([1.0, 2.0]), pa.array([3.0, 4.0]))
+    assert result.to_pylist() == [3.0, 8.0]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda definition: definition(col("value")),
+        lambda definition: definition(value=col("value")),
+        lambda definition: definition(value=col("value") * 2),
+    ],
+    ids=["positional", "keyword", "derived"],
+)
+def test_definition_calls_reject_expr_inputs_before_user_code(invoke):
+    @function
+    def double(value: float) -> float:
+        raise AssertionError("user code ran")
+
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        invoke(double)
+
+
+def test_class_definition_binds_initialization_only_on_a_version():
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        scale(factor=col("factor"), label="x")
 
 
 @pytest.mark.parametrize("class_function", [False, True])

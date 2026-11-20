@@ -7,7 +7,13 @@ import pytest
 
 from lancedb import DBConnection, Table, connect
 from lancedb.background_loop import LOOP
-from lancedb.permutation import Permutation, Permutations, permutation_builder
+from lancedb.permutation import (
+    DEFAULT_BATCH_SIZE,
+    Permutation,
+    Permutations,
+    Transforms,
+    permutation_builder,
+)
 from utils import (
     MockPermutationServer,
     assert_server_safe_row_id_requests,
@@ -79,6 +85,43 @@ def test_pickled_permutation_reads_pinned_version(tmp_path):
     assert len(restored) == 20
     rows = restored.__getitems__(list(range(20)))
     assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
+def test_builder_copy_is_shallow_and_does_not_materialize(
+    some_table: Table, some_perm_table: Table, monkeypatch
+):
+    """The with_* builders use copy.copy, which must stay a shallow copy.
+
+    Without ``Permutation.__copy__`` the copy falls back to the pickle path,
+    which materializes the permutation table with ``to_arrow()`` before
+    rebuilding the base table and reader. That is expensive for in-memory
+    tables and fails for remote permutation tables.
+    """
+    permutation = Permutation.from_tables(some_table, some_perm_table)
+
+    def fail_materialize(*args, **kwargs):
+        raise AssertionError("copy.copy must not materialize the permutation table")
+
+    def fail_getstate(_self):
+        raise AssertionError("copy.copy must not pickle the permutation")
+
+    monkeypatch.setattr(permutation.permutation_table, "to_arrow", fail_materialize)
+    monkeypatch.setattr(Permutation, "__getstate__", fail_getstate)
+
+    formatted = permutation.with_format("arrow")
+    assert formatted is not permutation
+    assert formatted.transform_fn is Transforms.arrow2arrow
+    assert permutation.transform_fn is Transforms.arrow2python
+    assert formatted.base_table is permutation.base_table
+    assert formatted.permutation_table is permutation.permutation_table
+    assert formatted.reader is permutation.reader
+
+    resized = permutation.with_batch_size(7)
+    assert resized.batch_size == 7
+    assert permutation.batch_size == DEFAULT_BATCH_SIZE
+    assert resized.selection is permutation.selection
+    resized.selection = {"id": "id"}
+    assert permutation.selection is not resized.selection
 
 
 def test_split_random_counts(mem_db):
@@ -273,6 +316,41 @@ def test_split_hash(mem_db):
 
     data2 = perm2.search(None).to_arrow().to_pydict()
     assert data["split_id"] == data2["split_id"]  # Should be identical
+
+
+def test_split_hash_default_discard_weight_matches_zero(mem_db):
+    """Omitting discard_weight must assign every row like discard_weight=0."""
+    tbl = mem_db.create_table(
+        "test_table",
+        pa.table(
+            {
+                "id": range(100),
+                "category": (["A", "B", "C"] * 34)[:100],
+                "value": range(100),
+            }
+        ),
+    )
+
+    default = (
+        permutation_builder(tbl)
+        .split_hash(["category"], [1, 1], split_names=["train", "test"])
+        .execute()
+    )
+    explicit_zero = (
+        permutation_builder(tbl)
+        .split_hash(
+            ["category"], [1, 1], discard_weight=0, split_names=["train", "test"]
+        )
+        .execute()
+    )
+
+    default_data = default.search(None).to_arrow().to_pydict()
+    explicit_data = explicit_zero.search(None).to_arrow().to_pydict()
+    assert default.count_rows() == 100
+    assert default.count_rows() == explicit_zero.count_rows()
+    assert dict(zip(default_data["row_id"], default_data["split_id"])) == dict(
+        zip(explicit_data["row_id"], explicit_data["split_id"])
+    )
 
 
 def test_split_hash_with_discard(mem_db):
