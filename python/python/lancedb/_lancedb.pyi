@@ -1285,7 +1285,12 @@ class AsyncPermutationBuilder:
         seed: Optional[int] = None,
     ) -> "AsyncPermutationBuilder": ...
     def split_hash(
-        self, columns: List[str], split_weights: List[int], *, discard_weight: int = 0
+        self,
+        columns: List[str],
+        split_weights: List[int],
+        *,
+        discard_weight: Optional[int] = None,
+        split_names: Optional[List[str]] = None,
     ) -> "AsyncPermutationBuilder": ...
     def split_sequential(
         self,

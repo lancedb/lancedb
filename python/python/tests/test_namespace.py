@@ -6,6 +6,8 @@
 import tempfile
 import shutil
 import importlib
+import asyncio
+import pickle
 import warnings
 import http.server
 import json
@@ -16,6 +18,7 @@ import copy
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lance_namespace import DescribeTableResponse
 from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
 from lancedb.index import FTS
@@ -33,6 +36,37 @@ from lancedb.table import AsyncTable, LanceTable
 PUSHDOWN_DATA = pa.table(
     {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
+
+
+class _RefreshNamespaceWithExpiringOptions(LanceNamespace):
+    def __init__(self, root):
+        self.root = root
+
+    def namespace_id(self):
+        return f"refresh-test:{self.root}"
+
+    def describe_table(self, request):
+        from pathlib import Path
+
+        return DescribeTableResponse(
+            location=str(Path(self.root) / "t.lance"),
+            storage_options={"vended": "fresh", "expires_at_millis": "1"},
+        )
+
+
+class _DeclaredNamespaceWithoutProperties(LanceNamespace):
+    root = None
+
+    def __init__(self):
+        from lance.namespace import DirectoryNamespace
+
+        self.client = DirectoryNamespace(root=self.root)
+
+    def namespace_id(self):
+        return self.client.namespace_id()
+
+    def describe_table(self, request):
+        return self.client.describe_table(request)
 
 
 @pytest.mark.asyncio
@@ -54,6 +88,70 @@ async def test_custom_namespace_table_exists_uses_namespace_api(table_id):
     adb = lancedb.AsyncLanceNamespaceDBConnection(namespace)
     assert db.table_exists(table_id) is (table_id != ["missing"])
     assert await adb.table_exists(table_id) is (table_id != ["missing"])
+
+
+def test_table_pickle_rejects_custom_namespace_connection(tmp_path):
+    pytest.importorskip("lance")
+    from lance.namespace import DirectoryNamespace
+
+    lancedb.connect_namespace("dir", {"root": str(tmp_path)}).create_table(
+        "t", [{"id": 1}]
+    )
+
+    class UnserializableNamespace(LanceNamespace):
+        def __init__(self, root):
+            from threading import Lock
+
+            self.client = DirectoryNamespace(root=str(root))
+            self.lock = Lock()
+
+        def namespace_id(self):
+            return self.client.namespace_id()
+
+        def describe_table(self, request):
+            return self.client.describe_table(request)
+
+    db = LanceNamespaceDBConnection(UnserializableNamespace(tmp_path))
+    table = db.open_table("t")
+
+    with pytest.raises(TypeError, match="namespace"):
+        pickle.dumps(table)
+
+
+def test_declared_namespace_pickle_keeps_caller_options_after_refresh(tmp_path):
+    lancedb.connect(tmp_path).create_table("t", [{"id": 1}])
+    db = lancedb.connect_namespace(
+        f"{__name__}._RefreshNamespaceWithExpiringOptions", {"root": str(tmp_path)}
+    )
+    table = db.open_table("t", storage_options={"caller_only": "keep"})
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    for current in (table, restored):
+        options = current.latest_storage_options()
+        assert options["caller_only"] == "keep"
+        assert options["vended"] == "fresh"
+
+
+def test_table_pickle_allows_declared_namespace_without_properties(tmp_path):
+    pytest.importorskip("lance")
+
+    lancedb.connect_namespace("dir", {"root": str(tmp_path)}).create_table(
+        "t", [{"id": 1}]
+    )
+    _DeclaredNamespaceWithoutProperties.root = str(tmp_path)
+    try:
+        impl = f"{__name__}._DeclaredNamespaceWithoutProperties"
+        db = LanceNamespaceDBConnection(
+            _DeclaredNamespaceWithoutProperties(), namespace_client_impl=impl
+        )
+        table = db.open_table("t")
+
+        restored = pickle.loads(pickle.dumps(table))
+
+        assert restored.to_arrow()["id"].to_pylist() == [1]
+    finally:
+        _DeclaredNamespaceWithoutProperties.root = None
 
 
 class TestNamespaceCreateTableOptions:
@@ -304,6 +402,328 @@ def paginated_rest_namespace():
         thread = start_server_thread(server)
         try:
             yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_rest_namespace_table_pickle_keeps_live_storage_options(tmp_path):
+    from time import time
+
+    local = lancedb.connect(tmp_path)
+    local.create_table("t", [{"id": 1}])
+    location = str(tmp_path / "t.lance")
+    ipc = _ipc_file(pa.table({"id": [42]}))
+    seen = []
+    current_options = {
+        "block_size": "4096",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            seen.append(path)
+            if path.endswith("/describe"):
+                body = json.dumps(
+                    {"location": location, "storage_options": current_options}
+                ).encode()
+                content_type = "application/json"
+            elif path.endswith("/query"):
+                body = ipc
+                content_type = "application/vnd.apache.arrow.file"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest",
+                {"uri": f"http://127.0.0.1:{server.server_port}"},
+                namespace_client_pushdown_operations=["QueryTable"],
+            )
+            table = db.open_table("t")
+            restored = pickle.loads(pickle.dumps(table))
+
+            seen.clear()
+            assert restored.search().limit(1).to_list() == [{"id": 42}]
+            assert seen == ["/v1/table/t/query"]
+
+            current_options = {
+                "block_size": "8192",
+                "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+            }
+            assert table.latest_storage_options()["block_size"] == "8192"
+            assert restored.latest_storage_options()["block_size"] == "8192"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_rest_namespace_create_empty_refresh_does_not_restore_expired_seed(tmp_path):
+    from time import time
+
+    location = str(tmp_path / "t.lance")
+    current_options = {
+        "vended_seed": "short-lived",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if not (path.endswith("/declare") or path.endswith("/describe")):
+                self.send_error(404)
+                return
+            body = json.dumps(
+                {"location": location, "storage_options": current_options}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest", {"uri": f"http://127.0.0.1:{server.server_port}"}
+            )
+            table = db.create_table("t", [{"id": 1}])
+            payload = pickle.dumps(table)
+            assert b"short-lived" not in payload
+            restored = pickle.loads(payload)
+
+            current_options = {}
+            assert table.latest_storage_options() == {}
+            assert restored.latest_storage_options() == {}
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.mark.parametrize("entrypoint", ["create", "open"])
+def test_rest_namespace_pickle_layers_caller_storage_options(tmp_path, entrypoint):
+    from time import time
+
+    location = str(tmp_path / "t.lance")
+    caller_options = {"caller_option": "kept", "conflict": "caller"}
+    vended_options = {
+        "vended_1": "old",
+        "conflict": "vended",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if path.endswith("/declare") or path.endswith("/describe"):
+                body = json.dumps(
+                    {"location": location, "storage_options": vended_options}
+                ).encode()
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest",
+                {"uri": f"http://127.0.0.1:{server.server_port}"},
+            )
+            if entrypoint == "create":
+                table = db.create_table(
+                    "t", [{"id": 1}], storage_options=caller_options
+                )
+            else:
+                db.create_table("t", [{"id": 1}])
+                table = db.open_table("t", storage_options=caller_options)
+            restored = pickle.loads(pickle.dumps(table))
+
+            for current in (table, restored):
+                options = current.latest_storage_options()
+                assert options["caller_option"] == "kept"
+                assert options["conflict"] == "vended"
+
+            vended_options.update(
+                {
+                    "vended_2": "new",
+                    "conflict": "vended-new",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                }
+            )
+
+            for current in (table, restored):
+                options = current.latest_storage_options()
+                assert options["caller_option"] == "kept"
+                assert options["vended_2"] == "new"
+                assert options["conflict"] == "vended-new"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_namespace_open_uses_explicit_storage_options_provider(tmp_path):
+    from time import time
+
+    from lancedb._lancedb import connect_namespace as connect_namespace_inner
+    from lancedb.db import AsyncConnection
+
+    location = str(tmp_path / "t.lance")
+    seed_options = {
+        "vended_seed": "short-lived",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if not (path.endswith("/declare") or path.endswith("/describe")):
+                self.send_error(404)
+                return
+            result = {"location": location, "storage_options": seed_options}
+            body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class ExplicitClient(LanceNamespace):
+        calls = 0
+
+        def namespace_id(self):
+            return "explicit-storage-options-provider"
+
+        def describe_table(self, request):
+            self.calls += 1
+            return DescribeTableResponse(
+                location=location,
+                storage_options={
+                    "explicit_provider": "fresh",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                },
+            )
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            properties = {"uri": f"http://127.0.0.1:{server.server_port}"}
+            db = lancedb.connect_namespace("rest", properties)
+            db.create_table("t", [{"id": 1}])
+
+            async def check():
+                connection = AsyncConnection(
+                    connect_namespace_inner("rest", properties)
+                )
+                client = ExplicitClient()
+                table = await connection.open_table("t", namespace_client=client)
+                options = await table.latest_storage_options()
+                assert client.calls > 0
+                assert options["explicit_provider"] == "fresh"
+
+            asyncio.run(check())
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_namespace_create_without_seed_uses_connection_provider(tmp_path):
+    from time import time
+
+    from lancedb._lancedb import connect_namespace as connect_namespace_inner
+    from lancedb.db import AsyncConnection
+
+    location = str(tmp_path / "t.lance")
+    seed_options = {
+        "vended_seed": "short-lived",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            result = {"location": location}
+            if path.endswith("/describe"):
+                result["storage_options"] = seed_options
+            elif not path.endswith("/declare"):
+                self.send_error(404)
+                return
+            body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class ExplicitClient(LanceNamespace):
+        calls = 0
+
+        def namespace_id(self):
+            return "explicit-storage-options-provider"
+
+        def describe_table(self, request):
+            self.calls += 1
+            return DescribeTableResponse(
+                location=location,
+                storage_options={
+                    "explicit_provider": "fresh",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                },
+            )
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            properties = {"uri": f"http://127.0.0.1:{server.server_port}"}
+
+            async def check():
+                connection = AsyncConnection(
+                    connect_namespace_inner("rest", properties)
+                )
+                client = ExplicitClient()
+                table = await connection.create_table(
+                    "t", [{"id": 1}], namespace_client=client
+                )
+                options = await table.latest_storage_options()
+                assert client.calls == 0
+                assert options["vended_seed"] == "short-lived"
+
+            asyncio.run(check())
         finally:
             server.shutdown()
             thread.join()

@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
-use lance_io::object_store::ObjectStoreParams;
+use lance_io::object_store::{
+    LanceNamespaceStorageOptionsProvider, ObjectStoreParams, StorageOptionsAccessor,
+    StorageOptionsProvider,
+};
 use lance_namespace::{
     LanceNamespace,
     error::{ErrorCode, NamespaceError},
@@ -25,7 +28,9 @@ use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
 use crate::blob::ensure_blob_storage_version;
-use crate::connection::{NamespaceClientPushdownOperation, merge_storage_options};
+use crate::connection::{
+    LayeredStorageOptionsProvider, NamespaceClientPushdownOperation, merge_storage_options,
+};
 use crate::database::ReadConsistency;
 use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
 use crate::database::read_freshness::{
@@ -467,13 +472,28 @@ impl Database for LanceNamespaceDatabase {
 
         // Set up storage options if provided. Namespace options take
         // precedence for overlapping keys, but must not discard caller-only
-        // options supplied with the create request, including the
-        // `base_<id>.<key>` settings of registered blob bases.
+        // options supplied with the create request.
+        let store_params = params
+            .store_params
+            .get_or_insert_with(ObjectStoreParams::default);
+        let caller_storage_options = store_params.storage_options().cloned().unwrap_or_default();
         if let Some(storage_opts) = initial_storage_options {
-            let store_params = params
-                .store_params
-                .get_or_insert_with(ObjectStoreParams::default);
             merge_storage_options(store_params, storage_opts);
+        }
+        if let Some(initial_options) = store_params
+            .storage_options()
+            .cloned()
+            .filter(|options| !options.is_empty())
+        {
+            let namespace_provider: Arc<dyn StorageOptionsProvider> = Arc::new(
+                LanceNamespaceStorageOptionsProvider::new(self.namespace.clone(), table_id.clone()),
+            );
+            let provider: Arc<dyn StorageOptionsProvider> = Arc::new(
+                LayeredStorageOptionsProvider::new(caller_storage_options, namespace_provider),
+            );
+            store_params.storage_options_accessor = Some(Arc::new(
+                StorageOptionsAccessor::with_initial_and_provider(initial_options, provider),
+            ));
         }
 
         // Set up commit handler when managed_versioning is enabled

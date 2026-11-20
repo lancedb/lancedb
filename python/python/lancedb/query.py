@@ -273,6 +273,24 @@ def _query_needs_lance_scanner(builder: Any) -> bool:
     )
 
 
+def _raise_unsupported_fragment_constraints(
+    fragments: Optional[Any],
+    fragment_ids: Optional[List[int]],
+    *,
+    operation: str,
+) -> None:
+    """Reject fragment selection where execution would silently scan everything."""
+    if fragments is None and fragment_ids is None:
+        return
+    raise NotImplementedError(
+        "with_fragments() and fragment_ids() are only supported for embedded "
+        "plain-scan blob queries executed through to_pandas(). "
+        f"{operation} would ignore the fragment selection and scan the full "
+        "table. Remove the fragment constraint, or use table.to_lance() with "
+        "a Lance scanner for this query shape."
+    )
+
+
 def _query_is_plain_scan(query: Query) -> bool:
     return (
         query.vector is None
@@ -1686,10 +1704,18 @@ class LanceQueryBuilder(ABC):
         return self._user_requested_row_id() or self._blob_auto_row_id_enabled()
 
     def _query_for_scan(self, blob_sources: Optional[dict[str, str]] = None) -> Query:
+        self._ensure_fragment_constraints_supported("this query")
         query = self.to_query_object()
         if self._scan_needs_row_id() or blob_sources:
             query.with_row_id = True
         return query
+
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
 
     def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
         if blob_mode != "bytes":
@@ -1826,12 +1852,51 @@ class LanceQueryBuilder(ABC):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """Set the Lance fragments to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. Other terminals and remote tables raise ``NotImplementedError``
+        before scanning instead of silently scanning the full table.
+        Blob-specific ``to_pandas()`` fallbacks keep their existing validation
+        errors.
+
+        Parameters
+        ----------
+        fragments : list[lance.Fragment]
+            Fragments from ``table.to_lance().get_fragments()``. Pass fragments
+            from the same dataset snapshot.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """Set the Lance fragment ids to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
+
+        Parameters
+        ----------
+        fragment_ids : list[int]
+            Fragment ids from ``table.to_lance().get_fragments()``.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragment_ids = fragment_ids
         return self
 
@@ -1887,6 +1952,7 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
     def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
@@ -1961,6 +2027,7 @@ class LanceQueryBuilder(ABC):
         plan : str
             The physical query execution plan with runtime metrics.
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return self._table._analyze_plan(
             self.to_query_object(), distributed_metrics=distributed_metrics
         )
@@ -2629,6 +2696,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         For example, ``table.search("gripper closed", query_type="fts",``
         ``operator="AND").where("active = true").count_rows()``.
         """
+        self._ensure_fragment_constraints_supported("count_rows()")
         self._table._ensure_no_legacy_fts_index()
         query = self._table._table._sync_query_to_async(self.to_query_object())
         assert isinstance(query, AsyncFTSQuery)
@@ -3522,6 +3590,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def _create_query_builders(self):
         """Set up and configure the vector and FTS query builders."""
+        self._ensure_fragment_constraints_supported("this hybrid query")
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
@@ -3640,6 +3709,19 @@ class AsyncQueryBase(object):
     def _user_requested_row_id(self) -> bool:
         return self._with_row_id is True
 
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
+
+    def _inherit_fragment_constraints(self, query: Any) -> Any:
+        """Carry a fragment selection across an async query conversion."""
+        query._fragments = self._fragments
+        query._fragment_ids = self._fragment_ids
+        return query
+
     def _blob_auto_row_id_enabled(self) -> bool:
         return self._blob_auto_row_id
 
@@ -3750,15 +3832,30 @@ class AsyncQueryBase(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. The constraint is preserved when converting between async
+        query types. Other terminals and remote tables raise
+        ``NotImplementedError`` before scanning instead of silently scanning
+        the full table. Blob-specific ``to_pandas()`` fallbacks keep their
+        existing validation errors.
         """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._fragment_ids = fragment_ids
         return self
@@ -3838,6 +3935,7 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        self._ensure_fragment_constraints_supported("to_batches()")
         if (
             blob_sources
             and not self._user_requested_row_id()
@@ -4245,6 +4343,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return await self._inner.explain_plan(verbose)
 
     async def analyze_plan(
@@ -4262,6 +4361,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return await self._inner.analyze_plan(distributed_metrics)
 
 
@@ -4501,11 +4601,17 @@ class AsyncQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncVectorQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(new_self, self._table)
+            )
         else:
-            return AsyncVectorQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     def nearest_to_text(
@@ -4545,18 +4651,22 @@ class AsyncQuery(AsyncStandardQuery):
             columns = []
 
         if isinstance(query, str):
-            return AsyncFTSQuery(
-                self._inner.nearest_to_text(
-                    {
-                        "query": query,
-                        "columns": columns,
-                        "operator": fts_query.operator,
-                    }
-                ),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncFTSQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        return self._inherit_fragment_constraints(
+            AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        )
 
 
 class AsyncFTSQuery(AsyncStandardQuery):
@@ -4577,6 +4687,7 @@ class AsyncFTSQuery(AsyncStandardQuery):
         For example, ``await table.query().nearest_to_text("gripper closed",``
         ``operator="AND").where("active = true").count_rows()``.
         """
+        self._ensure_fragment_constraints_supported("count_rows()")
         try:
             return await self._inner.count_rows()
         except Exception as error:
@@ -4662,11 +4773,17 @@ class AsyncFTSQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncHybridQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(new_self, self._table)
+            )
         else:
-            return AsyncHybridQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     async def _execute_batches(
@@ -5002,15 +5119,21 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             columns = []
 
         if isinstance(query, str):
-            return AsyncHybridQuery(
-                self._inner.nearest_to_text(
-                    {"query": query, "columns": columns, "operator": fts_query.operator}
-                ),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query}), self._table
+        return self._inherit_fragment_constraints(
+            AsyncHybridQuery(self._inner.nearest_to_text({"query": query}), self._table)
         )
 
     async def _execute_batches(
@@ -5098,6 +5221,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the hybrid query itself. The key the legs are fused on, if any, is left
         on `self._pk_fusion`.
         """
+        self._ensure_fragment_constraints_supported("this hybrid query")
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 
@@ -5394,15 +5518,26 @@ class BaseQueryBuilder(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict execution to the given Lance fragments.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._inner.with_fragments(fragments)
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict execution to the given Lance fragment ids.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. On that path, an empty list selects no
+        rows and missing ids raise ``ValueError``. Other terminals and remote
+        tables raise ``NotImplementedError`` before scanning instead of
+        silently scanning the full table. Blob-specific ``to_pandas()``
+        fallbacks keep their existing validation errors.
         """
         self._inner.fragment_ids(fragment_ids)
         return self

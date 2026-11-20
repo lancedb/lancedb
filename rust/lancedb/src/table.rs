@@ -29,7 +29,9 @@ use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
-use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
+use lance_io::object_store::{
+    LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor, StorageOptionsProvider,
+};
 pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
@@ -49,7 +51,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::connection::NamespaceClientPushdownOperation;
+use crate::connection::{LayeredStorageOptionsProvider, NamespaceClientPushdownOperation};
 
 use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
@@ -3679,7 +3681,7 @@ impl NativeTable {
         }
 
         // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
+        let mut params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
@@ -3690,9 +3692,49 @@ impl NativeTable {
 
         // Use DatasetBuilder::from_namespace which automatically fetches location
         // and storage options from the namespace
-        let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
-            .await
-            .map_err(|e| map_namespace_lance_error(e, name))?;
+        let mut builder =
+            DatasetBuilder::from_namespace(namespace_client.clone(), table_id.clone())
+                .await
+                .map_err(|e| map_namespace_lance_error(e, name))?;
+
+        // A caller-supplied read-params accessor replaces the namespace-backed
+        // accessor in with_read_params. Preserve an explicit provider/accessor;
+        // only layer static caller options onto the live namespace provider so
+        // refresh keeps working and namespace values retain their precedence.
+        if let Some(mut store_options) = params.store_options.take() {
+            if let Some(accessor) = store_options.get_accessor() {
+                if accessor.provider().is_some() {
+                    builder = builder.with_store_params(store_options);
+                } else {
+                    let caller_options = accessor
+                        .initial_storage_options()
+                        .cloned()
+                        .unwrap_or_default();
+                    let namespace_provider: Arc<dyn StorageOptionsProvider> =
+                        Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                            namespace_client.clone(),
+                            table_id,
+                        ));
+                    let provider: Arc<dyn StorageOptionsProvider> =
+                        Arc::new(LayeredStorageOptionsProvider::new(
+                            caller_options.clone(),
+                            namespace_provider,
+                        ));
+                    let accessor = if caller_options.is_empty() {
+                        Arc::new(StorageOptionsAccessor::with_provider(provider))
+                    } else {
+                        Arc::new(StorageOptionsAccessor::with_initial_and_provider(
+                            caller_options,
+                            provider,
+                        ))
+                    };
+                    store_options.storage_options_accessor = Some(accessor);
+                    builder = builder.with_store_params(store_options);
+                }
+            } else {
+                builder = builder.with_store_params(store_options);
+            }
+        }
 
         let dataset = builder
             .with_read_params(params)
@@ -3901,10 +3943,9 @@ impl NativeTable {
         table_id.push(name.to_string());
 
         // Set up storage options provider from namespace
-        let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-            namespace_client.clone(),
-            table_id,
-        ));
+        let namespace_provider: Arc<dyn StorageOptionsProvider> = Arc::new(
+            LanceNamespaceStorageOptionsProvider::new(namespace_client.clone(), table_id),
+        );
 
         // Start with provided params or defaults
         let mut params = params.unwrap_or_default();
@@ -3914,17 +3955,40 @@ impl NativeTable {
             params.session = Some(sess);
         }
 
-        // Ensure store_params exists and set the storage options provider
+        // Ensure store_params exists and preserve an already-layered provider
+        // from create_table, or attach the namespace provider to the caller's
+        // initial options for other callers.
         let store_params = params
             .store_params
             .get_or_insert_with(ObjectStoreParams::default);
-        let accessor = match store_params.storage_options().cloned() {
-            Some(options) => {
-                StorageOptionsAccessor::with_initial_and_provider(options, storage_options_provider)
+        let accessor = match store_params.storage_options_accessor.take() {
+            Some(existing)
+                if existing.provider().is_some()
+                    && existing.initial_storage_options().is_some() =>
+            {
+                existing
             }
-            None => StorageOptionsAccessor::with_provider(storage_options_provider),
+            Some(existing) => {
+                let options = existing
+                    .initial_storage_options()
+                    .cloned()
+                    .unwrap_or_default();
+                let provider: Arc<dyn StorageOptionsProvider> = Arc::new(
+                    LayeredStorageOptionsProvider::new(options.clone(), namespace_provider),
+                );
+                if options.is_empty() {
+                    Arc::new(StorageOptionsAccessor::with_provider(provider))
+                } else {
+                    Arc::new(StorageOptionsAccessor::with_initial_and_provider(
+                        options, provider,
+                    ))
+                }
+            }
+            None => Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
+                LayeredStorageOptionsProvider::new(HashMap::new(), namespace_provider),
+            ))),
         };
-        store_params.storage_options_accessor = Some(Arc::new(accessor));
+        store_params.storage_options_accessor = Some(accessor);
 
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
