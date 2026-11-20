@@ -53,7 +53,7 @@ from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult  # noqa: F401 - public compatibility import
-from lancedb.optimize import OptimizeResult
+from lancedb.optimize import OptimizePlan, OptimizeResult
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -3230,6 +3230,23 @@ class Table(ABC):
         )
         return self.optimize_async(**(compaction_options or {}))
 
+    def explain_optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizePlan:
+        """Preview Enterprise data rewriting without creating a maintenance job.
+
+        Accepts the same flat rewrite settings as ``optimize_async()``. Cleanup
+        and separate index maintenance are unsupported, as are Embedded and
+        historical-version handles. Requires SQL preview support, table
+        Ownership and parent Usage. A later submission plans its own snapshot.
+
+        Examples
+        --------
+        >>> plan = table.explain_optimize(max_source_rows=1_000_000)  # doctest: +SKIP
+        >>> print(plan.source_version, plan.planned_source_rows)  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Optimize previews are only supported by LanceDB Enterprise"
+        )
+
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         """Submit Enterprise Optimize and return a durable job after acceptance.
 
@@ -5989,6 +6006,9 @@ class LanceTable(Table):
             stacklevel=2,
         )
         return self.optimize_async(**(compaction_options or {}))
+
+    def explain_optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizePlan:
+        return LOOP.run(self._table.explain_optimize(**options))
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         return Job(LOOP.run(self._table.optimize_async(**options)))
@@ -9689,6 +9709,16 @@ class AsyncTable:
             stacklevel=2,
         )
         return await self.optimize_async(**(compaction_options or {}))
+
+    async def explain_optimize(
+        self, **options: Unpack[OptimizeOptions]
+    ) -> OptimizePlan:
+        """Preview Enterprise data rewriting without submitting a job.
+
+        See [Table.explain_optimize][lancedb.table.Table.explain_optimize].
+        """
+        tuning, _, _, _ = _split_optimize_options(options, durable=True)
+        return OptimizePlan.from_json(await self._inner.explain_optimize(tuning))
 
     async def optimize_async(
         self, **options: Unpack[OptimizeOptions]

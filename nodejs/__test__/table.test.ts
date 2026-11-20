@@ -6174,3 +6174,77 @@ it("rejects the removed dataOptions wrapper before submission", async () => {
   ).rejects.toThrow("Unsupported Optimize option: dataOptions");
   expect(optimize).not.toHaveBeenCalled();
 });
+
+describe("Optimize preview", () => {
+  it.each([false, true])(
+    "decodes a typed preview with legacy wrapper=%p",
+    async (legacy) => {
+      const explainOptimize = jest.fn().mockResolvedValue(
+        JSON.parse(`{
+      "operation":"rewrite_data", "table":"events", "namespace":["team"], "branch":"main",
+      "source_version":42, "planned_groups":0, "planned_fragments":0, "planned_source_rows":0,
+      "more_work":false,
+      "effective_options":{"target_rows_per_fragment":1000,"io_buffer_size":0,"max_source_rows":null,"batch_size":null}
+    }`),
+      );
+      const table = new LocalTable({ explainOptimize } as never);
+      const plan = await table.explainOptimize(
+        legacy
+          ? {
+              compactionOptions: { maxSourceRows: 500, ioBufferSize: 0 },
+              action: "rewrite_data",
+            }
+          : {
+              maxSourceRows: 500,
+              ioBufferSize: 0,
+              action: "rewrite_data",
+            },
+      );
+      expect(explainOptimize).toHaveBeenCalledTimes(1);
+      expect(explainOptimize).toHaveBeenCalledWith({
+        maxSourceRows: 500,
+        ioBufferSize: 0,
+      });
+      expect(plan).toEqual({
+        operation: "rewrite_data",
+        table: "events",
+        namespace: ["team"],
+        branch: "main",
+        sourceVersion: 42,
+        plannedGroups: 0,
+        plannedFragments: 0,
+        plannedSourceRows: 0,
+        moreWork: false,
+        effectiveOptions: {
+          targetRowsPerFragment: 1000,
+          ioBufferSize: 0,
+          maxSourceRows: null,
+          batchSize: null,
+        },
+      });
+    },
+  );
+  test.each([
+    { cleanupOlderThan: new Date() },
+    { deleteUnverified: true },
+    { action: "cleanup" },
+    { dataOptions: {} },
+    { unknown: 1 },
+  ])(
+    "rejects unsupported preview settings before native calls: %j",
+    async (options) => {
+      const explainOptimize = jest.fn();
+      const table = new LocalTable({ explainOptimize } as never);
+      await expect(table.explainOptimize(options as never)).rejects.toThrow();
+      expect(explainOptimize).not.toHaveBeenCalled();
+    },
+  );
+  it("rejects Embedded previews", async () => {
+    const db = await connect(`memory://optimize-preview-${Date.now()}`);
+    const table = await db.createTable("events", [{ id: 1 }]);
+    await expect(table.explainOptimize()).rejects.toThrow("Enterprise");
+    await expect(table.explainOptimize({ batchSize: 0 })).rejects.toThrow(
+      "safe integer",
+    );
+  });
+});

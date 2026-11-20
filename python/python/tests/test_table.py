@@ -6542,3 +6542,13 @@ async def test_optimize_inherits_embedded_table_config(tmp_path, asynchronous):
         )
         assert stats.compaction.fragments_removed == 2
         assert table.count_rows() == 2
+
+
+@pytest.mark.asyncio
+async def test_explain_optimize_requires_enterprise(mem_db, mem_db_async):
+    table = mem_db.create_table("preview", [{"id": 1}])
+    with pytest.raises(NotImplementedError, match="Enterprise"):
+        table.explain_optimize()
+    table = await mem_db_async.create_table("preview", [{"id": 1}])
+    with pytest.raises(NotImplementedError, match="Enterprise"):
+        await table.explain_optimize()

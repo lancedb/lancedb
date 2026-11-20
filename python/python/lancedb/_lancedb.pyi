@@ -806,6 +806,9 @@ class Table:
     async def update_field_metadata(
         self, updates: list[dict[str, Any]]
     ) -> UpdateFieldMetadataResult: ...
+    async def explain_optimize(
+        self, data_options: Optional[Dict[str, Any]] = None
+    ) -> str: ...
     async def optimize_async(
         self, data_options: Optional[Dict[str, Any]] = None
     ) -> Job: ...

@@ -113,73 +113,11 @@ pub(super) fn receipt(batches: &[RecordBatch]) -> Result<(String, u64)> {
 
 /// Decode the versioned JSON payload without depending on the display text.
 pub(super) fn plan(batches: &[RecordBatch]) -> Result<crate::table::PrewarmDataPlan> {
-    let invalid = || {
-        Error::Runtime {
-        message: "EXPLAIN PREWARM did not return a valid structured preview; a server supporting EXPLAIN (FORMAT JSON) PREWARM is required".into(),
-    }
-    };
-    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
-        return Err(invalid());
-    }
-    let batch = batches
-        .iter()
-        .find(|batch| batch.num_rows() == 1)
-        .ok_or_else(invalid)?;
-    let payload = batch
-        .column_by_name("plan")
-        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(invalid)?;
-    if payload.is_null(0) {
-        return Err(invalid());
-    }
-    #[derive(serde::Deserialize)]
-    struct Preview {
-        format_version: u32,
-        #[serde(flatten)]
-        plan: crate::table::PrewarmDataPlan,
-    }
-    let preview: Preview = serde_json::from_str(payload.value(0)).map_err(|_| invalid())?;
-    if preview.format_version != 1 {
-        return Err(invalid());
-    }
-    Ok(preview.plan)
+    super::preview::decode(batches, "PREWARM")
 }
 
 pub(super) fn map_explain_error(error: Error) -> Error {
-    fn unsupported_format(error: &Error) -> bool {
-        match error {
-            Error::Sql {
-                message, grpc_code, ..
-            } => {
-                let diagnostic = message.to_ascii_lowercase();
-                // Older servers hand this EXPLAIN to DataFusion, which rejects
-                // JSON as a configuration error (sometimes gRPC Internal).
-                (*grpc_code == tonic::Code::Internal as i32
-                    || *grpc_code == tonic::Code::InvalidArgument as i32)
-                    && diagnostic.contains("invalid explain format.")
-                    && diagnostic.contains("got 'json'")
-            }
-            Error::JobFailed { failure, .. } => {
-                failure.source.as_deref().is_some_and(unsupported_format)
-            }
-            _ => false,
-        }
-    }
-    let error = if unsupported_format(&error) {
-        Error::NotSupported {
-            message: error.to_string(),
-        }
-    } else {
-        map_error(error)
-    };
-    match error {
-        Error::NotSupported { message } => Error::NotSupported {
-            message: format!(
-                "Data prewarm previews require a server supporting EXPLAIN (FORMAT JSON) PREWARM; upgrade the server. Preview will not fall back to text or REST. Server diagnostic: {message}"
-            ),
-        },
-        other => other,
-    }
+    super::preview::map_error(error, "PREWARM", map_error)
 }
 
 pub(super) fn map_error(error: Error) -> Error {

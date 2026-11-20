@@ -516,7 +516,8 @@ impl FlightService for TestSqlService {
             .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
         if let Some(command) = &initial {
             self.statements.lock().unwrap().push(command.query.clone());
-            if command.query.starts_with("OPTIMIZE ")
+            if (command.query.starts_with("OPTIMIZE ")
+                || command.query.starts_with("EXPLAIN (FORMAT JSON) OPTIMIZE "))
                 && let Some(error) = &self.optimize_error
             {
                 return Err(error.clone());
@@ -5425,6 +5426,189 @@ async fn remote_optimize_legacy_compact_convenience_preserves_settings_without_p
                 "OPTIMIZE \"clips\" REWRITE DATA WITH (target_rows_per_fragment = 100, io_buffer_size = 0)"
             ]
         );
+        shutdown.send(()).unwrap();
+    }
+}
+
+fn optimize_preview_result() -> RecordBatch {
+    let value = serde_json::json!({
+        "format_version":1, "operation":"rewrite_data", "table":"events", "namespace":["team","inner"],
+        "branch":"o'brien", "source_version":42,
+        "effective_options":{"target_rows_per_fragment":1000,"max_source_rows":500,"io_buffer_size":0,"batch_size":16},
+        "planned_groups":2,"planned_fragments":4,"planned_source_rows":400,"more_work":true,
+    });
+    RecordBatch::try_from_iter([(
+        "plan",
+        Arc::new(StringArray::from(vec![value.to_string()])) as ArrayRef,
+    )])
+    .unwrap()
+}
+
+#[tokio::test]
+async fn remote_optimize_preview_uses_shared_options_without_submitting_jobs() {
+    use crate::table::OptimizeOverrides;
+    use crate::table::optimize::OptimizeOptions;
+    for (adaptive, defer) in [(false, false), (true, false), (true, true)] {
+        let service = TestSqlService {
+            adaptive,
+            defer,
+            result: optimize_preview_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = public_remote_table(
+            RemoteTable::new_with_sql_client(
+                client_with_handler(|request| -> http::Response<String> {
+                    panic!("preview must not call HTTP jobs or REST: {}", request.url());
+                }),
+                "analytics".into(),
+                "events".into(),
+                vec!["team".into(), "inner".into()],
+                "team$inner$events".into(),
+                Default::default(),
+                Some(sql),
+            )
+            .with_branch(Some("o'brien".into())),
+        );
+        let options = OptimizeOptions {
+            max_source_rows: Some(500),
+            io_buffer_size: Some(0),
+            ..Default::default()
+        };
+        let preview = table.explain_optimize(options).await.unwrap();
+        assert_eq!(preview.source_version, 42);
+        assert_eq!(preview.planned_source_rows, 400);
+        assert!(preview.more_work);
+        assert_eq!(preview.effective_options.io_buffer_size, Some(0));
+        let target =
+            lance::dataset::optimize::CompactionOptions::default().target_rows_per_fragment;
+        table
+            .explain_optimize(OptimizeOverrides {
+                target_rows_per_fragment: Some(target),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(*statements.lock().unwrap(), [
+            "EXPLAIN (FORMAT JSON) OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien', max_source_rows = 500, io_buffer_size = 0)".to_owned(),
+            format!("EXPLAIN (FORMAT JSON) OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien', target_rows_per_fragment = {target})"),
+        ]);
+        assert!(!headers.lock().unwrap().is_empty());
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.database == "analytics" && h.namespace_path == "team$inner")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_optimize_preview_rejects_maintenance_and_invalid_options_before_sql() {
+    use crate::table::optimize::OptimizeOptions;
+    use crate::table::{OptimizeAction, OptimizeOverrides};
+    let service = TestSqlService {
+        adaptive: true,
+        result: optimize_preview_result(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = public_remote_table(RemoteTable::new_with_sql_client(
+        client_with_handler(|_| -> http::Response<String> { panic!("no REST") }),
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        Some(sql),
+    ));
+    for action in [
+        OptimizeAction::All,
+        OptimizeAction::Index(Default::default()),
+        OptimizeAction::Prune {
+            older_than: None,
+            delete_unverified: None,
+            error_if_tagged_old_versions: None,
+        },
+    ] {
+        assert!(matches!(
+            table.explain_optimize(action).await,
+            Err(Error::NotSupported { .. })
+        ));
+    }
+    assert!(matches!(
+        table
+            .explain_optimize(OptimizeOptions {
+                max_source_bytes: Some(10),
+                ..Default::default()
+            })
+            .await,
+        Err(Error::NotSupported { .. })
+    ));
+    assert!(matches!(
+        table
+            .explain_optimize(OptimizeOverrides {
+                batch_size: Some(0),
+                ..Default::default()
+            })
+            .await,
+        Err(Error::InvalidInput { .. })
+    ));
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_optimize_preview_preserves_errors_without_retry_or_execution_fallback() {
+    for (code, message, unsupported) in [
+        (
+            tonic::Code::InvalidArgument,
+            "ParserError: Expected OPTIMIZE",
+            true,
+        ),
+        (
+            tonic::Code::Internal,
+            "Invalid EXPLAIN format. Expected text or json, got 'JSON'",
+            true,
+        ),
+        (tonic::Code::PermissionDenied, "permission denied", false),
+        (tonic::Code::NotFound, "table missing", false),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            optimize_error: Some(Status::new(code, message)),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = public_remote_table(RemoteTable::new_with_sql_client(
+            client_with_handler(|_| -> http::Response<String> { panic!("no REST fallback") }),
+            "analytics".into(),
+            "events".into(),
+            vec![],
+            "events".into(),
+            Default::default(),
+            Some(sql),
+        ));
+        let error = table
+            .explain_optimize(crate::table::OptimizeOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(error, Error::NotSupported { .. }),
+            unsupported,
+            "{error}"
+        );
+        assert!(error.to_string().contains(message));
+        if unsupported {
+            assert!(error.to_string().contains("EXPLAIN (FORMAT JSON) OPTIMIZE"));
+        }
+        assert_eq!(statements.lock().unwrap().len(), 1);
         shutdown.send(()).unwrap();
     }
 }

@@ -86,9 +86,9 @@ pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
-pub use optimize::OptimizeResult;
 #[allow(deprecated)]
 pub use optimize::{CompactionMode, CompactionOptions, CompactionOverrides, CompactionResult};
+pub use optimize::{OptimizeOperation, OptimizePlan, OptimizeResolvedOptions, OptimizeResult};
 mod prewarm;
 pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
@@ -945,6 +945,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         .await
     }
 
+    /// Preview Enterprise data rewrites without creating a maintenance job.
+    async fn explain_optimize(
+        &self,
+        _options: optimize::OptimizeOverrides,
+    ) -> Result<OptimizePlan> {
+        Err(Error::NotSupported {
+            message: "Optimize previews are only supported by LanceDB Enterprise".into(),
+        })
+    }
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -2174,6 +2183,33 @@ impl Table {
     ) -> Result<Job<OptimizeResult>> {
         #[allow(deprecated)]
         self.inner.compact_async(options).await
+    }
+
+    /// Preview Enterprise data rewriting using the same options as [`Self::optimize_async`].
+    ///
+    /// Uses `EXPLAIN (FORMAT JSON) OPTIMIZE ... REWRITE DATA`, without creating
+    /// a maintenance job or polling HTTP job APIs. Requires a compatible Enterprise
+    /// server and the SQL preview's Ownership and parent Usage privileges.
+    /// Cleanup, separate index maintenance, Embedded and historical-version handles
+    /// are unsupported. A later submission plans its own source snapshot.
+    ///
+    /// ```no_run
+    /// # async fn preview(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::optimize::OptimizeOptions;
+    /// let plan = table.explain_optimize(OptimizeOptions {
+    ///     max_source_rows: Some(1_000_000), ..Default::default()
+    /// }).await?;
+    /// println!("version={}, rows={}", plan.source_version, plan.planned_source_rows);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn explain_optimize(
+        &self,
+        options: impl Into<OptimizeAction>,
+    ) -> Result<OptimizePlan> {
+        self.inner
+            .explain_optimize(options.into().into_remote_overrides()?)
+            .await
     }
 
     /// Language-binding entry point retaining optional compaction fields.

@@ -248,6 +248,46 @@ pub struct OptimizeResult {
     pub fragments_removed: Option<u64>,
 }
 
+/// Operation covered by an Optimize preview. Cleanup and separate index
+/// maintenance are not included in a data-rewrite plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum OptimizeOperation {
+    /// Rewrite data files while maintaining their index references.
+    RewriteData,
+}
+
+/// Effective data-rewrite settings after Enterprise policy resolution.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct OptimizeResolvedOptions {
+    pub target_rows_per_fragment: u64,
+    pub max_source_rows: Option<u64>,
+    /// Zero disables byte-based I/O backpressure; None uses the worker default.
+    pub io_buffer_size: Option<u64>,
+    pub batch_size: Option<u64>,
+}
+
+/// Non-executing Enterprise Optimize preview for one source snapshot.
+///
+/// Counts describe planned work, not committed results, memory use, or runtime.
+/// A later submission plans its own snapshot and may select different work.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct OptimizePlan {
+    pub operation: OptimizeOperation,
+    pub table: String,
+    pub namespace: Vec<String>,
+    pub branch: String,
+    pub source_version: u64,
+    pub effective_options: OptimizeResolvedOptions,
+    pub planned_groups: u64,
+    pub planned_fragments: u64,
+    pub planned_source_rows: u64,
+    pub more_work: bool,
+}
+
 struct PrecomputedCompactionPlanner {
     plan: Mutex<Option<CompactionPlan>>,
 }

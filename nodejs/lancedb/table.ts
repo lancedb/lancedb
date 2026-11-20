@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { OptimizeResult, decodeOptimizeResult } from "./optimize";
+import {
+  OptimizePlan,
+  OptimizeResult,
+  decodeOptimizePlan,
+  decodeOptimizeResult,
+} from "./optimize";
 import {
   PrewarmDataPlan,
   PrewarmDataResult,
@@ -1320,6 +1325,21 @@ export abstract class Table {
    * out state and the read_consistency_interval, if any, will apply.
    */
   abstract restore(): Promise<void>;
+  /** Preview Enterprise data rewriting using the same flat settings as optimizeAsync().
+   * Requires structured SQL preview support, table Ownership and parent Usage.
+   * Creates no maintenance job and does not poll job APIs. Cleanup, separate index
+   * maintenance, Embedded and historical-version handles are unsupported.
+   * A later submission plans its own snapshot.
+   * @example
+   * const plan = await table.explainOptimize({ maxSourceRows: 1_000_000 });
+   * console.log(plan.sourceVersion, plan.plannedSourceRows);
+   */
+  async explainOptimize(_options?: OptimizeOptions): Promise<OptimizePlan> {
+    throw new Error(
+      "Optimize previews are only supported by LanceDB Enterprise",
+    );
+  }
+
   /**
    * Submit Enterprise Optimize and return its durable job after acceptance.
    *
@@ -2065,6 +2085,14 @@ export class LocalTable extends Table {
 
   currentBranch(): string | null {
     return this.inner.currentBranch() ?? null;
+  }
+
+  async explainOptimize(options?: OptimizeOptions): Promise<OptimizePlan> {
+    options = normalizeOptimizeOptions(options);
+    validateOptimizeOptions(options, true);
+    return decodeOptimizePlan(
+      await this.inner.explainOptimize(optimizeRewriteSettings(options)),
+    );
   }
 
   async optimizeAsync(options?: OptimizeOptions): Promise<Job<OptimizeResult>> {

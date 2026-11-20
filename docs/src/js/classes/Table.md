@@ -639,6 +639,35 @@ await table.enableRTE({
 
 ***
 
+### explainOptimize()
+
+```ts
+explainOptimize(_options?): Promise<OptimizePlan>
+```
+
+Preview Enterprise data rewriting using the same flat settings as optimizeAsync().
+Requires structured SQL preview support, table Ownership and parent Usage.
+Creates no maintenance job and does not poll job APIs. Cleanup, separate index
+maintenance, Embedded and historical-version handles are unsupported.
+A later submission plans its own snapshot.
+
+#### Parameters
+
+* **\_options?**: [`OptimizeOptions`](../interfaces/OptimizeOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`OptimizePlan`](../interfaces/OptimizePlan.md)&gt;
+
+#### Example
+
+```ts
+const plan = await table.explainOptimize({ maxSourceRows: 1_000_000 });
+console.log(plan.sourceVersion, plan.plannedSourceRows);
+```
+
+***
+
 ### explainPrewarmData()
 
 ```ts

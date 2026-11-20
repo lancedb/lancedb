@@ -1002,6 +1002,23 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn explain_optimize(
+        &self,
+        options: Option<OptimizeOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let options = options
+            .map(OptimizeOptions::into_overrides)
+            .transpose()?
+            .unwrap_or_default();
+        let plan = self
+            .inner_ref()?
+            .explain_optimize(options)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn optimize_async(
         &self,
         options: Option<OptimizeOptions>,

@@ -8810,3 +8810,177 @@ def test_legacy_optimize_rejects_ambiguous_or_unknown_settings(options):
 
     with pytest.warns(DeprecationWarning), pytest.raises(TypeError):
         _split_optimize_options(options)
+
+
+def _optimize_preview_payload():
+    return {
+        "format_version": 1,
+        "operation": "rewrite_data",
+        "table": "test",
+        "namespace": [],
+        "branch": "main",
+        "source_version": 42,
+        "effective_options": {
+            "target_rows_per_fragment": 1000,
+            "max_source_rows": None,
+            "io_buffer_size": 0,
+            "batch_size": None,
+        },
+        "planned_groups": 0,
+        "planned_fragments": 0,
+        "planned_source_rows": 0,
+        "more_work": False,
+        "future_field": "ignored",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        ({}, None),
+        ({"compaction_options": {"io_buffer_size": 0}}, b"io_buffer_size = 0"),
+        (
+            {"target_rows_per_fragment": 1_048_576},
+            b"target_rows_per_fragment = 1048576",
+        ),
+        (
+            {"max_source_rows": 500, "io_buffer_size": 0, "batch_size": 16},
+            b"io_buffer_size = 0",
+        ),
+    ],
+)
+async def test_explain_optimize_forwards_flat_options_without_creating_jobs(
+    asynchronous, options, expected
+):
+    from lancedb.optimize import OptimizePlan, OptimizeResolvedOptions
+
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table(
+                    {
+                        "plan_type": ["logical_plan"],
+                        "plan": [json.dumps(_optimize_preview_payload())],
+                    }
+                )
+            )
+
+    server = Server()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            plan = await table.explain_optimize(**options)
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            plan = table.explain_optimize(**options)
+    assert isinstance(plan, OptimizePlan)
+    assert isinstance(plan.effective_options, OptimizeResolvedOptions)
+    assert plan.operation == "rewrite_data"
+    assert plan.source_version == 42
+    assert plan.planned_source_rows == 0
+    assert plan.effective_options.io_buffer_size == 0
+    assert plan.effective_options.batch_size is None
+    assert not plan.more_work
+    assert len(server.tickets) == 1
+    assert b"EXPLAIN (FORMAT JSON) OPTIMIZE" in server.tickets[0]
+    if expected:
+        assert expected in server.tickets[0]
+    else:
+        assert b"WITH (" not in server.tickets[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "change", ["version", "operation", "missing", "negative", "text", "duplicate"]
+)
+async def test_explain_optimize_rejects_malformed_previews_without_retry(
+    asynchronous, change
+):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            plan = _optimize_preview_payload()
+            if change == "version":
+                plan["format_version"] = 99
+            elif change == "operation":
+                plan["operation"] = "cleanup"
+            elif change == "missing":
+                del plan["source_version"]
+            elif change == "negative":
+                plan["planned_groups"] = -1
+            value = "display text" if change == "text" else json.dumps(plan)
+            return flight.RecordBatchStream(
+                pa.table({"plan": [value] * (2 if change == "duplicate" else 1)})
+            )
+
+    server = Server()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            with pytest.raises(Exception, match="structured preview"):
+                await table.explain_optimize()
+        else:
+            table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+            with pytest.raises(Exception, match="structured preview"):
+                table.explain_optimize()
+    assert server.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"cleanup_older_than": timedelta(days=1)},
+        {"delete_unverified": True},
+        {"action": "cleanup"},
+        {"data_options": {}},
+        {"batch_size": 0},
+        {"max_source_bytes": 1024},
+    ],
+)
+async def test_explain_optimize_rejects_unsupported_options_before_requests(
+    asynchronous, options
+):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            raise AssertionError("invalid previews must not send SQL")
+
+    server = Server()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            with pytest.raises((ValueError, TypeError, NotImplementedError)):
+                await table.explain_optimize(**options)
+        else:
+            table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
+            with pytest.raises((ValueError, TypeError, NotImplementedError)):
+                table.explain_optimize(**options)
+    assert server.calls == 0

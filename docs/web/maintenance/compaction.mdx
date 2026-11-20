@@ -238,6 +238,11 @@ EXPLAIN OPTIMIZE events REWRITE DATA WITH (
   max_source_rows = 1000000
 );
 
+EXPLAIN (FORMAT JSON) OPTIMIZE events REWRITE DATA WITH (
+  target_rows_per_fragment = 100000,
+  max_source_rows = 1000000
+);
+
 DESCRIBE JOB '<job_id>' FORMAT JSON;
 ```
 
@@ -245,6 +250,48 @@ The preview uses the execution planner to report the source version, resolved
 options, planned groups/fragments/rows, and whether more eligible work remains.
 It creates no job. Submission plans against its own snapshot, so concurrent
 writes can change the work after a preview. `EXPLAIN ANALYZE` is unsupported.
+The explicit JSON form returns a versioned response with `operation: "rewrite_data"`;
+plain EXPLAIN retains its existing output. PREWARM uses the same explicit format syntax.
+
+The SDK helpers return a typed `OptimizePlan` using the same flat rewrite settings
+as durable submission:
+
+<Tabs>
+<Tab title="Python">
+```python
+plan = table.explain_optimize(max_source_rows=1_000_000, io_buffer_size=0)
+print(plan.source_version, plan.planned_source_rows, plan.more_work)
+```
+Async Python uses `await table.explain_optimize(...)` with the same settings.
+</Tab>
+<Tab title="TypeScript">
+```typescript
+const plan = await table.explainOptimize({ maxSourceRows: 1_000_000, ioBufferSize: 0 });
+console.log(plan.sourceVersion, plan.plannedSourceRows, plan.moreWork);
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use lancedb::table::optimize::OptimizeOptions;
+
+let plan = table.explain_optimize(OptimizeOptions {
+    max_source_rows: Some(1_000_000),
+    io_buffer_size: Some(0),
+    ..Default::default()
+}).await?;
+println!("{} {}", plan.source_version, plan.planned_source_rows);
+```
+</Tab>
+</Tabs>
+
+`effective_options` (`effectiveOptions` in TypeScript) contains the resolved
+fragment target, source-row budget, I/O buffer size, and batch size. Counts describe
+planned work, not committed results, runtime, or a memory estimate. A null optional
+setting retains the worker default; an explicit zero I/O buffer remains zero.
+Preview covers only data rewriting. Cleanup, separate index maintenance,
+Embedded tables, and historical-version handles are unsupported. The helper
+requires a server supporting the explicit JSON syntax and fails without falling
+back to text parsing, REST, or execution.
 
 JSON job diagnostics include reported maintenance progress and the completed
 operation result alongside the existing time profile. While a job runs, its

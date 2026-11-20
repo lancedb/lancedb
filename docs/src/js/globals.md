@@ -128,6 +128,8 @@
 - [OAuthConfig](interfaces/OAuthConfig.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
+- [OptimizePlan](interfaces/OptimizePlan.md)
+- [OptimizeResolvedOptions](interfaces/OptimizeResolvedOptions.md)
 - [OptimizeResult](interfaces/OptimizeResult.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
 - [PrewarmDataOptions](interfaces/PrewarmDataOptions.md)
