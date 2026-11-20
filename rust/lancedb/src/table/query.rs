@@ -180,7 +180,8 @@ pub async fn create_plan(
     if let AnyQuery::Query(request) = &query
         && request.has_take()
     {
-        return crate::query::create_take_plan(table, request, options, false).await;
+        return crate::query::create_take_plan(table, request, options, request.preserve_order)
+            .await;
     }
 
     let query = match query {

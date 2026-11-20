@@ -2660,7 +2660,11 @@ class Table(ABC):
 
     @abstractmethod
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
         """
         Take a list of offsets from the table.
@@ -2672,9 +2676,13 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.
-        Repeated offsets produce repeated rows, which makes this method suitable for
-        sampling with replacement.
+        By default, no guarantees are made regarding the order in which results
+        are returned. Repeated offsets produce repeated rows, which makes this
+        method suitable for sampling with replacement. Set ``preserve_order=True``
+        to return found rows in input order, including repeated offsets. Missing
+        non-negative offsets are omitted. Negative offsets are rejected and are
+        not Python-style relative indices. ``preserve_order`` cannot be combined
+        with an explicit ``order_by``.
 
         Parameters
         ----------
@@ -2682,6 +2690,10 @@ class Table(ABC):
             The offsets to take.
         with_row_id: bool, default False
             If True, include the "_rowid" column in the results.
+        preserve_order: bool, default False
+            If True, return found rows in input order. Rust take queries apply
+            limit/offset after restoration; Python take builders and Query
+            conversion do not expose pagination.
 
         Returns
         -------
@@ -4533,9 +4545,15 @@ class LanceTable(Table):
         return LOOP.run(self._table.version())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder
@@ -8449,10 +8467,18 @@ class AsyncTable:
         if query.take_offsets is not None or query.take_row_ids is not None:
             if query.take_offsets is not None and query.take_row_ids is not None:
                 raise ValueError("Only one of take_offsets and take_row_ids may be set")
+            if query.preserve_order is True and query.take_offsets is None:
+                raise ValueError("preserve_order only supports take_offsets")
+            if query.preserve_order is True and query.order_by:
+                raise ValueError(
+                    "preserve_order cannot be combined with an explicit order_by"
+                )
             take_query = (
                 self.take_row_ids(query.take_row_ids)
                 if query.take_row_ids is not None
-                else self.take_offsets(query.take_offsets)
+                else self.take_offsets(
+                    query.take_offsets, preserve_order=query.preserve_order is True
+                )
             )
             if query.columns is not None:
                 columns = query.columns
@@ -9662,7 +9688,11 @@ class AsyncTable:
         await self._inner.restore(version)
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> AsyncTakeQuery:
         """
         Take a list of offsets from the table.
@@ -9674,8 +9704,12 @@ class AsyncTable:
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.
-        Repeated offsets produce repeated rows.
+        By default, no guarantees are made regarding the order in which results
+        are returned. Repeated offsets produce repeated rows. Set
+        ``preserve_order=True`` to return found rows in input order, including
+        repeated offsets. Missing non-negative offsets are omitted. Negative
+        offsets are rejected and are not Python-style relative indices.
+        ``preserve_order`` cannot be combined with an explicit ``order_by``.
 
         Parameters
         ----------
@@ -9683,6 +9717,10 @@ class AsyncTable:
             The offsets to take.
         with_row_id: bool, default False
             If True, include the "_rowid" column in the results.
+        preserve_order: bool, default False
+            If True, return found rows in input order. Rust take queries apply
+            limit/offset after restoration; Python take builders and Query
+            conversion do not expose pagination.
 
         Returns
         -------
@@ -9691,6 +9729,8 @@ class AsyncTable:
             offsets.
         """
         query = AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        if preserve_order:
+            query._inner.preserve_order()
         if with_row_id:
             query.with_row_id()
         return query
