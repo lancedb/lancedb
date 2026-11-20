@@ -1958,6 +1958,18 @@ def test_fetch_blob_apis_reject_missing_fragment_row_addr():
     _assert_fetch_apis_reject_missing_row_ids(table, [1 << 32, live])
 
 
+def test_fetch_blobs_missing_row_ids_suggest_take_offsets():
+    table = _blob_table(
+        "position_hint",
+        [{"id": i, "image": b"x"} for i in range(3)],
+    )
+    with pytest.raises(ValueError, match="take_offsets") as exc:
+        table.fetch_blobs("image", [10])
+    message = str(exc.value)
+    assert "first missing row ids: [10]" in message
+    assert "with_row_id=True" in message
+
+
 def test_fetch_blob_apis_reject_deleted_row_ids():
     table = _blob_table(
         "deleted_rows",
@@ -2216,8 +2228,11 @@ def test_fetch_blobs_from_query_result_without_row_id_raises():
     table = _blob_table("no_rowid", [{"id": 1, "image": b"x"}])
     hits = table.search().select(["id"]).to_arrow()
     assert "_rowid" not in hits.column_names
-    with pytest.raises(ValueError, match="_rowid"):
+    with pytest.raises(ValueError, match="take_offsets") as exc:
         table.fetch_blobs("image", hits)
+    message = str(exc.value)
+    assert "with_row_id=True" in message
+    assert "list of row ids" in message
 
 
 _HYBRID_BLOB_SCHEMA = pa.schema(

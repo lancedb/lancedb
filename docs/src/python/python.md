@@ -903,6 +903,14 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Row positions are not row IDs. To read by position, call
+`take_offsets(offsets, with_row_id=True)` first and pass the resulting `_rowid`
+values; `fetch_blobs` remains row-ID based. Passing a query result table instead
+of a list keeps the snapshot that produced it on LanceDB Enterprise, so the
+fetched bytes or files stay pinned if the table changes. A plain list is read
+from the table's current snapshot; keep the source unchanged between selection
+and fetching.
+
 Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
 default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
 `open_blob_files` for sparse reads, or choose another window size in bytes.

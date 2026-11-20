@@ -1156,7 +1156,9 @@ impl<S: HttpSend> RemoteTable<S> {
             return Err(Error::InvalidInput {
                 message: format!(
                     "blob read for column '{column}' requested {} row ids but only {found} exist \
-                     in the table; pass row ids collected from this table",
+                     in the table; pass row ids collected from this table. If these were row \
+                     positions, call take_offsets(offsets, with_row_id=True) first and pass the \
+                     resulting row ids",
                     unique_row_ids.len()
                 ),
             });

@@ -5918,6 +5918,11 @@ def blob_remote_table(
             request.send_header(
                 "x-lancedb-version", str(BLOB_DESCRIBE_RESPONSE["version"])
             )
+            if verify_identity and request.headers.get("x-lancedb-query-snapshot"):
+                request.send_header(
+                    "x-lancedb-query-snapshot",
+                    request.headers["x-lancedb-query-snapshot"],
+                )
             request.end_headers()
             request.wfile.write(chunk)
         elif request.path == "/v1/table/test/query/":
@@ -6543,6 +6548,56 @@ def test_remote_blob_fetch_accepts_query_table():
         blobs = table.fetch_blobs("image", hits)
 
     assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+
+@pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])
+def test_remote_blob_fetch_from_query_result_keeps_query_snapshot(api):
+    requests = []
+    state = {"version": 1}
+    with blob_remote_table(requests=requests, state=state) as table:
+        hits = table.search().select(["id", "image"]).limit(3).to_arrow()
+        assert hits.schema.metadata[b"lancedb:query_version"] == b"1"
+        table.add([{"id": 4, "image": b"new-version"}])
+        assert table.version == 2
+
+        if api == "fetch_blobs":
+            assert table.fetch_blobs("image", hits).to_pylist() == [
+                b"alpha",
+                None,
+                b"gamma",
+            ]
+            fetches = [body for path, body in requests if path == "fetch_blobs"]
+            assert fetches
+            assert all(body["version"] == 1 for body in fetches)
+        else:
+            handles = table.fetch_blob_files("image", hits)
+            try:
+                assert [
+                    handle.read() if handle is not None else None for handle in handles
+                ] == [b"alpha", None, b"gamma"]
+            finally:
+                for handle in handles:
+                    if handle is not None:
+                        handle.close()
+            descriptor_queries = [
+                body
+                for path, body in requests
+                if path == "query" and body.get("filter", "").startswith("_rowid IN")
+            ]
+            assert descriptor_queries
+            assert all(body["version"] == 1 for body in descriptor_queries)
+
+
+@pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])
+def test_remote_blob_fetch_rejects_incomplete_query_snapshot(api):
+    requests = []
+    hits = pa.table(
+        {"_rowid": pa.array([10], type=pa.uint64())}
+    ).replace_schema_metadata({b"lancedb:query_version": b"1"})
+    with blob_remote_table(requests=requests) as table:
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-snapshot"):
+            getattr(table, api)("image", hits)
+    assert not any(path == "fetch_blobs" for path, _ in requests)
 
 
 def test_remote_blob_query_stashes_row_ids_for_fetch():
