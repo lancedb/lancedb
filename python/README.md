@@ -100,6 +100,34 @@ results = table.search([0.1, 0.3]).limit(20).to_list()
 print(results)
 ```
 
+### Have a Lance dataset? Open it with lancedb
+
+Any Lance dataset is a LanceDB table. If your data is at `/data/frames.lance` (or `s3://bucket/frames.lance`):
+
+```python
+import lancedb
+
+db = lancedb.connect("/data")  # the parent folder; pass storage_options=... for object storage
+tbl = db.open_table("frames")  # opens frames.lance; version=N pins a version
+```
+
+Coming from `pylance` (`import lance`)? Common calls map like this:
+
+| pylance | lancedb |
+|---|---|
+| `lance.dataset(uri)` | `lancedb.connect(parent).open_table(name)` |
+| `lance.write_dataset(data, uri, mode="append")` | `db.create_table(name, data)` / `tbl.add(data)` |
+| `ds.to_table(columns=, filter=, limit=)` | `tbl.search().where(filter).select(columns).limit(n).to_arrow()` |
+| `ds.to_batches(batch_size=)` | `tbl.search().where(filter).select(columns).to_batches(batch_size)` |
+| `ds.count_rows(filter=)` | `tbl.count_rows(filter)` |
+| `ds.take(indices)` | `tbl.take_offsets(indices).to_arrow()` |
+| `ds.merge_insert(on)...execute(data)` | `tbl.merge_insert(on).when_matched_update_all().when_not_matched_insert_all().execute(data)` |
+| `ds.versions()`, `ds.checkout_version(v)`, `ds.restore()` | `tbl.list_versions()`, `tbl.checkout(v)`, `tbl.restore()` |
+| `ds.tags.create(name, v)` | `tbl.tags.create(name, v)` |
+| `ds.optimize.compact_files(...)`, `ds.cleanup_old_versions(...)` | `tbl.optimize(compaction_options=..., cleanup_older_than=...)` |
+
+`pylance` remains the low-level format library for people building query engines and connectors.
+
 ### Development
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute to LanceDB.

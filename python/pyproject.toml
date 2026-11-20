@@ -12,12 +12,19 @@ dependencies = [
     "tqdm>=4.27.0",
     "lance-namespace>=0.13.0"
 ]
-description = "lancedb"
+description = "Multimodal AI lakehouse on the Lance format: search, data curation, training data and feature engineering"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = [
+    "lance",
+    "lance-format",
+    "vector-search",
+    "full-text-search",
+    "pytorch",
+    "dataset",
+    "versioning",
     "data-format",
     "data-science",
     "machine-learning",
