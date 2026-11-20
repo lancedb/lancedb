@@ -3731,13 +3731,16 @@ def test_remote_python_only_messages():
                 f"{method}() is not supported in LanceDB Enterprise. "
                 f"Use table.search().{method}() instead."
             )
-        for method in ["compact_files", "cleanup_old_versions"]:
+        for method, expected in {
+            "compact_files": "compact_files() is a no-op in LanceDB Enterprise.",
+            "cleanup_old_versions": (
+                "cleanup_old_versions() is a no-op in LanceDB Enterprise. "
+                "Use cleanup_async() to submit durable cleanup explicitly."
+            ),
+        }.items():
             with pytest.warns(UserWarning) as warning:
-                getattr(table, method)()
-            assert (
-                str(warning[0].message)
-                == f"{method}() is a no-op in LanceDB Enterprise."
-            )
+                assert getattr(table, method)() is None
+            assert str(warning[0].message) == expected
 
 
 def test_remote_embedding_config_does_not_warn_or_drop_metadata(caplog):
