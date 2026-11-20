@@ -3253,9 +3253,14 @@ impl Tags {
         })
     }
 
-    pub fn create(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+    #[pyo3(signature = (tag, version=None))]
+    pub fn create(self_: PyRef<Self>, tag: String, version: Option<u64>) -> PyResult<Bound<PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
+            let version = match version {
+                Some(version) => version,
+                None => inner.version().await.infer_error()?,
+            };
             let mut tags = inner.tags().await.infer_error()?;
             tags.create(tag.as_str(), version).await.infer_error()?;
             Ok(())
@@ -3312,16 +3317,20 @@ impl Branches {
         })
     }
 
-    #[pyo3(signature = (name, from_ref=None, from_version=None))]
+    #[pyo3(signature = (name, from_ref=None, from_version=None, *, from_tag=None))]
     pub fn create(
         self_: PyRef<'_, Self>,
         name: String,
         from_ref: Option<String>,
         from_version: Option<u64>,
+        from_tag: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let from = Ref::Version(from_ref, from_version);
+            let from = match from_tag {
+                Some(tag) => Ref::Tag(tag),
+                None => Ref::Version(from_ref, from_version),
+            };
             let table = inner.create_branch(&name, from).await.infer_error()?;
             Ok(Table::new(table))
         })
