@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crate::runtime::{block_on, future_into_py, spawn_background};
+use crate::runtime::{block_on, block_on_interruptible, future_into_py, spawn_background};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -1617,6 +1617,14 @@ impl Table {
             let schema = inner.schema().await.infer_error()?;
             Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
         })
+    }
+
+    pub fn schema_sync(self_: PyRef<'_, Self>) -> PyResult<Py<PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let schema = self_.py().detach(move || {
+            block_on_interruptible(async move { inner.schema().await.infer_error() })
+        })?;
+        Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
     }
 
     #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false, retries=None))]

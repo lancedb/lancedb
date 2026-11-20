@@ -4029,6 +4029,26 @@ class AsyncQueryBase(object):
         self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
         self._inner.with_row_id()
 
+    def _maybe_add_blob_row_id_sync(self) -> None:
+        if self._table is None:
+            self._blob_auto_row_id = False
+            self._blob_paths = ()
+            return
+
+        req = self._inner.to_query_request()
+        schema = self._table._schema_sync()
+        projection = _query_request_projection(req)
+        self._blob_auto_row_id = blob_auto_row_id_for_scan(
+            schema,
+            projection,
+            with_row_id=self._with_row_id,
+        )
+        if not self._blob_auto_row_id:
+            self._blob_paths = ()
+            return
+        self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
+        self._inner.with_row_id()
+
     async def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
         if blob_mode != "bytes" or self._table is None:
             return False
@@ -4214,6 +4234,18 @@ class AsyncQueryBase(object):
         if not self._blob_row_id_prepared:
             await self._maybe_add_blob_row_id()
         reader = await self._inner.execute_to_reader(None, timeout)
+        return pa.Table.from_batches(reader, schema=reader.schema)
+
+    def _execute_eager_sync(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute with the synchronous native eager collector."""
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        if not self._blob_row_id_prepared:
+            self._maybe_add_blob_row_id_sync()
+        reader = self._inner.execute_to_reader_sync(None, timeout)
         return pa.Table.from_batches(reader, schema=reader.schema)
 
     async def _execute_batches(
@@ -5114,6 +5146,22 @@ class AsyncFTSQuery(AsyncStandardQuery):
             results = _merge_query_snapshot(results, source)
         return results
 
+    def _execute_eager_sync(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        try:
+            results = super()._execute_eager_sync(timeout=timeout)
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
+        if self._reranker:
+            source = results
+            results = self._reranker.rerank_fts(self.get_query(), results)
+            results = _merge_query_snapshot(results, source)
+        return results
+
     async def _execute_batches(
         self,
         *,
@@ -5470,6 +5518,18 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         timeout: Optional[timedelta] = None,
     ) -> pa.Table:
         results = await super()._execute_eager(timeout=timeout)
+        if self._reranker:
+            source = results
+            results = self._reranker.rerank_vector(self._query_string, results)
+            results = _merge_query_snapshot(results, source)
+        return results
+
+    def _execute_eager_sync(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        results = super()._execute_eager_sync(timeout=timeout)
         if self._reranker:
             source = results
             results = self._reranker.rerank_vector(self._query_string, results)

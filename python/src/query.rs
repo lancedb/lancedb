@@ -33,6 +33,7 @@ use lancedb::query::{HasQuery, QueryBase};
 use lancedb::table::AnyQuery;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
+use pyo3::Py;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
@@ -63,6 +64,20 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
     let mut options = QueryExecutionOptions::default();
     options.analyze_plan_distributed_metrics = analyze_plan_distributed_metrics;
     Ok(options)
+}
+
+fn execute_to_reader_sync<Q>(
+    py: Python<'_>,
+    query: Q,
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> PyResult<Py<PyAny>>
+where
+    Q: ExecutableQuery + Send + 'static,
+{
+    let reader =
+        py.detach(move || crate::arrow::execute_to_reader_sync(query, max_batch_length, timeout))?;
+    Python::attach(|py| reader.into_pyarrow(py).map(|obj| obj.unbind()))
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
@@ -710,6 +725,15 @@ impl Query {
         crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+    }
+
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
@@ -949,6 +973,23 @@ impl FTSQuery {
         timeout: Option<Duration>,
     ) -> PyResult<Bound<'_, PyAny>> {
         crate::arrow::execute_to_reader(
+            self_.py(),
+            self_
+                .inner
+                .clone()
+                .full_text_search(self_.fts_query.clone()),
+            max_batch_length,
+            timeout,
+        )
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(
             self_.py(),
             self_
                 .inner
@@ -1210,6 +1251,15 @@ impl VectorQuery {
         timeout: Option<Duration>,
     ) -> PyResult<Bound<'_, PyAny>> {
         crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {

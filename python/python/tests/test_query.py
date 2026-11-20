@@ -2672,14 +2672,14 @@ def test_sync_query_prepares_schema_once_per_execution(tmp_path, monkeypatch):
     )
 
     calls = 0
-    original = AsyncTable.schema
+    original = AsyncTable._schema_sync
 
-    async def counted(self):
+    def counted(self):
         nonlocal calls
         calls += 1
-        return await original(self)
+        return original(self)
 
-    monkeypatch.setattr(AsyncTable, "schema", counted)
+    monkeypatch.setattr(AsyncTable, "_schema_sync", counted)
 
     table.search().where("id = 1").select(["id"]).to_arrow()
     assert calls <= 1
