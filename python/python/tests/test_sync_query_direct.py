@@ -84,11 +84,15 @@ def test_direct_sync_query_from_single_worker_progress_callback(tmp_path):
 import os
 import sys
 
-cpus = sorted(os.sched_getaffinity(0))
-if not cpus:
+try:
+    cpus = sorted(os.sched_getaffinity(0))
+    if not cpus:
+        print("SKIP")
+        sys.exit(0)
+    os.sched_setaffinity(0, {cpus[0]})
+except OSError:
     print("SKIP")
     sys.exit(0)
-os.sched_setaffinity(0, {cpus[0]})
 
 import lancedb
 
