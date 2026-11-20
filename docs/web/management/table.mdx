@@ -1770,6 +1770,9 @@ Deleting a tag only removes the label, not the version it points to. After
 deletion, the underlying table version becomes eligible for cleanup again.
 </Note>
 
+{/*
+Draft until the checkpoint-delta API is released.
+
 ### Compute changes since a checkpoint {#versioning-checkpoint-delta}
 
 Use `table.delta(from_version, to_version=None)` to stream the rows inserted,
@@ -1783,9 +1786,10 @@ with stable row IDs enabled, as shown below. If a table does not have them, the
 row-level readers explain how to recreate it with the option. `list_transactions()`
 reports the transactions in the range and works without stable row IDs.
 
-This API is available for LanceDB Embedded. It accepts versions and tags on the
-current branch only, and rejects tags that belong to another branch. LanceDB
-Enterprise tables do not support row-level deltas.
+This preview supports Python and Rust for LanceDB Embedded. TypeScript support
+is a follow-up. The API accepts versions and tags on the current branch only,
+and rejects tags that belong to another branch. LanceDB Enterprise tables do
+not support row-level deltas.
 
 A `Restore` can reintroduce rows with older row-version metadata that the delta
 readers do not report as changed. For that reason, the row-level readers reject
@@ -1804,6 +1808,7 @@ range. Branch-vs-main summaries remain a separate `branches.diff()` API.
     {RsVersioningCheckpointDelta}
     </CodeBlock>
 </CodeGroup>
+*/}
 
 {/*
 Draft until branching reaches early access.
