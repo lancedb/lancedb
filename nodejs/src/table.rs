@@ -1002,6 +1002,33 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn explain_cleanup(
+        &self,
+        min_age_seconds: Option<f64>,
+    ) -> napi::Result<serde_json::Value> {
+        let plan = self
+            .inner_ref()?
+            .explain_cleanup(parse_cleanup_options(min_age_seconds)?)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn cleanup_async(
+        &self,
+        min_age_seconds: Option<f64>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = parse_cleanup_options(min_age_seconds)?;
+        let job = self
+            .inner_ref()?
+            .cleanup_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn compact_async(
         &self,
         options: Option<CompactionOptions>,
@@ -2556,4 +2583,20 @@ impl Branches {
             napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
         })
     }
+}
+
+fn parse_cleanup_options(
+    min_age_seconds: Option<f64>,
+) -> napi::Result<lancedb::table::CleanupOptions> {
+    let mut options = lancedb::table::CleanupOptions::new();
+    if let Some(age) = min_age_seconds {
+        if !age.is_finite() || age.fract() != 0.0 || !(0.0..=9_007_199_254_740_991.0).contains(&age)
+        {
+            return Err(napi::Error::from_reason(
+                "minAgeSeconds must be a nonnegative safe integer",
+            ));
+        }
+        options.min_age_seconds = Some(age as u64);
+    }
+    Ok(options)
 }

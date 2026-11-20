@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 pub mod blobs;
+mod cleanup;
 pub mod insert;
 mod ipc_stream;
 mod optimize;
@@ -4175,6 +4176,67 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
+    async fn explain_cleanup(
+        &self,
+        options: crate::table::CleanupOptions,
+    ) -> Result<crate::table::CleanupPlan> {
+        self.check_mutable().await?;
+        let statement = format!(
+            "EXPLAIN (FORMAT JSON) {}",
+            cleanup::statement(&self.name, self.branch.as_deref(), &options)?
+        );
+        let client = self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "cleanup previews require a Flight SQL endpoint with EXPLAIN (FORMAT JSON) VACUUM support".into(),
+        })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(cleanup::map_error)?;
+        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
+            batches.push(batch);
+        }
+        cleanup::plan(&batches)
+    }
+
+    async fn cleanup_async(
+        &self,
+        options: crate::table::CleanupOptions,
+    ) -> Result<Job<crate::table::CleanupResult>> {
+        self.check_mutable().await?;
+        let statement = cleanup::statement(&self.name, self.branch.as_deref(), &options)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "manual cleanup requires a Flight SQL endpoint and SQL VACUUM support"
+                    .into(),
+            })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(cleanup::map_error)?;
+        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
+            batches.push(batch);
+        }
+        let job_id = cleanup::receipt(&batches)?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn compact_async(
         &self,
         options: crate::table::optimize::CompactionOverrides,

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import {
+  CleanupOptions,
+  CleanupPlan,
+  CleanupResult,
+  decodeCleanupPlan,
+  decodeCleanupResult,
+  validateCleanupOptions,
+} from "./cleanup";
 import { CompactionResult, decodeCompactionResult } from "./compaction";
 import {
   PrewarmDataPlan,
@@ -1342,6 +1350,28 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
+   * Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+   * Requires table Ownership and parent Usage. Retention inherits from the table
+   * then deployment when omitted. Local/historical handles are unsupported.
+   * Before submission, disable/drain automatic cleanup and prevent other cleanup,
+   * tag/branch publication and restore until completion, including direct clients.
+   * Coordination is not enforced by the server. Cancellation cannot undo deletion
+   * or prove storage I/O stopped. Preview is available without deletion.
+   * Wait timeout leaves work running; save the ID and reopen with db.openJob().
+   * @example
+   * const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+   * const result = await job.wait({ timeoutMs: 600000 });
+   */
+  async cleanupAsync(_options?: CleanupOptions): Promise<Job<CleanupResult>> {
+    throw new Error("durable cleanup jobs are only supported on remote tables");
+  }
+
+  /** Preview version deletion without creating a job. Execution re-evaluates current state. */
+  async explainCleanup(_options?: CleanupOptions): Promise<CleanupPlan> {
+    throw new Error("cleanup previews require LanceDB Enterprise");
+  }
+
+  /**
    * Submit remote compaction and return its durable job after acceptance.
    *
    * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
@@ -2088,6 +2118,21 @@ export class LocalTable extends Table {
     return new Job(
       await this.inner.compactAsync(options),
       decodeCompactionResult,
+    );
+  }
+
+  async cleanupAsync(options?: CleanupOptions): Promise<Job<CleanupResult>> {
+    validateCleanupOptions(options);
+    return new Job(
+      await this.inner.cleanupAsync(options?.minAgeSeconds),
+      decodeCleanupResult,
+    );
+  }
+
+  async explainCleanup(options?: CleanupOptions): Promise<CleanupPlan> {
+    validateCleanupOptions(options);
+    return decodeCleanupPlan(
+      await this.inner.explainCleanup(options?.minAgeSeconds),
     );
   }
 
