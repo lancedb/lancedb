@@ -1093,8 +1093,8 @@ class Permutation:
         "torch_dict", "torch", and a single-column "torch_col" produce
         numeric and fixed-size-list tensors without copying where the Arrow
         layout allows. Multi-column "torch_col" and "torch_row" stack columns
-        and therefore copy. Conversion to numpy and/or pandas will typically be
-        zero-copy for numeric types. Conversion of strings, lists, and structs
+        and therefore copy. Conversion to numpy and/or pandas can copy even
+        homogeneous numeric columns. Conversion of strings, lists, and structs
         will require creating Python objects and this is not zero-copy.
 
         For custom formatting, use
