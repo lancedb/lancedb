@@ -20,16 +20,18 @@ class BackgroundEventLoop:
     """
 
     def __init__(self):
-        self.loop = None
-        self.thread = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.thread: threading.Thread | None = None
         self._start_lock = threading.Lock()
 
-    def _start(self):
-        if self.thread is not None:
-            return
+    def _start(self) -> asyncio.AbstractEventLoop:
+        loop = self.loop
+        if loop is not None:
+            return loop
         with self._start_lock:
-            if self.thread is not None:
-                return
+            loop = self.loop
+            if loop is not None:
+                return loop
             loop = asyncio.new_event_loop()
             thread = threading.Thread(
                 target=loop.run_forever,
@@ -42,6 +44,7 @@ class BackgroundEventLoop:
             # cannot observe a half-initialized loop/thread pair.
             self.loop = loop
             self.thread = thread
+            return loop
 
     def _reset_after_fork(self):
         # Threads do not survive fork(). Reset to the unstarted state without
@@ -53,8 +56,8 @@ class BackgroundEventLoop:
         self._start_lock = threading.Lock()
 
     def run(self, future):
-        self._start()
-        concurrent_future = asyncio.run_coroutine_threadsafe(future, self.loop)
+        loop = self._start()
+        concurrent_future = asyncio.run_coroutine_threadsafe(future, loop)
         try:
             return concurrent_future.result()
         except BaseException:
