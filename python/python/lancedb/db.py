@@ -2197,6 +2197,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
     ) -> LanceTable:
@@ -2209,6 +2210,10 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.  When non-empty, the
             table is resolved through the directory namespace client.
+        location: str, optional
+            The explicit location (URI) of the table. If provided, the table will be
+            opened from this location instead of deriving it from the database URI
+            and table name.
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
@@ -2242,6 +2247,7 @@ class LanceDBConnection(DBConnection):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
+                location=location,
             )
         except (RuntimeError, ValueError) as e:
             if namespace_path and (

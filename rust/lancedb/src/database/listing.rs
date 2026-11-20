@@ -22,7 +22,7 @@ use crate::blob::ensure_blob_storage_version;
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
-use crate::error::{CreateDirSnafu, Error, Result};
+use crate::error::{BoxError, CreateDirSnafu, Error, Result, TableNotFoundHint};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
@@ -698,6 +698,22 @@ impl ListingDatabase {
         Ok(())
     }
 
+    /// Explain a miss caused by connecting to a Lance dataset as if it were a
+    /// database directory. The connection URI is enough to name the parent and
+    /// table stem, so this needs no storage probe.
+    fn lance_dataset_path_hint(&self) -> Option<String> {
+        let uri = self.uri.trim_end_matches(['/', '\\']);
+        let (parent, file_name) = uri.rsplit_once(['/', '\\'])?;
+        let stem = file_name.strip_suffix(".lance")?;
+        if stem.is_empty() {
+            return None;
+        }
+        let parent = if parent.is_empty() { "." } else { parent };
+        Some(format!(
+            ". The connection URI ends with '.lance', which points to a Lance dataset rather than a database directory. Connect to the parent directory '{parent}' and open table '{stem}' instead."
+        ))
+    }
+
     /// Get the URI of a table in the database.
     fn table_uri(&self, name: &str) -> Result<String> {
         validate_table_name(name)?;
@@ -1180,6 +1196,7 @@ impl Database for ListingDatabase {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().open_table(request).await;
         }
+        let derived_location = request.location.is_none();
         // Use provided location if available, otherwise derive from table name
         let table_uri = match request.location.clone() {
             Some(location) => location,
@@ -1233,20 +1250,29 @@ impl Database for ListingDatabase {
         });
         read_params.session(self.session.clone());
 
-        let native_table = Arc::new(
-            NativeTable::open_with_params(
-                &table_uri,
-                &request.name,
-                request.namespace_path,
-                self.store_wrapper.clone(),
-                Some(read_params),
-                self.read_consistency_interval,
-                request.namespace_client,
-                HashSet::new(), // listing database doesn't support server-side queries
-                request.managed_versioning, // Pass through managed_versioning from request
-            )
-            .await?,
-        );
+        let native_table = match NativeTable::open_with_params(
+            &table_uri,
+            &request.name,
+            request.namespace_path,
+            self.store_wrapper.clone(),
+            Some(read_params),
+            self.read_consistency_interval,
+            request.namespace_client,
+            HashSet::new(), // listing database doesn't support server-side queries
+            request.managed_versioning, // Pass through managed_versioning from request
+        )
+        .await
+        {
+            Ok(table) => Arc::new(table),
+            Err(Error::TableNotFound { name, source }) if derived_location => {
+                let source: BoxError = match self.lance_dataset_path_hint() {
+                    Some(hint) => Box::new(TableNotFoundHint::new(hint, source)),
+                    None => source,
+                };
+                return Err(Error::TableNotFound { name, source });
+            }
+            Err(error) => return Err(error),
+        };
         Ok(native_table)
     }
 
@@ -1843,10 +1869,100 @@ mod tests {
         }
     }
 
-    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+    /// A connection made to a dataset path cannot also be a database directory. The
+    /// miss names the parent and table stem so the caller can fix the connection.
+    #[tokio::test]
+    async fn test_open_table_dataset_path_hint() {
         let tempdir = tempdir().unwrap();
-        let uri = tempdir.path().to_str().unwrap();
+        let data_dir = tempdir.path().join("data");
+        let data_db = setup_database_at(data_dir.to_str().unwrap()).await;
+        create_tables(&data_db, &["embeddings"]).await;
 
+        let dataset_path = data_dir.join("embeddings.lance");
+        let dataset_db = setup_database_at(dataset_path.to_str().unwrap()).await;
+        let error = dataset_db
+            .open_table(OpenTableRequest {
+                name: "embeddings".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, Error::TableNotFound { name, .. } if name == "embeddings"),
+            "the dataset path miss changed classification: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("points to a Lance dataset rather than a database directory"),
+            "the hint did not explain the dataset path: {message}"
+        );
+        assert!(
+            message.contains(&format!("parent directory '{}'", data_dir.display())),
+            "the hint did not name the parent directory: {message}"
+        );
+        assert!(
+            message.contains("open table 'embeddings' instead"),
+            "the hint did not name the table stem: {message}"
+        );
+    }
+
+    /// The hint belongs only to a derived URI. An explicit location is the caller's
+    /// own choice, so a miss there keeps the original message.
+    #[tokio::test]
+    async fn test_open_table_explicit_location_skips_dataset_path_hint() {
+        let tempdir = tempdir().unwrap();
+        let data_dir = tempdir.path().join("data");
+        let data_db = setup_database_at(data_dir.to_str().unwrap()).await;
+        create_tables(&data_db, &["embeddings"]).await;
+        let dataset_path = data_dir.join("embeddings.lance");
+        let dataset_db = setup_database_at(dataset_path.to_str().unwrap()).await;
+
+        let table = dataset_db
+            .open_table(OpenTableRequest {
+                name: "alias".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: Some(dataset_path.to_str().unwrap().to_string()),
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
+
+        let missing_path = tempdir.path().join("missing.lance");
+        let error = dataset_db
+            .open_table(OpenTableRequest {
+                name: "missing".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: Some(missing_path.to_str().unwrap().to_string()),
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::TableNotFound { name, .. } if name == "missing"),
+            "the explicit location miss changed classification: {error:?}"
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("points to a Lance dataset rather than a database directory"),
+            "an explicit location still received the connection hint: {error}"
+        );
+    }
+
+    async fn setup_database_at(uri: &str) -> ListingDatabase {
         let request = ConnectRequest {
             uri: uri.to_string(),
             #[cfg(feature = "remote")]
@@ -1857,11 +1973,14 @@ mod tests {
             read_consistency_interval: None,
             session: None,
         };
-
-        let db = ListingDatabase::connect_with_options(&request)
+        ListingDatabase::connect_with_options(&request)
             .await
-            .unwrap();
+            .unwrap()
+    }
 
+    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+        let tempdir = tempdir().unwrap();
+        let db = setup_database_at(tempdir.path().to_str().unwrap()).await;
         (tempdir, db)
     }
 
