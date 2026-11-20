@@ -52,6 +52,9 @@ print(train.base_version, train.base_branch)
 ```
 </CodeGroup>
 
+The table returned by `execute` keeps the destination connection and namespace context, so it can be pickled and
+reopened directly in a worker process.
+
 `mode="create"` is the default and fails when the destination table already exists. Pass `mode="overwrite"` to
 replace it explicitly. Overwriting writes a new table version; readers that already opened the previous version keep
 reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting to LanceDB Enterprise

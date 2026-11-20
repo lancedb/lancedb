@@ -8,6 +8,7 @@ import os
 from deprecation import deprecated
 import pyarrow as pa
 
+from ._lancedb import Connection as NativeConnection
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable, Table
 from .background_loop import LOOP
@@ -28,12 +29,12 @@ def _native_connection(db: Any) -> Any:
     """Return the native connection wrapped by a sync or async connection."""
     async_connection = getattr(db, "_conn", None)
     if async_connection is not None:
-        native = getattr(async_connection, "_inner", None)
-        if native is not None:
-            return native
-    native = getattr(db, "_inner", None)
-    if native is not None:
-        return native
+        return _native_connection(async_connection)
+    inner = getattr(db, "_inner", None)
+    if inner is not None:
+        return _native_connection(inner)
+    if isinstance(db, NativeConnection):
+        return db
     raise TypeError("db must be a LanceDB connection")
 
 
@@ -72,6 +73,9 @@ class PermutationBuilder:
         Tables with an RTE write spec are rejected: unflushed rows have no row id.
         """
         self._async = async_permutation_builder(table)
+        self._persist_connection: Optional[Any] = None
+        self._persist_table_name: Optional[str] = None
+        self._persist_namespace_path: list[str] = []
 
     def split_random(
         self,
@@ -294,6 +298,8 @@ class PermutationBuilder:
         ordinary LanceDB table containing row ids and split ids; it can be
         opened with [open_table][lancedb.db.DBConnection.open_table] and passed to
         [Permutation.from_tables][lancedb.permutation.Permutation.from_tables].
+        The table returned by ``execute`` keeps the destination connection and
+        namespace context, so it can be pickled and reopened directly.
 
         Parameters
         ----------
@@ -334,12 +340,16 @@ class PermutationBuilder:
         elif not isinstance(namespace_path, (list, tuple)):
             raise TypeError("namespace_path must be a list of strings or None")
 
+        namespace_path = list(namespace_path)
         self._async.persist(
             _native_connection(db),
             table_name,
-            namespace_path=list(namespace_path),
+            namespace_path=namespace_path,
             mode=mode,
         )
+        self._persist_connection = db
+        self._persist_table_name = table_name
+        self._persist_namespace_path = namespace_path
         return self
 
     def execute(self) -> LanceTable:
@@ -349,7 +359,14 @@ class PermutationBuilder:
 
         async def do_execute():
             inner_tbl = await self._async.execute()
-            return await LanceTable.from_inner(inner_tbl)
+            if self._persist_connection is None:
+                return await LanceTable.from_inner(inner_tbl)
+            return await LanceTable.from_inner(
+                inner_tbl,
+                connection=self._persist_connection,
+                name=self._persist_table_name,
+                namespace_path=self._persist_namespace_path,
+            )
 
         return LOOP.run(do_execute())
 
@@ -841,7 +858,8 @@ class Permutation:
             table_state = plan_state["state"]
             if self._plan_version is not None:
                 table_state["checkout_version"] = self._plan_version
-            if self._plan_branch is not None:
+                # None is the main branch. Restore it explicitly because the
+                # live handle may have moved to another branch since capture.
                 table_state["branch"] = self._plan_branch
             permutation_table_state = plan_state
         elif self.permutation_table is not None:

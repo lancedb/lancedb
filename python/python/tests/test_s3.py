@@ -11,6 +11,7 @@ import threading
 import pytest
 import pyarrow as pa
 import lancedb
+from lancedb.permutation import Permutation, permutation_builder
 
 
 # These are all keys that are accepted by storage_options
@@ -85,6 +86,36 @@ def test_s3_lifecycle(s3_bucket: str):
         await db.drop_database()
 
     asyncio.run(test())
+
+
+@pytest.mark.s3_test
+def test_s3_permutation_persist_direct_result_pickle(s3_bucket: str):
+    import pickle
+
+    storage_options = copy.copy(CONFIG)
+    uri = f"s3://{s3_bucket}/test_permutation_persist"
+    db = lancedb.connect(uri, storage_options=storage_options)
+    try:
+        tbl = db.create_table("base", pa.table({"id": range(20)}))
+        plan = (
+            permutation_builder(tbl)
+            .split_sequential(fixed=2, split_names=["train", "test"])
+            .persist(db, "splits")
+            .execute()
+        )
+        assert plan._storage_options == storage_options
+
+        restored_plan = pickle.loads(pickle.dumps(plan))
+        assert restored_plan.count_rows() == 20
+
+        permutation = Permutation.from_tables(tbl, plan, split="train")
+        restored = pickle.loads(pickle.dumps(permutation))
+        assert restored.num_rows == 10
+        assert sorted(
+            row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+        ) == list(range(10))
+    finally:
+        db.drop_database()
 
 
 @pytest.mark.s3_test
