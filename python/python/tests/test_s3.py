@@ -115,7 +115,7 @@ def test_s3_permutation_persist_direct_result_pickle(s3_bucket: str):
             row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
         ) == list(range(10))
     finally:
-        db.drop_database()
+        db.drop_all_tables()
 
 
 @pytest.mark.s3_test
