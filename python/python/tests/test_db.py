@@ -845,6 +845,35 @@ def test_open_table_sync(tmp_db: lancedb.DBConnection):
         tmp_db.open_table("does_not_exist")
 
 
+def test_open_table_sync_with_location(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    db.create_table("test", data=[{"id": 0}])
+    dataset_path = tmp_path / "db" / "test.lance"
+
+    other_db = lancedb.connect(tmp_path / "other")
+    opened = other_db.open_table("test", location=str(dataset_path))
+    assert opened.name == "test"
+    assert opened.count_rows() == 1
+
+
+def test_open_table_sync_lance_dataset_path_hint(tmp_path):
+    data_dir = tmp_path / "data"
+    lancedb.connect(data_dir).create_table("embeddings", data=[{"id": 0}])
+    dataset_db = lancedb.connect(data_dir / "embeddings.lance")
+
+    with pytest.raises(ValueError) as exc_info:
+        dataset_db.open_table("embeddings")
+    message = str(exc_info.value)
+    assert "Table 'embeddings' was not found" in message
+    assert "points to a Lance dataset rather than a database directory" in message
+    assert f"parent directory '{data_dir}'" in message
+    assert "open table 'embeddings' instead" in message
+
+    with pytest.raises(ValueError) as exc_info:
+        dataset_db.open_table("missing", location=str(tmp_path / "missing.lance"))
+    assert "points to a Lance dataset" not in str(exc_info.value)
+
+
 @pytest.mark.asyncio
 async def test_open_table(tmp_path):
     from conftest import pandas_string_type
