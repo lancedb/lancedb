@@ -82,6 +82,7 @@
 - [CompactionStats](interfaces/CompactionStats.md)
 - [ConnectNamespaceOptions](interfaces/ConnectNamespaceOptions.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
+- [CreateBranchOptions](interfaces/CreateBranchOptions.md)
 - [CreateNamespaceOptions](interfaces/CreateNamespaceOptions.md)
 - [CreateNamespaceResponse](interfaces/CreateNamespaceResponse.md)
 - [CreateTableOptions](interfaces/CreateTableOptions.md)

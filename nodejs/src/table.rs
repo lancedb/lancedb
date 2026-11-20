@@ -20,7 +20,7 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
-use crate::error::NapiErrorExt;
+use crate::error::{NapiErrorExt, convert_error};
 use crate::index::Index;
 use crate::job::JobFailureInfo;
 use crate::merge::NativeMergeInsertBuilder;
@@ -2420,6 +2420,15 @@ pub struct BranchContents {
     pub manifest_size: i64,
 }
 
+fn from_tag_hint(name: &str, tag: &str) -> String {
+    let name_literal = serde_json::Value::String(name.to_string()).to_string();
+    let tag_literal = serde_json::Value::String(tag.to_string()).to_string();
+    format!(
+        "If {tag_literal} is a tag, use branches.create({name_literal}, {{ fromTag: {tag_literal} }}) instead of fromRef."
+    )
+}
+
+/// Tags label table versions with human-readable names.
 #[napi]
 pub struct Tags {
     inner: LanceDbTable,
@@ -2458,12 +2467,20 @@ impl Tags {
             .default_error()
     }
 
+    /// Create a tag for a table version.
+    ///
+    /// Omit `version` to tag the version this handle currently shows,
+    /// including a checked-out version.
     #[napi]
-    pub async unsafe fn create(&mut self, tag: String, version: i64) -> napi::Result<()> {
+    pub async unsafe fn create(&mut self, tag: String, version: Option<i64>) -> napi::Result<()> {
+        let version = match version {
+            Some(version) => version as u64,
+            None => self.inner.version().await.default_error()?,
+        };
         let mut rust_tags = self.inner.tags().await.default_error()?;
         rust_tags
             .as_mut()
-            .create(tag.as_str(), version as u64)
+            .create(tag.as_str(), version)
             .await
             .default_error()
     }
@@ -2521,7 +2538,18 @@ impl Branches {
         name: String,
         from_ref: Option<String>,
         from_version: Option<i64>,
+        from_tag: Option<String>,
     ) -> napi::Result<Table> {
+        if from_tag.is_some() && (from_ref.is_some() || from_version.is_some()) {
+            return Err(napi::Error::from_reason(
+                "fromTag cannot be combined with fromRef or fromVersion; pass only one source",
+            ));
+        }
+        let from_branch = if from_tag.is_none() {
+            from_ref.clone()
+        } else {
+            None
+        };
         let from_ref = from_ref.filter(|b| b != "main");
         let from_version = from_version
             .map(|v| {
@@ -2530,13 +2558,27 @@ impl Branches {
                 })
             })
             .transpose()?;
-        let from = Ref::Version(from_ref, from_version);
-        let table = self
-            .inner
-            .create_branch(&name, from)
-            .await
-            .default_error()?;
-        Ok(Table::new(table))
+        let from = match from_tag {
+            Some(tag) => Ref::Tag(tag),
+            None => Ref::Version(from_ref, from_version),
+        };
+        match self.inner.create_branch(&name, from).await {
+            Ok(table) => Ok(Table::new(table)),
+            Err(error) => {
+                // A missing branch is a native NotFound. A missing version is
+                // VersionNotFound, and an Enterprise 404 is an ambiguous
+                // TableNotFound, so only the native branch case gets the hint.
+                let missing_branch = matches!(
+                    &error,
+                    lancedb::Error::Lance { source } if source.is_not_found()
+                );
+                let mut error = convert_error(&error);
+                if missing_branch && let Some(branch) = from_branch.as_deref() {
+                    error.reason = format!("{}\n{}", error.reason, from_tag_hint(&name, branch));
+                }
+                Err(error)
+            }
+        }
     }
 
     #[napi]
@@ -2599,4 +2641,21 @@ fn parse_cleanup_options(
         options.min_age_seconds = Some(age as u64);
     }
     Ok(options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_tag_hint;
+
+    #[test]
+    fn from_tag_hint_uses_escaped_javascript_string_literals() {
+        assert_eq!(
+            from_tag_hint("exp", "baseline"),
+            r#"If "baseline" is a tag, use branches.create("exp", { fromTag: "baseline" }) instead of fromRef."#
+        );
+        assert_eq!(
+            from_tag_hint("branch\"name\\path", "tag\"name\\path"),
+            r#"If "tag\"name\\path" is a tag, use branches.create("branch\"name\\path", { fromTag: "tag\"name\\path" }) instead of fromRef."#
+        );
+    }
 }

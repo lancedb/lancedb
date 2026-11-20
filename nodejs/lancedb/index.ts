@@ -164,6 +164,7 @@ export {
   FunctionColumnStatus,
   FunctionColumnVersionStatus,
   Branches,
+  CreateBranchOptions,
   BranchColumnSummary,
   BranchColumnChange,
   BranchIndexSummary,
