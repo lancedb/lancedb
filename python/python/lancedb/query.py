@@ -1834,7 +1834,14 @@ class LanceQueryBuilder(ABC):
     ) -> pa.RecordBatchReader:
         query = self._query_for_scan(blob_sources, schema)
         reader = self._execute_query_prepared(
-            query, batch_size=batch_size, timeout=timeout
+            query,
+            batch_size=batch_size,
+            timeout=timeout,
+            pull_reader=(
+                blob_mode == "lazy"
+                and _query_is_plain_scan(query)
+                and not _query_needs_lance_scanner(self)
+            ),
         )
         return self._batches_in_mode(reader, blob_mode, blob_sources, schema)
 
@@ -1844,9 +1851,19 @@ class LanceQueryBuilder(ABC):
         *,
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        pull_reader: bool = False,
     ) -> pa.RecordBatchReader:
         if not _is_remote_query_table(self._table):
             query._blob_row_id_prepared = True
+        if (
+            pull_reader
+            and not _is_remote_query_table(self._table)
+            and not self._table.namespace
+            and getattr(self._table, "_namespace_client", None) is None
+        ):
+            return self._table._execute_pull_query(
+                query, batch_size=batch_size, timeout=timeout
+            )
         return self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
 
     def _execute_arrow_prepared(
@@ -4865,6 +4882,23 @@ class AsyncQuery(AsyncStandardQuery):
         """
         super().__init__(inner, table)
         self._inner = inner
+
+    def _execute_batches_sync(
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a plain local scan with one Rust fetch per batch.
+
+        The query starts once; each iteration asks the same Rust stream for a
+        single batch instead of submitting one Python future per batch to the
+        background event loop. The public reader type and schema come from the
+        same stream, so Arrow export and exception behavior stay unchanged.
+        """
+        self._ensure_fragment_constraints_supported("to_batches()")
+        stream = self._inner.execute_sync(max_batch_length, timeout)
+        return pa.RecordBatchReader.from_batches(stream.schema, stream)
 
     @classmethod
     def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
