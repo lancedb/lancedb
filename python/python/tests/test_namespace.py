@@ -26,7 +26,7 @@ from lancedb.namespace import (
     LanceNamespaceDBConnection,
     _query_to_namespace_request,
 )
-from lancedb.query import FullTextSearchQuery, Query
+from lancedb.query import ColumnOrdering, FullTextSearchQuery, Query
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -1352,6 +1352,23 @@ class TestPushdownOperations:
         assert request.maximum_nprobes == 0
         assert request.to_dict()["maximum_nprobes"] == 0
 
+    def test_lance_table_order_by_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = lancedb.connect(str(tmp_path / "db"))
+        table = db.create_table("hist", data=[{"id": 3}, {"id": 1}, {"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = table._execute_query(
+            Query(limit=1, order_by=[ColumnOrdering(column_name="id")])
+        ).read_all()
+
+        # Pushing this query down would drop order_by and return id 3.
+        assert result.column("id").to_pylist() == [1]
+        assert namespace_client.requests == []
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
@@ -1413,6 +1430,24 @@ class TestAsyncPushdownOperations:
         # field is i32); sys.maxsize would overflow the Rust binding.
         assert [request.k for request in namespace_client.requests] == [_MAX_QUERY_K]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+    async def test_async_table_order_by_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = await lancedb.connect_async(str(tmp_path / "db"))
+        table = await db.create_table("hist", data=[{"id": 3}, {"id": 1}, {"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = await table._execute_query(
+            Query(limit=1, order_by=[ColumnOrdering(column_name="id")])
+        )
+
+        # Pushing this query down would drop order_by and return id 3.
+        batches = await result.read_all()
+        assert pa.Table.from_batches(batches).column("id").to_pylist() == [1]
+        assert namespace_client.requests == []
 
     @pytest.mark.parametrize(
         "query_kwargs",
