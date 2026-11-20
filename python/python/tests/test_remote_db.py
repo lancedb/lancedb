@@ -4163,6 +4163,36 @@ def query_test_table(
         yield table
 
 
+def test_remote_fragment_constraints_fail_before_query():
+    query_calls = 0
+
+    def query_handler(body):
+        nonlocal query_calls
+        query_calls += 1
+        return pa.table({"text": ["unexpected"]})
+
+    with query_test_table(query_handler) as table:
+        with pytest.raises(NotImplementedError, match="fragment selection"):
+            table.search().fragment_ids([0]).to_arrow()
+
+    assert query_calls == 0
+
+
+def test_remote_fts_count_rows_rejects_fragment_constraints():
+    query_calls = 0
+
+    def query_handler(body):
+        nonlocal query_calls
+        query_calls += 1
+        return pa.table({"text": ["unexpected"]})
+
+    with query_test_table(query_handler) as table:
+        with pytest.raises(NotImplementedError, match="fragment selection"):
+            table.search("hello", query_type="fts").fragment_ids([0]).count_rows()
+
+    assert query_calls == 0
+
+
 @pytest.mark.parametrize(
     "query,search_kwargs,expected_column",
     [
@@ -5340,12 +5370,10 @@ def test_background_loop_cancellation(exception):
     mock_future = MagicMock()
     mock_future.result.side_effect = exception()
 
-    with (
-        patch.object(BackgroundEventLoop, "__init__", return_value=None),
-        patch("asyncio.run_coroutine_threadsafe", return_value=mock_future),
-    ):
+    with patch("asyncio.run_coroutine_threadsafe", return_value=mock_future):
         loop = BackgroundEventLoop()
         loop.loop = MagicMock()
+        loop.thread = MagicMock()
         with pytest.raises(exception):
             loop.run(None)
         mock_future.cancel.assert_called_once()

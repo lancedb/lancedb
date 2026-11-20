@@ -79,6 +79,7 @@ from .materialized_view import (
 from .view import ViewDescription as ViewDescription
 from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
+from .query import ColumnOrdering as ColumnOrdering
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
