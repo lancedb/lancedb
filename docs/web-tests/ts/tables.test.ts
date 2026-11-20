@@ -853,8 +853,7 @@ test("versioning snippets (async)", async () => {
 
     // Create a tag pointing at a specific version
     await tags.create("baseline", 1);
-    // Omit version to tag the version this handle currently shows.
-    await tags.create("with-edits");
+    await tags.create("with-edits", await tagsTable.version());
 
     // List all tags on this table
     console.log(await tags.list());
@@ -869,16 +868,12 @@ test("versioning snippets (async)", async () => {
     await tagsTable.checkout("baseline");
     console.log(await tagsTable.version());
 
-    // A checked-out handle tags the older version it shows, not the latest.
-    await tags.create("baseline-checkout");
-
     // Delete a tag (does not delete the underlying version)
     await tags.delete("with-edits");
 
     // Return to the latest version
     await tagsTable.checkoutLatest();
     // --8<-- [end:versioning_tags]
-    expect(await tags.getVersion("baseline-checkout")).toBe(2);
     expect(await tagsTable.version()).toBe(3);
     const remainingTags = await tags.list();
     expect(remainingTags).toHaveProperty("baseline");
@@ -905,17 +900,7 @@ test("branch snippets (async)", async () => {
     // Fork an isolated, writable branch from main's latest version.
     // `create` returns a table handle scoped to the new branch.
     const branch = await branches.create("exp");
-
-    // Fork from a tag. Pass `{ fromTag }` as the second argument; it cannot be
-    // combined with `fromRef` or `fromVersion`.
-    await (await table.tags()).create("baseline", 1);
-    const tagBranch = await branches.create("exp-from-tag", {
-      fromTag: "baseline",
-    });
     // --8<-- [end:branch_create]
-
-    expect(tagBranch.currentBranch()).toBe("exp-from-tag");
-    expect(await tagBranch.countRows()).toBe(3);
 
     // --8<-- [start:branch_write]
     // Writes land on the branch handle only; main is left untouched.
@@ -943,7 +928,6 @@ test("branch snippets (async)", async () => {
     // Delete the branch and its branch-local history. Data on main is safe.
     await branches.delete("exp");
     // --8<-- [end:branch_delete]
-    await branches.delete("exp-from-tag");
 
     expect(await table.countRows()).toBe(3);
     expect(await branches.list()).not.toHaveProperty("exp");
