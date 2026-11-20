@@ -87,6 +87,7 @@ def test_cargo_profiles_preserve_abi3_and_enable_native_free_threading():
         "lancedb/cos",
         "lancedb/goosefs",
         "lancedb/metrics-otel",
+        "lancedb/geo",
     }
     assert set(feature_values("default-python")) == default_python_features
     assert set(feature_values("default")) == {"stable-abi", "default-python"}
