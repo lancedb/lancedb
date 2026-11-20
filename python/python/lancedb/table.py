@@ -2961,6 +2961,16 @@ class Table(ABC):
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
 
+    def _execute_pull_query(
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a pull-driven batch query, falling back to the normal path."""
+        return self._execute_query(query, batch_size=batch_size, timeout=timeout)
+
     def _execute_arrow(
         self,
         query: Query,
@@ -6046,6 +6056,27 @@ class LanceTable(Table):
                 return
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+
+    def _execute_pull_query(
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a plain local scan with one Rust fetch per batch.
+
+        The caller has already checked that this is an embedded, non-namespace
+        plain lazy scan. A query shape that does not map to ``AsyncQuery``
+        keeps the existing reader path instead of guessing at its semantics.
+        """
+        async_query = self._table._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
+        if isinstance(async_query, AsyncQuery):
+            return async_query._execute_batches_sync(
+                max_batch_length=batch_size, timeout=timeout
+            )
+        return self._execute_query(query, batch_size=batch_size, timeout=timeout)
 
     def _execute_arrow(
         self,

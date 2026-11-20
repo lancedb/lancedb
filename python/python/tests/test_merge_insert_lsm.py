@@ -241,6 +241,25 @@ def test_lsm_read_sees_active_memtable(tmp_path):
     assert sorted(base_only["id"].to_pylist()) == [1, 2, 3]
 
 
+def test_lsm_read_to_batches_sees_active_memtable(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
+    table = db.create_table("t", _reader([1, 2, 3]))  # base ids 1,2,3
+    table.set_unenforced_primary_key("id")
+    table.enable_rte(RTEWriteSpec.unsharded())
+
+    _lsm_upsert(table, [4, 5])  # active memtable only, not committed to base
+
+    # The sync batch reader keeps the default LSM route and its pending writes.
+    lsm = pa.Table.from_batches(list(table.search().to_batches(batch_size=2)))
+    assert sorted(lsm["id"].to_pylist()) == [1, 2, 3, 4, 5]
+
+    # use_rte(False) still takes the base-only escape hatch through to_batches.
+    base_only = pa.Table.from_batches(
+        list(table.search().use_rte(False).to_batches(batch_size=2))
+    )
+    assert sorted(base_only["id"].to_pylist()) == [1, 2, 3]
+
+
 def test_lsm_read_dedup_newest_wins(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))  # id 2 -> value 1
