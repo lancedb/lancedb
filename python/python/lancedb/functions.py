@@ -3724,7 +3724,11 @@ def function(
         Positive, finite deadline in seconds for each Python call: one row for
         scalar Functions and one batch for vectorized Functions. This does not
         govern class initialization. When omitted, the service applies its
-        default per-call budget.
+        default per-call budget, currently 300 seconds on Enterprise builds.
+        Set it for a GPU Function whose longest call can exceed that budget.
+        Enterprise builds that require an explicit GPU deadline reject a
+        refresh when neither the definition nor the refresh request sets one;
+        a refresh value overrides the definition.
     retry_policy : FunctionRetryPolicy, optional
         Retry selected failed calls inside the Function, with bounded attempts
         and backoff. A refresh may override this default. Retrying a partial
@@ -3918,7 +3922,11 @@ __all__ = [
 
 
 def udf(*args: Any, **kwargs: Any) -> Any:
-    """Deprecated alias of :func:`function`."""
+    """Deprecated alias of :func:`function`.
+
+    Accepts the same options, including ``row_timeout_seconds``. See
+    :func:`function` for GPU deadline guidance.
+    """
     warnings.warn(
         "lancedb.udf is deprecated; use lancedb.function",
         DeprecationWarning,
