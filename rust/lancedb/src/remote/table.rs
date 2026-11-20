@@ -3420,7 +3420,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && request.has_take()
         {
-            return crate::query::create_take_plan(self, request, options, false).await;
+            return crate::query::create_take_plan(self, request, options, request.preserve_order)
+                .await;
         }
 
         let streams = self.execute_query(query, &options).await?;
@@ -3444,8 +3445,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && request.has_take()
         {
-            let plan =
-                crate::query::create_take_plan(self, request, options.clone(), false).await?;
+            let plan = crate::query::create_take_plan(
+                self,
+                request,
+                options.clone(),
+                request.preserve_order,
+            )
+            .await?;
             let inner = execute_plan(plan, Default::default())?;
             let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
             let inner = if let Some(timeout) = options.timeout {
@@ -3508,7 +3514,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && request.has_take()
         {
-            return crate::query::explain_take_plan(self, request, verbose, false).await;
+            return crate::query::explain_take_plan(self, request, verbose, request.preserve_order)
+                .await;
         }
 
         let base_request = self
@@ -8614,8 +8621,8 @@ mod tests {
                     Field::new("_rowoffset", DataType::UInt64, false),
                 ])),
                 vec![
-                    Arc::new(Int32Array::from(vec![5])),
-                    Arc::new(arrow_array::UInt64Array::from(vec![5])),
+                    Arc::new(Int32Array::from(vec![1, 5])),
+                    Arc::new(arrow_array::UInt64Array::from(vec![1, 5])),
                 ],
             )
             .unwrap();
@@ -8627,7 +8634,8 @@ mod tests {
         });
 
         let request = table
-            .take_offsets(vec![5, 5])
+            .take_offsets(vec![5, 1, 5])
+            .preserve_order()
             .select(crate::query::Select::columns(&["id"]))
             .into_request();
         let batches = table
@@ -8639,12 +8647,24 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
         assert!(
             batches
                 .iter()
                 .all(|batch| batch.schema().fields().len() == 1)
         );
+        let ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<arrow_array::types::Int32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![5, 1, 5]);
     }
 
     #[rstest::rstest]

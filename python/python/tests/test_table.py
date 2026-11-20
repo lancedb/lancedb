@@ -1690,6 +1690,31 @@ def test_tags(mem_db: DBConnection):
     )
 
 
+def test_tags_create_defaults_to_visible_version(mem_db: DBConnection):
+    table = mem_db.create_table("test", data=[{"id": 1}])
+    table.add(data=[{"id": 2}])
+
+    table.tags.create("live")
+    assert table.tags.get_version("live") == 2
+
+    table.checkout(1)
+    table.tags.create("pinned")
+    assert table.tags.get_version("pinned") == 1
+
+    # An explicit version is independent of the version this handle shows.
+    table.tags.create("explicit", 2)
+    assert table.tags.get_version("explicit") == 2
+
+    # A tag checkout is still a visible version, not "latest".
+    table.checkout_latest()
+    table.add(data=[{"id": 3}])
+    assert table.version == 3
+    table.checkout("live")
+    assert table.version == 2
+    table.tags.create("tag-checkout")
+    assert table.tags.get_version("tag-checkout") == 2
+
+
 @pytest.mark.asyncio
 async def test_async_tags(mem_db_async: AsyncConnection):
     table = await mem_db_async.create_table(
@@ -1744,6 +1769,34 @@ async def test_async_tags(mem_db_async: AsyncConnection):
     )
 
 
+@pytest.mark.asyncio
+async def test_async_tags_create_defaults_to_visible_version(
+    mem_db_async: AsyncConnection,
+):
+    table = await mem_db_async.create_table("test", data=[{"id": 1}])
+    await table.add(data=[{"id": 2}])
+
+    await table.tags.create("live")
+    assert await table.tags.get_version("live") == 2
+
+    await table.checkout(1)
+    await table.tags.create("pinned")
+    assert await table.tags.get_version("pinned") == 1
+
+    # An explicit version is independent of the version this handle shows.
+    await table.tags.create("explicit", 2)
+    assert await table.tags.get_version("explicit") == 2
+
+    # A tag checkout is still a visible version, not "latest".
+    await table.checkout_latest()
+    await table.add(data=[{"id": 3}])
+    assert await table.version() == 3
+    await table.checkout("live")
+    assert await table.version() == 2
+    await table.tags.create("tag-checkout")
+    assert await table.tags.get_version("tag-checkout") == 2
+
+
 def test_branches(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
     table = db.create_table(
@@ -1781,6 +1834,62 @@ def test_branches(tmp_path):
     table.branches.delete("exp")
     table.branches.delete("exp2")
     assert "exp" not in table.branches.list()
+
+
+def test_branches_create_from_tag(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("test", data=[{"i": 0}])
+
+    exp = table.branches.create("exp")
+    exp.add([{"i": 10}])
+    exp_version = exp.version
+    exp.tags.create("exp-v2", exp_version)
+
+    # main reaches the same numeric version with different rows.
+    table.add([{"i": 100}])
+    assert table.version == exp_version
+
+    forked = table.branches.create("from-tag", from_tag="exp-v2")
+    assert forked.current_branch() == "from-tag"
+    assert forked.count_rows("i = 10") == 1
+    assert forked.count_rows("i = 100") == 0
+
+
+def test_branches_create_from_tag_rejects_other_sources(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", data=[{"i": 0}])
+    table.tags.create("baseline")
+
+    # from_ref="main" must be rejected before it is normalized to the default.
+    with pytest.raises(ValueError, match="from_tag cannot be combined"):
+        table.branches.create("exp", from_ref="main", from_tag="baseline")
+    with pytest.raises(ValueError, match="from_tag cannot be combined"):
+        table.branches.create("exp", from_version=1, from_tag="baseline")
+
+
+def test_branches_create_from_missing_ref_hint_applies_only_to_branches(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", data=[{"i": 0}])
+    base = table.branches.create("base")
+    base.add([{"i": 1}])
+    table.tags.create("baseline")
+
+    # A tag passed through from_ref is not a branch. Keep the original failure
+    # classification and add guidance without probing the ref a second time.
+    with pytest.raises(RuntimeError) as exc_info:
+        table.branches.create("exp", from_ref="baseline")
+
+    detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
+    assert "from_tag='baseline'" in detail
+
+    # An existing branch with an absent version is a version failure, not an
+    # unresolved branch, so it must not suggest from_tag.
+    with pytest.raises(RuntimeError) as exc_info:
+        table.branches.create("exp", from_ref="base", from_version=9999)
+
+    detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
+    assert "9999" in detail
+    assert "from_tag=" not in detail
 
 
 def test_branch_handle_tracks_concurrent_writes(tmp_path):
@@ -2076,6 +2185,64 @@ async def test_async_branches(tmp_path):
     await table.branches.delete("exp")
     await table.branches.delete("exp2")
     assert "exp" not in await table.branches.list()
+
+
+@pytest.mark.asyncio
+async def test_async_branches_create_from_tag(tmp_path):
+    db = await lancedb.connect_async(tmp_path, read_consistency_interval=timedelta(0))
+    table = await db.create_table("test", data=[{"i": 0}])
+
+    exp = await table.branches.create("exp")
+    await exp.add([{"i": 10}])
+    exp_version = await exp.version()
+    await exp.tags.create("exp-v2", exp_version)
+
+    # main reaches the same numeric version with different rows.
+    await table.add([{"i": 100}])
+    assert await table.version() == exp_version
+
+    forked = await table.branches.create("from-tag", from_tag="exp-v2")
+    assert forked.current_branch() == "from-tag"
+    assert await forked.count_rows("i = 10") == 1
+    assert await forked.count_rows("i = 100") == 0
+
+
+@pytest.mark.asyncio
+async def test_async_branches_create_from_tag_rejects_other_sources(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", data=[{"i": 0}])
+    await table.tags.create("baseline")
+
+    with pytest.raises(ValueError, match="from_tag cannot be combined"):
+        await table.branches.create("exp", from_ref="main", from_tag="baseline")
+    with pytest.raises(ValueError, match="from_tag cannot be combined"):
+        await table.branches.create("exp", from_version=1, from_tag="baseline")
+
+
+@pytest.mark.asyncio
+async def test_async_branches_create_from_missing_ref_hint_applies_only_to_branches(
+    tmp_path,
+):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", data=[{"i": 0}])
+    base = await table.branches.create("base")
+    await base.add([{"i": 1}])
+    await table.tags.create("baseline")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await table.branches.create("exp", from_ref="baseline")
+
+    detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
+    assert "from_tag='baseline'" in detail
+
+    # An existing branch with an absent version is a version failure, not an
+    # unresolved branch, so it must not suggest from_tag.
+    with pytest.raises(RuntimeError) as exc_info:
+        await table.branches.create("exp", from_ref="base", from_version=9999)
+
+    detail = "\n".join((str(exc_info.value), *getattr(exc_info.value, "__notes__", ())))
+    assert "9999" in detail
+    assert "from_tag=" not in detail
 
 
 @pytest.mark.asyncio

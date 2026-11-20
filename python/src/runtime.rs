@@ -93,15 +93,19 @@
 //! `Arc` clone from becoming the final owner that drops it.
 
 use std::future::Future;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
-use pyo3::{Bound, PyAny, PyResult, Python, conversion::IntoPyObject};
+use futures::FutureExt;
+use pyo3::{Bound, PyAny, PyResult, Python, conversion::IntoPyObject, exceptions::PyRuntimeError};
 use pyo3_async_runtimes::{
     TaskLocals,
+    err::RustPanic,
     generic::{ContextExt, JoinError, Runtime},
 };
 use tokio::{runtime, task};
@@ -280,6 +284,111 @@ impl Drop for OutstandingGuard {
 pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     let _guard = OutstandingGuard::new();
     get_runtime().block_on(fut)
+}
+
+/// How often an interruptible wait returns to the Python caller for signal checks.
+const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(25);
+
+/// Block on `fut` while keeping the Python caller responsive to signals.
+///
+/// The query task lives on the shared runtime and carries an [`OutstandingGuard`].
+/// The caller waits on the result channel without holding the GIL and periodically
+/// reacquires it to run CPython's signal handlers on the same thread. A signal
+/// exception aborts the task and drops the result receiver.
+///
+/// A synchronous callback already running on a multi-threaded Tokio worker uses
+/// [`tokio::task::block_in_place`] so the core can be handed off while the callback
+/// waits. Current-thread runtimes and contexts that reject blocking are returned as
+/// Python errors instead of falling back to the Python event loop.
+pub fn block_on_interruptible<F, T>(fut: F) -> PyResult<T>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    block_on_interruptible_with(fut, || Python::attach(|py| py.check_signals()))
+}
+
+fn block_on_interruptible_with<F, T, C>(fut: F, check: C) -> PyResult<T>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: Send + 'static,
+    C: FnMut() -> PyResult<()>,
+{
+    match runtime::Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            runtime::RuntimeFlavor::MultiThread => {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    task::block_in_place(|| block_on_interruptible_inner(fut, check))
+                }));
+                match result {
+                    Ok(result) => result,
+                    Err(payload) => Err(PyRuntimeError::new_err(format!(
+                        "synchronous query cannot block in this Tokio context: {}",
+                        panic_message(payload.as_ref())
+                    ))),
+                }
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "synchronous query execution cannot block on a current-thread Tokio runtime; use the async API",
+            )),
+        },
+        Err(_) => block_on_interruptible_inner(fut, check),
+    }
+}
+
+fn block_on_interruptible_inner<F, T, C>(fut: F, mut check: C) -> PyResult<T>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: Send + 'static,
+    C: FnMut() -> PyResult<()>,
+{
+    let guard = OutstandingGuard::new();
+    let (tx, rx) = mpsc::sync_channel(1);
+    let task = async move {
+        let _guard = guard;
+        let result = AssertUnwindSafe(fut).catch_unwind().await;
+        // Dropping a completed result is enough when the caller has already
+        // returned on an interrupt; the task's guard is dropped with it.
+        let _ = tx.send(result);
+    };
+    let handle = get_runtime().spawn(task);
+
+    loop {
+        match rx.recv_timeout(SIGNAL_CHECK_INTERVAL) {
+            Ok(Ok(result)) => {
+                check()?;
+                return result;
+            }
+            Ok(Err(payload)) => {
+                check()?;
+                return Err(RustPanic::new_err(format!(
+                    "rust future panicked: {}",
+                    panic_message(payload.as_ref())
+                )));
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(error) = check() {
+                    handle.abort();
+                    return Err(error);
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(PyRuntimeError::new_err(
+                    "query task stopped before producing a result",
+                ));
+            }
+        }
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "unknown error"
+    }
 }
 
 /// Run a detached task, including when the caller is already on a runtime worker.
@@ -568,6 +677,95 @@ mod tests {
         // Shutting down twice in a row (e.g. atexit firing more than once)
         // must not panic or double-free.
         shutdown(Duration::from_secs(5));
+        shutdown(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_block_on_interruptible_aborts_and_drops_future() {
+        use std::sync::mpsc;
+
+        Python::initialize();
+        let _lock = lock_runtime_state_for_test();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+
+        struct DropNotify(Option<mpsc::Sender<()>>);
+        impl Drop for DropNotify {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let fut = async move {
+            started_tx.send(()).unwrap();
+            let _notify = DropNotify(Some(dropped_tx));
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), pyo3::PyErr>(())
+        };
+        let result = block_on_interruptible_with(fut, || {
+            Err(pyo3::exceptions::PyRuntimeError::new_err("interrupted"))
+        });
+
+        assert!(result.is_err());
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("query task never started");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("interrupted query future was not dropped");
+        shutdown(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_block_on_interruptible_maps_panic() {
+        Python::initialize();
+        let result = block_on_interruptible(async {
+            panic!("boom");
+            #[allow(unreachable_code)]
+            Ok::<(), pyo3::PyErr>(())
+        });
+        assert!(
+            result
+                .expect_err("panic must become a Python exception")
+                .to_string()
+                .contains("rust future panicked: boom")
+        );
+    }
+
+    #[test]
+    fn test_block_on_interruptible_rejects_current_thread_runtime() {
+        Python::initialize();
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        let error = runtime
+            .block_on(async { block_on_interruptible(async { Ok::<_, pyo3::PyErr>(1) }) })
+            .expect_err("current-thread runtime must be rejected");
+        assert!(error.to_string().contains("current-thread"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_block_on_interruptible_from_single_worker_runtime() {
+        Python::initialize();
+        let _lock = lock_runtime_state_for_test();
+        let _worker_threads = TestWorkerThreads::new(1);
+        shutdown(Duration::from_secs(5));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        drop(get_runtime().spawn(async move {
+            let result = block_on_interruptible(async { Ok::<_, pyo3::PyErr>(42) });
+            let _ = done_tx.send(result.map_err(|error| error.to_string()));
+        }));
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("single-worker runtime made no progress");
+        assert_eq!(result.expect("single-worker query failed"), 42);
         shutdown(Duration::from_secs(5));
     }
 
