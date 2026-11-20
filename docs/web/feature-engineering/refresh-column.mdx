@@ -536,8 +536,9 @@ refresh value overrides that default for this execution only.
 
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
 work sizes. For Function columns, the refresh defaults to
-`error_policy = 'fail'`. Set `error_policy = 'skip'` to write null outputs for
-failing rows and record them in the error store, subject to failure limits.
+`error_policy = 'skip'` with a 5% failed-row ceiling: failing rows keep any
+existing output, unassigned outputs stay unassigned, and their errors are
+recorded in the error store. Set `error_policy = 'fail'` to stop on a row error.
 See the [SQL refresh options](/sql/dml/refresh-column#options).
 
 {/*

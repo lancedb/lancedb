@@ -121,9 +121,11 @@ That is also why a function must declare the environment it needs.
 
 ## Recovering from a failure {#failures}
 
-A function that raises fails the job. There is no per-row retry or skip policy
-in the function definition, so a function calling a flaky external service
-should handle that itself, inside the function body.
+By default, a refresh skips rows where the function raises and records their
+errors, up to a 5% failed-row ceiling; see
+[Handle Function failures](/management/function-failures). A function can also
+declare a retry policy for transient errors with `@function(retry_policy=...)`
+where the SDK, server and Function image support it.
 
 When a refresh fails, fix the cause and run the refresh
 again. The new refresh fills what is still empty or stale. How much of the
