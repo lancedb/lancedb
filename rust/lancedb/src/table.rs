@@ -3328,6 +3328,13 @@ impl Table {
     /// by row id or offset; it refuses a scan or search on this handle
     /// instead of reading storage for it. Calls that are not queries behave
     /// as usual.
+    ///
+    /// The handle is fixed to the version and branch it was made from:
+    /// [`checkout`](Self::checkout), [`checkout_tag`](Self::checkout_tag),
+    /// [`checkout_latest`](Self::checkout_latest),
+    /// [`checkout_branch`](Self::checkout_branch) and
+    /// [`create_branch`](Self::create_branch) fail on it with
+    /// [`Error::InvalidInput`]. The table it was made from is not affected.
     pub async fn cache_only(&self) -> Result<Self> {
         Ok(Self {
             inner: self.inner.cache_only().await?,

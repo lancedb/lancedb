@@ -927,6 +927,21 @@ impl<S: HttpSend> RemoteTable<S> {
         );
     }
 
+    /// A cache-only handle reads the one version and branch a prewarm run
+    /// warmed. Moving it would send cache-only reads at data nobody warmed,
+    /// so the calls that move a handle refuse instead.
+    fn refuse_to_move_cache_only(&self, action: &str) -> Result<()> {
+        if self.cache_only {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "cannot {action} on a cache-only table handle; it is fixed to the \
+                     version and branch it was made from"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Seed the schema cache from a `describe` body the caller already fetched.
     ///
     /// Best effort. `open_table` succeeds today without reading this body, so a
@@ -945,6 +960,10 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Return a new handle scoped to `branch`, sharing the client but with fresh
     /// caches and version/freshness state (the branch tracks its own latest).
     /// Mirrors `NativeTable`'s handle-per-branch model.
+    ///
+    /// `cache_only()` builds its handle here and then copies back the version,
+    /// location and query snapshot this resets. A field added to the struct
+    /// that a cache-only handle should share needs the same treatment there.
     pub(super) fn with_branch(&self, branch: Option<String>) -> Self {
         Self {
             client: self.client.clone(),
@@ -2835,6 +2854,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
+        self.refuse_to_move_cache_only("check out another version")?;
         // Validate the version exists. The describe is sent without freshness
         // headers so a stale `min_version` from a previous write doesn't ride
         // along on an explicit time-travel request.
@@ -2864,6 +2884,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
     async fn checkout_latest(&self) -> Result<()> {
+        self.refuse_to_move_cache_only("check out the latest version")?;
         let mut write_guard = self.version.write().await;
         // Drop any per-handle read/write tracking; subsequent reads use the
         // baseline timestamp captured now to guarantee freshness.
@@ -3038,6 +3059,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<Arc<dyn BaseTable>> {
         use lance::dataset::refs::Ref;
 
+        self.refuse_to_move_cache_only("create a branch")?;
         if name.trim().is_empty() {
             return Err(Error::InvalidInput {
                 message: "branch name must be a non-empty string".into(),
@@ -3110,6 +3132,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
+        self.refuse_to_move_cache_only("check out a branch")?;
         // `main` / empty normalizes to the main-branch handle.
         let Some(branch) = normalize_branch(Some(name.to_string())) else {
             return Ok(Arc::new(self.with_branch(None)));
@@ -4037,6 +4060,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(Box::new(RemoteTags { inner: self }))
     }
     async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        self.refuse_to_move_cache_only("check out a tag")?;
         // Resolve the tag without attaching freshness headers; a stale
         // `min_version` from a previous write should not ride along on an
         // explicit time-travel request.

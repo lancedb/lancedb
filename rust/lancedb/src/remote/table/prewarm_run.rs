@@ -687,6 +687,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cache_only_handle_cannot_be_moved() {
+        let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
+        table.checkout(42).await.unwrap();
+        let cache_only = table.cache_only().await.unwrap();
+
+        for error in [
+            cache_only.checkout(41).await.err().unwrap(),
+            cache_only.checkout_latest().await.err().unwrap(),
+            cache_only.checkout_tag("v1").await.err().unwrap(),
+            cache_only.checkout_branch("exp", None).await.err().unwrap(),
+        ] {
+            assert!(matches!(error, Error::InvalidInput { .. }), "{error:?}");
+        }
+        assert_eq!(cache_only.version().await.unwrap(), 42);
+        // The handle it was made from still moves.
+        table.checkout_latest().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn cache_only_needs_a_checked_out_version() {
         let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
         let error = table.cache_only().await.err().unwrap();
