@@ -975,6 +975,10 @@ async def test_async_take_query_to_pandas_blob_v2_bytes(tmp_db_async):
 
     df = await table.take_offsets([1, 2]).to_pandas(blob_mode="bytes")
     assert set(df["blob"]) == {b"two", b"three"}
+    ordered = await table.take_offsets([2, 1], preserve_order=True).to_pandas(
+        blob_mode="bytes"
+    )
+    assert ordered["blob"].tolist() == [b"three", b"two"]
 
 
 def test_order_by_plain_query(mem_db):
@@ -1739,17 +1743,16 @@ def test_query_builder_with_different_vector_column():
     ds = mock.Mock()
     table.to_lance.return_value = ds
     builder.to_arrow()
-    table._execute_arrow.assert_called_once_with(
-        Query(
-            vector=query,
-            filter="b < 10",
-            limit=2,
-            distance_type="cosine",
-            columns=["b"],
-            vector_column="foo_vector",
-        ),
-        timeout=None,
+    expected = Query(
+        vector=query,
+        filter="b < 10",
+        limit=2,
+        distance_type="cosine",
+        columns=["b"],
+        vector_column="foo_vector",
     )
+    expected._blob_row_id_prepared = True
+    table._execute_arrow.assert_called_once_with(expected, timeout=None)
 
 
 def cosine_distance(vec1, vec2):
@@ -2657,6 +2660,61 @@ def test_query_schema(tmp_path):
     )
 
 
+def test_sync_query_prepares_schema_once_per_execution(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3],
+                "vector": pa.array(
+                    [[1, 2], [3, 4], [5, 6]],
+                    pa.list_(pa.float32(), list_size=2),
+                ),
+            }
+        ),
+    )
+
+    calls = 0
+    original = AsyncTable._schema_sync
+
+    def counted(self):
+        nonlocal calls
+        calls += 1
+        return original(self)
+
+    monkeypatch.setattr(AsyncTable, "_schema_sync", counted)
+
+    table.search().where("id = 1").select(["id"]).to_arrow()
+    assert calls <= 1
+
+    calls = 0
+    table.search([1, 2], vector_column_name="vector").limit(1).to_arrow()
+    assert calls <= 1
+
+    calls = 0
+    table.search([1, 2]).limit(1).to_arrow()
+    # At most one lookup infers the vector column, one prepares execution.
+    assert calls <= 2
+
+    calls = 0
+    table.search().where("id = 1").select(["id"]).to_batches().read_all()
+    assert calls <= 1
+
+    builder = table.search().where("id = 1")
+    before = builder.to_arrow()
+    assert "extra" not in before.column_names
+    assert "image" not in before.column_names
+
+    table.add_columns(pa.schema([pa.field("extra", pa.int64()), lancedb.blob("image")]))
+    calls = 0
+    after = builder.to_arrow()
+    assert calls <= 1
+    assert after["extra"].to_pylist() == [None]
+    assert "_lance_row_id" in str(after.schema)
+    assert "_rowid" not in after.column_names
+
+
 @pytest.mark.asyncio
 async def test_query_schema_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -2759,6 +2817,86 @@ def test_take_queries(tmp_path):
 
     # Take by row id
     assert table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list() == [5, 2, 17]
+
+
+def test_take_offsets_preserve_order_sync(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", pa.table({"idx": range(4)}))
+    table.add(pa.table({"idx": range(4, 8)}))
+    table.delete("idx IN (1, 6)")
+    requested = [5, 0, 5, 2, 99, 4, 0]
+    expected = [7, 0, 7, 3, 5, 0]
+
+    actual = (
+        table.take_offsets(requested, preserve_order=True).select(["idx"]).to_arrow()
+    )
+    assert actual.column_names == ["idx"]
+    assert actual["idx"].to_pylist() == expected
+
+    batches = list(
+        table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_batches(max_batch_length=1)
+    )
+    assert all(batch.num_rows <= 1 for batch in batches)
+    assert [row for batch in batches for row in batch["idx"].to_pylist()] == expected
+
+    # The default path keeps its unspecified-order behavior.
+    default = table.take_offsets(requested).select(["idx"]).to_arrow()
+    assert sorted(default["idx"].to_pylist()) == sorted(expected)
+
+    assert table.take_offsets(requested).to_query_object().preserve_order is None
+    query = (
+        table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_query_object()
+    )
+    assert query.preserve_order is True
+    assert table._execute_query(query).read_all()["idx"].to_pylist() == expected
+
+    empty = table.take_offsets([], preserve_order=True).select(["idx"]).to_arrow()
+    assert empty.num_rows == 0
+    assert empty.column_names == ["idx"]
+
+    query.order_by = [ColumnOrdering(column_name="idx")]
+    with pytest.raises(
+        ValueError, match="preserve_order cannot be combined with an explicit order_by"
+    ):
+        table._execute_query(query)
+
+
+@pytest.mark.asyncio
+async def test_take_offsets_preserve_order_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", pa.table({"idx": range(4)}))
+    await table.add(pa.table({"idx": range(4, 8)}))
+    await table.delete("idx IN (1, 6)")
+    requested = [5, 0, 5, 2, 99, 4, 0]
+    expected = [7, 0, 7, 3, 5, 0]
+
+    actual = (
+        await table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_arrow()
+    )
+    assert actual.column_names == ["idx"]
+    assert actual["idx"].to_pylist() == expected
+
+    reader = (
+        await table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_batches(max_batch_length=1)
+    )
+    batches = [batch async for batch in reader]
+    assert all(batch.num_rows <= 1 for batch in batches)
+    assert [row for batch in batches for row in batch["idx"].to_pylist()] == expected
+
+    query = (
+        table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_query_object()
+    )
+    assert query.preserve_order is True
 
 
 @pytest.mark.parametrize("selection", [None, [], ["idx"], {"_rowid": "100 - idx"}])
@@ -2865,6 +3003,13 @@ def test_getitems(tmp_path):
 
     offsets = random.sample(range(200), 10)
     assert table.__getitems__(offsets) == pa.table({"idx": offsets})
+
+
+def test_getitems_rejects_missing_offsets(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("test", pa.table({"idx": range(3)}))
+
+    with pytest.raises(pa.ArrowIndexError, match="out of bounds"):
+        table.__getitems__([0, 99])
 
 
 @pytest.mark.asyncio

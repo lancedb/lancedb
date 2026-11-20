@@ -1404,6 +1404,12 @@ def test_remote_permutation_is_picklable():
             {"a": 2},
             {"a": 4},
         ]
+        assert table.take_offsets([0, 2, 0, 4], preserve_order=True).to_list() == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
         permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
@@ -1528,6 +1534,126 @@ def test_create_table_positional_parameters_match_base_contract():
     expected = list(inspect.signature(DBConnection.create_table).parameters)[:9]
     actual = list(inspect.signature(RemoteDBConnection.create_table).parameters)[:9]
     assert actual == expected
+
+
+def _unconsumed_create_input():
+    raise AssertionError("create_table consumed input before rejecting the option")
+    yield  # pragma: no cover
+
+
+def _assert_enterprise_rejection(error):
+    message = str(error)
+    assert "not supported for table creation in LanceDB Enterprise" in message
+    assert "Embedded" not in message
+    assert "add(" not in message
+
+
+def test_create_table_rejects_blob_base_options_before_request():
+    def handler(request):
+        raise AssertionError(f"unexpected request: {request.path}")
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NotImplementedError, match="initial_bases") as error:
+            db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                initial_bases=[{"path": "s3://bucket/prefix"}],
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            db.create_table(
+                "test",
+                schema=schema,
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+
+
+def test_create_table_accepts_empty_blob_base_options():
+    def handler(request):
+        assert request.path == "/v1/table/test/create/?mode=create"
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table(
+            "test",
+            schema=schema,
+            initial_bases=[],
+            allow_external_blob_outside_bases=False,
+        )
+        assert table is not None
+
+
+@pytest.mark.asyncio
+async def test_create_table_rejects_blob_base_options_before_request_async():
+    def handler(request):
+        raise AssertionError(f"unexpected request: {request.path}")
+
+    def reader():
+        schema = pa.schema([pa.field("id", pa.int64())])
+        return pa.RecordBatchReader.from_batches(schema, [])
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    async with mock_lancedb_connection_async(handler) as db:
+        with pytest.raises(NotImplementedError, match="initial_bases") as error:
+            await db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                initial_bases=[{"path": "s3://bucket/prefix"}],
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            await db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            await db.create_table(
+                "test",
+                schema=schema,
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+        # The lower-layer guard still maps Error::NotSupported for direct native
+        # calls that bypass the Python entrypoint.
+        with pytest.raises(NotImplementedError, match="initial_bases"):
+            await db._inner.create_table(
+                "test",
+                "create",
+                reader(),
+                initial_bases=[{"path": "s3://bucket/prefix"}],
+            )
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ):
+            await db._inner.create_table(
+                "test",
+                "create",
+                reader(),
+                allow_external_blob_outside_bases=True,
+            )
 
 
 def test_create_table_exist_ok():
@@ -5887,6 +6013,9 @@ def blob_descriptor_take_table():
     )
 
 
+_DEFAULT_DESCRIPTOR_IDENTITY = object()
+
+
 @contextlib.contextmanager
 def blob_remote_table(
     *,
@@ -5902,6 +6031,7 @@ def blob_remote_table(
     search_scores=False,
     snapshot_supported=True,
     identity_header="v1:" + "a" * 64,
+    descriptor_identity_header=_DEFAULT_DESCRIPTOR_IDENTITY,
     verify_identity=True,
 ):
     if state is None:
@@ -5946,6 +6076,11 @@ def blob_remote_table(
             request.send_header(
                 "x-lancedb-version", str(BLOB_DESCRIBE_RESPONSE["version"])
             )
+            if verify_identity and request.headers.get("x-lancedb-query-snapshot"):
+                request.send_header(
+                    "x-lancedb-query-snapshot",
+                    request.headers["x-lancedb-query-snapshot"],
+                )
             request.end_headers()
             request.wfile.write(chunk)
         elif request.path == "/v1/table/test/query/":
@@ -5954,14 +6089,26 @@ def blob_remote_table(
             if requests is not None:
                 requests.append(("query", body))
             columns = body.get("columns")
-            assert columns in (
+            take_offsets_query = isinstance(columns, list) and "_rowoffset" in columns
+            assert take_offsets_query or columns in (
                 None,
                 ["id", "image"],
                 ["id"],
                 ["image"],
                 {"payload": "image"},
             )
-            if isinstance(columns, dict):
+            if take_offsets_query:
+                response_table = blob_query_response_table().append_column(
+                    "_rowoffset", pa.array(range(3), type=pa.uint64())
+                )
+                response_table = response_table.select(
+                    [name for name in columns if name != "_rowid"]
+                )
+                if body.get("with_row_id", False):
+                    response_table = response_table.append_column(
+                        "_rowid", blob_query_response_table()["_rowid"]
+                    )
+            elif isinstance(columns, dict):
                 response_table = blob_query_response_table().select(["image", "_rowid"])
                 response_table = response_table.rename_columns(["payload", "_rowid"])
                 if not body.get("with_row_id", False):
@@ -6012,11 +6159,20 @@ def blob_remote_table(
                 request.send_header("x-lancedb-version", header)
                 if snapshot_supported:
                     request.send_header("x-lancedb-query-version", header)
-                    identity = (
-                        identity_header(body)
-                        if callable(identity_header)
-                        else identity_header
+                    descriptor_query = body.get("filter", "").startswith("_rowid IN")
+                    use_descriptor_identity = (
+                        descriptor_query
+                        and descriptor_identity_header
+                        is not _DEFAULT_DESCRIPTOR_IDENTITY
                     )
+                    if use_descriptor_identity:
+                        identity = descriptor_identity_header
+                    else:
+                        identity = (
+                            identity_header(body)
+                            if callable(identity_header)
+                            else identity_header
+                        )
                     if identity is not None:
                         request.send_header("x-lancedb-query-snapshot", identity)
             request.end_headers()
@@ -6564,13 +6720,114 @@ def test_remote_blob_file_matches_file_error_and_range_contract():
             handle.read(1)
 
 
-def test_remote_blob_fetch_accepts_query_table():
+@pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])
+def test_remote_blob_fetch_accepts_metadata_free_query_table(api):
     hits = pa.table({"_rowid": pa.array([10, 20, 30], type=pa.uint64())})
 
-    with blob_remote_table() as table:
-        blobs = table.fetch_blobs("image", hits)
+    with blob_remote_table(descriptor_identity_header=None) as table:
+        if api == "fetch_blobs":
+            assert table.fetch_blobs("image", hits).to_pylist() == [
+                b"alpha",
+                None,
+                b"gamma",
+            ]
+        else:
+            handles = table.fetch_blob_files("image", hits)
+            try:
+                assert [
+                    handle.read() if handle is not None else None for handle in handles
+                ] == [b"alpha", None, b"gamma"]
+            finally:
+                for handle in handles:
+                    if handle is not None:
+                        handle.close()
 
-    assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+def test_remote_take_offsets_preserve_order_with_blob_bytes():
+    with blob_remote_table() as table:
+        hits = (
+            table.take_offsets([2, 0, 2], preserve_order=True)
+            .select(["id", "image"])
+            .to_arrow(blob_mode="bytes")
+        )
+
+    assert hits["id"].to_pylist() == [3, 1, 3]
+    assert hits["image"].to_pylist() == [b"gamma", b"alpha", b"gamma"]
+
+
+@pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])
+def test_remote_blob_fetch_from_query_result_keeps_query_snapshot(api):
+    requests = []
+    state = {"version": 1}
+    with blob_remote_table(requests=requests, state=state) as table:
+        hits = table.search().select(["id", "image"]).limit(3).to_arrow()
+        assert hits.schema.metadata[b"lancedb:query_version"] == b"1"
+        table.add([{"id": 4, "image": b"new-version"}])
+        assert table.version == 2
+
+        if api == "fetch_blobs":
+            assert table.fetch_blobs("image", hits).to_pylist() == [
+                b"alpha",
+                None,
+                b"gamma",
+            ]
+            fetches = [body for path, body in requests if path == "fetch_blobs"]
+            assert fetches
+            assert all(body["version"] == 1 for body in fetches)
+        else:
+            handles = table.fetch_blob_files("image", hits)
+            try:
+                assert [
+                    handle.read() if handle is not None else None for handle in handles
+                ] == [b"alpha", None, b"gamma"]
+            finally:
+                for handle in handles:
+                    if handle is not None:
+                        handle.close()
+            descriptor_queries = [
+                body
+                for path, body in requests
+                if path == "query" and body.get("filter", "").startswith("_rowid IN")
+            ]
+            assert descriptor_queries
+            assert all(body["version"] == 1 for body in descriptor_queries)
+
+
+@pytest.mark.parametrize("descriptor_identity", [None, "v1:" + "b" * 64])
+def test_remote_blob_files_reject_unverified_descriptor_identity(descriptor_identity):
+    requested = "v1:" + "a" * 64
+    hits = pa.table(
+        {"_rowid": pa.array([20, 40], type=pa.uint64())}
+    ).replace_schema_metadata(
+        {
+            b"lancedb:query_version": b"1",
+            b"lancedb:query_snapshot": requested.encode(),
+        }
+    )
+    requests = []
+
+    with blob_remote_table(
+        requests=requests, descriptor_identity_header=descriptor_identity
+    ) as table:
+        with pytest.raises(
+            NotImplementedError, match="did not verify the query snapshot identity"
+        ):
+            table.fetch_blob_files("image", hits)
+
+    assert not any(path.startswith("/v1/table/test/blob/") for path, _ in requests)
+    assert not any(path == "/v1/table/test/fetch_blobs/" for path, _ in requests)
+
+
+@pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])
+def test_remote_blob_fetch_rejects_incomplete_query_snapshot(api):
+    requests = []
+    hits = pa.table(
+        {"_rowid": pa.array([10], type=pa.uint64())}
+    ).replace_schema_metadata({b"lancedb:query_version": b"1"})
+    with blob_remote_table(requests=requests) as table:
+        with pytest.raises(NotImplementedError, match="x-lancedb-query-snapshot"):
+            getattr(table, api)("image", hits)
+    assert not any(path == "fetch_blobs" for path, _ in requests)
 
 
 def test_remote_blob_query_stashes_row_ids_for_fetch():

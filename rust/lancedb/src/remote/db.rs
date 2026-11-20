@@ -1552,6 +1552,30 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // The remote create endpoint does not transmit Lance write parameters.
         // Reject them before consuming data or issuing a request, especially
         // for overwrite: silently using the server's format can lose intent.
+        //
+        // Name the blob-base options specifically: they carry data placement
+        // and URI-resolution semantics the server cannot honor, and a generic
+        // "write_options" message would not tell the caller which input to drop.
+        if let Some(params) = request.write_options.lance_write_params.as_ref() {
+            let unsupported = if params
+                .initial_bases
+                .as_ref()
+                .is_some_and(|bases| !bases.is_empty())
+            {
+                Some("initial_bases")
+            } else if params.allow_external_blob_outside_bases {
+                Some("allow_external_blob_outside_bases")
+            } else {
+                None
+            };
+            if let Some(option) = unsupported {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for table creation in LanceDB Enterprise"
+                    ),
+                });
+            }
+        }
         for (option, provided) in [
             (
                 "write_options (including storage_options)",
@@ -2910,6 +2934,89 @@ mod tests {
                 builder.execute().await,
                 Err(Error::NotSupported { .. })
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_blob_base_options_before_reading_input() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let base = crate::BasePath::new(1, "s3://bucket/prefix".to_string(), None, false);
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let data: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(CountingReader {
+            schema: schema.clone(),
+            reads: reads.clone(),
+        });
+        let err = conn
+            .create_table("table1", data)
+            .initial_bases(vec![base])
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::NotSupported { ref message } if message.contains("initial_bases")),
+            "got {err:?}"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        let err = conn
+            .create_empty_table("table1", schema)
+            .allow_external_blob_outside_bases(true)
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::NotSupported { ref message } if message.contains("allow_external_blob_outside_bases")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_accepts_empty_blob_base_options() {
+        // Empty bases and the explicit opt-out are not customization: the remote
+        // create must stay an ordinary request.
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        for builder in [
+            conn.create_table("table1", data)
+                .initial_bases(Vec::new())
+                .allow_external_blob_outside_bases(false),
+            conn.create_empty_table("table1", schema)
+                .initial_bases(Vec::new())
+                .allow_external_blob_outside_bases(false),
+        ] {
+            assert!(builder.execute().await.is_ok());
+        }
+    }
+
+    struct CountingReader {
+        schema: Arc<Schema>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl Iterator for CountingReader {
+        type Item = Result<RecordBatch, arrow_schema::ArrowError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+    }
+
+    impl arrow_array::RecordBatchReader for CountingReader {
+        fn schema(&self) -> arrow_schema::SchemaRef {
+            self.schema.clone()
         }
     }
 

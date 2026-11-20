@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::PythonErrorExt;
-use crate::runtime::future_into_py;
+use crate::runtime::{block_on_interruptible, future_into_py};
 use arrow::{
     array::RecordBatch,
     datatypes::SchemaRef,
@@ -99,20 +99,47 @@ where
     Q: ExecutableQuery + Send + 'static,
 {
     future_into_py(py, async move {
-        let mut options = QueryExecutionOptions::default();
-        // `None` means the caller wants one eager result, not the core's
-        // default batch size. An explicit value is still honored.
-        options.max_batch_length = max_batch_length.unwrap_or(0);
-        options.timeout = timeout;
-        let stream = query.execute_with_options(options).await.infer_error()?;
-        let schema = stream.schema();
-        let batches = stream.try_collect::<Vec<_>>().await.infer_error()?;
-        let reader: Box<dyn ArrowRecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
-            batches.into_iter().map(Ok),
-            schema,
-        ));
+        let reader = collect_to_reader(query, max_batch_length, timeout).await?;
         Python::attach(|py| reader.into_pyarrow(py).map(|obj| obj.unbind()))
     })
+}
+
+/// Synchronous counterpart of [`execute_to_reader`].
+///
+/// The returned reader owns the collected batches; the caller converts it to
+/// Python after reattaching to the interpreter. The wait releases the GIL and
+/// keeps Python signal handlers on the calling thread.
+pub fn execute_to_reader_sync<Q>(
+    query: Q,
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> PyResult<Box<dyn ArrowRecordBatchReader + Send>>
+where
+    Q: ExecutableQuery + Send + 'static,
+{
+    block_on_interruptible(collect_to_reader(query, max_batch_length, timeout))
+}
+
+async fn collect_to_reader<Q>(
+    query: Q,
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> PyResult<Box<dyn ArrowRecordBatchReader + Send>>
+where
+    Q: ExecutableQuery + Send + 'static,
+{
+    let mut options = QueryExecutionOptions::default();
+    // `None` means the caller wants one eager result, not the core's
+    // default batch size. An explicit value is still honored.
+    options.max_batch_length = max_batch_length.unwrap_or(0);
+    options.timeout = timeout;
+    let stream = query.execute_with_options(options).await.infer_error()?;
+    let schema = stream.schema();
+    let batches = stream.try_collect::<Vec<_>>().await.infer_error()?;
+    Ok(Box::new(RecordBatchIterator::new(
+        batches.into_iter().map(Ok),
+        schema,
+    )))
 }
 
 #[cfg(test)]

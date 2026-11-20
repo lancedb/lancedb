@@ -1,6 +1,6 @@
 extends: existence
 message: "'%s' doesn't say what the section covers. Name the task or topic instead."
-link: https://github.com/lancedb/docs/blob/main/STYLE.md#headings
+link: https://github.com/lancedb/lancedb/blob/main/docs/STYLE.md#headings
 level: suggestion
 scope: heading
 ignorecase: true
