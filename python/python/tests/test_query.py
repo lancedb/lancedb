@@ -1098,6 +1098,106 @@ def test_order_by_clears_with_none_and_empty_list(mem_db):
     assert query.order_by([]).to_query_object().order_by is None
 
 
+def test_scan_in_order_plain_query(tmp_db):
+    table = tmp_db.create_table("scan_in_order", pa.table({"id": [0, 1]}))
+    table.add(pa.table({"id": [2, 3]}))
+    table.add(pa.table({"id": [4, 5]}))
+
+    fragments = table.to_lance().get_fragments()
+    assert len(fragments) == 3, "the test needs real multi-fragment data"
+
+    version = table.version
+    table.checkout(version)
+
+    default = table.search().select(["id"]).to_arrow()["id"].to_pylist()
+    assert default == [0, 1, 2, 3, 4, 5]
+    assert table.search().to_query_object().scan_in_order is None
+
+    ordered = table.search().scan_in_order().select(["id"]).to_arrow()
+    assert ordered["id"].to_pylist() == [0, 1, 2, 3, 4, 5]
+    repeated = table.search().scan_in_order(True).select(["id"]).to_arrow()
+    assert repeated.equals(ordered)
+
+    unordered = (
+        table.search().scan_in_order(False).select(["id"]).to_arrow()["id"].to_pylist()
+    )
+    assert sorted(unordered) == [0, 1, 2, 3, 4, 5]
+
+    sorted_desc = (
+        table.search()
+        .scan_in_order(False)
+        .order_by(("id", "desc"))
+        .select(["id"])
+        .to_arrow()["id"]
+        .to_pylist()
+    )
+    assert sorted_desc == [5, 4, 3, 2, 1, 0]
+
+    with pytest.raises(ValueError, match="nonempty order_by"):
+        table.search().scan_in_order().order_by("id").to_arrow()
+
+
+@pytest.mark.asyncio
+async def test_scan_in_order_async_query(tmp_db_async: AsyncConnection):
+    table = await tmp_db_async.create_table(
+        "scan_in_order_async", pa.table({"id": [0, 1]})
+    )
+    await table.add(pa.table({"id": [2, 3]}))
+    await table.add(pa.table({"id": [4, 5]}))
+
+    assert len((await table.to_lance()).get_fragments()) == 3
+    version = await table.version()
+    await table.checkout(version)
+
+    ordered = await table.query().scan_in_order().select(["id"]).to_arrow()
+    assert ordered["id"].to_pylist() == [0, 1, 2, 3, 4, 5]
+    assert table.query().to_query_object().scan_in_order is None
+
+    unordered = (await table.query().scan_in_order(False).select(["id"]).to_arrow())[
+        "id"
+    ].to_pylist()
+    assert sorted(unordered) == [0, 1, 2, 3, 4, 5]
+
+    with pytest.raises(ValueError, match="nonempty order_by"):
+        await table.query().scan_in_order().order_by("id").to_arrow()
+    with pytest.raises(ValueError, match="ranked results"):
+        await table.query().scan_in_order().nearest_to([0.0, 0.0]).to_arrow()
+
+
+def test_scan_in_order_pandas_scanner_path(tmp_db, monkeypatch):
+    pytest.importorskip("lance")
+    data = _blob_query_data()
+    table = tmp_db.create_table(
+        "scan_in_order_scanner",
+        data.slice(0, 2),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+    table.add(data.slice(2, 2))
+
+    query = table.search().select(["id", "blob"]).scan_in_order(False)
+
+    def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("scanner-backed pandas must not collect through to_arrow")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    dataset = table.to_lance()
+    dataset_cls = type(dataset)
+    real_scanner = dataset_cls.scanner
+    captured = {}
+
+    def capture_scanner(self, **kwargs):
+        captured.update(kwargs)
+        return real_scanner(self, **kwargs)
+
+    monkeypatch.setattr(dataset_cls, "scanner", capture_scanner)
+
+    df = query.to_pandas(blob_mode="descriptions", flatten=True)
+
+    assert captured["scan_in_order"] is False
+    assert sorted(df["id"].tolist()) == [1, 2, 3, 4]
+
+
 def test_order_by_rejects_invalid_input_early(mem_db):
     table = mem_db.create_table("test_order_by_invalid", [{"name": "a"}])
 

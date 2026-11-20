@@ -380,6 +380,7 @@ pub struct PyQueryRequest {
     pub postfilter: Option<bool>,
     pub norm: Option<String>,
     pub order_by: Option<Vec<PyColumnOrdering>>,
+    pub scan_in_order: Option<bool>,
 }
 
 impl From<AnyQuery> for PyQueryRequest {
@@ -417,6 +418,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 order_by: query_request
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: query_request.scan_in_order,
             },
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
@@ -449,6 +451,7 @@ impl From<AnyQuery> for PyQueryRequest {
                     .base
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: vector_query.base.scan_in_order,
             },
         }
     }
@@ -665,6 +668,10 @@ impl Query {
             ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
         self.inner = self.inner.clone().order_by(ordering);
         Ok(())
+    }
+
+    pub fn scan_in_order(&mut self, ordered: bool) {
+        self.inner = self.inner.clone().scan_in_order(ordered);
     }
 
     #[pyo3(signature = ())]

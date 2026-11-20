@@ -149,6 +149,9 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         # The namespace QueryTable request has no order_by field. Pushing a
         # nonempty ordering down would drop it and return the wrong top-K rows.
         or bool(query.order_by)
+        # An ordered scan is a local manifest-order guarantee. The request has
+        # no scan-order field, so run it locally where storage is available.
+        or query.scan_in_order is True
         or (
             query.full_text_query is not None
             and query.fast_search is True
@@ -8490,6 +8493,8 @@ class AsyncTable:
             async_query = async_query.with_row_id()
         if query.order_by:
             async_query = async_query.order_by(query.order_by)
+        if query.scan_in_order is not None:
+            async_query = async_query.scan_in_order(query.scan_in_order)
 
         if query.vector:
             async_query = async_query.nearest_to(query.vector).distance_range(

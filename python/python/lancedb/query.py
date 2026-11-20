@@ -371,6 +371,7 @@ def _scanner_kwargs_for_query(
         "with_row_id": with_row_id if with_row_id is not None else query.with_row_id,
         "with_row_address": query.with_row_address,
         "fast_search": query.fast_search,
+        "scan_in_order": query.scan_in_order,
         "blob_handling": BLOB_MODE_TO_HANDLING[blob_mode],
         "fragments": fragments,
     }
@@ -1205,6 +1206,10 @@ class Query(pydantic.BaseModel):
 
     order_by: Optional[List[ColumnOrdering]] = None
 
+    # Tri-state storage-order requirement: None preserves the backend default,
+    # True requires manifest order, False allows an unordered scan.
+    scan_in_order: Optional[bool] = None
+
     @classmethod
     def from_inner(cls, req: PyQueryRequest) -> Self:
         query = cls()
@@ -1237,6 +1242,7 @@ class Query(pydantic.BaseModel):
         query.postfilter = req.postfilter
         if req.order_by is not None:
             query.order_by = [ColumnOrdering(**o) for o in req.order_by]
+        query.scan_in_order = req.scan_in_order
         if req.full_text_search is not None:
             query.full_text_query = FullTextSearchQuery(
                 columns=None,
@@ -1411,6 +1417,7 @@ class LanceQueryBuilder(ABC):
         self._approx_mode = None
         self._bypass_vector_index = None
         self._order_by = None
+        self._scan_in_order = None
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -3078,6 +3085,34 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             schema=schema,
         )
 
+    def scan_in_order(self, ordered: bool = True) -> Self:
+        """Control whether an ordinary scan must preserve storage order.
+
+        Parameters
+        ----------
+        ordered: bool, default True
+            ``True`` requires manifest order: fragments in manifest order, then
+            rows in fragment order. ``False`` allows the backend to scan
+            unordered. Leave the method uncalled to preserve the backend
+            default.
+
+        A plain local scan of an Embedded table reads one dataset version and
+        returns manifest order by default. Compaction, updates, or opening a
+        newer version can change that order, so pin the table version when
+        positions must remain stable across executions. An explicit
+        ``order_by()`` replaces manifest order with a global sort, and vector,
+        full-text, hybrid, or reranked queries return ranked results; combining
+        those with ``scan_in_order(True)`` raises ``ValueError``. Remote
+        Enterprise tables and RTE/LSM reads raise ``NotImplementedError``
+        because they cannot uphold the order; set ``use_rte(False)`` to read
+        the RTE base table in storage order. When ``QueryTable`` pushdown is
+        enabled, the backend default may not preserve order; requesting ``True``
+        executes locally instead, because the namespace request has no order
+        field.
+        """
+        self._scan_in_order = ordered
+        return self
+
     def to_query_object(self) -> Query:
         return Query(
             columns=self._columns,
@@ -3090,6 +3125,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             use_rte=self._use_rte,
             offset=self._offset,
             order_by=self._order_by,
+            scan_in_order=self._scan_in_order,
         )
 
     def output_schema(self) -> pa.Schema:
@@ -4829,6 +4865,34 @@ class AsyncQuery(AsyncStandardQuery):
         """
         super().__init__(inner, table)
         self._inner = inner
+
+    def scan_in_order(self, ordered: bool = True) -> Self:
+        """Control whether an ordinary scan must preserve storage order.
+
+        Parameters
+        ----------
+        ordered: bool, default True
+            ``True`` requires manifest order: fragments in manifest order, then
+            rows in fragment order. ``False`` allows the backend to scan
+            unordered. Leave the method uncalled to preserve the backend
+            default.
+
+        A plain local scan of an Embedded table reads one dataset version and
+        returns manifest order by default. Compaction, updates, or opening a
+        newer version can change that order, so pin the table version when
+        positions must remain stable across executions. An explicit
+        ``order_by()`` replaces manifest order with a global sort, and vector,
+        full-text, hybrid, or reranked queries return ranked results; combining
+        those with ``scan_in_order(True)`` raises ``ValueError``. Remote
+        Enterprise tables and RTE/LSM reads raise ``NotImplementedError``
+        because they cannot uphold the order; set ``use_rte(False)`` to read
+        the RTE base table in storage order. When ``QueryTable`` pushdown is
+        enabled, the backend default may not preserve order; requesting ``True``
+        executes locally instead, because the namespace request has no order
+        field.
+        """
+        self._inner.scan_in_order(ordered)
+        return self
 
     @classmethod
     def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
