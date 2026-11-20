@@ -2456,10 +2456,24 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             columns and raises for blobs inside lists.
         """
         blob_sources = self._validated_blob_sources(blob_mode)
+        if blob_mode != "lazy":
+            return self._finalize_blob_query_table(
+                self.to_batches(timeout=timeout).read_all(),
+                blob_mode=blob_mode,
+                blob_sources=blob_sources,
+            )
+
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        results = self._table._execute_arrow(
+            self._query_for_scan(blob_sources), timeout=timeout
+        )
+        if self._reranker is not None:
+            source = results
+            results = self._reranker.rerank_vector(self._str_query, results)
+            check_reranker_result(results)
+            results = _merge_query_snapshot(results, source)
         return self._finalize_blob_query_table(
-            self.to_batches(timeout=timeout).read_all(),
-            blob_mode=blob_mode,
-            blob_sources=blob_sources,
+            results, blob_mode=blob_mode, blob_sources=blob_sources
         )
 
     def to_query_object(self) -> Query:
@@ -2784,8 +2798,12 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         blob_sources = self._validated_blob_sources(blob_mode)
         self._table._ensure_no_legacy_fts_index()
 
+        self._ensure_fragment_constraints_supported("to_arrow()")
         query = self._query_for_scan(blob_sources)
-        results = self._table._execute_query(query, timeout=timeout).read_all()
+        if blob_mode == "lazy":
+            results = self._table._execute_arrow(query, timeout=timeout)
+        else:
+            results = self._table._execute_query(query, timeout=timeout).read_all()
         if self._reranker is not None:
             source = results
             results = self._reranker.rerank_fts(self._query, results)
@@ -2834,8 +2852,18 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         blob_sources = self._validated_blob_sources(blob_mode)
         if blob_mode == "bytes" and blob_sources:
             return self.to_batches(timeout=timeout, blob_mode=blob_mode).read_all()
+        if blob_mode != "lazy":
+            return self._finalize_blob_query_table(
+                self.to_batches(timeout=timeout).read_all(),
+                blob_mode=blob_mode,
+                blob_sources=blob_sources,
+            )
+
+        self._ensure_fragment_constraints_supported("to_arrow()")
         return self._finalize_blob_query_table(
-            self.to_batches(timeout=timeout).read_all(),
+            self._table._execute_arrow(
+                self._query_for_scan(blob_sources), timeout=timeout
+            ),
             blob_mode=blob_mode,
             blob_sources=blob_sources,
         )
@@ -3928,6 +3956,17 @@ class AsyncQueryBase(object):
 
         return AsyncRecordBatchReader._from_batches(schema, batches())
 
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute with the native eager collector used by ``to_arrow``."""
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        await self._maybe_add_blob_row_id()
+        reader = await self._inner.execute_to_reader(None, timeout)
+        return pa.Table.from_batches(reader, schema=reader.schema)
+
     async def _execute_batches(
         self,
         *,
@@ -4053,10 +4092,17 @@ class AsyncQueryBase(object):
         if blob_mode == "bytes" and blob_sources:
             reader = await self.to_batches(timeout=timeout, blob_mode=blob_mode)
             return pa.Table.from_batches(await reader.read_all(), schema=reader.schema)
-        batch_iter = await self.to_batches(timeout=timeout)
-        tbl = self._finalize_blob_query_table(
-            pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
-        )
+        if blob_mode != "lazy":
+            batch_iter = await self.to_batches(timeout=timeout)
+            tbl = self._finalize_blob_query_table(
+                pa.Table.from_batches(
+                    await batch_iter.read_all(), schema=batch_iter.schema
+                )
+            )
+        else:
+            tbl = self._finalize_blob_query_table(
+                await self._execute_eager(timeout=timeout)
+            )
         return await self._apply_arrow_blob_mode(tbl, blob_mode, blob_sources)
 
     async def to_list(
@@ -4786,6 +4832,22 @@ class AsyncFTSQuery(AsyncStandardQuery):
                 )
             )
 
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        try:
+            results = await super()._execute_eager(timeout=timeout)
+        except Exception as error:
+            _add_fts_position_error_note(error)
+            raise
+        if self._reranker:
+            source = results
+            results = self._reranker.rerank_fts(self.get_query(), results)
+            results = _merge_query_snapshot(results, source)
+        return results
+
     async def _execute_batches(
         self,
         *,
@@ -5136,6 +5198,18 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             AsyncHybridQuery(self._inner.nearest_to_text({"query": query}), self._table)
         )
 
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        results = await super()._execute_eager(timeout=timeout)
+        if self._reranker:
+            source = results
+            results = self._reranker.rerank_vector(self._query_string, results)
+            results = _merge_query_snapshot(results, source)
+        return results
+
     async def _execute_batches(
         self,
         *,
@@ -5144,8 +5218,12 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
         reader = await super()._execute_batches(
-            timeout=timeout, blob_sources=blob_sources
+            max_batch_length=max_batch_length,
+            timeout=timeout,
+            blob_sources=blob_sources,
         )
+        if self._reranker is None:
+            return reader
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
             source = results
@@ -5270,6 +5348,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         vec_query.offset(0)
 
         return fts_query, vec_query, limit, offset
+
+    async def _execute_eager(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        self._ensure_fragment_constraints_supported("to_arrow()")
+        reader = await self._execute_batches(timeout=timeout)
+        return pa.Table.from_batches(await reader.read_all(), schema=reader.schema)
 
     async def _execute_batches(
         self,

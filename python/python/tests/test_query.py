@@ -1632,7 +1632,7 @@ def test_query_builder_with_different_vector_column():
     ds = mock.Mock()
     table.to_lance.return_value = ds
     builder.to_arrow()
-    table._execute_query.assert_called_once_with(
+    table._execute_arrow.assert_called_once_with(
         Query(
             vector=query,
             filter="b < 10",
@@ -1641,7 +1641,6 @@ def test_query_builder_with_different_vector_column():
             columns=["b"],
             vector_column="foo_vector",
         ),
-        batch_size=None,
         timeout=None,
     )
 

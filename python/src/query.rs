@@ -948,7 +948,15 @@ impl FTSQuery {
         max_batch_length: Option<u32>,
         timeout: Option<Duration>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+        crate::arrow::execute_to_reader(
+            self_.py(),
+            self_
+                .inner
+                .clone()
+                .full_text_search(self_.fts_query.clone()),
+            max_batch_length,
+            timeout,
+        )
     }
 
     pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
