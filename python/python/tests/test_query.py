@@ -1225,7 +1225,7 @@ def test_scan_in_order_indexed_filter_preserves_manifest_order(
         assert actual == expected
 
 
-def test_scan_in_order_fragments_use_manifest_order(tmp_db):
+def test_scan_in_order_rejects_with_fragments_and_keeps_fragment_ids(tmp_db):
     pytest.importorskip("lance")
     data = _blob_query_data()
     table = tmp_db.create_table(
@@ -1238,12 +1238,14 @@ def test_scan_in_order_fragments_use_manifest_order(tmp_db):
 
     fragments = table.to_lance().get_fragments()
     reversed_fragments = fragments[::-1]
-    query = table.search().scan_in_order().select(["id", "blob"])
-
-    df = query.with_fragments(reversed_fragments).to_pandas(
-        blob_mode="descriptions", flatten=True
-    )
-    assert df["id"].tolist() == [1, 2, 3, 4]
+    with pytest.raises(ValueError, match="use fragment_ids"):
+        (
+            table.search()
+            .scan_in_order()
+            .select(["id", "blob"])
+            .with_fragments(reversed_fragments)
+            .to_pandas(blob_mode="descriptions", flatten=True)
+        )
 
     # fragment_ids is already resolved from the manifest and stays ordered.
     df_by_id = (
@@ -1257,7 +1259,9 @@ def test_scan_in_order_fragments_use_manifest_order(tmp_db):
 
 
 @pytest.mark.asyncio
-async def test_async_scan_in_order_fragments_use_manifest_order(tmp_db_async):
+async def test_async_scan_in_order_rejects_with_fragments_and_keeps_fragment_ids(
+    tmp_db_async,
+):
     pytest.importorskip("lance")
     data = _blob_query_data()
     table = await tmp_db_async.create_table(
@@ -1269,14 +1273,24 @@ async def test_async_scan_in_order_fragments_use_manifest_order(tmp_db_async):
     await table.checkout(await table.version())
 
     fragments = (await table.to_lance()).get_fragments()
-    df = await (
+    reversed_fragments = fragments[::-1]
+    with pytest.raises(ValueError, match="use fragment_ids"):
+        await (
+            table.query()
+            .scan_in_order()
+            .with_fragments(fragments[::-1])
+            .select(["id", "blob"])
+            .to_pandas(blob_mode="descriptions", flatten=True)
+        )
+
+    df_by_id = await (
         table.query()
         .scan_in_order()
-        .with_fragments(fragments[::-1])
+        .fragment_ids([fragment.fragment_id for fragment in reversed_fragments])
         .select(["id", "blob"])
         .to_pandas(blob_mode="descriptions", flatten=True)
     )
-    assert df["id"].tolist() == [1, 2, 3, 4]
+    assert df_by_id["id"].tolist() == [1, 2, 3, 4]
 
 
 def test_order_by_rejects_invalid_input_early(mem_db):

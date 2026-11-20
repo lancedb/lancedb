@@ -743,9 +743,10 @@ pub trait ExecutableQuery {
     /// access the [`arrow_schema::Schema`] without polling the stream).
     ///
     /// Note: The size of the returned batches is not deterministic. Row order
-    /// depends on the query shape: an ordinary base-only scan of a fixed table
-    /// version in Embedded returns manifest order unless [`Query::scan_in_order`]
-    /// is set to `false` or a nonempty [`QueryBase::order_by`] adds a sort. RTE
+    /// depends on the query shape: an ordinary unfiltered base-only scan of a
+    /// fixed table version in Embedded returns manifest order unless
+    /// [`Query::scan_in_order`] is set to `false` or a nonempty
+    /// [`QueryBase::order_by`] adds a sort. RTE
     /// tables scan the LSM by default; use `use_rte(false)` for the base-only
     /// guarantee. Ranked searches return rank order, while Enterprise and
     /// namespace-pushed scans have no order guarantee.
@@ -1050,19 +1051,20 @@ impl Query {
     /// Require the results to follow storage order instead of allowing an
     /// unordered scan.
     ///
-    /// A plain base-only scan of an Embedded table, pinned to one dataset
-    /// version, returns rows in that version's manifest order: fragments in
-    /// manifest order, then rows in fragment order. Ordinary base-only scans
-    /// already use Lance's ordered scan by default, so leaving this unset
-    /// preserves that behavior. RTE tables scan the LSM by default and do not
-    /// provide this guarantee unless `use_rte(false)` selects the base table.
-    /// Use `true` when a caller assigns meaning to row positions and must fail
-    /// instead of silently receiving a different order.
+    /// An unfiltered plain base-only scan of an Embedded table, pinned to one
+    /// dataset version, returns rows in that version's manifest order:
+    /// fragments in manifest order, then rows in fragment order. Ordinary
+    /// unfiltered base-only scans already use Lance's ordered scan by default,
+    /// so leaving this unset preserves that behavior. RTE tables scan the LSM
+    /// by default and do not provide this guarantee unless `use_rte(false)`
+    /// selects the base table. Use `true` when a caller assigns meaning to row
+    /// positions and must fail instead of silently receiving a different order.
     ///
     /// Explicit `true` also disables scalar-index filter planning. Legacy
     /// scalar-index plans can materialize index rows in a different sequence,
-    /// so filters are evaluated over the manifest-ordered scan instead. The
-    /// filter result is unchanged, but the scan can read more data.
+    /// so filters are evaluated over the manifest-ordered scan instead. Default
+    /// filtered scans can still use those plans and may not preserve manifest
+    /// order. The filter result is unchanged, but the scan can read more data.
     ///
     /// Leaving this unset preserves the backend default. In particular, a
     /// namespace-backed native table configured for `QueryTable` pushdown may
