@@ -2904,7 +2904,11 @@ impl Table {
     /// Equal valid versions produce empty streams with the same schemas.
     ///
     /// Reversed ranges, version 0, missing versions or tags, and tags from a
-    /// different branch are rejected. Remote tables return
+    /// different branch are rejected. A row-level range that contains a
+    /// `Restore`, or whose transaction history is incomplete, is rejected
+    /// because the restored snapshot can retain older row-version metadata that
+    /// the delta readers would omit; recompute the checkpoint with a full
+    /// rescan and reinitialize it at the end version. Remote tables return
     /// [`Error::NotSupported`].
     ///
     /// ```no_run

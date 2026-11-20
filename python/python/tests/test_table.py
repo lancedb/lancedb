@@ -1469,6 +1469,55 @@ def test_delta_streams_and_pins_endpoints(tmp_path):
     assert table.version == 4
 
 
+@pytest.mark.parametrize("mutation", ["update", "delete"])
+def test_delta_rejects_restore_ranges(tmp_path, mutation):
+    table = lancedb.connect(tmp_path).create_table(
+        "restore_delta",
+        [{"id": 1, "value": 0}],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    if mutation == "update":
+        table.update(values={"value": 10})
+    else:
+        table.delete("id = 1")
+    assert table.version == 2
+
+    table.restore(1)
+    assert table.version == 3
+    assert table.to_arrow().to_pylist() == [{"id": 1, "value": 0}]
+
+    restore_range = table.delta(2, 3)
+    assert [tx["operation"] for tx in restore_range.list_transactions()] == ["Restore"]
+    for reader in (
+        restore_range.inserted_rows,
+        restore_range.updated_rows,
+        restore_range.upserted_rows,
+        restore_range.deleted_row_ids,
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            reader()
+        message = str(exc_info.value)
+        assert "Restore" in message
+        assert "full rescan" in message
+        assert "reinitialize" in message
+
+    # A restore in the middle of the range is still unverifiable.
+    table.add([{"id": 2, "value": 0}])
+    assert table.version == 4
+    with pytest.raises(ValueError, match="Restore"):
+        table.delta(2, 4).upserted_rows()
+
+    # A restore at the exclusive boundary is the base snapshot, so later
+    # changes remain usable.
+    after_restore = table.delta(3, 4)
+    assert after_restore.inserted_rows().read_all()["id"].to_pylist() == [2]
+    assert [tx["operation"] for tx in after_restore.list_transactions()] == ["Append"]
+
+    # Equal endpoints remain empty and do not run the restore guard.
+    equal = table.delta(3, 3)
+    assert equal.inserted_rows().read_all().num_rows == 0
+
+
 def test_delta_requires_stable_row_ids(mem_db: DBConnection):
     table = mem_db.create_table("delta_no_stable", data=[{"id": 1}])
     table.add([{"id": 2}])

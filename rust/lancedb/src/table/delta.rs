@@ -13,7 +13,7 @@ use futures::stream;
 use lance::Dataset;
 use lance::dataset::delta::{DatasetDelta, DatasetDeltaBuilder};
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::transaction::Transaction;
+use lance::dataset::transaction::{Operation, Transaction};
 use lance_core::{ROW_CREATED_AT_VERSION_FIELD, ROW_ID_FIELD, ROW_LAST_UPDATED_AT_VERSION_FIELD};
 
 use crate::error::{Error, Result};
@@ -61,6 +61,13 @@ impl From<String> for DeltaRef {
 /// [`Self::inserted_rows`], [`Self::updated_rows`], [`Self::upserted_rows`],
 /// and [`Self::deleted_row_ids`]. [`Self::list_transactions`] works without
 /// stable row ids.
+///
+/// A nonempty range that contains a `Restore` rejects the row-level readers,
+/// because a restored snapshot can retain older row-version metadata that the
+/// delta readers would omit. The same happens when transaction history in the
+/// range is incomplete. Recompute the checkpoint with a full rescan and
+/// reinitialize it at the end version; [`Self::list_transactions`] remains
+/// available.
 pub struct TableDelta {
     /// The resolved start endpoint. Kept alongside the numeric version so the
     /// handle remains pinned even if the source table is checked out or moves
@@ -72,6 +79,8 @@ pub struct TableDelta {
     begin_version: u64,
     end_version: u64,
     delta: DatasetDelta,
+    transactions: Vec<Transaction>,
+    row_change_error: Option<String>,
     row_schema: SchemaRef,
     deleted_schema: SchemaRef,
 }
@@ -118,6 +127,15 @@ impl TableDelta {
             .with_end_version(end_version)
             .build()?;
 
+        // Read the pinned range once so every row reader shares the same
+        // Restore/history check instead of scanning it again.
+        let transactions = if begin_version == end_version {
+            Vec::new()
+        } else {
+            delta.list_transactions().await?
+        };
+        let row_change_error = row_change_error(begin_version, end_version, &transactions);
+
         Ok(Self {
             row_schema: row_change_schema(&end),
             deleted_schema: deleted_row_ids_schema(),
@@ -126,6 +144,8 @@ impl TableDelta {
             begin_version,
             end_version,
             delta,
+            transactions,
+            row_change_error,
         })
     }
 
@@ -175,7 +195,7 @@ impl TableDelta {
         if self.begin_version == self.end_version {
             return Ok(empty_stream(self.deleted_schema.clone()));
         }
-        self.ensure_stable_row_ids()?;
+        self.ensure_row_changes_allowed()?;
         Ok(self.delta.get_deleted_row_ids().await?)
     }
 
@@ -184,23 +204,29 @@ impl TableDelta {
     /// Unlike the row readers, this does not require stable row ids. A version
     /// can have no readable transaction and is skipped by Lance.
     pub async fn list_transactions(&self) -> Result<Vec<Transaction>> {
-        if self.begin_version == self.end_version {
-            return Ok(Vec::new());
-        }
-        Ok(self.delta.list_transactions().await?)
+        Ok(self.transactions.clone())
     }
 
     async fn scan_rows(&self, change: DeltaRowChange) -> Result<DatasetRecordBatchStream> {
         if self.begin_version == self.end_version {
             return Ok(empty_stream(self.row_schema.clone()));
         }
-        self.ensure_stable_row_ids()?;
+        self.ensure_row_changes_allowed()?;
         let rows = match change {
             DeltaRowChange::Inserted => self.delta.get_inserted_rows().await?,
             DeltaRowChange::Updated => self.delta.get_updated_rows().await?,
             DeltaRowChange::Upserted => self.delta.get_upserted_rows().await?,
         };
         Ok(rows)
+    }
+
+    fn ensure_row_changes_allowed(&self) -> Result<()> {
+        if let Some(message) = &self.row_change_error {
+            return Err(Error::InvalidInput {
+                message: message.clone(),
+            });
+        }
+        self.ensure_stable_row_ids()
     }
 
     fn ensure_stable_row_ids(&self) -> Result<()> {
@@ -218,6 +244,44 @@ impl TableDelta {
             ),
         })
     }
+}
+
+fn row_change_error(
+    begin_version: u64,
+    end_version: u64,
+    transactions: &[Transaction],
+) -> Option<String> {
+    if begin_version == end_version {
+        return None;
+    }
+    if transactions
+        .iter()
+        .any(|transaction| matches!(&transaction.operation, Operation::Restore { .. }))
+    {
+        return Some(format!(
+            "row-level table.delta cannot verify versions ({begin_version}, {end_version}] \
+             because the range contains a Restore; a restore can reintroduce rows with older \
+             row-version metadata that the delta readers omit. Recompute the checkpoint with a \
+             full rescan and reinitialize it at version {end_version}, or use \
+             list_transactions() to inspect the range"
+        ));
+    }
+
+    // A normal commit in the range records one transaction. Lance's
+    // `DatasetDelta::list_transactions` skips versions whose transaction entry
+    // is absent, so a short result means we cannot rule out a hidden Restore.
+    let expected_transactions = (end_version - begin_version) as usize;
+    if transactions.len() != expected_transactions {
+        let missing = expected_transactions.saturating_sub(transactions.len());
+        return Some(format!(
+            "row-level table.delta cannot verify versions ({begin_version}, {end_version}] \
+             because transaction history is missing for {missing} of {expected_transactions} \
+             versions; a Restore may be hidden. Recompute the checkpoint with a full rescan and \
+             reinitialize it at version {end_version}, or use list_transactions() to inspect the \
+             available history"
+        ));
+    }
+    None
 }
 
 #[derive(Clone, Copy)]
@@ -337,12 +401,16 @@ mod tests {
     use futures::TryStreamExt;
     use lance::dataset::WriteParams;
     use lance::io::RecordBatchStream;
+    use lance_file::format::{MAGIC, MAJOR_VERSION, MINOR_VERSION};
+    use lance_io::object_writer::ObjectWriter;
+    use lance_io::traits::{WriteExt, Writer};
+    use lance_table::format::pb;
     use tempfile::tempdir;
 
     use super::*;
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase};
-    use crate::table::WriteOptions;
+    use crate::table::{BaseTable, NativeTable, WriteOptions};
 
     fn rows(ids: &[i32]) -> RecordBatch {
         let schema = Arc::new(ArrowSchema::new(vec![
@@ -456,7 +524,7 @@ mod tests {
         table.delete("id = 1").await.unwrap();
         assert_eq!(table.version().await.unwrap(), 4);
 
-        let delta = table.delta(1u64, None).await.unwrap();
+        let delta = table.delta(DeltaRef::Version(1), None).await.unwrap();
         assert_eq!(delta.begin_version(), 1);
         assert_eq!(delta.end_version(), 4);
 
@@ -658,6 +726,187 @@ mod tests {
             matches!(wrong_branch, Err(Error::InvalidInput { .. })),
             "main must reject a branch tag"
         );
+    }
+
+    #[tokio::test]
+    async fn test_delta_rejects_restore_ranges() {
+        for mutation in ["update", "delete"] {
+            let tmp_dir = tempdir().unwrap();
+            let conn = connect(tmp_dir.path().to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+            let table = conn
+                .create_table("t", rows(&[0]))
+                .write_options(stable_row_ids())
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(table.version().await.unwrap(), 1);
+
+            if mutation == "update" {
+                table.update().column("value", "1").execute().await.unwrap();
+            } else {
+                table.delete("id = 0").await.unwrap();
+            }
+            assert_eq!(table.version().await.unwrap(), 2);
+
+            table.checkout(1).await.unwrap();
+            table.restore().await.unwrap();
+            assert_eq!(table.version().await.unwrap(), 3);
+            assert_eq!(table.count_rows(None).await.unwrap(), 1);
+
+            let restore_range = table.delta(2u64, Some(DeltaRef::Version(3))).await.unwrap();
+            assert_eq!(
+                restore_range
+                    .list_transactions()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|transaction| transaction.operation.name())
+                    .collect::<Vec<_>>(),
+                vec!["Restore"]
+            );
+            for result in [
+                restore_range.inserted_rows().await,
+                restore_range.updated_rows().await,
+                restore_range.upserted_rows().await,
+                restore_range.deleted_row_ids().await,
+            ] {
+                match result {
+                    Err(Error::InvalidInput { message }) => {
+                        assert!(message.contains("Restore"), "{mutation}: {message}");
+                        assert!(message.contains("full rescan"), "{mutation}: {message}");
+                        assert!(message.contains("reinitialize"), "{mutation}: {message}");
+                    }
+                    Ok(_) => panic!("{mutation}: restore range must be rejected"),
+                    Err(other) => panic!("{mutation}: expected invalid input, got {other:?}"),
+                }
+            }
+
+            // A restore in the middle of the range is still unverifiable.
+            table.add(rows(&[1])).execute().await.unwrap();
+            assert_eq!(table.version().await.unwrap(), 4);
+            match table
+                .delta(2u64, Some(DeltaRef::Version(4)))
+                .await
+                .unwrap()
+                .upserted_rows()
+                .await
+            {
+                Err(Error::InvalidInput { message }) => {
+                    assert!(message.contains("Restore"), "{mutation}: {message}");
+                }
+                Ok(_) => panic!("{mutation}: restore inside the range must be rejected"),
+                Err(other) => panic!("{mutation}: expected invalid input, got {other:?}"),
+            }
+
+            // A restore at the exclusive boundary is the base snapshot, so
+            // changes after it are usable.
+            let after_restore = table.delta(3u64, Some(DeltaRef::Version(4))).await.unwrap();
+            let inserted = collect(after_restore.inserted_rows().await.unwrap()).await;
+            assert_eq!(i32_column(&inserted, "id"), vec![1]);
+            assert_eq!(
+                after_restore
+                    .list_transactions()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|transaction| transaction.operation.name())
+                    .collect::<Vec<_>>(),
+                vec!["Append"]
+            );
+
+            // Equal endpoints remain empty and do not run the restore guard.
+            let equal = table.delta(3u64, Some(DeltaRef::Version(3))).await.unwrap();
+            assert!(
+                collect(equal.upserted_rows().await.unwrap())
+                    .await
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn test_row_change_guard_requires_complete_restore_free_history() {
+        let append = |read_version| {
+            Transaction::new(
+                read_version,
+                Operation::Append {
+                    fragments: Vec::new(),
+                },
+                None,
+            )
+        };
+        let restore = Transaction::new(2, Operation::Restore { version: 1 }, None);
+
+        let missing =
+            row_change_error(1, 3, &[append(1)]).expect("missing history must be rejected");
+        assert!(
+            missing.contains("transaction history is missing"),
+            "{missing}"
+        );
+
+        let restored =
+            row_change_error(1, 3, &[append(1), restore]).expect("a restore must be rejected");
+        assert!(restored.contains("Restore"), "{restored}");
+
+        assert!(row_change_error(1, 3, &[append(1), append(2)]).is_none());
+        assert!(row_change_error(1, 1, &[]).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delta_rejects_missing_transaction_history() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", rows(&[0]))
+            .write_options(stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        table.add(rows(&[1])).execute().await.unwrap();
+        let uri = table.uri().await.unwrap();
+
+        // Simulate a supported dataset whose latest version has no transaction
+        // entry. Lance cannot then tell us whether that version was a Restore,
+        // so row readers must fail closed instead of treating it as restore-free.
+        let dataset = Dataset::open(&uri).await.unwrap();
+        let manifest_path = dataset.manifest_location().path.clone();
+        let store = dataset.object_store(None).await.unwrap();
+        let mut writer = ObjectWriter::new(store.as_ref(), &manifest_path)
+            .await
+            .unwrap();
+        let mut manifest = pb::Manifest::from(dataset.manifest());
+        manifest.transaction_section = None;
+        manifest.transaction_section_deprecated = None;
+        manifest.transaction_file = String::new();
+        let pos = writer.write_protobuf(&manifest).await.unwrap();
+        writer
+            .write_magics(pos, MAJOR_VERSION, MINOR_VERSION, MAGIC)
+            .await
+            .unwrap();
+        Writer::shutdown(&mut writer).await.unwrap();
+        drop(dataset);
+        drop(table);
+
+        let table = NativeTable::open(&uri).await.unwrap();
+        let delta = table.delta(DeltaRef::Version(1), None).await.unwrap();
+        assert!(delta.list_transactions().await.unwrap().is_empty());
+        match delta.inserted_rows().await {
+            Err(Error::InvalidInput { message }) => {
+                assert!(
+                    message.contains("transaction history is missing"),
+                    "{message}"
+                );
+                assert!(message.contains("full rescan"), "{message}");
+            }
+            Ok(_) => panic!("missing transaction history must fail closed"),
+            Err(other) => panic!("expected invalid input, got {other:?}"),
+        }
     }
 
     #[tokio::test]

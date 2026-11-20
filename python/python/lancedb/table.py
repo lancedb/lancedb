@@ -1616,7 +1616,11 @@ class Table(ABC):
         Equal valid versions produce empty readers with the same schemas.
 
         Reversed ranges, version 0, missing versions or tags, and tags from a
-        different branch are rejected. Remote tables raise
+        different branch are rejected. A row-level range that contains a
+        ``Restore``, or whose transaction history is incomplete, is rejected
+        because the restored snapshot can retain older row-version metadata that
+        the delta readers would omit; recompute the checkpoint with a full
+        rescan and reinitialize it at the end version. Remote tables raise
         ``NotImplementedError``.
 
         Parameters
@@ -10438,6 +10442,11 @@ class TableDelta:
     table with ``storage_options={"new_table_enable_stable_row_ids": "true"}``
     to enable them. [list_transactions][lancedb.table.TableDelta.list_transactions]
     works without stable row ids.
+
+    A nonempty range that contains a ``Restore``, or whose transaction history
+    is incomplete, rejects the row-level readers. Recompute the checkpoint with
+    a full rescan and reinitialize it at the end version; transaction history
+    remains available.
     """
 
     def __init__(self, inner: Any):
