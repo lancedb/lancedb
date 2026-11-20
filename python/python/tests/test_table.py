@@ -6565,7 +6565,7 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         ({"max_concurrency": 4}, "max_concurrency"),
         ({"publication_interval_rows": 60}, "publication_interval_rows"),
         (
-            {"resource_budget": {"cpu_millis": 1000, "memory_bytes": 1024}},
+            {"resource_budget": {"total_cpu_millis": 1000, "total_memory_bytes": 1024}},
             "resource_budget",
         ),
         (
@@ -6865,8 +6865,8 @@ def test_auto_refresh_resource_budget_requires_a_function(tmp_path):
         table.add_columns(
             computed={"doubled": "x * 2"},
             auto_refresh_resource_budget={
-                "cpu_millis": 1_000,
-                "memory_bytes": 1_024,
+                "total_cpu_millis": 1_000,
+                "total_memory_bytes": 1_024,
             },
         )
     assert table.version == before

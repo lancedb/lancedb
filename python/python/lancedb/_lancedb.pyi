@@ -744,7 +744,7 @@ class Table:
         supervisor_resources: Optional[dict[str, int]] = None,
         planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
         error_policy: Optional[str] = None,
         max_failed_fraction: Optional[float] = None,
@@ -772,7 +772,7 @@ class Table:
         supervisor_resources: Optional[dict[str, int]] = None,
         planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
         error_policy: Optional[str] = None,
         max_failed_fraction: Optional[float] = None,
@@ -824,9 +824,9 @@ class Table:
         source_version: Optional[int] = None,
         *,
         full: bool = False,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
@@ -834,9 +834,9 @@ class Table:
         source_version: Optional[int] = None,
         *,
         full: bool = False,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...

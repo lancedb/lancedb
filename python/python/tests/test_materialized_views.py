@@ -68,8 +68,12 @@ def mock_remote_materialized_view_refresh():
     "resources",
     [
         {},
-        {"gpu_count": 2, "gpu_class": "h100"},
-        {"cpu_millis": 8000, "memory_bytes": 16 * 1024**3, "gpu_count": 0},
+        {"total_gpu_count": 2, "gpu_class": "h100"},
+        {
+            "total_cpu_millis": 8000,
+            "total_memory_bytes": 16 * 1024**3,
+            "total_gpu_count": 0,
+        },
     ],
 )
 async def test_remote_refresh_reports_unknown_metrics(
@@ -159,13 +163,13 @@ async def test_remote_refresh_reports_unknown_metrics(
             assert expected.encode() in refresh
         previous = len(server.commands)
         for invalid in [
-            {"cpu_millis": 0},
-            {"memory_bytes": 1},
-            {"gpu_count": -1},
-            {"gpu_count": True},
-            {"gpu_count": 2**32},
+            {"total_cpu_millis": 0},
+            {"total_memory_bytes": 1},
+            {"total_gpu_count": -1},
+            {"total_gpu_count": True},
+            {"total_gpu_count": 2**32},
             {"gpu_class": "H200:8"},
-            {"gpu_count": 0, "gpu_class": "h100"},
+            {"total_gpu_count": 0, "gpu_class": "h100"},
         ]:
             with pytest.raises(ValueError):
                 if sync:

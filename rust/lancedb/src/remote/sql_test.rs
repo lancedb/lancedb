@@ -1716,9 +1716,9 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     let third = view
         .refresh()
         .full(true)
-        .cpu_millis(8000)
-        .memory_bytes(16 << 30)
-        .gpu_count(2)
+        .total_cpu_millis(8000)
+        .total_memory_bytes(16 << 30)
+        .total_gpu_count(2)
         .gpu_class("h100")
         .execute_async()
         .await
@@ -1727,9 +1727,9 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
     for invalid in [
-        view.refresh().cpu_millis(1),
+        view.refresh().total_cpu_millis(1),
         view.refresh().gpu_class("H200:8"),
-        view.refresh().gpu_count(0).gpu_class("h100"),
+        view.refresh().total_gpu_count(0).gpu_class("h100"),
     ] {
         assert!(matches!(
             invalid.execute_async().await,
@@ -1757,7 +1757,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
             "DESCRIBE MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
-            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2, gpu_class = 'h100')",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2, gpu_class = 'h100')",
         ]
     );
     assert!(
