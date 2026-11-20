@@ -5747,8 +5747,16 @@ class LanceTable(Table):
         """
         if isinstance(query, FullTextQuery):
             query_type = "fts"
+        if (
+            vector_column_name is None
+            and query_type != "fts"
+            and not (query is None and query_type != "hybrid")
+        ):
+            schema = self.schema
+        else:
+            schema = None
         vector_column_name = infer_vector_column_name(
-            schema=self.schema,
+            schema=schema,
             query_type=query_type,
             query=query,
             vector_column_name=vector_column_name,
@@ -6033,6 +6041,7 @@ class LanceTable(Table):
             return self._execute_query(query, timeout=timeout).read_all()
 
         async_query = self._table._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
         return LOOP.run(async_query._execute_eager(timeout=timeout))
 
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
@@ -8547,6 +8556,7 @@ class AsyncTable:
         # used for that code path right now.
 
         async_query = self._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
 
         return await async_query.to_batches(
             max_batch_length=batch_size, timeout=timeout
@@ -8568,6 +8578,7 @@ class AsyncTable:
             return (await self._execute_query(query, timeout=timeout)).read_all()
 
         async_query = self._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
         return await async_query._execute_eager(timeout=timeout)
 
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
