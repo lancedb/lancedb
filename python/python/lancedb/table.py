@@ -46,7 +46,7 @@ from ._blob import (
     validate_blob_mode,
 )
 from .types import BlobMode
-from lancedb.arrow import peek_reader
+from lancedb.arrow import AsyncRecordBatchReader, peek_reader
 from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
@@ -1597,6 +1597,63 @@ class Table(ABC):
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         raise NotImplementedError("current_branch is not supported for this table type")
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> "TableDelta":
+        """Compare two persisted versions of this table on its current branch.
+
+        ``from_version`` is exclusive and ``to_version`` is inclusive. Both
+        accept a version number (starting at 1) or a tag on the current branch.
+        Omitting ``to_version`` uses the version this handle currently sees,
+        including a time-travel checkout. Endpoints are resolved once when this
+        method is called, so moving a tag or advancing the table later does not
+        change the delta, and this table's checkout state is left untouched.
+
+        The returned [TableDelta][lancedb.table.TableDelta] streams inserted,
+        updated, upserted, and deleted rows. Those row-level readers require
+        stable row ids at both endpoints; create the table with
+        ``storage_options={"new_table_enable_stable_row_ids": "true"}`` to
+        enable them. ``list_transactions()`` works without stable row ids.
+        Equal valid versions produce empty readers with the same schemas.
+
+        Reversed ranges, version 0, missing versions or tags, and tags from a
+        different branch are rejected. A row-level range that contains a
+        ``Restore``, or whose transaction history is incomplete, is rejected
+        because the restored snapshot can retain older row-version metadata that
+        the delta readers would omit; recompute the checkpoint with a full
+        rescan and reinitialize it at the end version. Remote tables raise
+        ``NotImplementedError``.
+
+        Parameters
+        ----------
+        from_version: int | str
+            The version or tag to compare from (exclusive).
+        to_version: int | str, optional
+            The version or tag to compare to (inclusive). Defaults to the
+            currently visible version.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "delta_example",
+        ...     [{"id": 1}, {"id": 2}],
+        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
+        ... )
+        >>> table.tags.create("baseline", table.version)
+        >>> _ = table.add([{"id": 3}])
+        >>> delta = table.delta("baseline")
+        >>> inserted = delta.inserted_rows().read_all()
+        >>> inserted["id"].to_pylist()
+        [3]
+        >>> [transaction["operation"] for transaction in delta.list_transactions()]
+        ['Append']
+        """
+        raise NotImplementedError("delta is not supported for this table type")
 
     def __len__(self) -> int:
         """The number of rows in this Table"""
@@ -4617,6 +4674,18 @@ class LanceTable(Table):
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> "TableDelta":
+        """Compare two versions or tags.
+
+        See [Table.delta][lancedb.table.Table.delta].
+        """
+        async_delta = LOOP.run(self._table.delta(from_version, to_version))
+        return TableDelta(async_delta._inner)
 
     @property
     def version(self) -> int:
@@ -9764,6 +9833,20 @@ class AsyncTable:
 
         return versions
 
+    async def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> "AsyncTableDelta":
+        """Compare two versions or tags.
+
+        See [Table.delta][lancedb.table.Table.delta] for endpoint, stable-row-id,
+        and branch-tag semantics. The returned
+        [AsyncTableDelta][lancedb.table.AsyncTableDelta] streams
+        ``AsyncRecordBatchReader`` values.
+        """
+        return AsyncTableDelta(await self._inner.delta(from_version, to_version))
+
     async def checkout(self, version: int | str):
         """
         Checks out a specific version of the Table
@@ -10567,6 +10650,128 @@ class Branches:
         # (LanceTable / RemoteTable) and connection context; `version` is the
         # explicit pin so a remote handle can restore branch+version on reopen.
         return self._parent._wrap_branch_handle(async_table, version)
+
+
+class TableDelta:
+    """Streaming row changes between two table versions.
+
+    Created by [Table.delta][lancedb.table.Table.delta]. The endpoints are
+    fixed when the delta is created.
+
+    Row-level readers require stable row ids at both endpoints. Create the
+    table with ``storage_options={"new_table_enable_stable_row_ids": "true"}``
+    to enable them. [list_transactions][lancedb.table.TableDelta.list_transactions]
+    works without stable row ids.
+
+    A nonempty range that contains a ``Restore``, or whose transaction history
+    is incomplete, rejects the row-level readers. Recompute the checkpoint with
+    a full rescan and reinitialize it at the end version; transaction history
+    remains available.
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+        self._async = AsyncTableDelta(inner)
+
+    @property
+    def begin_version(self) -> int:
+        """The version this delta starts from (exclusive)."""
+        return self._inner.begin_version()
+
+    @property
+    def end_version(self) -> int:
+        """The version this delta ends at (inclusive)."""
+        return self._inner.end_version()
+
+    def inserted_rows(self) -> pa.RecordBatchReader:
+        """Stream rows inserted in ``(begin_version, end_version]``.
+
+        Each batch carries the table columns plus ``_rowid``,
+        ``_row_created_at_version``, and ``_row_last_updated_at_version``.
+        """
+        return _record_batch_reader(LOOP.run(self._async.inserted_rows()))
+
+    def updated_rows(self) -> pa.RecordBatchReader:
+        """Stream rows updated in ``(begin_version, end_version]``.
+
+        Newly inserted rows are excluded; use
+        [upserted_rows][lancedb.table.TableDelta.upserted_rows] for both.
+        """
+        return _record_batch_reader(LOOP.run(self._async.updated_rows()))
+
+    def upserted_rows(self) -> pa.RecordBatchReader:
+        """Stream inserted and updated rows in ``(begin_version, end_version]``."""
+        return _record_batch_reader(LOOP.run(self._async.upserted_rows()))
+
+    def deleted_row_ids(self) -> pa.RecordBatchReader:
+        """Stream the ``_rowid`` values of rows deleted in the range.
+
+        Each batch carries one ``_rowid`` column of type ``uint64``. Deleted
+        rows are not reconstructed from earlier versions.
+        """
+        return _record_batch_reader(LOOP.run(self._async.deleted_row_ids()))
+
+    def list_transactions(self) -> List[Dict[str, Any]]:
+        """List transactions committed in ``(begin_version, end_version]``.
+
+        Each item has ``read_version``, ``uuid``, ``operation``, ``tag``, and
+        ``transaction_properties``. Unlike row readers, this works without
+        stable row ids.
+        """
+        return LOOP.run(self._async.list_transactions())
+
+
+class AsyncTableDelta:
+    """Async streaming row changes between two table versions.
+
+    Created by [AsyncTable.delta][lancedb.table.AsyncTable.delta]. See
+    [TableDelta][lancedb.table.TableDelta] for the endpoint and stable-row-id
+    contract.
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+
+    @property
+    def begin_version(self) -> int:
+        """The version this delta starts from (exclusive)."""
+        return self._inner.begin_version()
+
+    @property
+    def end_version(self) -> int:
+        """The version this delta ends at (inclusive)."""
+        return self._inner.end_version()
+
+    async def inserted_rows(self) -> AsyncRecordBatchReader:
+        """Stream rows inserted in ``(begin_version, end_version]``."""
+        return AsyncRecordBatchReader(await self._inner.inserted_rows())
+
+    async def updated_rows(self) -> AsyncRecordBatchReader:
+        """Stream rows updated in ``(begin_version, end_version]``."""
+        return AsyncRecordBatchReader(await self._inner.updated_rows())
+
+    async def upserted_rows(self) -> AsyncRecordBatchReader:
+        """Stream inserted and updated rows in ``(begin_version, end_version]``."""
+        return AsyncRecordBatchReader(await self._inner.upserted_rows())
+
+    async def deleted_row_ids(self) -> AsyncRecordBatchReader:
+        """Stream the ``_rowid`` values of rows deleted in the range."""
+        return AsyncRecordBatchReader(await self._inner.deleted_row_ids())
+
+    async def list_transactions(self) -> List[Dict[str, Any]]:
+        """List transactions committed in ``(begin_version, end_version]``."""
+        return await self._inner.list_transactions()
+
+
+def _record_batch_reader(stream) -> pa.RecordBatchReader:
+    def iter_sync():
+        try:
+            while True:
+                yield LOOP.run(stream.__anext__())
+        except StopAsyncIteration:
+            return
+
+    return pa.RecordBatchReader.from_batches(stream.schema, iter_sync())
 
 
 class AsyncTags:

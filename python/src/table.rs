@@ -29,10 +29,10 @@ use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
+    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, DeltaRef, Duration,
     FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionRefreshPlanningConfig,
     FunctionRefreshPodResources, FunctionWorkerResourceBudget, IndexRemapMode, NewColumnTransform,
-    Ref, RefreshColumnOptions, Table as LanceDbTable,
+    Ref, RefreshColumnOptions, Table as LanceDbTable, TableDelta as LanceDbTableDelta,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -2075,6 +2075,22 @@ impl Table {
         )
     }
 
+    #[pyo3(signature = (from_version, to_version=None))]
+    pub fn delta(
+        self_: PyRef<'_, Self>,
+        from_version: LanceVersion,
+        to_version: Option<LanceVersion>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let delta = inner
+                .delta(from_version, to_version.map(Into::into))
+                .await
+                .infer_error()?;
+            Ok(TableDelta::new(delta))
+        })
+    }
+
     pub fn list_versions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -3242,6 +3258,103 @@ impl Table {
 pub enum LanceVersion {
     Version(u64),
     Tag(String),
+}
+
+impl From<LanceVersion> for DeltaRef {
+    fn from(version: LanceVersion) -> Self {
+        match version {
+            LanceVersion::Version(version) => DeltaRef::Version(version),
+            LanceVersion::Tag(tag) => DeltaRef::Tag(tag),
+        }
+    }
+}
+
+/// Streaming row changes between two table versions.
+#[pyclass]
+pub struct TableDelta {
+    inner: Arc<LanceDbTableDelta>,
+}
+
+impl TableDelta {
+    fn new(inner: LanceDbTableDelta) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[pymethods]
+impl TableDelta {
+    /// The version this delta starts from (exclusive).
+    pub fn begin_version(&self) -> u64 {
+        self.inner.begin_version()
+    }
+
+    /// The version this delta ends at (inclusive).
+    pub fn end_version(&self) -> u64 {
+        self.inner.end_version()
+    }
+
+    pub fn inserted_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.inserted_rows().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn updated_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.updated_rows().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn upserted_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.upserted_rows().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn deleted_row_ids(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.deleted_row_ids().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn list_transactions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let transactions = inner.list_transactions().await.infer_error()?;
+            Python::attach(|py| {
+                let output = PyList::empty(py);
+                for transaction in transactions {
+                    let item = PyDict::new(py);
+                    item.set_item("read_version", transaction.read_version)?;
+                    item.set_item("uuid", transaction.uuid)?;
+                    item.set_item("operation", transaction.operation.name())?;
+                    item.set_item("tag", transaction.tag)?;
+                    match transaction.transaction_properties {
+                        Some(properties) => {
+                            let py_properties = PyDict::new(py);
+                            for (key, value) in properties.iter() {
+                                py_properties.set_item(key, value)?;
+                            }
+                            item.set_item("transaction_properties", py_properties)?;
+                        }
+                        None => item.set_item("transaction_properties", py.None())?,
+                    }
+                    output.append(item)?;
+                }
+                Ok(output.unbind())
+            })
+        })
+    }
 }
 
 #[derive(FromPyObject)]

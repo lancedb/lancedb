@@ -84,6 +84,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod delta;
 pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
@@ -114,6 +115,7 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
+pub use delta::{DeltaRef, TableDelta};
 pub use function_column_status::{
     FunctionColumnAutoRefreshBlockedReason, FunctionColumnAutoRefreshState,
     FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
@@ -1071,6 +1073,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Compare two persisted versions on this table's current branch.
+    ///
+    /// The default implementation returns [`Error::NotSupported`]; table types
+    /// without a local Lance dataset, such as remote tables, cannot stream row
+    /// changes.
+    async fn delta(
+        &self,
+        _from_version: DeltaRef,
+        _to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        Err(Error::NotSupported {
+            message: "table.delta is only supported on LanceDB Embedded tables".into(),
+        })
+    }
     /// Return a new table handle pinned to the exact revision currently visible.
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
         Err(Error::NotSupported {
@@ -2923,6 +2939,48 @@ impl Table {
         self.inner.version().await
     }
 
+    /// Compare two persisted versions of this table on its current branch.
+    ///
+    /// `from_version` is exclusive and `to_version` is inclusive. Both accept
+    /// a version number (starting at 1) or a tag on the current branch.
+    /// Omitting `to_version` uses the version this handle currently sees,
+    /// including a time-travel [`Self::checkout`]. The endpoints are resolved
+    /// once when this method is called, so moving a tag or advancing the table
+    /// later does not change the delta, and the table's own checkout state is
+    /// left untouched.
+    ///
+    /// The returned [`TableDelta`] streams the rows inserted, updated,
+    /// upserted, or deleted between the endpoints. Those row-level readers
+    /// require stable row ids at both endpoints; create the table with
+    /// `storage_options={"new_table_enable_stable_row_ids": "true"}` to enable
+    /// them. [`TableDelta::list_transactions`] works without stable row ids.
+    /// Equal valid versions produce empty streams with the same schemas.
+    ///
+    /// Reversed ranges, version 0, missing versions or tags, and tags from a
+    /// different branch are rejected. A row-level range that contains a
+    /// `Restore`, or whose transaction history is incomplete, is rejected
+    /// because the restored snapshot can retain older row-version metadata that
+    /// the delta readers would omit; recompute the checkpoint with a full
+    /// rescan and reinitialize it at the end version. Remote tables return
+    /// [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::table::DeltaRef;
+    /// # async fn example(table: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let delta = table.delta(1u64, Some(DeltaRef::Version(table.version().await?))).await?;
+    /// let _inserted = delta.inserted_rows().await?;
+    /// let transactions = delta.list_transactions().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delta(
+        &self,
+        from_version: impl Into<DeltaRef>,
+        to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        self.inner.delta(from_version.into(), to_version).await
+    }
+
     /// Return a new table handle pinned to the exact revision currently visible.
     ///
     /// This is used when asynchronous preparation must remain consistent with
@@ -4268,6 +4326,15 @@ impl BaseTable for NativeTable {
 
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn delta(
+        &self,
+        from_version: DeltaRef,
+        to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        let visible = self.dataset.get().await?;
+        TableDelta::from_visible_snapshot(&visible, from_version, to_version).await
     }
 
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {

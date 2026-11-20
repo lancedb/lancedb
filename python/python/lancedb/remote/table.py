@@ -85,6 +85,7 @@ from ..table import (
     IndexStatistics,
     Query,
     Table,
+    TableDelta,
     Tags,
 )
 from ..types import BaseTokenizerType, ScalarIndexType
@@ -286,6 +287,19 @@ class RemoteTable(Table):
     def list_versions(self):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> TableDelta:
+        """Compare two versions or tags.
+
+        Streamed version deltas are not supported by LanceDB Enterprise tables;
+        this raises ``NotImplementedError``.
+        """
+        async_delta = LOOP.run(self._table.delta(from_version, to_version))
+        return TableDelta(async_delta._inner)
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported in LanceDB Enterprise."""

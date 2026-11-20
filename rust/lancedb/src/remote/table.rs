@@ -5252,6 +5252,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delta_not_supported() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("table.delta must not send a remote request")
+        });
+
+        let error = table.delta(1u64, None).await.unwrap_err();
+        assert!(
+            matches!(error, Error::NotSupported { .. }),
+            "expected NotSupported, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_version() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
