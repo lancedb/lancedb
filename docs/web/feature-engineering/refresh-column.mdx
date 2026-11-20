@@ -333,7 +333,7 @@ too slow or too expensive:
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
-  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+  WITH (total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2)
 ```
 </CodeGroup>
 
@@ -342,7 +342,7 @@ up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
 per-worker allocations or a guaranteed worker count. `num_workers` is only
 accepted for SQL-expression columns; registered Function columns reject it.
 
-In particular, `gpu_count = 2` does not request two devices inside one Python
+In particular, `total_gpu_count = 2` does not request two devices inside one Python
 process or enable tensor parallelism. Inspect configured GPU classes and their
 per-worker limits with `db.list_gpu_classes()` or `SHOW GPU CLASSES`. Choose a
 model that fits the worker shape supported by your deployment; see
@@ -356,8 +356,8 @@ count inside the budget defaults to zero, so a CPU-only Function can omit it:
 job = table.refresh_column_async(
     "embedding",
     resource_budget={
-        "cpu_millis": 8000,
-        "memory_bytes": 16 * 1024**3,
+        "total_cpu_millis": 8000,
+        "total_memory_bytes": 16 * 1024**3,
     },
 )
 job.wait()
@@ -382,8 +382,8 @@ let _job = table
 ```typescript TypeScript icon="typescript"
 const job = await table.refreshColumnAsync("embedding", {
   resourceBudget: {
-    cpuMillis: 8000,
-    memoryBytes: 16 * 1024 ** 3,
+    totalCpuMillis: 8000,
+    totalMemoryBytes: 16 * 1024 ** 3,
   },
 });
 await job.wait();
@@ -391,11 +391,11 @@ await job.wait();
 </CodeGroup>
 
 On current SQL servers, the equivalent `REFRESH COLUMN ... WITH (...)` form
-still takes all three fields when CPU or memory is set; use `gpu_count = 0`
+still takes all three fields when CPU or memory is set; use `total_gpu_count = 0`
 for a CPU-only Function. The SDK normalizes an omitted nested GPU count to a
 numeric zero before sending the request.
 
-The existing top-level `gpu_count` / `gpuCount` option remains the shorthand
+The existing top-level `total_gpu_count` / `totalGpuCount` option remains the shorthand
 for changing only the aggregate GPU budget. It cannot be combined with the
 complete resource budget. Omitting both preserves the server's existing
 defaults.
@@ -613,7 +613,7 @@ gpu_class = next(gpu.name for gpu in classes if gpu.gpu_model == "NVIDIA H100")
 job = table.refresh_column_async(
     "embedding",
     gpu_class=gpu_class,
-    gpu_count=4,
+    total_gpu_count=4,
     batch_size=32,
 )
 ```
@@ -637,7 +637,7 @@ async fn refresh(
             "embedding",
             RefreshColumnOptions::default()
                 .gpu_class(gpu_class)
-                .gpu_count(4)
+                .total_gpu_count(4)
                 .batch_size(32),
         )
         .await?;
@@ -646,7 +646,7 @@ async fn refresh(
 ```
 </CodeGroup>
 
-`gpu_count` is the aggregate GPU budget for the refresh's Function workers,
+`total_gpu_count` is the aggregate GPU budget for the refresh's Function workers,
 not a request for that many GPUs per worker. It must be positive and preserves
 the deployment's CPU and memory defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
@@ -658,7 +658,7 @@ GPU class discovery.
 <Note>
 The Rust GPU discovery and refresh controls are not in the latest Rust
 release. TypeScript does not expose GPU class discovery; pass `gpuClass`
-and `gpuCount` in the `refreshColumnAsync` options.
+and `totalGpuCount` in the `refreshColumnAsync` options.
 </Note>
 
 Completed Function outputs publish with their fragment by default. To opt into
@@ -750,7 +750,7 @@ The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
 timeout that is not a positive number and a zero worker or process count
 before sending the request; the server validates everything else. A LanceDB
 Embedded refresh rejects every option other than `batch_size`, `gpu_class`
-and `gpu_count`; in particular, it rejects `resource_budget` rather than
+and `total_gpu_count`; in particular, it rejects `resource_budget` rather than
 silently ignoring it.
 
 ## When a refresh fails {#failures}

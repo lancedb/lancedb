@@ -6310,7 +6310,7 @@ describe("computed columns", () => {
     ).rejects.toThrow("max_concurrency requires a LanceDB Enterprise refresh");
     await expect(
       table.refreshColumnAsync("x", {
-        resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
+        resourceBudget: { totalCpuMillis: 1_000, totalMemoryBytes: 1_024 },
       }),
     ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
     await expect(

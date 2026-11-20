@@ -1966,17 +1966,17 @@ impl MaterializedView {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RefreshMaterializedViewOptions {
-    pub cpu_millis: Option<u64>,
-    pub memory_bytes: Option<u64>,
-    pub gpu_count: Option<u32>,
+    pub total_cpu_millis: Option<u64>,
+    pub total_memory_bytes: Option<u64>,
+    pub total_gpu_count: Option<u32>,
     pub gpu_class: Option<String>,
 }
 
 impl RefreshMaterializedViewOptions {
     pub(crate) fn is_empty(&self) -> bool {
-        self.cpu_millis.is_none()
-            && self.memory_bytes.is_none()
-            && self.gpu_count.is_none()
+        self.total_cpu_millis.is_none()
+            && self.total_memory_bytes.is_none()
+            && self.total_gpu_count.is_none()
             && self.gpu_class.is_none()
     }
 
@@ -1984,23 +1984,23 @@ impl RefreshMaterializedViewOptions {
         let invalid = |message: &str| Error::InvalidInput {
             message: message.into(),
         };
-        if self.cpu_millis == Some(0) || self.memory_bytes == Some(0) {
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
             return Err(invalid(
-                "cpu_millis and memory_bytes must be positive integers",
+                "total_cpu_millis and total_memory_bytes must be positive integers",
             ));
         }
-        if (self.cpu_millis.is_some() || self.memory_bytes.is_some())
-            && !(self.cpu_millis.is_some()
-                && self.memory_bytes.is_some()
-                && self.gpu_count.is_some())
+        if (self.total_cpu_millis.is_some() || self.total_memory_bytes.is_some())
+            && !(self.total_cpu_millis.is_some()
+                && self.total_memory_bytes.is_some()
+                && self.total_gpu_count.is_some())
         {
             return Err(invalid(
-                "cpu_millis, memory_bytes, and gpu_count must be specified together",
+                "total_cpu_millis, total_memory_bytes, and total_gpu_count must be specified together",
             ));
         }
         if let Some(class) = &self.gpu_class {
             crate::function::validate_gpu_class_name(class)?;
-            if self.gpu_count == Some(0) {
+            if self.total_gpu_count == Some(0) {
                 return Err(invalid("gpu_class requires a positive GPU budget"));
             }
         }
@@ -2013,14 +2013,14 @@ impl RefreshMaterializedViewOptions {
         if full {
             values.push("full = true".to_string());
         }
-        if let Some(cpu) = self.cpu_millis {
-            values.push(format!("cpu_millis = {cpu}"));
+        if let Some(cpu) = self.total_cpu_millis {
+            values.push(format!("total_cpu_millis = {cpu}"));
         }
-        if let Some(memory) = self.memory_bytes {
-            values.push(format!("memory_bytes = {memory}"));
+        if let Some(memory) = self.total_memory_bytes {
+            values.push(format!("total_memory_bytes = {memory}"));
         }
-        if let Some(gpu) = self.gpu_count {
-            values.push(format!("gpu_count = {gpu}"));
+        if let Some(gpu) = self.total_gpu_count {
+            values.push(format!("total_gpu_count = {gpu}"));
         }
         if let Some(class) = &self.gpu_class {
             values.push(format!("gpu_class = '{class}'"));
@@ -2043,20 +2043,20 @@ pub struct RefreshMaterializedViewBuilder {
 
 impl RefreshMaterializedViewBuilder {
     /// Cap total CPU capacity in millicores; requires memory and GPU budgets.
-    pub fn cpu_millis(mut self, cpu_millis: u64) -> Self {
-        self.options.cpu_millis = Some(cpu_millis);
+    pub fn total_cpu_millis(mut self, total_cpu_millis: u64) -> Self {
+        self.options.total_cpu_millis = Some(total_cpu_millis);
         self
     }
 
     /// Cap total memory in bytes; requires CPU and GPU budgets.
-    pub fn memory_bytes(mut self, memory_bytes: u64) -> Self {
-        self.options.memory_bytes = Some(memory_bytes);
+    pub fn total_memory_bytes(mut self, total_memory_bytes: u64) -> Self {
+        self.options.total_memory_bytes = Some(total_memory_bytes);
         self
     }
 
     /// Cap concurrent GPUs for this refresh. Zero is CPU-only.
-    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
-        self.options.gpu_count = Some(gpu_count);
+    pub fn total_gpu_count(mut self, total_gpu_count: u32) -> Self {
+        self.options.total_gpu_count = Some(total_gpu_count);
         self
     }
 
@@ -2448,7 +2448,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            view.refresh().gpu_count(0).execute().await,
+            view.refresh().total_gpu_count(0).execute().await,
             Err(Error::NotSupported { .. })
         ));
         assert!(matches!(

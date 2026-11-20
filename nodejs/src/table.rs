@@ -1921,11 +1921,11 @@ pub struct FunctionErrorsOptions {
 #[derive(Clone, Debug)]
 pub struct FunctionWorkerResourceBudget {
     /// Aggregate CPU budget in millicores; 1000 is one CPU.
-    pub cpu_millis: f64,
+    pub total_cpu_millis: f64,
     /// Aggregate memory budget in bytes.
-    pub memory_bytes: f64,
+    pub total_memory_bytes: f64,
     /// Aggregate GPU budget. Omitted means zero, a CPU-only refresh.
-    pub gpu_count: Option<f64>,
+    pub total_gpu_count: Option<f64>,
 }
 
 /// CPU, memory, and ephemeral-storage limits for one Function refresh
@@ -1996,7 +1996,7 @@ fn resource_budget_gpu_count(value: Option<f64>) -> napi::Result<u32> {
     };
     if !value.is_finite() || value.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&value) {
         return Err(napi::Error::from_reason(
-            "resourceBudget.gpuCount must be an integer between 0 and 4294967295",
+            "resourceBudget.totalGpuCount must be an integer between 0 and 4294967295",
         ));
     }
     Ok(value as u32)
@@ -2048,7 +2048,7 @@ pub struct RefreshColumnOptions {
     /// Resources and sizing for the refresh planning fleet.
     pub planning_workers: Option<FunctionRefreshPlanningConfig>,
     /// Positive aggregate GPU budget for Function workers.
-    pub gpu_count: Option<u32>,
+    pub total_gpu_count: Option<u32>,
     /// Override retries of failed user-code calls for this refresh.
     pub retry_policy: Option<FunctionRetryPolicy>,
     /// `"fail"` (default) stops on a row error; `"skip"` writes null and
@@ -2088,10 +2088,16 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
             .map(|budget| {
                 Ok::<_, napi::Error>(
                     LanceFunctionWorkerResourceBudget::new(
-                        positive_safe_integer(budget.cpu_millis, "resourceBudget.cpuMillis")?,
-                        positive_safe_integer(budget.memory_bytes, "resourceBudget.memoryBytes")?,
+                        positive_safe_integer(
+                            budget.total_cpu_millis,
+                            "resourceBudget.totalCpuMillis",
+                        )?,
+                        positive_safe_integer(
+                            budget.total_memory_bytes,
+                            "resourceBudget.totalMemoryBytes",
+                        )?,
                     )
-                    .with_gpu_count(resource_budget_gpu_count(budget.gpu_count)?),
+                    .with_total_gpu_count(resource_budget_gpu_count(budget.total_gpu_count)?),
                 )
             })
             .transpose()?;
@@ -2147,7 +2153,7 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
                 ))
             })
             .transpose()?;
-        options.gpu_count = value.gpu_count;
+        options.total_gpu_count = value.total_gpu_count;
         options.retry_policy = value.retry_policy.map(|policy| {
             let mut converted = lancedb::function::FunctionRetryPolicy::default();
             if let Some(max_attempts) = policy.max_attempts {

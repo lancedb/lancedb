@@ -62,7 +62,7 @@ struct RefreshColumnArgs {
     supervisor_resources: Option<FunctionRefreshPodResources>,
     planning_workers: Option<FunctionRefreshPlanningConfig>,
     gpu_class: Option<String>,
-    gpu_count: Option<i64>,
+    total_gpu_count: Option<i64>,
     retry_policy: Option<String>,
     error_policy: Option<String>,
     max_failed_fraction: Option<f64>,
@@ -140,31 +140,37 @@ fn parse_resource_budget(
         let key = key
             .extract::<String>()
             .map_err(|_| PyValueError::new_err("resource_budget keys must be strings"))?;
-        if !matches!(key.as_str(), "cpu_millis" | "memory_bytes" | "gpu_count") {
+        if !matches!(
+            key.as_str(),
+            "total_cpu_millis" | "total_memory_bytes" | "total_gpu_count"
+        ) {
             return Err(PyValueError::new_err(format!(
                 "resource_budget contains unsupported key '{key}'"
             )));
         }
     }
-    let cpu_millis = budget
-        .get_item("cpu_millis")?
-        .ok_or_else(|| PyValueError::new_err("resource_budget.cpu_millis is required"))?;
-    let cpu_millis = resource_budget_integer(&cpu_millis, "cpu_millis", false)?;
-    let memory_bytes = budget
-        .get_item("memory_bytes")?
-        .ok_or_else(|| PyValueError::new_err("resource_budget.memory_bytes is required"))?;
-    let memory_bytes = resource_budget_integer(&memory_bytes, "memory_bytes", false)?;
-    let gpu_count = match budget.get_item("gpu_count")? {
+    let total_cpu_millis = budget
+        .get_item("total_cpu_millis")?
+        .ok_or_else(|| PyValueError::new_err("resource_budget.total_cpu_millis is required"))?;
+    let total_cpu_millis = resource_budget_integer(&total_cpu_millis, "total_cpu_millis", false)?;
+    let total_memory_bytes = budget
+        .get_item("total_memory_bytes")?
+        .ok_or_else(|| PyValueError::new_err("resource_budget.total_memory_bytes is required"))?;
+    let total_memory_bytes =
+        resource_budget_integer(&total_memory_bytes, "total_memory_bytes", false)?;
+    let total_gpu_count = match budget.get_item("total_gpu_count")? {
         None => 0,
         Some(value) if value.is_none() => 0,
-        Some(value) => {
-            u32::try_from(resource_budget_integer(&value, "gpu_count", true)?).map_err(|_| {
-                PyValueError::new_err("resource_budget.gpu_count must be no greater than u32::MAX")
-            })?
-        }
+        Some(value) => u32::try_from(resource_budget_integer(&value, "total_gpu_count", true)?)
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "resource_budget.total_gpu_count must be no greater than u32::MAX",
+                )
+            })?,
     };
     Ok(Some(
-        FunctionWorkerResourceBudget::new(cpu_millis, memory_bytes).with_gpu_count(gpu_count),
+        FunctionWorkerResourceBudget::new(total_cpu_millis, total_memory_bytes)
+            .with_total_gpu_count(total_gpu_count),
     ))
 }
 
@@ -279,7 +285,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         supervisor_resources,
         planning_workers,
         gpu_class,
-        gpu_count,
+        total_gpu_count,
         retry_policy,
         error_policy,
         max_failed_fraction,
@@ -337,14 +343,14 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
     options.supervisor_resources = supervisor_resources;
     options.planning_workers = planning_workers;
     options.gpu_class = gpu_class;
-    options.gpu_count = gpu_count
+    options.total_gpu_count = total_gpu_count
         .map(|count| {
             u32::try_from(count)
                 .ok()
                 .filter(|count| *count > 0)
                 .ok_or_else(|| {
                     PyValueError::new_err(
-                        "gpu_count must be a positive integer no greater than u32::MAX",
+                        "total_gpu_count must be a positive integer no greater than u32::MAX",
                     )
                 })
         })
@@ -2788,7 +2794,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column<'py>(
         self_: PyRef<'py, Self>,
@@ -2801,7 +2807,7 @@ impl Table {
         supervisor_resources: Option<Bound<'py, PyDict>>,
         planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
-        gpu_count: Option<i64>,
+        total_gpu_count: Option<i64>,
         retry_policy: Option<String>,
         error_policy: Option<String>,
         max_failed_fraction: Option<f64>,
@@ -2832,7 +2838,7 @@ impl Table {
             supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
             planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
-            gpu_count,
+            total_gpu_count,
             retry_policy,
             error_policy,
             max_failed_fraction,
@@ -2852,7 +2858,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, resource_budget=None, supervisor_resources=None, planning_workers=None, gpu_class=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async<'py>(
         self_: PyRef<'py, Self>,
@@ -2865,7 +2871,7 @@ impl Table {
         supervisor_resources: Option<Bound<'py, PyDict>>,
         planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
-        gpu_count: Option<i64>,
+        total_gpu_count: Option<i64>,
         retry_policy: Option<String>,
         error_policy: Option<String>,
         max_failed_fraction: Option<f64>,
@@ -2896,7 +2902,7 @@ impl Table {
             supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
             planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
-            gpu_count,
+            total_gpu_count,
             retry_policy,
             error_policy,
             max_failed_fraction,
@@ -3031,15 +3037,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false, cpu_millis=None, memory_bytes=None, gpu_count=None, gpu_class=None))]
+    #[pyo3(signature = (source_version=None, *, full=false, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
         full: bool,
-        cpu_millis: Option<u64>,
-        memory_bytes: Option<u64>,
-        gpu_count: Option<u32>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
         gpu_class: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -3048,14 +3054,14 @@ impl Table {
                 .await
                 .infer_error()?;
             let mut builder = view.refresh().full(full);
-            if let Some(value) = cpu_millis {
-                builder = builder.cpu_millis(value);
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
             }
-            if let Some(value) = memory_bytes {
-                builder = builder.memory_bytes(value);
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
             }
-            if let Some(value) = gpu_count {
-                builder = builder.gpu_count(value);
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
             }
             if let Some(value) = gpu_class {
                 builder = builder.gpu_class(value);
@@ -3068,15 +3074,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false, cpu_millis=None, memory_bytes=None, gpu_count=None, gpu_class=None))]
+    #[pyo3(signature = (source_version=None, *, full=false, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
         full: bool,
-        cpu_millis: Option<u64>,
-        memory_bytes: Option<u64>,
-        gpu_count: Option<u32>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
         gpu_class: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -3085,14 +3091,14 @@ impl Table {
                 .await
                 .infer_error()?;
             let mut builder = view.refresh().full(full);
-            if let Some(value) = cpu_millis {
-                builder = builder.cpu_millis(value);
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
             }
-            if let Some(value) = memory_bytes {
-                builder = builder.memory_bytes(value);
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
             }
-            if let Some(value) = gpu_count {
-                builder = builder.gpu_count(value);
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
             }
             if let Some(value) = gpu_class {
                 builder = builder.gpu_class(value);

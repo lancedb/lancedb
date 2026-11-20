@@ -167,30 +167,32 @@ def normalize_select(select: SelectArg) -> Optional[List[Tuple[str, str]]]:
     return normalized
 
 
-def _refresh_execution_options(cpu_millis, memory_bytes, gpu_count, gpu_class):
+def _refresh_execution_options(
+    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
+):
     values = {
-        "cpu_millis": cpu_millis,
-        "memory_bytes": memory_bytes,
-        "gpu_count": gpu_count,
+        "total_cpu_millis": total_cpu_millis,
+        "total_memory_bytes": total_memory_bytes,
+        "total_gpu_count": total_gpu_count,
     }
     for name, value in values.items():
-        maximum = 2**32 - 1 if name == "gpu_count" else 2**64 - 1
-        minimum = 0 if name == "gpu_count" else 1
+        maximum = 2**32 - 1 if name == "total_gpu_count" else 2**64 - 1
+        minimum = 0 if name == "total_gpu_count" else 1
         if value is not None and (
             type(value) is not int or not minimum <= value <= maximum
         ):
             raise ValueError(
                 f"{name} must be an integer between {minimum} and {maximum}"
             )
-    if (cpu_millis is not None or memory_bytes is not None) and any(
+    if (total_cpu_millis is not None or total_memory_bytes is not None) and any(
         value is None for value in values.values()
     ):
         raise ValueError(
-            "cpu_millis, memory_bytes, and gpu_count must be specified together"
+            "total_cpu_millis, total_memory_bytes, and total_gpu_count must be specified together"
         )
     if gpu_class is not None:
         values["gpu_class"] = _validate_gpu_class_name(gpu_class)
-        if gpu_count == 0:
+        if total_gpu_count == 0:
             raise ValueError("gpu_class requires a positive GPU budget")
     return {name: value for name, value in values.items() if value is not None}
 
@@ -228,9 +230,9 @@ class AsyncMaterializedView:
         *,
         full: bool = False,
         source_version: Optional[int] = None,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
@@ -240,7 +242,7 @@ class AsyncMaterializedView:
         and ``source_version`` selects a source version instead of the latest.
         LanceDB Enterprise SQL refreshes do not support source-version pinning.
 
-        ``cpu_millis`` (1000 = one core), ``memory_bytes``, and ``gpu_count``
+        ``total_cpu_millis`` (1000 = one core), ``total_memory_bytes``, and ``total_gpu_count``
         cap aggregate resources for this execution, including its Function
         processes. CPU or memory requires all three budget fields; GPU count
         may be zero for CPU-only views. ``gpu_class`` selects an operator-defined
@@ -256,7 +258,7 @@ class AsyncMaterializedView:
             source_version=source_version,
             full=full,
             **_refresh_execution_options(
-                cpu_millis, memory_bytes, gpu_count, gpu_class
+                total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
             ),
         )
 
@@ -265,9 +267,9 @@ class AsyncMaterializedView:
         *,
         full: bool = False,
         source_version: Optional[int] = None,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
@@ -289,7 +291,7 @@ class AsyncMaterializedView:
                 source_version=source_version,
                 full=full,
                 **_refresh_execution_options(
-                    cpu_millis, memory_bytes, gpu_count, gpu_class
+                    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
                 ),
             ),
             RefreshMaterializedViewResult.from_json,
@@ -326,9 +328,9 @@ class MaterializedView:
         *,
         full: bool = False,
         source_version: Optional[int] = None,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source. See
@@ -338,7 +340,7 @@ class MaterializedView:
                 full=full,
                 source_version=source_version,
                 **_refresh_execution_options(
-                    cpu_millis, memory_bytes, gpu_count, gpu_class
+                    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
                 ),
             )
         )
@@ -348,9 +350,9 @@ class MaterializedView:
         *,
         full: bool = False,
         source_version: Optional[int] = None,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
@@ -364,7 +366,7 @@ class MaterializedView:
                     full=full,
                     source_version=source_version,
                     **_refresh_execution_options(
-                        cpu_millis, memory_bytes, gpu_count, gpu_class
+                        total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
                     ),
                 )
             )

@@ -2354,12 +2354,17 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": 8},
         {"max_concurrency": 3},
         {"publication_interval_rows": 60},
-        {"resource_budget": {"cpu_millis": 2000, "memory_bytes": 4 * 1024**3}},
         {
             "resource_budget": {
-                "cpu_millis": 8000,
-                "memory_bytes": 16 * 1024**3,
-                "gpu_count": 2,
+                "total_cpu_millis": 2000,
+                "total_memory_bytes": 4 * 1024**3,
+            }
+        },
+        {
+            "resource_budget": {
+                "total_cpu_millis": 8000,
+                "total_memory_bytes": 16 * 1024**3,
+                "total_gpu_count": 2,
             }
         },
         {
@@ -2379,7 +2384,7 @@ def test_remote_create_index_async_returns_job():
                 "fragments_per_worker": 8,
             },
         },
-        {"gpu_class": "a10g", "gpu_count": 2},
+        {"gpu_class": "a10g", "total_gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
             "error_policy": "skip",
@@ -2417,13 +2422,13 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["batch_size"] = refresh_kwargs["batch_size"]
             if refresh_kwargs.get("gpu_class") is not None:
                 expected["gpu_class"] = refresh_kwargs["gpu_class"]
-            if refresh_kwargs.get("gpu_count") is not None:
-                expected["gpu_count"] = refresh_kwargs["gpu_count"]
+            if refresh_kwargs.get("total_gpu_count") is not None:
+                expected["total_gpu_count"] = refresh_kwargs["total_gpu_count"]
             if refresh_kwargs.get("resource_budget") is not None:
                 budget = refresh_kwargs["resource_budget"]
                 expected["resource_budget"] = {
                     **budget,
-                    "gpu_count": budget.get("gpu_count", 0),
+                    "total_gpu_count": budget.get("total_gpu_count", 0),
                 }
             for key in ("supervisor_resources", "planning_workers"):
                 if refresh_kwargs.get(key) is not None:
@@ -2606,8 +2611,8 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"gpu_class": "H100"}, "gpu_class"),
         ({"gpu_class": "-a10g"}, "gpu_class"),
         ({"gpu_class": "a_b"}, "gpu_class"),
-        ({"gpu_count": 0}, "gpu_count"),
-        ({"gpu_count": -1}, "gpu_count"),
+        ({"total_gpu_count": 0}, "total_gpu_count"),
+        ({"total_gpu_count": -1}, "total_gpu_count"),
         ({"retry_policy": {"transient": True, "max_attempts": 0}}, "retry_policy"),
         ({"error_policy": "retry"}, "error_policy"),
         ({"where": "  "}, "where"),
@@ -2624,33 +2629,33 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"max_concurrency": 2**32}, "max_concurrency"),
         ({"num_workers": 0}, "num_workers"),
         (
-            {"resource_budget": {"cpu_millis": 1000}},
-            "resource_budget.memory_bytes",
+            {"resource_budget": {"total_cpu_millis": 1000}},
+            "resource_budget.total_memory_bytes",
         ),
         (
             {
                 "resource_budget": {
-                    "cpu_millis": 0,
-                    "memory_bytes": 1,
+                    "total_cpu_millis": 0,
+                    "total_memory_bytes": 1,
                 }
             },
-            "resource_budget.cpu_millis",
+            "resource_budget.total_cpu_millis",
         ),
         (
             {
                 "resource_budget": {
-                    "cpu_millis": 1000,
-                    "memory_bytes": 1,
+                    "total_cpu_millis": 1000,
+                    "total_memory_bytes": 1,
                 },
-                "gpu_count": 1,
+                "total_gpu_count": 1,
             },
-            "gpu_count cannot be combined with resource_budget",
+            "total_gpu_count cannot be combined with resource_budget",
         ),
         (
             {
                 "resource_budget": {
-                    "cpu_millis": 1000,
-                    "memory_bytes": 1,
+                    "total_cpu_millis": 1000,
+                    "total_memory_bytes": 1,
                     "unknown": 1,
                 }
             },
@@ -7673,7 +7678,7 @@ async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget
             request.send_response(404)
             request.end_headers()
 
-    budget = {"cpu_millis": 2_000, "memory_bytes": 4 * 1024**3}
+    budget = {"total_cpu_millis": 2_000, "total_memory_bytes": 4 * 1024**3}
     with mock_lancedb_connection(handler) as db:
         table = db.open_table("test")
         table.add_columns(
@@ -7693,7 +7698,7 @@ async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget
         assert body["auto_refresh_enabled"] is True
         assert body["auto_refresh_resource_budget"] == {
             **budget,
-            "gpu_count": 0,
+            "total_gpu_count": 0,
         }
         assert body["new_columns"] == [{"name": "embedding", "all_null": True}]
 

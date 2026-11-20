@@ -66,6 +66,31 @@ pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_i
 pub const AUTO_REFRESH_RESOURCE_BUDGET_META_KEY: &str =
     "computed_column.auto_refresh_resource_budget";
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredFunctionWorkerResourceBudget {
+    cpu_millis: u64,
+    memory_bytes: u64,
+    #[serde(default)]
+    gpu_count: u32,
+}
+
+impl From<FunctionWorkerResourceBudget> for StoredFunctionWorkerResourceBudget {
+    fn from(budget: FunctionWorkerResourceBudget) -> Self {
+        Self {
+            cpu_millis: budget.total_cpu_millis,
+            memory_bytes: budget.total_memory_bytes,
+            gpu_count: budget.total_gpu_count,
+        }
+    }
+}
+
+impl From<StoredFunctionWorkerResourceBudget> for FunctionWorkerResourceBudget {
+    fn from(budget: StoredFunctionWorkerResourceBudget) -> Self {
+        Self::new(budget.cpu_millis, budget.memory_bytes).with_total_gpu_count(budget.gpu_count)
+    }
+}
+
 /// Scheduling settings persisted on each computed output. LanceDB Embedded
 /// stores these settings; automatic scheduling requires LanceDB Enterprise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -125,13 +150,15 @@ impl ComputedColumnOptions {
                 })?);
         }
         if let Some(value) = metadata.get(AUTO_REFRESH_RESOURCE_BUDGET_META_KEY) {
-            options.auto_refresh_resource_budget = Some(serde_json::from_str(value).map_err(
-                |error| Error::InvalidInput {
-                    message: format!(
-                        "auto_refresh_resource_budget must be a valid resource budget: {error}"
-                    ),
-                },
-            )?);
+            options.auto_refresh_resource_budget = Some(
+                serde_json::from_str::<StoredFunctionWorkerResourceBudget>(value)
+                    .map_err(|error| Error::InvalidInput {
+                        message: format!(
+                            "auto_refresh_resource_budget must be a valid resource budget: {error}"
+                        ),
+                    })?
+                    .into(),
+            );
         }
         options.validate()?;
         Ok(options)
@@ -178,9 +205,11 @@ impl ComputedColumnOptions {
         if let Some(budget) = &self.auto_refresh_resource_budget {
             metadata.insert(
                 AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-                serde_json::to_string(budget).map_err(|error| Error::InvalidInput {
-                    message: format!("failed to encode auto_refresh_resource_budget: {error}"),
-                })?,
+                serde_json::to_string(&StoredFunctionWorkerResourceBudget::from(*budget)).map_err(
+                    |error| Error::InvalidInput {
+                        message: format!("failed to encode auto_refresh_resource_budget: {error}"),
+                    },
+                )?,
             );
         }
         Ok(metadata)
@@ -2705,7 +2734,7 @@ mod tests {
     #[test]
     fn computed_auto_refresh_resource_budget_metadata_round_trips() {
         let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-            .with_gpu_count(2);
+            .with_total_gpu_count(2);
         let options = super::ComputedColumnOptions {
             auto_refresh_enabled: true,
             auto_refresh_interval_seconds: Some(300),
@@ -2733,7 +2762,13 @@ mod tests {
             r#"{"cpu_millis":8000,"memory_bytes":17179869184}"#.into(),
         );
         let decoded = super::ComputedColumnOptions::from_metadata(&omitted_gpu).unwrap();
-        assert_eq!(decoded.auto_refresh_resource_budget.unwrap().gpu_count, 0);
+        assert_eq!(
+            decoded
+                .auto_refresh_resource_budget
+                .unwrap()
+                .total_gpu_count,
+            0
+        );
         assert_eq!(
             decoded
                 .metadata()
@@ -2797,7 +2832,7 @@ mod tests {
             function_field("assignment", super::FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL),
         ]);
         let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-            .with_gpu_count(2);
+            .with_total_gpu_count(2);
         let updated = super::ComputedColumnOptions {
             auto_refresh_resource_budget: Some(budget),
             ..Default::default()
@@ -2809,7 +2844,12 @@ mod tests {
             let metadata = updated.field_with_name(name).unwrap().metadata();
             assert_eq!(
                 metadata.get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY),
-                Some(&serde_json::to_string(&budget).unwrap())
+                Some(
+                    &serde_json::to_string(&super::StoredFunctionWorkerResourceBudget::from(
+                        budget
+                    ))
+                    .unwrap()
+                )
             );
             assert_eq!(
                 metadata.get("custom").map(String::as_str),
