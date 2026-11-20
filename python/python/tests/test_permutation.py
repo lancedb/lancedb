@@ -1224,6 +1224,31 @@ def test_transform_fn_pandas(mem_db):
     assert isinstance(result, pd.DataFrame)
 
 
+def test_numpy_format_mixed_columns_is_object_ndarray(mem_db):
+    pytest.importorskip("pandas")
+    import numpy as np
+
+    tbl = mem_db.create_table(
+        "test_table",
+        pa.table(
+            {
+                "id": range(3),
+                "vector": pa.array(
+                    [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                    type=pa.list_(pa.float32(), 2),
+                ),
+            }
+        ),
+    )
+    permutation = Permutation.identity(tbl).with_format("numpy")
+    result = next(permutation.iter(2, skip_last_batch=False))
+
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == object
+    assert result.shape == (2, 2)
+    np.testing.assert_array_equal(result[0, 1], [1.0, 2.0])
+
+
 def test_custom_transform(mem_db):
     tbl = mem_db.create_table(
         "test_table", pa.table({"id": range(10), "value": range(10)})

@@ -8,6 +8,7 @@ import importlib
 import math
 import os
 import pathlib
+import sys
 import warnings
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -611,15 +612,253 @@ def tbl_to_tensor(tbl: pa.Table):
     return torch.stack([to_tensor(tbl.column(i)) for i in range(tbl.num_columns)])
 
 
+_BFLOAT16_EXTENSION_NAME = "lance.bfloat16"
+_ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
+
+
+def _field_metadata_value(field: pa.Field, key: str):
+    metadata = field.metadata or {}
+    value = metadata.get(key.encode()) or metadata.get(key)
+    if isinstance(value, bytes):
+        return value.decode()
+    return value
+
+
+def _field_extension_name(field: pa.Field) -> Optional[str]:
+    extension_name = _field_metadata_value(field, _ARROW_EXTENSION_NAME_KEY)
+    if extension_name is not None:
+        return extension_name
+    if isinstance(field.type, pa.ExtensionType):
+        return field.type.extension_name
+    return None
+
+
+def _field_storage_type(field: pa.Field) -> pa.DataType:
+    if isinstance(field.type, pa.ExtensionType):
+        return field.type.storage_type
+    return field.type
+
+
+def _is_bfloat16_field(field: pa.Field) -> bool:
+    if _field_extension_name(field) != _BFLOAT16_EXTENSION_NAME:
+        return False
+    storage_type = _field_storage_type(field)
+    return pa.types.is_fixed_size_binary(storage_type) and storage_type.byte_width == 2
+
+
+def _check_torch_nulls(array: pa.Array, column_name: str) -> None:
+    if array.null_count:
+        raise ValueError(
+            f"Cannot convert column `{column_name}` to a torch tensor because it "
+            f"contains {array.null_count} null value(s). Drop or fill nulls before "
+            "using a torch format."
+        )
+
+
+def _bfloat16_to_tensor(array: pa.Array, torch, column_name: str):
+    storage = array.storage if isinstance(array.type, pa.ExtensionType) else array
+    storage_type = storage.type
+    if not (
+        pa.types.is_fixed_size_binary(storage_type) and storage_type.byte_width == 2
+    ):
+        raise ValueError(
+            f"Column `{column_name}` is marked as {_BFLOAT16_EXTENSION_NAME!r} but "
+            f"has storage type {storage_type}. The lance.bfloat16 extension requires "
+            "fixed_size_binary[2] storage."
+        )
+    _check_torch_nulls(storage, column_name)
+    if len(storage) == 0:
+        return torch.empty((0,), dtype=torch.bfloat16)
+
+    buffer = storage.buffers()[1]
+    if buffer is None:
+        return torch.empty((0,), dtype=torch.bfloat16)
+    offset = storage.offset * 2
+    byte_length = len(storage) * 2
+    if buffer.size < offset + byte_length:
+        raise ValueError(
+            f"Column `{column_name}` has a truncated bfloat16 value buffer."
+        )
+
+    # Arrow stores bfloat16 as two little-endian bytes. Copy only on big-endian
+    # hosts before viewing the same bits as torch.bfloat16.
+    values = np.frombuffer(
+        buffer, dtype=np.dtype("<u2"), count=len(storage), offset=offset
+    )
+    if sys.byteorder != "little":
+        values = values.astype(np.uint16)
+    # Older torch releases cannot create a tensor from np.uint16, so view the
+    # same bits as signed 16-bit values before interpreting them as bfloat16.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The given NumPy array is not writable",
+            category=UserWarning,
+        )
+        return torch.from_numpy(values.view(np.int16)).view(torch.bfloat16)
+
+
+def _leaf_to_tensor(array: pa.Array, field: pa.Field, torch, column_name: str):
+    _check_torch_nulls(array, column_name)
+    if _is_bfloat16_field(field):
+        return _bfloat16_to_tensor(array, torch, column_name)
+
+    data_type = array.type
+    if isinstance(data_type, pa.ExtensionType):
+        raise ValueError(
+            f"Unsupported PyTorch column type {data_type} for column "
+            f"`{column_name}`. Supported extension types are "
+            f"{_BFLOAT16_EXTENSION_NAME!r} and arrow.fixed_shape_tensor."
+        )
+    if (
+        pa.types.is_boolean(data_type)
+        or pa.types.is_integer(data_type)
+        or pa.types.is_floating(data_type)
+    ):
+        # Arrow packs booleans as bits while torch uses one byte per value, so
+        # boolean columns always need a copy. Other numeric columns share the
+        # Arrow buffer.
+        zero_copy_only = not pa.types.is_boolean(data_type)
+        try:
+            numpy_values = array.to_numpy(zero_copy_only=zero_copy_only)
+        except pa.ArrowInvalid as err:
+            raise ValueError(
+                f"Cannot convert column `{column_name}` of type {data_type} to a "
+                f"torch tensor without copying: {err}"
+            ) from err
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The given NumPy array is not writable",
+                    category=UserWarning,
+                )
+                return torch.from_numpy(numpy_values)
+        except (TypeError, RuntimeError) as err:
+            raise ValueError(
+                f"Cannot convert column `{column_name}` of type {data_type} to a "
+                f"torch tensor: {err}"
+            ) from err
+    if pa.types.is_fixed_size_binary(data_type) and data_type.byte_width == 2:
+        raise ValueError(
+            f"Column `{column_name}` has type fixed_size_binary[2] but is not "
+            f"marked with {_ARROW_EXTENSION_NAME_KEY!r} = "
+            f"{_BFLOAT16_EXTENSION_NAME!r}. An unmarked binary column is not "
+            "treated as bfloat16."
+        )
+    raise ValueError(
+        f"Unsupported PyTorch column type {data_type} for column `{column_name}`. "
+        "Supported leaf types are boolean, integer, floating point, and "
+        f"{_BFLOAT16_EXTENSION_NAME!r} fixed_size_binary[2] values."
+    )
+
+
+def _fixed_size_list_to_tensor(array: pa.FixedSizeListArray, torch, column_name: str):
+    _check_torch_nulls(array, column_name)
+    width = array.type.list_size
+    values = array.values.slice(array.offset * width, len(array) * width)
+    child_tensor = _arrow_column_to_tensor(
+        values, array.type.value_field, torch, column_name
+    )
+    return child_tensor.reshape((len(array), width, *child_tensor.shape[1:]))
+
+
+def _fixed_shape_tensor_to_tensor(array: pa.Array, torch, column_name: str):
+    _check_torch_nulls(array, column_name)
+    tensor_type = array.type
+    storage = array.storage
+    physical_shape = list(tensor_type.shape)
+    permutation = list(getattr(tensor_type, "permutation", None) or [])
+    storage_tensor = _arrow_column_to_tensor(
+        storage, storage.type.value_field, torch, column_name
+    )
+    tensor = storage_tensor.reshape((len(array), *physical_shape))
+    if permutation:
+        # Arrow's ``shape`` is the physical row-major shape, and
+        # ``permutation`` maps a logical axis to its physical axis. Transposing
+        # by it restores the logical shape as a view.
+        tensor = tensor.permute([0] + [axis + 1 for axis in permutation])
+    return tensor
+
+
+def _arrow_column_to_tensor(array: pa.Array, field: pa.Field, torch, column_name: str):
+    if isinstance(array.type, pa.FixedShapeTensorType):
+        return _fixed_shape_tensor_to_tensor(array, torch, column_name)
+    if pa.types.is_fixed_size_list(array.type):
+        return _fixed_size_list_to_tensor(array, torch, column_name)
+    return _leaf_to_tensor(array, field, torch, column_name).reshape((len(array),))
+
+
+def _is_nullable_numeric_scalar(array: pa.Array) -> bool:
+    data_type = array.type
+    if isinstance(data_type, pa.ExtensionType) or array.null_count == 0:
+        return False
+    return pa.types.is_integer(data_type) or pa.types.is_floating(data_type)
+
+
+def _nullable_numeric_scalar_to_tensor(array: pa.Array, torch, column_name: str):
+    try:
+        numpy_values = array.to_numpy(zero_copy_only=False)
+    except pa.ArrowInvalid as err:
+        raise ValueError(
+            f"Cannot convert nullable column `{column_name}` of type {array.type} "
+            f"to a torch tensor: {err}"
+        ) from err
+    try:
+        return torch.from_numpy(numpy_values)
+    except (TypeError, RuntimeError) as err:
+        raise ValueError(
+            f"Cannot convert nullable column `{column_name}` of type {array.type} "
+            f"to a torch tensor: {err}"
+        ) from err
+
+
+def _batch_column_tensors(batch: pa.RecordBatch, allow_scalar_nulls: bool = False):
+    torch = attempt_import_or_raise("torch", "torch")
+    columns = []
+    for field, column in zip(batch.schema, batch.columns):
+        if allow_scalar_nulls and _is_nullable_numeric_scalar(column):
+            tensor = _nullable_numeric_scalar_to_tensor(column, torch, field.name)
+        else:
+            tensor = _arrow_column_to_tensor(column, field, torch, field.name)
+        columns.append((field.name, tensor))
+    return torch, columns
+
+
+def _uniform_column_tensors(
+    batch: pa.RecordBatch, format_name: str, allow_scalar_nulls: bool = False
+):
+    torch, columns = _batch_column_tensors(batch, allow_scalar_nulls=allow_scalar_nulls)
+    if len(columns) <= 1:
+        return torch, columns
+
+    first_name, first = columns[0]
+    first_shape = tuple(first.shape[1:])
+    for name, tensor in columns[1:]:
+        shape = tuple(tensor.shape[1:])
+        if shape != first_shape:
+            raise ValueError(
+                f"Cannot use the {format_name!r} format because column `{name}` "
+                f"has sample shape {shape} while column `{first_name}` has sample "
+                f'shape {first_shape}. Use with_format("torch_dict") for columns '
+                'with different shapes, or with_format("torch") for a list of '
+                "per-row dicts."
+            )
+    return torch, columns
+
+
 def batch_to_tensor(batch: pa.RecordBatch):
     """
     Convert a PyArrow RecordBatch to a PyTorch Tensor.
 
-    Each column is converted to a tensor (using zero-copy via DLPack)
-    and the columns are then stacked into a single tensor.
+    Each column is converted to a tensor with shape ``(rows, *sample_shape)``
+    and the columns are stacked along a new leading dimension. Scalar columns
+    have sample shape ``()`` and fixed-size-list columns contribute each list
+    dimension. All columns must have the same sample shape.
 
     Fails if torch is not installed.
     Fails if a column's data type is not supported by PyTorch.
+    Fails if a column contains nulls.
 
     Parameters
     ----------
@@ -628,43 +867,99 @@ def batch_to_tensor(batch: pa.RecordBatch):
 
     Returns
     -------
-    torch.Tensor: The tensor containing the columns of the record batch.
+    torch.Tensor: A tensor with shape ``(columns, rows, *sample_shape)``. A
+        one-column batch returns an ``unsqueeze(0)`` view of that column.
     """
-    torch = attempt_import_or_raise("torch", "torch")
-    return torch.stack([torch.from_dlpack(col) for col in batch.columns])
+    torch, columns = _uniform_column_tensors(batch, "torch_col")
+    if not columns:
+        return torch.empty((0, batch.num_rows))
+    if len(columns) == 1:
+        return columns[0][1].unsqueeze(0)
+    return torch.stack([tensor for _, tensor in columns], dim=0)
 
 
 def batch_to_tensor_rows(batch: pa.RecordBatch):
     """
-    Convert a PyArrow RecordBatch to a list of PyTorch Tensor, one per row
+    Convert a PyArrow RecordBatch to a list of PyTorch Tensors, one per row.
 
-    Each column is converted to a tensor (using zero-copy via DLPack)
-    and the columns are then stacked into a single tensor.  The 2D tensor
-    is then converted to a list of tensors, one per row
+    Each row tensor has shape ``(columns, *sample_shape)``. All columns must
+    have the same sample shape, so a table mixing scalar and vector columns
+    should use ``torch_dict`` or ``torch`` instead. Dtypes are combined with
+    ``torch.promote_types``, matching PyTorch's numeric promotion rules.
 
-    Fails if torch or numpy is not installed.
+    Fails if torch is not installed.
     Fails if a column's data type is not supported by PyTorch.
+    Nulls in ordinary integer or floating scalar columns become ``NaN``.
+    Nulls in nested fixed-size-list or tensor columns are rejected.
+
+    Parameters
+    ----------
+    batch : pa.RecordBatch
+        The record batch to convert.
+
+    Returns
+    -------
+    list[torch.Tensor]
+        One tensor per row, each with shape ``(columns, *sample_shape)``. A
+        one-column scalar batch produces ``(1,)`` tensors.
     """
-    torch = attempt_import_or_raise("torch", "torch")
-    numpy = attempt_import_or_raise("numpy", "numpy")
-    columns = [col.to_numpy(zero_copy_only=False) for col in batch.columns]
-    stacked = torch.tensor(numpy.column_stack(columns))
-    rows = list(stacked.unbind(dim=0))
-    return rows
+    torch, columns = _uniform_column_tensors(
+        batch, "torch_row", allow_scalar_nulls=True
+    )
+    if not columns:
+        return [torch.empty((0,)) for _ in range(batch.num_rows)]
+
+    dtype = columns[0][1].dtype
+    for _, tensor in columns[1:]:
+        dtype = torch.promote_types(dtype, tensor.dtype)
+    tensors = [
+        tensor if tensor.dtype == dtype else tensor.to(dtype) for _, tensor in columns
+    ]
+    stacked = torch.stack(tensors, dim=1)
+    return list(stacked.unbind(dim=0))
+
+
+def batch_to_tensor_columns(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a dict of per-column PyTorch Tensors.
+
+    Each tensor has shape ``(rows, *sample_shape)`` and shares Arrow storage
+    where the layout allows it. Unlike ``torch_col`` and ``torch_row``, columns
+    may have different sample shapes. This is the transform behind
+    ``Permutation.with_format("torch_dict")`` and can be consumed directly by
+    a ``DataLoader`` with an identity ``collate_fn``.
+
+    Fails if torch is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+    Fails if a column contains nulls.
+
+    Parameters
+    ----------
+    batch : pa.RecordBatch
+        The record batch to convert.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        A tensor per column, each with shape ``(rows, *sample_shape)``.
+    """
+    _, columns = _batch_column_tensors(batch)
+    return dict(columns)
 
 
 def batch_to_tensor_dict(batch: pa.RecordBatch):
     """
     Convert a PyArrow RecordBatch to a list of per-row dicts of PyTorch Tensors.
 
-    Each column is first converted to a 1-D tensor (zero-copy via DLPack), then
-    sliced per row. The result is a list whose length is ``batch.num_rows`` and
-    whose items are dicts keyed by column name. This shape composes directly
-    with PyTorch's default ``DataLoader`` collate, which stacks the per-row
-    dicts back into a dict of batched tensors.
+    Each column is converted to a tensor with shape ``(rows, *sample_shape)``,
+    then sliced per row. The result is a list whose length is
+    ``batch.num_rows`` and whose items are dicts keyed by column name. This
+    shape composes directly with PyTorch's default ``DataLoader`` collate,
+    which stacks the per-row dicts back into a dict of batched tensors.
 
     Fails if torch is not installed.
     Fails if a column's data type is not supported by PyTorch.
+    Fails if a column contains nulls.
 
     Parameters
     ----------
@@ -675,14 +970,9 @@ def batch_to_tensor_dict(batch: pa.RecordBatch):
     -------
     list[dict[str, torch.Tensor]]
         One per-row dict per row in the batch. Each dict maps column name to a
-        0-D tensor view into the column.
+        tensor view into the column.
     """
-    torch = attempt_import_or_raise("torch", "torch")
-    tensors = {
-        name: torch.from_dlpack(col)
-        for name, col in zip(batch.schema.names, batch.columns)
-    }
+    _, columns = _batch_column_tensors(batch)
     return [
-        {name: tensor[i] for name, tensor in tensors.items()}
-        for i in range(batch.num_rows)
+        {name: tensor[i] for name, tensor in columns} for i in range(batch.num_rows)
     ]
