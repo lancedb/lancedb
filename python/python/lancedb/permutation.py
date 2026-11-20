@@ -410,6 +410,8 @@ def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     from .remote.table import RemoteTable
 
     if isinstance(table, RemoteTable):
+        # RemoteTable already owns its reopen state; keep the table object so
+        # pickle delegates to its __getstate__ without duplicating the fields.
         return {
             "kind": "remote",
             "table": table,
@@ -418,20 +420,15 @@ def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     if not isinstance(table, LanceTable):
         raise ValueError(f"Cannot pickle table of type {type(table)!r}")
 
-    base_uri = table._conn.uri
-    if base_uri.startswith("memory://"):
+    state = table.__getstate__()
+    if state.get("kind") == "memory":
         return {
             "kind": "memory",
-            "name": table.name,
-            "data": table.to_arrow(),
+            "state": state,
         }
-
     return {
-        "kind": "local",
-        "name": table.name,
-        "uri": base_uri,
-        "namespace": table._namespace_path,
-        "storage_options": table._conn.storage_options,
+        "kind": "lance",
+        "state": state,
     }
 
 
@@ -444,13 +441,25 @@ def _drop_base_version(permutation_data: pa.Table) -> pa.Table:
     return permutation_data.replace_schema_metadata(metadata)
 
 
+def _lance_table_from_pickle_state(state: dict[str, Any]) -> LanceTable:
+    table = LanceTable.__new__(LanceTable)
+    table.__setstate__(state)
+    return table
+
+
 def _table_from_pickle_state(state: dict[str, Any]) -> Table:
     from . import connect
 
     kind = state["kind"]
     if kind == "remote":
         return state["table"]
+    if kind == "lance":
+        return _lance_table_from_pickle_state(state["state"])
     if kind == "memory":
+        if "state" in state:
+            return _lance_table_from_pickle_state(state["state"])
+        # Backward compatibility for pickles written before tables carried
+        # their own state.
         return connect("memory://").create_table(state["name"], state["data"])
     if kind == "local":
         db = connect(state["uri"], storage_options=state["storage_options"])
@@ -778,6 +787,20 @@ class Permutation:
         self.connection_factory = connection_factory
         self.reader = None
         self._pid = None
+
+    def __copy__(self) -> "Permutation":
+        """Return a shallow copy without going through the pickle path.
+
+        The ``with_*`` builders use ``copy.copy`` to derive a new permutation.
+        The default copy protocol would use ``__getstate__``/``__setstate__``,
+        which materializes the permutation table with ``to_arrow()`` (not
+        supported for remote tables) and rebuilds the base table and reader.
+        A shallow copy instead keeps the existing table handles and reader;
+        the caller replaces only the attribute it is changing.
+        """
+        new = self.__class__.__new__(self.__class__)
+        new.__dict__ = self.__dict__.copy()
+        return new
 
     def _ensure_open(self) -> None:
         pid = os.getpid()

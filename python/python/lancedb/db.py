@@ -1936,10 +1936,39 @@ class LanceDBConnection(DBConnection):
                 "manifest_enabled": self._manifest_enabled,
                 "namespace_client_properties": self._namespace_client_properties,
                 "read_consistency_interval_seconds": (
-                    rci.total_seconds() if rci else None
+                    rci.total_seconds() if rci is not None else None
                 ),
             }
         )
+
+    def _pickle_state(self) -> str:
+        """Serialize this connection for pickle-based workers."""
+        if self._session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceDBConnection created with a Session; "
+                "Session objects are not serializable. Create the Session in "
+                "each worker process instead."
+            )
+        if self.uri.startswith("memory://"):
+            raise TypeError(
+                "Cannot pickle an in-memory LanceDBConnection because its tables "
+                "exist only in this process. Pickle a LanceTable instead to "
+                "export its data, or connect to a persistent URI."
+            )
+        return self.serialize()
+
+    def __getstate__(self) -> dict[str, str]:
+        return {"serialized": self._pickle_state()}
+
+    def __setstate__(self, state: dict[str, str]) -> None:
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["serialized"], for_worker=True)
+        if not isinstance(connection, LanceDBConnection):
+            raise TypeError(
+                "Serialized connection did not reconstruct a LanceDBConnection"
+            )
+        self.__dict__.update(connection.__dict__)
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))

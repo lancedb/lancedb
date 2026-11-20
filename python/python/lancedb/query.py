@@ -273,6 +273,24 @@ def _query_needs_lance_scanner(builder: Any) -> bool:
     )
 
 
+def _raise_unsupported_fragment_constraints(
+    fragments: Optional[Any],
+    fragment_ids: Optional[List[int]],
+    *,
+    operation: str,
+) -> None:
+    """Reject fragment selection where execution would silently scan everything."""
+    if fragments is None and fragment_ids is None:
+        return
+    raise NotImplementedError(
+        "with_fragments() and fragment_ids() are only supported for embedded "
+        "plain-scan blob queries executed through to_pandas(). "
+        f"{operation} would ignore the fragment selection and scan the full "
+        "table. Remove the fragment constraint, or use table.to_lance() with "
+        "a Lance scanner for this query shape."
+    )
+
+
 def _query_is_plain_scan(query: Query) -> bool:
     return (
         query.vector is None
@@ -571,9 +589,105 @@ def ensure_vector_query(
 
 
 class ColumnOrdering(pydantic.BaseModel):
+    """A single sort key for ``order_by``.
+
+    Attributes
+    ----------
+    column_name: str
+        The column to sort by.
+    ascending: bool, default True
+        Sort ascending when true, descending otherwise.
+    nulls_first: bool, default False
+        Place null values before non-null values when true.
+    """
+
     column_name: str
     ascending: bool = True
     nulls_first: bool = False
+
+
+_OrderingItem = Union[str, Tuple[str, str], ColumnOrdering, Dict[str, Any]]
+_OrderingInput = Optional[Union[_OrderingItem, List[_OrderingItem]]]
+_COLUMN_ORDERING_KEYS = frozenset({"column_name", "ascending", "nulls_first"})
+_ORDERING_EXAMPLE = '[{"column_name": "uris", "ascending": True}]'
+
+
+def _normalize_ordering(ordering: _OrderingInput) -> Optional[List[ColumnOrdering]]:
+    """Normalize the accepted ``order_by`` inputs into ``ColumnOrdering`` models.
+
+    ``None`` and an empty list clear the ordering. A tuple is always a single
+    ``(column_name, "asc"|"desc")`` pair, while a list is always a sequence of
+    separate orderings, so ``("a", "desc")`` and ``["a", "desc"]`` differ.
+    """
+    if ordering is None:
+        return None
+    if isinstance(ordering, tuple):
+        items: List[Any] = [ordering]
+    elif isinstance(ordering, list):
+        items = ordering
+    else:
+        items = [ordering]
+
+    normalized = [
+        _normalize_ordering_item(item, index) for index, item in enumerate(items)
+    ]
+    return normalized or None
+
+
+def _normalize_ordering_item(item: Any, index: int) -> ColumnOrdering:
+    prefix = f"order_by entry {index}"
+    if isinstance(item, ColumnOrdering):
+        if not item.column_name:
+            raise ValueError(f"{prefix} has an empty column_name")
+        return item
+    if isinstance(item, str):
+        if not item:
+            raise ValueError(f"{prefix} is an empty column name")
+        return ColumnOrdering(column_name=item)
+    if isinstance(item, tuple):
+        if len(item) != 2:
+            raise ValueError(
+                f"{prefix} must be a (column_name, 'asc'|'desc') tuple; got {item!r}"
+            )
+        column_name, direction = item
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError(
+                f"{prefix} must start with a non-empty column name; got {item!r}"
+            )
+        if not isinstance(direction, str) or direction.lower() not in ("asc", "desc"):
+            raise ValueError(
+                f"{prefix} has invalid direction {direction!r}; "
+                "expected 'asc' or 'desc'"
+            )
+        return ColumnOrdering(
+            column_name=column_name, ascending=direction.lower() == "asc"
+        )
+    if isinstance(item, dict):
+        unknown_keys = set(item) - _COLUMN_ORDERING_KEYS
+        if unknown_keys:
+            raise ValueError(
+                f"{prefix} has unsupported key(s) {sorted(map(str, unknown_keys))}; "
+                f"expected keys: {sorted(_COLUMN_ORDERING_KEYS)}. "
+                f"Example: {_ORDERING_EXAMPLE}"
+            )
+        if "column_name" not in item:
+            raise ValueError(
+                f"{prefix} is missing 'column_name'. Example: {_ORDERING_EXAMPLE}"
+            )
+        try:
+            normalized = ColumnOrdering(**item)
+        except pydantic.ValidationError as err:
+            raise ValueError(
+                f"{prefix} is not a valid ordering: {err}. Example: {_ORDERING_EXAMPLE}"
+            ) from err
+        if not normalized.column_name:
+            raise ValueError(f"{prefix} has an empty column_name")
+        return normalized
+    raise TypeError(
+        f"{prefix} must be a column name, a (column_name, 'asc'|'desc') tuple, "
+        f"a ColumnOrdering, or a dict with 'column_name'; "
+        f"got {type(item).__name__}"
+    )
 
 
 class FullTextQueryType(str, Enum):
@@ -1686,10 +1800,18 @@ class LanceQueryBuilder(ABC):
         return self._user_requested_row_id() or self._blob_auto_row_id_enabled()
 
     def _query_for_scan(self, blob_sources: Optional[dict[str, str]] = None) -> Query:
+        self._ensure_fragment_constraints_supported("this query")
         query = self.to_query_object()
         if self._scan_needs_row_id() or blob_sources:
             query.with_row_id = True
         return query
+
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
 
     def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
         if blob_mode != "bytes":
@@ -1826,12 +1948,51 @@ class LanceQueryBuilder(ABC):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """Set the Lance fragments to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. Other terminals and remote tables raise ``NotImplementedError``
+        before scanning instead of silently scanning the full table.
+        Blob-specific ``to_pandas()`` fallbacks keep their existing validation
+        errors.
+
+        Parameters
+        ----------
+        fragments : list[lance.Fragment]
+            Fragments from ``table.to_lance().get_fragments()``. Pass fragments
+            from the same dataset snapshot.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """Set the Lance fragment ids to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
+
+        Parameters
+        ----------
+        fragment_ids : list[int]
+            Fragment ids from ``table.to_lance().get_fragments()``.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragment_ids = fragment_ids
         return self
 
@@ -1887,24 +2048,40 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
-    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
         """
         Set the ordering for the results.
 
         Parameters
         ----------
-        ordering: Optional[List[ColumnOrdering]]
-            The ordering to use for the results.  If None, then the default ordering
-            will be used.
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            The ordering to use for the results. Each entry can be a column
+            name, a ``(column_name, "asc"|"desc")`` tuple, a
+            [ColumnOrdering][lancedb.query.ColumnOrdering], or a dict with a
+            ``column_name`` key. A bare tuple is a single direction pair, while
+            a list contains separate orderings, so ``("a", "desc")`` sorts by
+            ``a`` descending and ``["a", "desc"]`` sorts by both columns.
+            Pass ``None`` or an empty list to clear the ordering.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("ordering", [{"name": "b"}, {"name": "a"}])
+        >>> table.search().order_by(["name"]).to_list()
+        [{'name': 'a'}, {'name': 'b'}]
+        >>> table.search().order_by([("name", "desc")]).to_list()
+        [{'name': 'b'}, {'name': 'a'}]
         """
-        self._order_by = ordering
+        self._order_by = _normalize_ordering(ordering)
         return self
 
     def analyze_plan(
@@ -1961,6 +2138,7 @@ class LanceQueryBuilder(ABC):
         plan : str
             The physical query execution plan with runtime metrics.
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return self._table._analyze_plan(
             self.to_query_object(), distributed_metrics=distributed_metrics
         )
@@ -2629,6 +2807,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         For example, ``table.search("gripper closed", query_type="fts",``
         ``operator="AND").where("active = true").count_rows()``.
         """
+        self._ensure_fragment_constraints_supported("count_rows()")
         self._table._ensure_no_legacy_fts_index()
         query = self._table._table._sync_query_to_async(self.to_query_object())
         assert isinstance(query, AsyncFTSQuery)
@@ -2861,6 +3040,29 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # `_with_row_id` is also turned on by `rerank(return_score="all")` for
         # the reranker's own use, so it cannot answer "did the caller ask?".
         self._caller_requested_row_id = False
+
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
+        """
+        Set the ordering for the results.
+
+        Hybrid results are fused and reranked, so ordering the two search legs
+        does not define the final result order. Order the returned rows after
+        reranking instead.
+
+        Parameters
+        ----------
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            Must be ``None`` or an empty list. Any non-empty ordering raises
+            ``NotImplementedError``.
+        """
+        normalized = _normalize_ordering(ordering)
+        if normalized:
+            raise NotImplementedError(
+                "order_by is not supported for hybrid queries; "
+                "sort the returned results after reranking instead."
+            )
+        self._order_by = None
+        return self
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -3522,6 +3724,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def _create_query_builders(self):
         """Set up and configure the vector and FTS query builders."""
+        self._ensure_fragment_constraints_supported("this hybrid query")
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
@@ -3640,6 +3843,19 @@ class AsyncQueryBase(object):
     def _user_requested_row_id(self) -> bool:
         return self._with_row_id is True
 
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
+
+    def _inherit_fragment_constraints(self, query: Any) -> Any:
+        """Carry a fragment selection across an async query conversion."""
+        query._fragments = self._fragments
+        query._fragment_ids = self._fragment_ids
+        return query
+
     def _blob_auto_row_id_enabled(self) -> bool:
         return self._blob_auto_row_id
 
@@ -3750,15 +3966,30 @@ class AsyncQueryBase(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. The constraint is preserved when converting between async
+        query types. Other terminals and remote tables raise
+        ``NotImplementedError`` before scanning instead of silently scanning
+        the full table. Blob-specific ``to_pandas()`` fallbacks keep their
+        existing validation errors.
         """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._fragment_ids = fragment_ids
         return self
@@ -3838,6 +4069,7 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        self._ensure_fragment_constraints_supported("to_batches()")
         if (
             blob_sources
             and not self._user_requested_row_id()
@@ -4245,6 +4477,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return await self._inner.explain_plan(verbose)
 
     async def analyze_plan(
@@ -4262,6 +4495,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return await self._inner.analyze_plan(distributed_metrics)
 
 
@@ -4334,20 +4568,36 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.offset(offset)
         return self
 
-    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
         """
         Set the ordering for the results.
 
         Parameters
         ----------
-        ordering: Optional[List[ColumnOrdering]]
-            The ordering to use for the results.  If None, then the default ordering
-            will be used.
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            The ordering to use for the results. Each entry can be a column
+            name, a ``(column_name, "asc"|"desc")`` tuple, a
+            [ColumnOrdering][lancedb.query.ColumnOrdering], or a dict with a
+            ``column_name`` key. A bare tuple is a single direction pair, while
+            a list contains separate orderings, so ``("a", "desc")`` sorts by
+            ``a`` descending and ``["a", "desc"]`` sorts by both columns.
+            Pass ``None`` or an empty list to clear the ordering.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = await lancedb.connect_async("memory://")  # doctest: +SKIP
+        >>> table = await db.create_table(  # doctest: +SKIP
+        ...     "ordering", [{"name": "b"}, {"name": "a"}]
+        ... )
+        >>> await table.query().order_by(["name"]).to_list()  # doctest: +SKIP
+        [{'name': 'a'}, {'name': 'b'}]
         """
-        if ordering is None:
+        normalized = _normalize_ordering(ordering)
+        if normalized is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by([o.model_dump() for o in ordering])
+            self._inner.order_by([o.model_dump() for o in normalized])
         return self
 
     def fast_search(self) -> Self:
@@ -4501,11 +4751,17 @@ class AsyncQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncVectorQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(new_self, self._table)
+            )
         else:
-            return AsyncVectorQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     def nearest_to_text(
@@ -4545,18 +4801,22 @@ class AsyncQuery(AsyncStandardQuery):
             columns = []
 
         if isinstance(query, str):
-            return AsyncFTSQuery(
-                self._inner.nearest_to_text(
-                    {
-                        "query": query,
-                        "columns": columns,
-                        "operator": fts_query.operator,
-                    }
-                ),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncFTSQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        return self._inherit_fragment_constraints(
+            AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        )
 
 
 class AsyncFTSQuery(AsyncStandardQuery):
@@ -4577,6 +4837,7 @@ class AsyncFTSQuery(AsyncStandardQuery):
         For example, ``await table.query().nearest_to_text("gripper closed",``
         ``operator="AND").where("active = true").count_rows()``.
         """
+        self._ensure_fragment_constraints_supported("count_rows()")
         try:
             return await self._inner.count_rows()
         except Exception as error:
@@ -4662,11 +4923,17 @@ class AsyncFTSQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncHybridQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(new_self, self._table)
+            )
         else:
-            return AsyncHybridQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     async def _execute_batches(
@@ -5002,15 +5269,21 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             columns = []
 
         if isinstance(query, str):
-            return AsyncHybridQuery(
-                self._inner.nearest_to_text(
-                    {"query": query, "columns": columns, "operator": fts_query.operator}
-                ),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query}), self._table
+        return self._inherit_fragment_constraints(
+            AsyncHybridQuery(self._inner.nearest_to_text({"query": query}), self._table)
         )
 
     async def _execute_batches(
@@ -5098,6 +5371,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the hybrid query itself. The key the legs are fused on, if any, is left
         on `self._pk_fusion`.
         """
+        self._ensure_fragment_constraints_supported("this hybrid query")
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 
@@ -5394,15 +5668,26 @@ class BaseQueryBuilder(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict execution to the given Lance fragments.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._inner.with_fragments(fragments)
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict execution to the given Lance fragment ids.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. On that path, an empty list selects no
+        rows and missing ids raise ``ValueError``. Other terminals and remote
+        tables raise ``NotImplementedError`` before scanning instead of
+        silently scanning the full table. Blob-specific ``to_pandas()``
+        fallbacks keep their existing validation errors.
         """
         self._inner.fragment_ids(fragment_ids)
         return self
