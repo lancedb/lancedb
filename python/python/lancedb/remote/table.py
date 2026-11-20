@@ -50,6 +50,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.cleanup import CleanupPlan, CleanupResult
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -1101,7 +1102,8 @@ class RemoteTable(Table):
         cleanup_old_versions() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op in LanceDB Enterprise.",
+            "cleanup_old_versions() is a no-op in LanceDB Enterprise. "
+            "Use cleanup_async() to submit durable cleanup explicitly.",
             stacklevel=2,
         )
         pass
@@ -1115,6 +1117,19 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         pass
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview cleanup without submitting a job or deleting files."""
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
 
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None

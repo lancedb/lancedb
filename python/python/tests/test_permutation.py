@@ -5,7 +5,7 @@ import pyarrow as pa
 import math
 import pytest
 
-from lancedb import DBConnection, Table, connect
+from lancedb import DBConnection, Session, Table, connect, connect_namespace
 from lancedb.background_loop import LOOP
 from lancedb.permutation import (
     DEFAULT_BATCH_SIZE,
@@ -19,6 +19,18 @@ from utils import (
     assert_server_safe_row_id_requests,
     mock_remote_table,
 )
+
+
+def _read_permutation_in_spawned_process(payload: bytes, output) -> None:
+    import pickle
+
+    permutation = pickle.loads(payload)
+    output.put(
+        [
+            row["id"]
+            for row in permutation.__getitems__(list(range(permutation.num_rows)))
+        ]
+    )
 
 
 def test_split_random_ratios(mem_db):
@@ -85,6 +97,282 @@ def test_pickled_permutation_reads_pinned_version(tmp_path):
     assert len(restored) == 20
     rows = restored.__getitems__(list(range(20)))
     assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
+def test_persist_plan_create_overwrite_namespace_and_metadata(tmp_path):
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    db.create_namespace(["plans"])
+    namespace_path = ["plans"]
+
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2, split_names=["train", "test"])
+        .persist(db, "splits", namespace_path=namespace_path)
+        .execute()
+    )
+    assert plan.count_rows() == 20
+    assert plan.namespace == namespace_path
+    assert pickle.loads(pickle.dumps(plan)).namespace == namespace_path
+
+    permutation = Permutation.from_tables(tbl, plan, split="train")
+    assert permutation.base_version == tbl.version
+    assert permutation.base_branch is None
+    assert permutation.num_rows == 10
+
+    with pytest.raises((ValueError, RuntimeError), match="already exists"):
+        (
+            permutation_builder(tbl)
+            .split_sequential(fixed=2)
+            .persist(db, "splits", namespace_path=namespace_path)
+            .execute()
+        )
+
+    with pytest.raises(ValueError, match="Invalid mode"):
+        permutation_builder(tbl).persist(db, "other", mode="replace")
+
+    class RemoteLike:
+        uri = "db://example"
+
+    with pytest.raises(NotImplementedError, match="Enterprise"):
+        permutation_builder(tbl).persist(RemoteLike(), "remote_splits")
+
+    tbl.add(pa.table({"id": range(20, 40)}))
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2)
+        .persist(db, "splits", namespace_path=namespace_path, mode="overwrite")
+        .execute()
+    )
+    assert plan.count_rows() == 40
+    assert db.open_table("splits", namespace_path=namespace_path).count_rows() == 40
+    # The earlier permutation still reads the plan and base snapshot it was built from.
+    assert permutation.num_rows == 10
+    assert [row["id"] for row in permutation.__getitems__([0, 1])] == [0, 1]
+
+
+def test_persist_namespace_connection_direct_result_pickle(tmp_path):
+    import pickle
+
+    db = connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["plans"])
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2, split_names=["train", "test"])
+        .persist(db, "splits", namespace_path=["plans"])
+        .execute()
+    )
+    assert plan.namespace == ["plans"]
+    assert plan._conn is db
+
+    restored_plan = pickle.loads(pickle.dumps(plan))
+    assert restored_plan.namespace == ["plans"]
+    assert restored_plan.count_rows() == 20
+
+    permutation = Permutation.from_tables(tbl, plan, split="train")
+    restored = pickle.loads(pickle.dumps(permutation))
+    assert restored.num_rows == 10
+    assert sorted(
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ) == list(range(10))
+
+
+def test_persist_direct_result_keeps_session_pickle_error(tmp_path):
+    import pickle
+
+    db = connect(tmp_path, session=Session())
+    tbl = db.create_table("base", pa.table({"id": range(5)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(plan)
+
+    permutation = Permutation.from_tables(tbl, plan)
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(permutation)
+
+
+def test_persist_direct_result_preserves_manifest_connection_state(tmp_path):
+    import pickle
+
+    db = connect(tmp_path, manifest_enabled=True)
+    tbl = db.create_table("base", pa.table({"id": range(5)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+
+    restored = pickle.loads(pickle.dumps(plan))
+    assert restored._conn._manifest_enabled is True
+    assert restored.count_rows() == 5
+
+
+def test_base_branch_property_reads_plan_metadata(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(10)}))
+    branch = tbl.branches.create("exp")
+    branch.add(pa.table({"id": range(10, 20)}))
+
+    plan = permutation_builder(branch).persist(db, "branch_splits").execute()
+    permutation = Permutation.from_tables(branch, plan)
+
+    assert permutation.base_branch == "exp"
+    assert permutation.base_version == branch.version
+    assert permutation.num_rows == 20
+
+
+def test_persisted_plan_pickle_reopens_same_snapshot_after_overwrite(tmp_path):
+    from datetime import timedelta
+    import pickle
+
+    db = connect(tmp_path, read_consistency_interval=timedelta(0))
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    plan = permutation_builder(tbl).filter("id < 10").persist(db, "splits").execute()
+    permutation = Permutation.from_tables(tbl, plan)
+    old_base_version = permutation.base_version
+    old_plan_version = permutation._plan_version
+    state = permutation.__getstate__()
+    assert "permutation_data" not in state
+    assert (
+        state["permutation_table_state"]["state"]["checkout_version"]
+        == old_plan_version
+    )
+
+    # Replace the plan with disjoint rows of the same cardinality.
+    permutation_builder(tbl).filter("id >= 10").persist(
+        db, "splits", mode="overwrite"
+    ).execute()
+    assert plan.version == old_plan_version + 1
+    assert permutation.permutation_table.version == old_plan_version
+
+    live_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(permutation.num_rows)))
+    ]
+    assert live_ids == list(range(10))
+
+    # A reader recreated after the overwrite must still use the pinned snapshot.
+    permutation.reader = None
+    permutation._pid = None
+    recreated_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(permutation.num_rows)))
+    ]
+    assert recreated_ids == list(range(10))
+
+    restored = pickle.loads(pickle.dumps(permutation))
+    assert restored.base_version == old_base_version
+    restored_ids = [
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ]
+    assert restored_ids == list(range(10))
+
+    # A newly constructed permutation sees the overwritten plan.
+    fresh = Permutation.from_tables(tbl, db.open_table("splits"))
+    assert fresh.base_version == old_base_version
+    fresh_ids = [row["id"] for row in fresh.__getitems__(list(range(fresh.num_rows)))]
+    assert fresh_ids == list(range(10, 20))
+
+
+def test_persisted_plan_pickle_uses_captured_main_branch(tmp_path):
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    permutation_builder(tbl).persist(db, "splits").execute()
+
+    initial_plan = db.open_table("splits")
+    initial_plan.branches.create("exp", from_version=1)
+
+    # Main plan version 2 still has all 20 rows.
+    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+    main_plan = db.open_table("splits")
+    assert main_plan.version == 2
+
+    # Branch plan version 2 has different contents, so the numeric version alone
+    # does not identify the snapshot.
+    branch_plan = db.open_table("splits", branch="exp")
+    branch_plan.add(
+        pa.table(
+            {
+                "row_id": pa.array([0], type=pa.uint64()),
+                "split_id": pa.array([0], type=pa.uint32()),
+            }
+        )
+    )
+    branch_plan = db.open_table("splits", branch="exp")
+    assert branch_plan.version == 2
+    assert branch_plan.count_rows() == 21
+    branch_plan.tags.create("exp_v2", 2)
+
+    permutation = Permutation.from_tables(tbl, main_plan)
+
+    # Move the same passed-in plan handle to the other branch at the same
+    # numeric version. Pickle must still reopen the captured main snapshot.
+    main_plan.checkout("exp_v2")
+    assert main_plan.current_branch() == "exp"
+    assert main_plan.version == 2
+    payload = pickle.dumps(permutation)
+
+    restored = pickle.loads(payload)
+    assert restored.permutation_table.current_branch() is None
+    assert restored.permutation_table.version == 2
+    assert restored.num_rows == 20
+
+
+def test_persisted_plan_pickle_reopens_in_spawned_process(tmp_path):
+    import multiprocessing as mp
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(12)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+    payload = pickle.dumps(Permutation.from_tables(tbl, plan))
+
+    tbl.add(pa.table({"id": range(12, 24)}))
+    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+
+    context = mp.get_context("spawn")
+    output = context.Queue()
+    process = context.Process(
+        target=_read_permutation_in_spawned_process, args=(payload, output)
+    )
+    process.start()
+    try:
+        ids = output.get(timeout=60)
+    finally:
+        process.join(timeout=60)
+
+    assert process.exitcode == 0
+    assert sorted(ids) == list(range(12))
+
+
+def test_old_permutation_pickle_state_still_round_trips(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    plan = permutation_builder(tbl).execute()
+    state = {
+        "base_table_name": tbl.name,
+        "permutation_data": plan.to_arrow(),
+        "split": 0,
+        "selection": {"id": "id"},
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "transform_fn": Transforms.arrow2python,
+        "offset": None,
+        "limit": None,
+        "connection_factory": None,
+        "base_table_uri": str(tmp_path),
+        "base_table_storage_options": None,
+        "base_table_namespace": [],
+    }
+
+    restored = Permutation.__new__(Permutation)
+    restored.__setstate__(state)
+
+    assert restored.base_version == tbl.version
+    assert restored.base_branch is None
+    assert sorted(
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ) == list(range(20))
 
 
 def test_builder_copy_is_shallow_and_does_not_materialize(

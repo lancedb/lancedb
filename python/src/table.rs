@@ -2120,6 +2120,15 @@ impl Table {
         })
     }
 
+    /// Return an independent handle pinned to the currently selected snapshot.
+    pub fn _checkout_current(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let current = inner.checkout_current().await.infer_error()?;
+            Ok(Table::new(current))
+        })
+    }
+
     #[pyo3(signature = (version=None))]
     pub fn restore(
         self_: PyRef<'_, Self>,
@@ -2314,6 +2323,37 @@ impl Table {
                 inner: Arc::new(file),
                 closed: AtomicBool::new(false),
             })
+        })
+    }
+
+    /// Explain Enterprise version cleanup without submitting a job.
+    #[pyo3(signature = (min_age_seconds=None))]
+    pub fn explain_cleanup<'py>(
+        self_: PyRef<'py, Self>,
+        min_age_seconds: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = lancedb::table::CleanupOptions::new();
+        options.min_age_seconds = min_age_seconds;
+        future_into_py(self_.py(), async move {
+            let plan = inner.explain_cleanup(options).await.infer_error()?;
+            serde_json::to_string(&plan)
+                .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
+    /// Submit Enterprise version cleanup and retain its durable job and result.
+    #[pyo3(signature = (min_age_seconds=None))]
+    pub fn cleanup_async<'py>(
+        self_: PyRef<'py, Self>,
+        min_age_seconds: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = lancedb::table::CleanupOptions::new();
+        options.min_age_seconds = min_age_seconds;
+        future_into_py(self_.py(), async move {
+            let job = inner.cleanup_async(options).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
         })
     }
 

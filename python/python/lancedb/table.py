@@ -52,6 +52,7 @@ from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult
+from lancedb.cleanup import CleanupPlan, CleanupResult, _validate_min_age_seconds
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -149,6 +150,9 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         # The namespace QueryTable request has no order_by field. Pushing a
         # nonempty ordering down would drop it and return the wrong top-K rows.
         or bool(query.order_by)
+        # An ordered scan is a local manifest-order guarantee. The request has
+        # no scan-order field, so run it locally where storage is available.
+        or query.scan_in_order is True
         or (
             query.full_text_query is not None
             and query.fast_search is True
@@ -2958,6 +2962,16 @@ class Table(ABC):
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
 
+    def _execute_pull_query(
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a pull-driven batch query, falling back to the normal path."""
+        return self._execute_query(query, batch_size=batch_size, timeout=timeout)
+
     def _execute_arrow(
         self,
         query: Query,
@@ -3180,6 +3194,38 @@ class Table(ABC):
         This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview version deletion without submitting a job or deleting files.
+
+        Uses the same retention, branch and Ownership boundary as cleanup_async.
+        Estimates exclude auxiliary sweeps and reserve no snapshot for execution.
+        """
+        raise NotImplementedError("cleanup previews require LanceDB Enterprise")
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit durable remote version cleanup through SQL VACUUM.
+
+        Omitted retention inherits selected table/branch then deployment policy.
+        Requires Ownership and parent Usage. Local/historical handles are unsupported.
+        Disable/drain automatic cleanup and prevent other cleanup, tag/branch
+        publication and restore until completion, including direct storage clients.
+        The server does not enforce coordination. Cancellation cannot undo deletion
+        or prove storage I/O stopped. Preview is available without deletion.
+
+        Save ``job.id`` to reopen with ``db.open_job(id)``. Waiting returns
+        [CleanupResult][lancedb.cleanup.CleanupResult]; timeout leaves work running.
+        Unknown totals after retry/recovery remain None. Auxiliary sweeps are
+        best effort and excluded from the version-deletion counts.
+
+        >>> job = table.cleanup_async(min_age_seconds=604800)  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "durable cleanup jobs are only supported on remote tables"
+        )
 
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
@@ -4424,10 +4470,40 @@ class LanceTable(Table):
         return self._namespace_path
 
     @classmethod
-    async def from_inner(cls, tbl: LanceDBTable):
+    async def from_inner(
+        cls,
+        tbl: LanceDBTable,
+        *,
+        connection: Optional["DBConnection"] = None,
+        name: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        location: Optional[str] = None,
+    ):
+        async_tbl = AsyncTable(tbl)
+        if connection is not None:
+            # A table created through a Python connection keeps that
+            # connection's explicit options. Reconstructing a bare connection
+            # from the native handle loses namespace, storage, manifest and
+            # Session state needed by pickle.
+            return cls(
+                connection,
+                name or async_tbl.name,
+                namespace_path=namespace_path,
+                storage_options=getattr(connection, "storage_options", None),
+                location=location,
+                namespace_client=getattr(connection, "_namespace_client", None),
+                managed_versioning=getattr(connection, "_managed_versioning", None),
+                pushdown_operations=getattr(
+                    connection, "_namespace_client_pushdown_operations", None
+                ),
+                route_pushdown_to_rust=getattr(
+                    connection, "_route_pushdown_to_rust", False
+                ),
+                _async=async_tbl,
+            )
+
         from .db import AsyncConnection, LanceDBConnection
 
-        async_tbl = AsyncTable(tbl)
         inner_conn = tbl.database()
         read_consistency_interval = await AsyncConnection(
             inner_conn
@@ -4656,6 +4732,16 @@ class LanceTable(Table):
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
+
+    def _pin_current_snapshot(self) -> "LanceTable":
+        """Return an independent handle pinned to this table's current snapshot."""
+
+        async def do_pin():
+            pinned = await self._table._checkout_current()
+            return pinned, await pinned.version()
+
+        pinned, version = LOOP.run(do_pin())
+        return self._wrap_branch_handle(pinned, version)
 
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
@@ -6044,6 +6130,27 @@ class LanceTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
+    def _execute_pull_query(
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a plain local scan with one Rust fetch per batch.
+
+        The caller has already checked that this is an embedded, non-namespace
+        plain lazy scan. A query shape that does not map to ``AsyncQuery``
+        keeps the existing reader path instead of guessing at its semantics.
+        """
+        async_query = self._table._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
+        if isinstance(async_query, AsyncQuery):
+            return async_query._execute_batches_sync(
+                max_batch_length=batch_size, timeout=timeout
+            )
+        return self._execute_query(query, batch_size=batch_size, timeout=timeout)
+
     def _execute_arrow(
         self,
         query: Query,
@@ -6165,6 +6272,14 @@ class LanceTable(Table):
         return Job(
             LOOP.run(self._table.compact_async(compaction_options=compaction_options))
         )
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
 
     def optimize(
         self,
@@ -8529,6 +8644,8 @@ class AsyncTable:
             async_query = async_query.with_row_id()
         if query.order_by:
             async_query = async_query.order_by(query.order_by)
+        if query.scan_in_order is not None:
+            async_query = async_query.scan_in_order(query.scan_in_order)
 
         if query.vector:
             async_query = async_query.nearest_to(query.vector).distance_range(
@@ -9628,6 +9745,10 @@ class AsyncTable:
         """
         return await self._inner.version()
 
+    async def _checkout_current(self) -> "AsyncTable":
+        """Return an independent handle pinned to the currently selected snapshot."""
+        return AsyncTable(await self._inner._checkout_current())
+
     async def list_versions(self):
         """
         List all versions of the table
@@ -9902,6 +10023,25 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def explain_cleanup(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> CleanupPlan:
+        """Read-only preview; see Table.explain_cleanup."""
+        _validate_min_age_seconds(min_age_seconds)
+        return CleanupPlan.from_json(await self._inner.explain_cleanup(min_age_seconds))
+
+    async def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> AsyncJob[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        _validate_min_age_seconds(min_age_seconds)
+        return _typed_job(
+            await self._inner.cleanup_async(min_age_seconds), CleanupResult.from_json
+        )
 
     async def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None

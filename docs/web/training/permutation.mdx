@@ -29,6 +29,42 @@ In specific use cases, you may need the flexibility to shuffle, split, and selec
 functionality `StreamingDataset` is built on. A `Permutation` defines a customizable row ordering, and supports
 map-style access through `__getitem__()` and batched access through `__getitems__()`.
 
+## Persisting a permutation {#persisting}
+
+By default a permutation table is stored in memory. Call `persist` before `execute` to write it to an embedded
+LanceDB connection backed by local files or object storage. The plan becomes an ordinary table, so another process
+with access to the same storage can open it and use `Permutation.from_tables` to read the same split.
+
+<CodeGroup>
+```py Python icon=Python
+from lancedb.permutation import Permutation, permutation_builder
+
+db = lancedb.connect("file://some/db/path")
+table = db.open_table("some_table")
+plan = (
+    permutation_builder(table)
+    .split_random(ratios=[0.8, 0.2], seed=42, split_names=["train", "validation"])
+    .persist(db, "splits_v1")
+    .execute()
+)
+train = Permutation.from_tables(table, db.open_table("splits_v1"), split="train")
+print(train.base_version, train.base_branch)
+```
+</CodeGroup>
+
+The table returned by `execute` keeps the destination connection and namespace context, so it can be pickled and
+reopened directly in a worker process.
+
+`mode="create"` is the default and fails when the destination table already exists. Pass `mode="overwrite"` to
+replace it explicitly. Overwriting writes a new table version; readers that already opened the previous version keep
+reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting to LanceDB Enterprise
+connections is not supported yet, because reproducible Enterprise plan ordering requires deterministic remote row
+ordering.
+
+The plan records the base table version and branch in its schema metadata. `Permutation.base_version` and
+`Permutation.base_branch` read those values without querying the base table; both are `None` for older plans that did
+not record them.
+
 ## Version Pinning {#version-pinning}
 
 A `Permutation` is pinned to the version of its base table at the time it was constructed, and every read (including future reads

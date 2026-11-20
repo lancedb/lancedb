@@ -1054,6 +1054,10 @@ impl Connection {
                     job.into_typed::<lancedb::table::PrewarmDataResult>()
                         .infer_error()?,
                 )),
+                Some("cleanup") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::CleanupResult>()
+                        .infer_error()?,
+                )),
                 Some("compact") => Ok(crate::job::Job::new_typed(
                     job.into_typed::<lancedb::table::CompactionResult>()
                         .infer_error()?,

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 pub mod blobs;
+mod cleanup;
 pub mod insert;
 mod ipc_stream;
 mod optimize;
@@ -1326,6 +1327,13 @@ impl<S: HttpSend> RemoteTable<S> {
         params: &QueryRequest,
     ) -> Result<()> {
         params.check_filter()?;
+        if params.scan_in_order == Some(true) {
+            return Err(Error::NotSupported {
+                message: "scan_in_order(true) requires an ordered scan of Embedded storage; \
+                          LanceDB Enterprise tables do not support storage-order scans yet"
+                    .to_string(),
+            });
+        }
         body["prefilter"] = params.prefilter.into();
         // Only forward use_rte when explicitly set; a server that predates it
         // ignores the field and routes as it would by default.
@@ -4168,6 +4176,67 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
+    async fn explain_cleanup(
+        &self,
+        options: crate::table::CleanupOptions,
+    ) -> Result<crate::table::CleanupPlan> {
+        self.check_mutable().await?;
+        let statement = format!(
+            "EXPLAIN (FORMAT JSON) {}",
+            cleanup::statement(&self.name, self.branch.as_deref(), &options)?
+        );
+        let client = self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "cleanup previews require a Flight SQL endpoint with EXPLAIN (FORMAT JSON) VACUUM support".into(),
+        })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(cleanup::map_error)?;
+        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
+            batches.push(batch);
+        }
+        cleanup::plan(&batches)
+    }
+
+    async fn cleanup_async(
+        &self,
+        options: crate::table::CleanupOptions,
+    ) -> Result<Job<crate::table::CleanupResult>> {
+        self.check_mutable().await?;
+        let statement = cleanup::statement(&self.name, self.branch.as_deref(), &options)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "manual cleanup requires a Flight SQL endpoint and SQL VACUUM support"
+                    .into(),
+            })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(cleanup::map_error)?;
+        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
+            batches.push(batch);
+        }
+        let job_id = cleanup::receipt(&batches)?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn compact_async(
         &self,
         options: crate::table::optimize::CompactionOverrides,
@@ -6716,6 +6785,27 @@ mod tests {
 
         let result = table.drop_columns(&["a", "b"]).await.unwrap();
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    #[tokio::test]
+    async fn test_query_scan_in_order_true_is_not_supported() {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("scan_in_order(true) must fail before sending a request")
+        });
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .execute()
+            .await
+            .err()
+            .expect("remote scans cannot guarantee manifest order");
+        assert!(
+            matches!(&err, Error::NotSupported { message }
+                if message.contains("scan_in_order(true)")
+                    && message.contains("Enterprise tables")),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

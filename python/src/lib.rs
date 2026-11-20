@@ -40,6 +40,7 @@ pub mod query;
 pub mod runtime;
 pub mod session;
 pub mod sql;
+mod sync_stream;
 pub mod table;
 pub mod util;
 
@@ -113,6 +114,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<HybridQuery>()?;
     m.add_class::<VectorQuery>()?;
     m.add_class::<RecordBatchStream>()?;
+    m.add_class::<sync_stream::SyncRecordBatchStream>()?;
     m.add_class::<AddColumnsResult>()?;
     m.add_class::<RefreshColumnResult>()?;
     m.add_class::<FunctionErrors>()?;

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::expr::PyExpr;
 use crate::runtime::future_into_py;
+use crate::sync_stream::SyncRecordBatchStream;
 use crate::util::parse_distance_type;
 use crate::{arrow::RecordBatchStream, util::PyLanceDB};
 use crate::{error::PythonErrorExt, index::class_name};
@@ -78,6 +79,20 @@ where
     let reader =
         py.detach(move || crate::arrow::execute_to_reader_sync(query, max_batch_length, timeout))?;
     Python::attach(|py| reader.into_pyarrow(py).map(|obj| obj.unbind()))
+}
+
+fn query_execution_options(
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> QueryExecutionOptions {
+    let mut options = QueryExecutionOptions::default();
+    if let Some(max_batch_length) = max_batch_length {
+        options.max_batch_length = max_batch_length;
+    }
+    if let Some(timeout) = timeout {
+        options.timeout = Some(timeout);
+    }
+    options
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
@@ -396,6 +411,7 @@ pub struct PyQueryRequest {
     pub postfilter: Option<bool>,
     pub norm: Option<String>,
     pub order_by: Option<Vec<PyColumnOrdering>>,
+    pub scan_in_order: Option<bool>,
 }
 
 impl From<AnyQuery> for PyQueryRequest {
@@ -434,6 +450,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 order_by: query_request
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: query_request.scan_in_order,
             },
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
@@ -467,6 +484,7 @@ impl From<AnyQuery> for PyQueryRequest {
                     .base
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: vector_query.base.scan_in_order,
             },
         }
     }
@@ -685,6 +703,10 @@ impl Query {
         Ok(())
     }
 
+    pub fn scan_in_order(&mut self, ordered: bool) {
+        self.inner = self.inner.clone().scan_in_order(ordered);
+    }
+
     #[pyo3(signature = ())]
     pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
@@ -702,16 +724,33 @@ impl Query {
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let mut opts = QueryExecutionOptions::default();
-            if let Some(max_batch_length) = max_batch_length {
-                opts.max_batch_length = max_batch_length;
-            }
-            if let Some(timeout) = timeout {
-                opts.timeout = Some(timeout);
-            }
+            let opts = query_execution_options(max_batch_length, timeout);
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this local query and return a pull-driven synchronous iterator.
+    ///
+    /// The query is started once. Each `__next__` fetches exactly one batch
+    /// from the caller's thread while the GIL is released. `None` keeps the
+    /// core's default 1024-row output cap, `0` lets the engine choose, and a
+    /// positive value caps each returned batch.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_sync(
+        self_: PyRef<'_, Self>,
+        py: Python<'_>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<SyncRecordBatchStream> {
+        let inner = self_.inner.clone();
+        let opts = query_execution_options(max_batch_length, timeout);
+        let stream = py.detach(move || {
+            crate::runtime::block_on_interruptible(async move {
+                inner.execute_with_options(opts).await.infer_error()
+            })
+        })?;
+        Ok(SyncRecordBatchStream::new(stream))
     }
 
     /// Execute this query eagerly and return an Arrow C Stream reader.

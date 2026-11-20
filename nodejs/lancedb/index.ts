@@ -669,6 +669,7 @@ export {
 export { Listing, ListingOptions } from "./listing";
 
 export type { CompactionResult } from "./compaction";
+export type { CleanupOptions, CleanupPlan, CleanupResult } from "./cleanup";
 
 export type {
   PrewarmDataPlan,
