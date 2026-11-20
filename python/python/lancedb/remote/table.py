@@ -1556,9 +1556,15 @@ class RemoteTable(Table):
         return LOOP.run(self._table.uri())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder

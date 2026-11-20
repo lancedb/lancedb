@@ -1404,6 +1404,12 @@ def test_remote_permutation_is_picklable():
             {"a": 2},
             {"a": 4},
         ]
+        assert table.take_offsets([0, 2, 0, 4], preserve_order=True).to_list() == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
         permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
@@ -6083,14 +6089,26 @@ def blob_remote_table(
             if requests is not None:
                 requests.append(("query", body))
             columns = body.get("columns")
-            assert columns in (
+            take_offsets_query = isinstance(columns, list) and "_rowoffset" in columns
+            assert take_offsets_query or columns in (
                 None,
                 ["id", "image"],
                 ["id"],
                 ["image"],
                 {"payload": "image"},
             )
-            if isinstance(columns, dict):
+            if take_offsets_query:
+                response_table = blob_query_response_table().append_column(
+                    "_rowoffset", pa.array(range(3), type=pa.uint64())
+                )
+                response_table = response_table.select(
+                    [name for name in columns if name != "_rowid"]
+                )
+                if body.get("with_row_id", False):
+                    response_table = response_table.append_column(
+                        "_rowid", blob_query_response_table()["_rowid"]
+                    )
+            elif isinstance(columns, dict):
                 response_table = blob_query_response_table().select(["image", "_rowid"])
                 response_table = response_table.rename_columns(["payload", "_rowid"])
                 if not body.get("with_row_id", False):
@@ -6723,6 +6741,18 @@ def test_remote_blob_fetch_accepts_metadata_free_query_table(api):
                 for handle in handles:
                     if handle is not None:
                         handle.close()
+
+
+def test_remote_take_offsets_preserve_order_with_blob_bytes():
+    with blob_remote_table() as table:
+        hits = (
+            table.take_offsets([2, 0, 2], preserve_order=True)
+            .select(["id", "image"])
+            .to_arrow(blob_mode="bytes")
+        )
+
+    assert hits["id"].to_pylist() == [3, 1, 3]
+    assert hits["image"].to_pylist() == [b"gamma", b"alpha", b"gamma"]
 
 
 @pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])

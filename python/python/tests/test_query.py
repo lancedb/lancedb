@@ -975,6 +975,10 @@ async def test_async_take_query_to_pandas_blob_v2_bytes(tmp_db_async):
 
     df = await table.take_offsets([1, 2]).to_pandas(blob_mode="bytes")
     assert set(df["blob"]) == {b"two", b"three"}
+    ordered = await table.take_offsets([2, 1], preserve_order=True).to_pandas(
+        blob_mode="bytes"
+    )
+    assert ordered["blob"].tolist() == [b"three", b"two"]
 
 
 def test_order_by_plain_query(mem_db):
@@ -2815,6 +2819,86 @@ def test_take_queries(tmp_path):
     assert table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list() == [5, 2, 17]
 
 
+def test_take_offsets_preserve_order_sync(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", pa.table({"idx": range(4)}))
+    table.add(pa.table({"idx": range(4, 8)}))
+    table.delete("idx IN (1, 6)")
+    requested = [5, 0, 5, 2, 99, 4, 0]
+    expected = [7, 0, 7, 3, 5, 0]
+
+    actual = (
+        table.take_offsets(requested, preserve_order=True).select(["idx"]).to_arrow()
+    )
+    assert actual.column_names == ["idx"]
+    assert actual["idx"].to_pylist() == expected
+
+    batches = list(
+        table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_batches(max_batch_length=1)
+    )
+    assert all(batch.num_rows <= 1 for batch in batches)
+    assert [row for batch in batches for row in batch["idx"].to_pylist()] == expected
+
+    # The default path keeps its unspecified-order behavior.
+    default = table.take_offsets(requested).select(["idx"]).to_arrow()
+    assert sorted(default["idx"].to_pylist()) == sorted(expected)
+
+    assert table.take_offsets(requested).to_query_object().preserve_order is None
+    query = (
+        table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_query_object()
+    )
+    assert query.preserve_order is True
+    assert table._execute_query(query).read_all()["idx"].to_pylist() == expected
+
+    empty = table.take_offsets([], preserve_order=True).select(["idx"]).to_arrow()
+    assert empty.num_rows == 0
+    assert empty.column_names == ["idx"]
+
+    query.order_by = [ColumnOrdering(column_name="idx")]
+    with pytest.raises(
+        ValueError, match="preserve_order cannot be combined with an explicit order_by"
+    ):
+        table._execute_query(query)
+
+
+@pytest.mark.asyncio
+async def test_take_offsets_preserve_order_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", pa.table({"idx": range(4)}))
+    await table.add(pa.table({"idx": range(4, 8)}))
+    await table.delete("idx IN (1, 6)")
+    requested = [5, 0, 5, 2, 99, 4, 0]
+    expected = [7, 0, 7, 3, 5, 0]
+
+    actual = (
+        await table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_arrow()
+    )
+    assert actual.column_names == ["idx"]
+    assert actual["idx"].to_pylist() == expected
+
+    reader = (
+        await table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_batches(max_batch_length=1)
+    )
+    batches = [batch async for batch in reader]
+    assert all(batch.num_rows <= 1 for batch in batches)
+    assert [row for batch in batches for row in batch["idx"].to_pylist()] == expected
+
+    query = (
+        table.take_offsets(requested, preserve_order=True)
+        .select(["idx"])
+        .to_query_object()
+    )
+    assert query.preserve_order is True
+
+
 @pytest.mark.parametrize("selection", [None, [], ["idx"], {"_rowid": "100 - idx"}])
 @pytest.mark.parametrize("empty", [False, True])
 def test_take_row_ids_order_and_roundtrip(tmp_path, selection, empty):
@@ -2919,6 +3003,13 @@ def test_getitems(tmp_path):
 
     offsets = random.sample(range(200), 10)
     assert table.__getitems__(offsets) == pa.table({"idx": offsets})
+
+
+def test_getitems_rejects_missing_offsets(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("test", pa.table({"idx": range(3)}))
+
+    with pytest.raises(pa.ArrowIndexError, match="out of bounds"):
+        table.__getitems__([0, 99])
 
 
 @pytest.mark.asyncio

@@ -1017,6 +1017,11 @@ def test_take_queries_honor_blob_mode():
         1: b"one",
         2: b"two",
     }
+    ordered = table.take_offsets([1, 0], preserve_order=True).to_arrow(
+        blob_mode="bytes"
+    )
+    assert ordered["id"].to_pylist() == [2, 1]
+    assert ordered["image"].to_pylist() == [b"two", b"one"]
     assert [
         row["image"] for row in table.take_row_ids([0]).to_list(blob_mode="bytes")
     ] == [b"one"]

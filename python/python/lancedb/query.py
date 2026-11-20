@@ -1186,6 +1186,9 @@ class Query(pydantic.BaseModel):
     # Row IDs whose requested order and duplicate occurrences must be restored.
     take_row_ids: Optional[List[int]] = None
 
+    # Restore take-offset duplicates in the exact input order.
+    preserve_order: Optional[bool] = None
+
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
@@ -1212,6 +1215,7 @@ class Query(pydantic.BaseModel):
         query.offset = req.offset
         query.take_offsets = req.take_offsets
         query.take_row_ids = req.take_row_ids
+        query.preserve_order = req.preserve_order
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select
