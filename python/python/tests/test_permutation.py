@@ -1225,6 +1225,7 @@ def test_transform_fn_pandas(mem_db):
 
 
 def test_numpy_format_mixed_columns_is_object_ndarray(mem_db):
+    pytest.importorskip("pandas")
     import numpy as np
 
     tbl = mem_db.create_table(
