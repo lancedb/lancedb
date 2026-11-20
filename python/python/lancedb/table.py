@@ -1629,9 +1629,21 @@ class Table(ABC):
 
         Examples
         --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "delta_example",
+        ...     [{"id": 1}, {"id": 2}],
+        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
+        ... )
+        >>> table.tags.create("baseline", table.version)
+        >>> _ = table.add([{"id": 3}])
         >>> delta = table.delta("baseline")
         >>> inserted = delta.inserted_rows().read_all()
-        >>> transactions = delta.list_transactions()
+        >>> inserted["id"].to_pylist()
+        [3]
+        >>> [transaction["operation"] for transaction in delta.list_transactions()]
+        ['Append']
         """
         raise NotImplementedError("delta is not supported for this table type")
 
