@@ -1852,12 +1852,51 @@ class LanceQueryBuilder(ABC):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """Set the Lance fragments to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. Other terminals and remote tables raise ``NotImplementedError``
+        before scanning instead of silently scanning the full table.
+        Blob-specific ``to_pandas()`` fallbacks keep their existing validation
+        errors.
+
+        Parameters
+        ----------
+        fragments : list[lance.Fragment]
+            Fragments from ``table.to_lance().get_fragments()``. Pass fragments
+            from the same dataset snapshot.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """Set the Lance fragment ids to scan for plain scanner-backed queries."""
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
+
+        Parameters
+        ----------
+        fragment_ids : list[int]
+            Fragment ids from ``table.to_lance().get_fragments()``.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
         self._fragment_ids = fragment_ids
         return self
 
@@ -3793,15 +3832,30 @@ class AsyncQueryBase(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict an embedded plain-scan blob query to the given Lance fragments.
+
+        Fragment selection is supported only when ``to_pandas()`` uses the
+        embedded Lance plain-scan path: the table is an embedded, non-memory
+        Lance dataset, the query is a plain scan (no vector, full-text, take,
+        postfilter, or ordering), and the selected output includes a blob
+        column. The constraint is preserved when converting between async
+        query types. Other terminals and remote tables raise
+        ``NotImplementedError`` before scanning instead of silently scanning
+        the full table. Blob-specific ``to_pandas()`` fallbacks keep their
+        existing validation errors.
         """
         self._fragments = fragments
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict an embedded plain-scan blob query to the given fragment ids.
+
+        Fragment selection uses the same supported ``to_pandas()`` path as
+        ``with_fragments()``. On that path, an empty list selects no rows and
+        missing ids raise ``ValueError``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._fragment_ids = fragment_ids
         return self
@@ -5464,15 +5518,26 @@ class BaseQueryBuilder(object):
         return self
 
     def with_fragments(self, fragments: Any) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragments.
+        """Restrict execution to the given Lance fragments.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. Other terminals and remote tables
+        raise ``NotImplementedError`` before scanning instead of silently
+        scanning the full table. Blob-specific ``to_pandas()`` fallbacks keep
+        their existing validation errors.
         """
         self._inner.with_fragments(fragments)
         return self
 
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
-        """
-        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """Restrict execution to the given Lance fragment ids.
+
+        Fragment selection is supported only by embedded plain-scan blob
+        queries through ``to_pandas()``. On that path, an empty list selects no
+        rows and missing ids raise ``ValueError``. Other terminals and remote
+        tables raise ``NotImplementedError`` before scanning instead of
+        silently scanning the full table. Blob-specific ``to_pandas()``
+        fallbacks keep their existing validation errors.
         """
         self._inner.fragment_ids(fragment_ids)
         return self
