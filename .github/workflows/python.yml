@@ -126,6 +126,14 @@ jobs:
         run: |
           python -c "import torch"
           pytest python/tests/test_torch.py::test_remote_permutation_dataloader_multiprocessing -q -rs
+      # These files skip themselves without torch, and this is the only job
+      # that installs it, so nothing else runs them.
+      - name: Test streaming data loader
+        run: |
+          pytest -q -rs \
+            python/tests/test_elastic_dataloader.py \
+            python/tests/test_prewarm_streaming.py \
+            python/tests/test_prewarm_waves.py
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
   linux:
