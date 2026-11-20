@@ -1,6 +1,6 @@
 extends: existence
 message: "Avoid '%s' in prose. Use a comma, a colon, parentheses or two sentences."
-link: https://github.com/lancedb/docs/blob/main/STYLE.md#punctuation
+link: https://github.com/lancedb/lancedb/blob/main/docs/STYLE.md#punctuation
 level: warning
 nonword: true
 # An em dash in prose, and a double hyphen or en dash used as one, with a

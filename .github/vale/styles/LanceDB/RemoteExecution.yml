@@ -1,6 +1,6 @@
 extends: existence
 message: "Avoid '%s'. Write 'LanceDB Enterprise' and describe where the operation runs directly."
-link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+link: https://github.com/lancedb/lancedb/blob/main/docs/STYLE.md#names
 level: warning
 ignorecase: false
 # Remote storage, remote URLs and a git remote are other things and stay. Class
