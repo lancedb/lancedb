@@ -1373,6 +1373,190 @@ def test_versioning(mem_db: DBConnection):
     assert len(table) == 2
 
 
+def test_delta_streams_and_pins_endpoints(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "delta",
+        data=[
+            {"id": 1, "value": 0},
+            {"id": 2, "value": 0},
+        ],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+
+    table.add([{"id": 3, "value": 0}])
+    table.tags.create("baseline", 2)
+    table.update(where="id = 1", values_sql={"value": "value + 10"})
+    table.delete("id = 2")
+    assert table.version == 4
+
+    delta = table.delta(1)
+    assert delta.begin_version == 1
+    assert delta.end_version == 4
+
+    inserted = delta.inserted_rows().read_all()
+    assert inserted["id"].to_pylist() == [3]
+    assert inserted.schema.names == [
+        "id",
+        "value",
+        "_rowid",
+        "_row_created_at_version",
+        "_row_last_updated_at_version",
+    ]
+
+    updated = delta.updated_rows().read_all()
+    assert updated["id"].to_pylist() == [1]
+    assert updated["value"].to_pylist() == [10]
+
+    upserted = delta.upserted_rows().read_all()
+    assert sorted(upserted["id"].to_pylist()) == [1, 3]
+
+    deleted = delta.deleted_row_ids().read_all()
+    assert deleted.schema.names == ["_rowid"]
+    assert deleted.schema.field("_rowid").type == pa.uint64()
+    assert deleted.num_rows == 1
+
+    transactions = delta.list_transactions()
+    assert [transaction["operation"] for transaction in transactions] == [
+        "Append",
+        "Update",
+        "Delete",
+    ]
+    assert transactions[0]["read_version"] == 1
+
+    # Tags are resolved on the current branch and can be either endpoint.
+    from_tag = table.delta("baseline")
+    assert from_tag.begin_version == 2
+    assert from_tag.end_version == 4
+    assert from_tag.updated_rows().read_all()["id"].to_pylist() == [1]
+
+    to_tag = table.delta(1, "baseline")
+    assert to_tag.end_version == 2
+    assert to_tag.inserted_rows().read_all()["id"].to_pylist() == [3]
+
+    # Equal valid versions keep the reader schemas even when no rows change.
+    equal = table.delta(2, 2)
+    empty_inserted = equal.inserted_rows().read_all()
+    assert empty_inserted.num_rows == 0
+    assert empty_inserted.schema == inserted.schema
+    empty_deleted = equal.deleted_row_ids().read_all()
+    assert empty_deleted.num_rows == 0
+    assert empty_deleted.schema.names == ["_rowid"]
+
+    # Reversed, zero, missing, and missing-tag endpoints are input errors.
+    with pytest.raises(ValueError, match="newer than"):
+        table.delta(4, 2)
+    with pytest.raises(ValueError, match="start at 1"):
+        table.delta(0)
+    with pytest.raises(ValueError, match="does not exist"):
+        table.delta(999)
+    with pytest.raises(ValueError, match="does not exist"):
+        table.delta("missing-tag")
+
+    # An omitted target follows the visible checkout and leaves the shared
+    # checkout in place.
+    table.checkout(2)
+    checked_out = table.delta(1)
+    assert checked_out.end_version == 2
+    assert checked_out.inserted_rows().read_all()["id"].to_pylist() == [3]
+    assert table.version == 2
+
+    # An explicit target works from a pinned handle without moving it.
+    explicit = table.delta(1, 3)
+    assert explicit.updated_rows().read_all()["id"].to_pylist() == [1]
+    assert table.version == 2
+    table.checkout_latest()
+    assert table.version == 4
+
+
+def test_delta_requires_stable_row_ids(mem_db: DBConnection):
+    table = mem_db.create_table("delta_no_stable", data=[{"id": 1}])
+    table.add([{"id": 2}])
+    delta = table.delta(1)
+
+    for reader in (
+        delta.inserted_rows,
+        delta.updated_rows,
+        delta.upserted_rows,
+        delta.deleted_row_ids,
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            reader()
+        message = str(exc_info.value)
+        assert "new_table_enable_stable_row_ids" in message
+        assert "list_transactions" in message
+
+    # Transactions remain available without stable row ids.
+    transactions = delta.list_transactions()
+    assert [transaction["operation"] for transaction in transactions] == ["Append"]
+
+    # Equal endpoints need no row lineage, so they are empty rather than
+    # rejected.
+    version = table.version
+    equal = table.delta(version, version)
+    assert equal.inserted_rows().read_all().num_rows == 0
+    assert equal.deleted_row_ids().read_all().num_rows == 0
+
+
+def test_delta_rejects_cross_branch_tags(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table(
+        "delta_branches",
+        data=[{"id": 0}],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    branch = table.branches.create("exp")
+    branch.add([{"id": 1}])
+    table.add([{"id": 100}, {"id": 101}, {"id": 102}])
+    assert branch.version == table.version
+
+    table.tags.create("main_tag", table.version)
+    branch.tags.create("exp_tag", branch.version)
+
+    # The same-branch tag resolves through the branch, not main's data at the
+    # same version number.
+    delta = branch.delta(1, "exp_tag")
+    assert delta.inserted_rows().read_all()["id"].to_pylist() == [1]
+
+    # Cross-branch tags are rejected even though the version number exists on
+    # both branches.
+    with pytest.raises(ValueError) as exc_info:
+        branch.delta("main_tag")
+    message = str(exc_info.value)
+    assert "main_tag" in message
+    assert "main" in message
+    assert "exp" in message
+
+    with pytest.raises(ValueError, match="exp_tag"):
+        table.delta("exp_tag")
+
+
+@pytest.mark.asyncio
+async def test_async_delta(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "async_delta",
+        data=[{"id": 1}],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    await table.add([{"id": 2}])
+
+    delta = await table.delta(1)
+    assert delta.begin_version == 1
+    assert delta.end_version == 2
+
+    reader = await delta.inserted_rows()
+    inserted = await reader.read_all()
+    assert inserted[0]["id"].to_pylist() == [2]
+
+    transactions = await delta.list_transactions()
+    assert [transaction["operation"] for transaction in transactions] == ["Append"]
+
+    equal = await table.delta(2, 2)
+    reader = await equal.inserted_rows()
+    assert await reader.read_all() == []
+
+
 def test_tags(mem_db: DBConnection):
     table = mem_db.create_table(
         "test",

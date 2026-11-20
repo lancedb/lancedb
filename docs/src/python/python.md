@@ -428,6 +428,8 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Branches
 
+::: lancedb.table.TableDelta
+
 ::: lancedb.RTEWriteSpec
 
 ## Functions and Jobs
@@ -1316,6 +1318,8 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+::: lancedb.table.AsyncTableDelta
 
 ## Materialized Views (Asynchronous)
 

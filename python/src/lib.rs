@@ -97,6 +97,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<table::TableDelta>()?;
     m.add_class::<crate::oauth::PyOAuthSession>()?;
     m.add_class::<crate::oauth::PySessionStatus>()?;
     m.add_class::<crate::oauth::PySessionLogout>()?;
