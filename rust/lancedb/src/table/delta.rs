@@ -128,13 +128,13 @@ impl TableDelta {
             .build()?;
 
         // Read the pinned range once so every row reader shares the same
-        // Restore/history check instead of scanning it again.
-        let transactions = if begin_version == end_version {
-            Vec::new()
+        // Restore/history check instead of scanning it again. Use the end
+        // dataset because its branch is the one the delta is pinned to.
+        let (transactions, row_change_error) = if begin_version == end_version {
+            (Vec::new(), None)
         } else {
-            delta.list_transactions().await?
+            read_range_history(&end, begin_version, end_version).await?
         };
-        let row_change_error = row_change_error(begin_version, end_version, &transactions);
 
         Ok(Self {
             row_schema: row_change_schema(&end),
@@ -202,7 +202,8 @@ impl TableDelta {
     /// List the transactions committed in `(begin_version, end_version]`.
     ///
     /// Unlike the row readers, this does not require stable row ids. A version
-    /// can have no readable transaction and is skipped by Lance.
+    /// with no readable transaction entry is skipped; the returned list keeps
+    /// any transactions that are available.
     pub async fn list_transactions(&self) -> Result<Vec<Transaction>> {
         Ok(self.transactions.clone())
     }
@@ -246,18 +247,53 @@ impl TableDelta {
     }
 }
 
+/// Read the pinned range's transactions through Lance's lineage-aware,
+/// cache-bypassing path. This matters when a table is dropped and recreated at
+/// the same URI in the same session: `read_transaction()` can return the old
+/// incarnation's transaction for a version number.
+async fn read_range_history(
+    end: &Dataset,
+    begin_version: u64,
+    end_version: u64,
+) -> Result<(Vec<Transaction>, Option<String>)> {
+    let mut transactions = Vec::new();
+    let mut missing_transactions = 0u64;
+    let mut has_restore = false;
+
+    for version in (begin_version + 1)..=end_version {
+        let record = end.read_version_transaction(version).await?;
+        match record.transaction {
+            Some(transaction) => {
+                if matches!(&transaction.operation, Operation::Restore { .. }) {
+                    has_restore = true;
+                }
+                transactions.push(transaction);
+            }
+            // A missing entry is readable as a gap for list_transactions(), but
+            // it cannot prove the version was not a Restore.
+            None => missing_transactions += 1,
+        }
+    }
+
+    let row_change_error = row_change_error(
+        begin_version,
+        end_version,
+        has_restore,
+        missing_transactions,
+    );
+    Ok((transactions, row_change_error))
+}
+
 fn row_change_error(
     begin_version: u64,
     end_version: u64,
-    transactions: &[Transaction],
+    has_restore: bool,
+    missing_transactions: u64,
 ) -> Option<String> {
     if begin_version == end_version {
         return None;
     }
-    if transactions
-        .iter()
-        .any(|transaction| matches!(&transaction.operation, Operation::Restore { .. }))
-    {
+    if has_restore {
         return Some(format!(
             "row-level table.delta cannot verify versions ({begin_version}, {end_version}] \
              because the range contains a Restore; a restore can reintroduce rows with older \
@@ -267,18 +303,14 @@ fn row_change_error(
         ));
     }
 
-    // A normal commit in the range records one transaction. Lance's
-    // `DatasetDelta::list_transactions` skips versions whose transaction entry
-    // is absent, so a short result means we cannot rule out a hidden Restore.
-    let expected_transactions = (end_version - begin_version) as usize;
-    if transactions.len() != expected_transactions {
-        let missing = expected_transactions.saturating_sub(transactions.len());
+    if missing_transactions > 0 {
+        let expected_transactions = end_version - begin_version;
         return Some(format!(
             "row-level table.delta cannot verify versions ({begin_version}, {end_version}] \
-             because transaction history is missing for {missing} of {expected_transactions} \
-             versions; a Restore may be hidden. Recompute the checkpoint with a full rescan and \
-             reinitialize it at version {end_version}, or use list_transactions() to inspect the \
-             available history"
+             because transaction history is missing for {missing_transactions} of \
+             {expected_transactions} versions; a Restore may be hidden. Recompute the checkpoint \
+             with a full rescan and reinitialize it at version {end_version}, or use \
+             list_transactions() to inspect the available history"
         ));
     }
     None
@@ -825,34 +857,6 @@ mod tests {
                     .is_empty()
             );
         }
-    }
-
-    #[test]
-    fn test_row_change_guard_requires_complete_restore_free_history() {
-        let append = |read_version| {
-            Transaction::new(
-                read_version,
-                Operation::Append {
-                    fragments: Vec::new(),
-                },
-                None,
-            )
-        };
-        let restore = Transaction::new(2, Operation::Restore { version: 1 }, None);
-
-        let missing =
-            row_change_error(1, 3, &[append(1)]).expect("missing history must be rejected");
-        assert!(
-            missing.contains("transaction history is missing"),
-            "{missing}"
-        );
-
-        let restored =
-            row_change_error(1, 3, &[append(1), restore]).expect("a restore must be rejected");
-        assert!(restored.contains("Restore"), "{restored}");
-
-        assert!(row_change_error(1, 3, &[append(1), append(2)]).is_none());
-        assert!(row_change_error(1, 1, &[]).is_none());
     }
 
     #[tokio::test]

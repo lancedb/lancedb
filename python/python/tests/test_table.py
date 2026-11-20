@@ -1518,6 +1518,37 @@ def test_delta_rejects_restore_ranges(tmp_path, mutation):
     assert equal.inserted_rows().read_all().num_rows == 0
 
 
+def test_delta_rejects_restore_after_same_uri_recreate(tmp_path):
+    stable = {"new_table_enable_stable_row_ids": "true"}
+    old_db = lancedb.connect(tmp_path)
+    old = old_db.create_table("t", [{"id": 1, "value": 0}], storage_options=stable)
+    old.add([{"id": 2, "value": 0}])
+    old.add([{"id": 3, "value": 0}])
+    assert [tx["operation"] for tx in old.delta(2, 3).list_transactions()] == ["Append"]
+
+    writer_db = lancedb.connect(tmp_path)
+    writer_db.drop_table("t")
+    schema = pa.schema(
+        [("id", pa.int32()), ("value", pa.int32())],
+        metadata={"padding": "x" * (256 * 1024)},
+    )
+    recreated = writer_db.create_table(
+        "t",
+        pa.Table.from_pylist([{"id": 1, "value": 0}], schema=schema),
+        storage_options=stable,
+    )
+    recreated.update(values={"value": 10})
+    recreated.restore(1)
+    assert [tx["operation"] for tx in recreated.delta(2, 3).list_transactions()] == [
+        "Restore"
+    ]
+
+    delta = old_db.open_table("t").delta(2, 3)
+    assert [tx["operation"] for tx in delta.list_transactions()] == ["Restore"]
+    with pytest.raises(ValueError, match="Restore"):
+        delta.upserted_rows()
+
+
 def test_delta_requires_stable_row_ids(mem_db: DBConnection):
     table = mem_db.create_table("delta_no_stable", data=[{"id": 1}])
     table.add([{"id": 2}])

@@ -1787,7 +1787,7 @@ readers do not report as changed. For that reason, the row-level readers reject
 a nonempty range that contains a `Restore`. They also reject a range whose
 transaction history is incomplete, because they cannot rule out a hidden
 `Restore`. Recompute the checkpoint with a full rescan and reinitialize it at
-the restored version. `list_transactions()` remains available for the same
+the range end version. `list_transactions()` remains available for the same
 range. Branch-vs-main summaries remain a separate `branches.diff()` API.
 
 <CodeGroup>
