@@ -3490,3 +3490,79 @@ async def test_create_table_initial_bases_through_async_namespace(tmp_path):
     reopened = await db.open_table("videos")
     hits = await reopened.query().with_row_id().to_arrow()
     assert (await reopened.fetch_blobs("video", hits)).to_pylist() == [payload]
+
+
+def test_namespace_refresh_layers_caller_scoped_options(tmp_path):
+    from lance_namespace import (
+        DeclareTableResponse,
+        DescribeTableResponse,
+        LanceNamespace,
+    )
+    from lancedb.namespace import LanceNamespaceDBConnection
+
+    class RefreshingNamespace(LanceNamespace):
+        def __init__(self, location):
+            self.location = location
+            self.refreshes = 0
+
+        def namespace_id(self):
+            return self.location
+
+        def declare_table(self, request):
+            return DeclareTableResponse(
+                location=self.location,
+                storage_options={
+                    "timeout": "7s",
+                    # Expired immediately so the next read must refresh.
+                    "expires_at_millis": "1",
+                },
+            )
+
+        def describe_table(self, request):
+            self.refreshes += 1
+            return DescribeTableResponse(
+                location=self.location,
+                storage_options={"timeout": "8s", "namespace_vended": "fresh"},
+            )
+
+    payload = b"0123456789abcdef"
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+    clip = base_dir / "clip.mp4"
+    clip.write_bytes(payload)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    namespace = RefreshingNamespace((tmp_path / "table.lance").as_uri())
+    db = LanceNamespaceDBConnection(namespace)
+
+    table = db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[lancedb.BasePath(base_dir.as_uri(), name="base", id=1)],
+        storage_options={"base_1.caller_scoped": "keep-me"},
+    )
+    initial = table.initial_storage_options()
+    assert initial["base_1.caller_scoped"] == "keep-me"
+    assert initial["timeout"] == "7s"
+
+    latest = table.latest_storage_options()
+    assert namespace.refreshes > 0, "expired seed did not trigger a refresh"
+    assert latest["base_1.caller_scoped"] == "keep-me"
+    assert latest["timeout"] == "8s"
+    assert latest["namespace_vended"] == "fresh"
+    assert table.version == 1
+
+    reopened = db.open_table(
+        "videos", storage_options={"base_1.caller_scoped": "keep-me"}
+    )
+    assert reopened.latest_storage_options()["base_1.caller_scoped"] == "keep-me"
+    hits = reopened.search().with_row_id(True).to_arrow()
+    row_id = hits["_rowid"][0].as_py()
+    assert reopened.fetch_blobs("video", [row_id]).to_pylist() == [payload]
+    assert reopened.fetch_blob_ranges("video", [(row_id, 4, 6)]).to_pylist() == [
+        payload[4:10]
+    ]
