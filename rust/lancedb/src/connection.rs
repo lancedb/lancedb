@@ -2138,6 +2138,9 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NamespaceClientPushdownOperation {
     /// Execute queries on the namespace server via `query_table()` instead of locally.
+    ///
+    /// Queries with a nonempty `order_by` execute locally and require client access
+    /// to the table storage.
     QueryTable,
     /// Execute table creation on the namespace server via `create_table()`
     /// instead of using `declare_table` + local write.
@@ -2252,6 +2255,10 @@ impl ConnectNamespaceBuilder {
     /// Available operations:
     /// - [`NamespaceClientPushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
     /// - [`NamespaceClientPushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
+    ///
+    /// Some query options cannot be represented in the namespace request. A query
+    /// with a nonempty `order_by` executes locally and requires client access to
+    /// the table storage.
     ///
     /// By default, no operations are pushed down (all executed locally).
     pub fn pushdown_operation(mut self, operation: NamespaceClientPushdownOperation) -> Self {
