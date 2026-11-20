@@ -1331,6 +1331,14 @@ class AsyncPermutationBuilder:
         self, seed: Optional[int], clump_size: Optional[int]
     ) -> "AsyncPermutationBuilder": ...
     def filter(self, filter: str) -> "AsyncPermutationBuilder": ...
+    def persist(
+        self,
+        db: Connection,
+        table_name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        mode: str = "create",
+    ) -> "AsyncPermutationBuilder": ...
     async def execute(self) -> Table: ...
 
 def async_permutation_builder(

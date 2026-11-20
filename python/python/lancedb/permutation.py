@@ -11,11 +11,30 @@ import pyarrow as pa
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable, Table
 from .background_loop import LOOP
-from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
+from .util import (
+    batch_to_tensor,
+    batch_to_tensor_dict,
+    batch_to_tensor_rows,
+    get_uri_scheme,
+)
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from lancedb.dependencies import pandas as pd, numpy as np, polars as pl
+    from .db import DBConnection
+
+
+def _native_connection(db: Any) -> Any:
+    """Return the native connection wrapped by a sync or async connection."""
+    async_connection = getattr(db, "_conn", None)
+    if async_connection is not None:
+        native = getattr(async_connection, "_inner", None)
+        if native is not None:
+            return native
+    native = getattr(db, "_inner", None)
+    if native is not None:
+        return native
+    raise TypeError("db must be a LanceDB connection")
 
 
 class PermutationBuilder:
@@ -38,7 +57,9 @@ class PermutationBuilder:
     be referenced by name in the future.  If names are not provided then they can only
     be referenced by their ordinal index.  There is no requirement to name every split.
 
-    The permutation is stored in memory and will be lost when the program exits.
+    The permutation is stored in memory and will be lost when the program exits,
+    unless [persist][lancedb.permutation.PermutationBuilder.persist] is called before
+    [execute][lancedb.permutation.PermutationBuilder.execute].
     """
 
     def __init__(self, table: Table):
@@ -257,6 +278,70 @@ class PermutationBuilder:
         self._async.filter(filter)
         return self
 
+    def persist(
+        self,
+        db: "DBConnection",
+        table_name: str,
+        *,
+        namespace_path: Optional[list[str]] = None,
+        mode: Literal["create", "overwrite"] = "create",
+    ) -> "PermutationBuilder":
+        """
+        Store the permutation table in an embedded database.
+
+        Persisting a plan makes the same split available to another process or
+        another machine with access to the destination storage. The plan is an
+        ordinary LanceDB table containing row ids and split ids; it can be
+        opened with [open_table][lancedb.db.DBConnection.open_table] and passed to
+        [Permutation.from_tables][lancedb.permutation.Permutation.from_tables].
+
+        Parameters
+        ----------
+        db: DBConnection
+            An embedded LanceDB connection. Local files and object storage are
+            supported; LanceDB Enterprise connections are not supported yet.
+        table_name: str
+            The name of the permutation table to create.
+        namespace_path: list[str], optional
+            The namespace to create the table in. The default is the root
+            namespace.
+        mode: {"create", "overwrite"}, default "create"
+            ``create`` fails if the destination table already exists.
+            ``overwrite`` writes a new version of the table. Readers that already
+            opened the previous version keep reading that snapshot.
+
+        Returns
+        -------
+        PermutationBuilder
+            This builder, so ``persist`` can be chained with the split, filter,
+            and execute methods.
+        """
+        if mode not in ("create", "overwrite"):
+            raise ValueError(f"Invalid mode {mode!r}; expected 'create' or 'overwrite'")
+
+        uri = getattr(db, "uri", None)
+        if uri is None:
+            raise TypeError("db must be a LanceDB connection")
+        if get_uri_scheme(str(uri)) == "db":
+            raise NotImplementedError(
+                "Permutation persistence is not supported for LanceDB Enterprise "
+                "connections yet; reproducible Enterprise plan ordering requires "
+                "deterministic remote row ordering."
+            )
+
+        if namespace_path is None:
+            namespace_path = []
+        elif not isinstance(namespace_path, (list, tuple)):
+            raise TypeError("namespace_path must be a list of strings or None")
+
+        self._async.persist(
+            _native_connection(db),
+            table_name,
+            namespace_path=list(namespace_path),
+            mode=mode,
+        )
+        return self
+
     def execute(self) -> LanceTable:
         """
         Execute the configuration and create the permutation table.
@@ -406,6 +491,11 @@ class Transforms:
 DEFAULT_BATCH_SIZE = 100
 
 
+def _is_persisted_plan(table: Table) -> bool:
+    """Whether a permutation table lives in reopenable storage rather than memory."""
+    return isinstance(table, LanceTable) and not table._conn.uri.startswith("memory://")
+
+
 def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     from .remote.table import RemoteTable
 
@@ -492,6 +582,9 @@ class Permutation:
         limit: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Table]] = None,
         _reader: Optional[PermutationReader] = None,
+        _plan_metadata: Optional[dict[bytes, bytes]] = None,
+        _plan_version: Optional[int] = None,
+        _plan_branch: Optional[str] = None,
     ):
         """
         Internal constructor.  Use
@@ -508,6 +601,9 @@ class Permutation:
         self.offset = offset
         self.limit = limit
         self.connection_factory = connection_factory
+        self._plan_metadata = _plan_metadata
+        self._plan_version = _plan_version
+        self._plan_branch = _plan_branch
         if _reader is None:
             _reader = LOOP.run(self._build_reader())
         self.reader: PermutationReader = _reader
@@ -647,6 +743,12 @@ class Permutation:
         then the first split will be used.
         """
         assert base_table is not None, "base_table is required"
+        persisted_plan = permutation_table is not None and _is_persisted_plan(
+            permutation_table
+        )
+        plan_metadata = None if permutation_table is not None else {}
+        if permutation_table is not None and (isinstance(split, str) or persisted_plan):
+            plan_metadata = dict(permutation_table.schema.metadata or {})
         if split is not None:
             if permutation_table is None:
                 raise ValueError(
@@ -654,12 +756,7 @@ class Permutation:
                     " because no permutation table is provided"
                 )
             if isinstance(split, str):
-                if permutation_table.schema.metadata is None:
-                    raise ValueError(
-                        f"Cannot create a permutation on split `{split}`"
-                        " because no split names are defined in the permutation table"
-                    )
-                raw = permutation_table.schema.metadata.get(b"split_names")
+                raw = (plan_metadata or {}).get(b"split_names")
                 split_names = raw.decode("utf-8") if raw is not None else None
                 if split_names is None:
                     raise ValueError(
@@ -682,6 +779,14 @@ class Permutation:
         else:
             split = 0
 
+        plan_version = None
+        plan_branch = None
+        if persisted_plan:
+            # Pin the pickled plan to the snapshot this object was created from,
+            # not what the destination name points at after an overwrite.
+            plan_version = permutation_table.version
+            plan_branch = permutation_table.current_branch()
+
         async def do_from_tables():
             reader = await PermutationReader.from_tables(
                 base_table, permutation_table, split
@@ -696,6 +801,9 @@ class Permutation:
                 DEFAULT_BATCH_SIZE,
                 Transforms.arrow2python,
                 _reader=reader,
+                _plan_metadata=plan_metadata,
+                _plan_version=plan_version,
+                _plan_branch=plan_branch,
             )
 
         return LOOP.run(do_from_tables())
@@ -705,18 +813,42 @@ class Permutation:
 
         The base table is captured either via a user-supplied
         ``connection_factory`` (see [with_connection_factory]) or, as a
-        fallback, by the table's own picklable reopen state. The permutation
-        table is captured as a pyarrow Table (which pickles via Arrow IPC
-        natively). The reader is dropped from the wire format and rebuilt
-        lazily on first use.
+        fallback, by the table's own picklable reopen state. A permutation
+        table in memory is captured as a pyarrow Table (which pickles via Arrow
+        IPC natively). A persisted plan is reopened by reference and pinned to
+        the plan snapshot this object was built from. The reader is dropped
+        from the wire format and rebuilt lazily on first use.
         """
+        base_table_state = (
+            None
+            if self.connection_factory is not None
+            else _table_to_pickle_state(self.base_table)
+        )
+        base_is_memory = (
+            base_table_state is not None and base_table_state["kind"] == "memory"
+        )
+
         permutation_data: Optional[pa.Table] = None
-        if self.permutation_table is not None:
+        permutation_table_state: Optional[dict[str, Any]] = None
+        if (
+            self.permutation_table is not None
+            and _is_persisted_plan(self.permutation_table)
+            and not base_is_memory
+        ):
+            plan_state = _table_to_pickle_state(self.permutation_table)
+            # Keep the plan's own branch/version coordinate. A later overwrite
+            # of the destination must not change what this pickle reads.
+            table_state = plan_state["state"]
+            if self._plan_version is not None:
+                table_state["checkout_version"] = self._plan_version
+            if self._plan_branch is not None:
+                table_state["branch"] = self._plan_branch
+            permutation_table_state = plan_state
+        elif self.permutation_table is not None:
             permutation_data = self.permutation_table.to_arrow()
 
         common = {
             "base_table_name": self.base_table.name,
-            "permutation_data": permutation_data,
             "split": self.split,
             "selection": self.selection,
             "batch_size": self.batch_size,
@@ -725,17 +857,13 @@ class Permutation:
             "limit": self.limit,
             "connection_factory": self.connection_factory,
         }
-
-        if self.connection_factory is not None:
-            # The factory carries enough state to recover the base table on
-            # its own; we don't need to capture the URI / storage options /
-            # namespace from the existing connection.
-            return common
-
-        return {
-            **common,
-            "base_table_state": _table_to_pickle_state(self.base_table),
-        }
+        if permutation_table_state is not None:
+            common["permutation_table_state"] = permutation_table_state
+        else:
+            common["permutation_data"] = permutation_data
+        if base_table_state is not None:
+            common["base_table_state"] = base_table_state
+        return common
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         from . import connect
@@ -767,17 +895,32 @@ class Permutation:
             )
 
         permutation_table: Optional[Table] = None
-        permutation_data = state["permutation_data"]
-        if permutation_data is not None:
-            if rebuilt_base:
-                # The base table was materialized from Arrow, so it is a fresh
-                # single-version dataset and the recorded pin cannot resolve on it.
-                permutation_data = _drop_base_version(permutation_data)
-            mem_db = connect("memory://")
-            permutation_table = mem_db.create_table("permutation", permutation_data)
+        plan_metadata: dict[bytes, bytes] = {}
+        plan_version = None
+        plan_branch = None
+        if "permutation_table_state" in state:
+            plan_state = state["permutation_table_state"]
+            permutation_table = _table_from_pickle_state(plan_state)
+            nested_state = plan_state.get("state", {})
+            plan_version = nested_state.get("checkout_version")
+            plan_branch = nested_state.get("branch")
+            plan_metadata = dict(permutation_table.schema.metadata or {})
+        else:
+            permutation_data = state.get("permutation_data")
+            if permutation_data is not None:
+                if rebuilt_base:
+                    # The base table was materialized from Arrow, so it is a fresh
+                    # single-version dataset and the recorded pin cannot resolve on it.
+                    permutation_data = _drop_base_version(permutation_data)
+                mem_db = connect("memory://")
+                permutation_table = mem_db.create_table("permutation", permutation_data)
+                plan_metadata = dict(permutation_table.schema.metadata or {})
 
         self.base_table = base_table
         self.permutation_table = permutation_table
+        self._plan_metadata = plan_metadata
+        self._plan_version = plan_version
+        self._plan_branch = plan_branch
         self.split = state["split"]
         self.selection = state["selection"]
         self.batch_size = state["batch_size"]
@@ -801,6 +944,44 @@ class Permutation:
         new = self.__class__.__new__(self.__class__)
         new.__dict__ = self.__dict__.copy()
         return new
+
+    def _loaded_plan_metadata(self) -> dict[bytes, bytes]:
+        if self._plan_metadata is None:
+            self._plan_metadata = (
+                dict(self.permutation_table.schema.metadata or {})
+                if self.permutation_table is not None
+                else {}
+            )
+        return self._plan_metadata
+
+    @property
+    def base_version(self) -> Optional[int]:
+        """The base table version recorded in the plan, or ``None`` for legacy plans.
+
+        This value comes from the plan's schema metadata, so reading it does not
+        query the base table. Version numbers are per-branch; see
+        [base_branch][lancedb.permutation.Permutation.base_branch].
+        """
+        raw = self._loaded_plan_metadata().get(b"base_version")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as error:
+            raise ValueError(
+                f"Permutation table has an unreadable base_version of {raw!r}"
+            ) from error
+
+    @property
+    def base_branch(self) -> Optional[str]:
+        """The base table branch recorded in the plan, or ``None`` for main.
+
+        Legacy plans recorded no branch and therefore also return ``None``.
+        """
+        raw = self._loaded_plan_metadata().get(b"base_branch")
+        if raw is None:
+            return None
+        return raw.decode("utf-8")
 
     def _ensure_open(self) -> None:
         pid = os.getpid()

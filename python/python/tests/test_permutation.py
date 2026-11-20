@@ -21,6 +21,18 @@ from utils import (
 )
 
 
+def _read_permutation_in_spawned_process(payload: bytes, output) -> None:
+    import pickle
+
+    permutation = pickle.loads(payload)
+    output.put(
+        [
+            row["id"]
+            for row in permutation.__getitems__(list(range(permutation.num_rows)))
+        ]
+    )
+
+
 def test_split_random_ratios(mem_db):
     """Test random splitting with ratios."""
     tbl = mem_db.create_table(
@@ -85,6 +97,161 @@ def test_pickled_permutation_reads_pinned_version(tmp_path):
     assert len(restored) == 20
     rows = restored.__getitems__(list(range(20)))
     assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
+def test_persist_plan_create_overwrite_namespace_and_metadata(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    db.create_namespace(["plans"])
+    namespace_path = ["plans"]
+
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2, split_names=["train", "test"])
+        .persist(db, "splits", namespace_path=namespace_path)
+        .execute()
+    )
+    assert plan.count_rows() == 20
+    assert db.open_table("splits", namespace_path=namespace_path).count_rows() == 20
+
+    permutation = Permutation.from_tables(
+        tbl,
+        db.open_table("splits", namespace_path=namespace_path),
+        split="train",
+    )
+    assert permutation.base_version == tbl.version
+    assert permutation.base_branch is None
+    assert permutation.num_rows == 10
+
+    with pytest.raises((ValueError, RuntimeError), match="already exists"):
+        (
+            permutation_builder(tbl)
+            .split_sequential(fixed=2)
+            .persist(db, "splits", namespace_path=namespace_path)
+            .execute()
+        )
+
+    with pytest.raises(ValueError, match="Invalid mode"):
+        permutation_builder(tbl).persist(db, "other", mode="replace")
+
+    class RemoteLike:
+        uri = "db://example"
+
+    with pytest.raises(NotImplementedError, match="Enterprise"):
+        permutation_builder(tbl).persist(RemoteLike(), "remote_splits")
+
+    tbl.add(pa.table({"id": range(20, 40)}))
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2)
+        .persist(db, "splits", namespace_path=namespace_path, mode="overwrite")
+        .execute()
+    )
+    assert plan.count_rows() == 40
+    assert db.open_table("splits", namespace_path=namespace_path).count_rows() == 40
+    # The earlier permutation still reads the plan and base snapshot it was built from.
+    assert permutation.num_rows == 10
+    assert [row["id"] for row in permutation.__getitems__([0, 1])] == [0, 1]
+
+
+def test_base_branch_property_reads_plan_metadata(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(10)}))
+    branch = tbl.branches.create("exp")
+    branch.add(pa.table({"id": range(10, 20)}))
+
+    plan = permutation_builder(branch).persist(db, "branch_splits").execute()
+    permutation = Permutation.from_tables(branch, plan)
+
+    assert permutation.base_branch == "exp"
+    assert permutation.base_version == branch.version
+    assert permutation.num_rows == 20
+
+
+def test_persisted_plan_pickle_reopens_same_snapshot_after_overwrite(tmp_path):
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+    permutation = Permutation.from_tables(tbl, plan)
+    old_base_version = permutation.base_version
+    state = permutation.__getstate__()
+    assert "permutation_data" not in state
+    assert state["permutation_table_state"]["state"]["checkout_version"] == plan.version
+    payload = pickle.dumps(permutation)
+
+    # Advance the base table and replace the plan at the same destination.
+    tbl.add(pa.table({"id": range(20, 40)}))
+    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+
+    restored = pickle.loads(payload)
+    assert restored.base_version == old_base_version
+    assert restored.num_rows == 20
+    assert sorted(
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ) == list(range(20))
+
+    # A newly constructed permutation sees the overwritten plan and newer base rows.
+    fresh = Permutation.from_tables(tbl, db.open_table("splits"))
+    assert db.open_table("splits").count_rows() == 40
+    assert fresh.base_version > old_base_version
+
+
+def test_persisted_plan_pickle_reopens_in_spawned_process(tmp_path):
+    import multiprocessing as mp
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(12)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+    payload = pickle.dumps(Permutation.from_tables(tbl, plan))
+
+    tbl.add(pa.table({"id": range(12, 24)}))
+    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+
+    context = mp.get_context("spawn")
+    output = context.Queue()
+    process = context.Process(
+        target=_read_permutation_in_spawned_process, args=(payload, output)
+    )
+    process.start()
+    try:
+        ids = output.get(timeout=60)
+    finally:
+        process.join(timeout=60)
+
+    assert process.exitcode == 0
+    assert sorted(ids) == list(range(12))
+
+
+def test_old_permutation_pickle_state_still_round_trips(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    plan = permutation_builder(tbl).execute()
+    state = {
+        "base_table_name": tbl.name,
+        "permutation_data": plan.to_arrow(),
+        "split": 0,
+        "selection": {"id": "id"},
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "transform_fn": Transforms.arrow2python,
+        "offset": None,
+        "limit": None,
+        "connection_factory": None,
+        "base_table_uri": str(tmp_path),
+        "base_table_storage_options": None,
+        "base_table_namespace": [],
+    }
+
+    restored = Permutation.__new__(Permutation)
+    restored.__setstate__(state)
+
+    assert restored.base_version == tbl.version
+    assert restored.base_branch is None
+    assert sorted(
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ) == list(range(20))
 
 
 def test_builder_copy_is_shallow_and_does_not_materialize(
