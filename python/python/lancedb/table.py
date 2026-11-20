@@ -4226,28 +4226,35 @@ class LanceTable(Table):
         self._branch = self._table.current_branch()
         self._checkout_version: Optional[int] = None
 
-    def _storage_options_for_pickle(self) -> Optional[Dict[str, str]]:
-        """Return the options the native table was actually opened with."""
-        if self._storage_options is not None:
-            return self._storage_options
-        # Connections rebuilt via from_inner() lose their Python storage options.
-        # The native handle still knows what it was opened with.
-        return LOOP.run(self._table.initial_storage_options())
-
     def _pickle_connection_state(self) -> str:
         """Serialize the connection, rejecting state a worker cannot recreate."""
-        pickle_state = getattr(self._conn, "_pickle_state", None)
+        connection = self._conn
+        namespace_client = getattr(connection, "_namespace_client", None)
+        namespace_impl = getattr(connection, "_namespace_client_impl", None)
+        namespace_properties = getattr(connection, "_namespace_client_properties", None)
+        if namespace_client is not None and (
+            namespace_impl is None or namespace_properties is None
+        ):
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r} backed by a namespace "
+                "connection whose custom namespace_client cannot be "
+                "reconstructed. Connect through connect_namespace(impl, "
+                "properties) or provide a picklable worker-side namespace "
+                "connection instead."
+            )
+
+        pickle_state = getattr(connection, "_pickle_state", None)
         if pickle_state is not None:
             return pickle_state()
 
-        session = getattr(self._conn, "session", None)
+        session = getattr(connection, "session", None)
         if session is not None:
             raise TypeError(
                 "Cannot pickle a LanceTable whose connection was created with a "
                 "Session; Session objects are not serializable. Create the "
                 "Session in each worker process instead."
             )
-        return self._conn.serialize()
+        return connection.serialize()
 
     def _namespace_client_for_pickle(self) -> Optional[Any]:
         """Keep a table-level namespace client only when pickle can carry it."""
@@ -4326,12 +4333,19 @@ class LanceTable(Table):
             # Keep the established behavior of exporting the visible table.
             return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
 
+        # The native handle is authoritative: a tag checkout can move this
+        # wrapper onto another branch, so never trust the branch captured at
+        # construction time.
+        self._branch = self.current_branch()
         return {
             "kind": "lance",
             "connection_state": self._pickle_connection_state(),
             "name": self.name,
             "namespace_path": list(self._namespace_path),
-            "storage_options": self._storage_options_for_pickle(),
+            # Only caller-supplied overrides are safe to replay. Namespace-provided
+            # initial options may contain rotating credentials and must be fetched
+            # again by the reopened connection's storage-options provider.
+            "storage_options": self._storage_options,
             "index_cache_size": self._index_cache_size,
             "location": self._location,
             "namespace_client": self._namespace_client_for_pickle(),
@@ -4650,6 +4664,7 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.checkout(version))
         self._checkout_version = self.version
+        self._branch = self.current_branch()
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -4659,6 +4674,7 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.checkout_latest())
         self._checkout_version = None
+        self._branch = self.current_branch()
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -4708,6 +4724,7 @@ class LanceTable(Table):
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
         self._checkout_version = None
+        self._branch = self.current_branch()
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))

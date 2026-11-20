@@ -1260,6 +1260,26 @@ def test_lance_table_pickle_preserves_checkout(tmp_db: DBConnection):
     assert restored.to_arrow()["id"].to_pylist() == [1, 2, 3]
 
 
+def test_lance_table_pickle_preserves_cross_branch_tag_checkout(tmp_path):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("pickle_tag_branch", pa.table({"id": [0]}))
+    branch = main.branches.create("exp")
+    branch.add(pa.table({"id": [1]}))
+    branch.tags.create("exp_tag", branch.version)
+
+    # Advance main independently, then resolve a tag that points into exp.
+    main.add(pa.table({"id": [9]}))
+    main.checkout("exp_tag")
+    assert main.current_branch() == "exp"
+    assert main.version == 2
+    assert main.to_arrow()["id"].to_pylist() == [0, 1]
+
+    restored = pickle.loads(pickle.dumps(main))
+    assert restored.current_branch() == "exp"
+    assert restored.version == 2
+    assert restored.to_arrow()["id"].to_pylist() == [0, 1]
+
+
 def test_lance_table_pickle_preserves_branch_and_version(tmp_path):
     db = lancedb.connect(tmp_path)
     main = db.create_table("pickle_branch", pa.table({"id": [0]}))

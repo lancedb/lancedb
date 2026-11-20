@@ -6,6 +6,7 @@
 import tempfile
 import shutil
 import importlib
+import pickle
 import warnings
 import http.server
 import json
@@ -54,6 +55,34 @@ async def test_custom_namespace_table_exists_uses_namespace_api(table_id):
     adb = lancedb.AsyncLanceNamespaceDBConnection(namespace)
     assert db.table_exists(table_id) is (table_id != ["missing"])
     assert await adb.table_exists(table_id) is (table_id != ["missing"])
+
+
+def test_table_pickle_rejects_custom_namespace_connection(tmp_path):
+    pytest.importorskip("lance")
+    from lance.namespace import DirectoryNamespace
+
+    lancedb.connect_namespace("dir", {"root": str(tmp_path)}).create_table(
+        "t", [{"id": 1}]
+    )
+
+    class UnserializableNamespace(LanceNamespace):
+        def __init__(self, root):
+            from threading import Lock
+
+            self.client = DirectoryNamespace(root=str(root))
+            self.lock = Lock()
+
+        def namespace_id(self):
+            return self.client.namespace_id()
+
+        def describe_table(self, request):
+            return self.client.describe_table(request)
+
+    db = LanceNamespaceDBConnection(UnserializableNamespace(tmp_path))
+    table = db.open_table("t")
+
+    with pytest.raises(TypeError, match="namespace"):
+        pickle.dumps(table)
 
 
 class TestNamespaceCreateTableOptions:
@@ -304,6 +333,70 @@ def paginated_rest_namespace():
         thread = start_server_thread(server)
         try:
             yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_rest_namespace_table_pickle_keeps_live_storage_options(tmp_path):
+    from time import time
+
+    local = lancedb.connect(tmp_path)
+    local.create_table("t", [{"id": 1}])
+    location = str(tmp_path / "t.lance")
+    ipc = _ipc_file(pa.table({"id": [42]}))
+    seen = []
+    current_options = {
+        "block_size": "4096",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            seen.append(path)
+            if path.endswith("/describe"):
+                body = json.dumps(
+                    {"location": location, "storage_options": current_options}
+                ).encode()
+                content_type = "application/json"
+            elif path.endswith("/query"):
+                body = ipc
+                content_type = "application/vnd.apache.arrow.file"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest",
+                {"uri": f"http://127.0.0.1:{server.server_port}"},
+                namespace_client_pushdown_operations=["QueryTable"],
+            )
+            table = db.open_table("t")
+            restored = pickle.loads(pickle.dumps(table))
+
+            seen.clear()
+            assert restored.search().limit(1).to_list() == [{"id": 42}]
+            assert seen == ["/v1/table/t/query"]
+
+            current_options = {
+                "block_size": "8192",
+                "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+            }
+            assert table.latest_storage_options()["block_size"] == "8192"
+            assert restored.latest_storage_options()["block_size"] == "8192"
         finally:
             server.shutdown()
             thread.join()

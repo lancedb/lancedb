@@ -82,6 +82,17 @@ def test_lance_db_connection_pickle_roundtrip(tmp_path):
     assert restored.open_table("pickle_conn").to_arrow()["id"].to_pylist() == [1, 2]
 
 
+def test_lance_db_connection_pickle_preserves_zero_read_consistency(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("pickle_zero", pa.table({"id": [1]}))
+
+    restored_db, restored_table = pickle.loads(pickle.dumps((db, table)))
+    lancedb.connect(tmp_path).open_table("pickle_zero").add(pa.table({"id": [2]}))
+
+    assert restored_db.read_consistency_interval == timedelta(0)
+    assert restored_table.to_arrow()["id"].to_pylist() == [1, 2]
+
+
 def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeypatch):
     from lancedb.background_loop import LOOP
 
