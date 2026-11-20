@@ -299,7 +299,7 @@ def _maybe_add_fts_error_note(
 
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
+    from .db import DBConnection, LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -4191,7 +4191,10 @@ class LanceTable(Table):
             namespace_path = []
         self._conn = connection
         self._namespace_path = namespace_path
+        self._storage_options = storage_options
+        self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
+        self._managed_versioning = managed_versioning
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         # When the connection built the namespace client natively (e.g. an
@@ -4218,6 +4221,141 @@ class LanceTable(Table):
             )
         # Take queries read the pushdown set from the inner table.
         self._table._pushdown_operations = self._pushdown_operations
+        # These coordinates live on the Python wrapper: the native table only
+        # reports its current branch and version, not whether it is pinned.
+        self._branch = self._table.current_branch()
+        self._checkout_version: Optional[int] = None
+
+    def _storage_options_for_pickle(self) -> Optional[Dict[str, str]]:
+        """Return the options the native table was actually opened with."""
+        if self._storage_options is not None:
+            return self._storage_options
+        # Connections rebuilt via from_inner() lose their Python storage options.
+        # The native handle still knows what it was opened with.
+        return LOOP.run(self._table.initial_storage_options())
+
+    def _pickle_connection_state(self) -> str:
+        """Serialize the connection, rejecting state a worker cannot recreate."""
+        pickle_state = getattr(self._conn, "_pickle_state", None)
+        if pickle_state is not None:
+            return pickle_state()
+
+        session = getattr(self._conn, "session", None)
+        if session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceTable whose connection was created with a "
+                "Session; Session objects are not serializable. Create the "
+                "Session in each worker process instead."
+            )
+        return self._conn.serialize()
+
+    def _namespace_client_for_pickle(self) -> Optional[Any]:
+        """Keep a table-level namespace client only when pickle can carry it."""
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            return None
+        if namespace_client is getattr(self._conn, "_namespace_client", None):
+            # The serialized connection rebuilds its own namespace client.
+            return None
+        if namespace_client is getattr(self._conn, "_cached_namespace_client", None):
+            # Local manifest-mode connections cache their namespace client here.
+            return None
+
+        import pickle
+
+        try:
+            pickle.dumps(namespace_client)
+        except Exception as error:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r}: its custom "
+                f"namespace_client ({type(namespace_client).__name__}) is not "
+                "serializable. Reopen the table in the worker through a "
+                "picklable namespace connection instead."
+            ) from error
+        return namespace_client
+
+    @classmethod
+    def _open_from_pickle_state(
+        cls, connection: "DBConnection", state: dict[str, Any]
+    ) -> "LanceTable":
+        """Reopen a table from the state returned by ``__getstate__``."""
+        async_connection = getattr(connection, "_conn", None)
+        if async_connection is None:
+            async_connection = connection._inner
+
+        namespace_client = state.get("namespace_client")
+        if namespace_client is None:
+            namespace_client = getattr(connection, "_namespace_client", None)
+
+        async_table = LOOP.run(
+            async_connection.open_table(
+                state["name"],
+                namespace_path=state["namespace_path"],
+                storage_options=state["storage_options"],
+                index_cache_size=state["index_cache_size"],
+                location=state["location"],
+                namespace_client=namespace_client,
+                managed_versioning=state["managed_versioning"],
+            )
+        )
+        table = cls(
+            connection,
+            state["name"],
+            namespace_path=state["namespace_path"],
+            storage_options=state["storage_options"],
+            index_cache_size=state["index_cache_size"],
+            location=state["location"],
+            namespace_client=namespace_client,
+            managed_versioning=state["managed_versioning"],
+            pushdown_operations=state["pushdown_operations"],
+            route_pushdown_to_rust=state["route_pushdown_to_rust"],
+            _async=async_table,
+        )
+
+        version = state["checkout_version"]
+        if state["branch"] is not None:
+            table = table.branches.checkout(state["branch"], version)
+        elif version is not None:
+            table.checkout(version)
+        return table
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return a process-independent state for pickle-based workers."""
+        if self._conn.uri.startswith("memory://"):
+            # In-memory databases cannot be reopened by name in another process.
+            # Keep the established behavior of exporting the visible table.
+            return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
+
+        return {
+            "kind": "lance",
+            "connection_state": self._pickle_connection_state(),
+            "name": self.name,
+            "namespace_path": list(self._namespace_path),
+            "storage_options": self._storage_options_for_pickle(),
+            "index_cache_size": self._index_cache_size,
+            "location": self._location,
+            "namespace_client": self._namespace_client_for_pickle(),
+            "managed_versioning": self._managed_versioning,
+            "pushdown_operations": set(self._pushdown_operations),
+            "route_pushdown_to_rust": self._route_pushdown_to_rust,
+            "branch": self._branch,
+            "checkout_version": self._checkout_version,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Rebuild a table from ``__getstate__`` in the current process."""
+        if state.get("kind") == "memory":
+            from . import connect
+
+            rebuilt = connect("memory://").create_table(state["name"], state["data"])
+            self.__dict__.update(rebuilt.__dict__)
+            return
+
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["connection_state"], for_worker=True)
+        reopened = type(self)._open_from_pickle_state(connection, state)
+        self.__dict__.update(reopened.__dict__)
 
     @property
     def name(self) -> str:
@@ -4456,18 +4594,23 @@ class LanceTable(Table):
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
-        # version is unused locally: the pin already lives on async_table and a
-        # local handle is not reopened via a serialized connection.
-        return LanceTable(
+        table = LanceTable(
             self._conn,
             async_table.name,
             namespace_path=self._namespace_path,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
             namespace_client=self._namespace_client,
+            managed_versioning=self._managed_versioning,
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
+        # The native handle knows its branch but not whether this wrapper is a
+        # pinned branch version, so carry that coordinate explicitly.
+        table._checkout_version = version
+        return table
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -4506,6 +4649,7 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         LOOP.run(self._table.checkout(version))
+        self._checkout_version = self.version
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -4514,6 +4658,7 @@ class LanceTable(Table):
         version of the table.
         """
         LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -4562,6 +4707,7 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+        self._checkout_version = None
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -5651,7 +5797,9 @@ class LanceTable(Table):
         self = cls.__new__(cls)
         self._conn = db
         self._namespace_path = namespace_path
+        self._index_cache_size = None
         self._location = location
+        self._managed_versioning = None
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         self._route_pushdown_to_rust = route_pushdown_to_rust
@@ -5679,6 +5827,7 @@ class LanceTable(Table):
                 enable_v2_manifest_paths
             ).lower()
 
+        self._storage_options = storage_options
         self._table = LOOP.run(
             self._conn._conn.create_table(
                 name,
@@ -5695,6 +5844,8 @@ class LanceTable(Table):
                 namespace_client=namespace_client,
             )
         )
+        self._branch = self._table.current_branch()
+        self._checkout_version = None
         return self
 
     def delete(self, where: Union[str, Expr]) -> DeleteResult:

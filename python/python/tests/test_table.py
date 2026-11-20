@@ -6,6 +6,7 @@ import ctypes
 import gc
 import json
 import os
+import pickle
 import sys
 import threading
 import warnings
@@ -1226,6 +1227,108 @@ def test_list_versions_timestamp_precision_remote():
     expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
     assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
     assert versions[0]["timestamp"].microsecond == 274000
+
+
+def test_lance_table_is_picklable(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_table", pa.table({"id": [1, 2, 3]}))
+    payload = pickle.dumps(table)
+
+    # A standard-mode handle must reopen at latest, not freeze the version that
+    # happened to be current when pickle.dumps ran.
+    tmp_db.open_table("pickle_table").add(pa.table({"id": [4]}))
+
+    restored = pickle.loads(payload)
+    assert restored.name == "pickle_table"
+    assert restored.count_rows() == 4
+    assert restored.to_arrow()["id"].to_pylist() == [1, 2, 3, 4]
+
+
+def test_lance_table_pickle_preserves_checkout(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_checkout", pa.table({"id": [1]}))
+    table.add(pa.table({"id": [2]}))
+    table.checkout(1)
+    payload = pickle.dumps(table)
+
+    tmp_db.open_table("pickle_checkout").add(pa.table({"id": [3]}))
+
+    restored = pickle.loads(payload)
+    assert restored.version == 1
+    assert restored.to_arrow()["id"].to_pylist() == [1]
+
+    restored.checkout_latest()
+    assert restored.version == 3
+    assert restored.to_arrow()["id"].to_pylist() == [1, 2, 3]
+
+
+def test_lance_table_pickle_preserves_branch_and_version(tmp_path):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("pickle_branch", pa.table({"id": [0]}))
+    branch = main.branches.create("exp")
+    branch.add(pa.table({"id": [1]}))
+    branch_version = branch.version
+
+    branch_payload = pickle.dumps(branch)
+    pinned = db.open_table("pickle_branch", branch="exp", version=branch_version)
+    pinned_payload = pickle.dumps(pinned)
+
+    db.open_table("pickle_branch", branch="exp").add(pa.table({"id": [2]}))
+
+    restored_branch = pickle.loads(branch_payload)
+    assert restored_branch.current_branch() == "exp"
+    assert restored_branch.to_arrow()["id"].to_pylist() == [0, 1, 2]
+
+    restored_pinned = pickle.loads(pinned_payload)
+    assert restored_pinned.current_branch() == "exp"
+    assert restored_pinned.version == branch_version
+    assert restored_pinned.to_arrow()["id"].to_pylist() == [0, 1]
+    assert main.count_rows() == 1
+
+
+def test_lance_table_pickle_memory_uses_arrow_snapshot(mem_db: DBConnection):
+    table = mem_db.create_table("pickle_memory", pa.table({"id": [1, 2]}))
+    payload = pickle.dumps(table)
+
+    table.add(pa.table({"id": [3]}))
+
+    restored = pickle.loads(payload)
+    assert restored.name == "pickle_memory"
+    assert restored.to_arrow()["id"].to_pylist() == [1, 2]
+
+
+def test_memory_connection_pickle_requires_a_table_snapshot(mem_db: DBConnection):
+    with pytest.raises(TypeError, match="in-memory LanceDBConnection"):
+        pickle.dumps(mem_db)
+
+
+def test_pickle_rejects_session_backed_connection(tmp_path):
+    db = lancedb.connect(tmp_path, session=lancedb.Session())
+    table = db.create_table("pickle_session", pa.table({"id": [1]}))
+
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(db)
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(table)
+
+
+def test_pickle_rejects_custom_namespace_client(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_custom_ns", pa.table({"id": [1]}))
+    table._namespace_client = threading.Lock()
+
+    with pytest.raises(TypeError, match="namespace_client"):
+        pickle.dumps(table)
+
+
+def test_lance_table_pickle_preserves_namespace_path(tmp_path):
+    pytest.importorskip("lance")
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["ns1"])
+    table = db.create_table("pickle_ns", pa.table({"id": [1]}), namespace_path=["ns1"])
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    assert restored.namespace == ["ns1"]
+    assert restored.count_rows() == 1
+    assert restored._conn._namespace_client_properties == {"root": str(tmp_path)}
 
 
 def test_versioning(mem_db: DBConnection):

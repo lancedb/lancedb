@@ -135,6 +135,23 @@ def _open_native_table(uri: str, table_name: str):
     return lancedb.connect(uri).open_table(table_name)
 
 
+class _DatasetHoldingConnectionAndTable(torch.utils.data.Dataset):
+    """User-style Dataset that keeps both the connection and table."""
+
+    def __init__(self, db, table):
+        self._db = db
+        self._table = table
+
+    def __len__(self):
+        return self._table.count_rows()
+
+    def __getitem__(self, index):
+        row = self._table.take_offsets([index]).to_arrow().to_pylist()[0]
+        # Touch the connection too, so workers prove both objects were restored.
+        row["db_uri"] = self._db.uri
+        return row
+
+
 def test_table_dataloader(mem_db):
     table = mem_db.create_table("test_table", pa.table({"a": range(1000)}))
     dataloader = torch.utils.data.DataLoader(
@@ -227,6 +244,30 @@ def test_permutation_with_memory_base_is_picklable(mem_db):
 
     assert len(restored) == 50
     assert restored.__getitems__([0, 10, 49]) == [{"a": 0}, {"a": 10}, {"a": 49}]
+
+
+@pytest.mark.parametrize("start_method", ["spawn", "forkserver"])
+def test_dataset_with_connection_and_table_dataloader(tmp_path, start_method):
+    if start_method not in mp.get_all_start_methods():
+        pytest.skip(f"{start_method} start method is not available")
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test_table", pa.table({"a": range(20)}))
+    dataset = _DatasetHoldingConnectionAndTable(db, table)
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=4,
+        num_workers=2,
+        multiprocessing_context=start_method,
+    )
+
+    seen = []
+    expected_uri = str(tmp_path)
+    for batch in dataloader:
+        seen.extend(batch["a"].tolist())
+        assert all(uri == expected_uri for uri in batch["db_uri"])
+    assert sorted(seen) == list(range(20))
 
 
 def test_permutation_dataloader_multiprocessing(tmp_db):
