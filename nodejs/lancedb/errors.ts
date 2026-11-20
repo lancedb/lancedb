@@ -9,26 +9,64 @@
  * kind and its fields in a one-line header, and {@link installLanceErrorTranslation}
  * turns that into one of the classes below before application code sees it.
  *
- * ```ts
- * import * as lancedb from "@lancedb/lancedb";
- *
- * try {
- *   await db.openTable("missing");
- * } catch (error) {
- *   if (error instanceof lancedb.TableNotFoundError) {
- *     error.tableName; // "missing"
- *     error.cause; // underlying error, when Rust supplied one
- *   }
- * }
- * ```
- *
  * `error.code` is the Rust variant name (`"TableNotFound"`, `"Http"`, ...).
  * `error.message` is that variant's own message, without the nested cause text.
+ * {@link LanceError} shows how to branch with `instanceof`.
  */
 
 const HEADER = /^LanceError (\{.*\})(?:\n|$)/;
 const MAX_CAUSE_DEPTH = 8;
+/** Per-load marker so one SDK load does not wrap the same function twice. */
 const WRAPPED = Symbol("lancedb.errorWrapped");
+/**
+ * Points a wrapper at the native function it replaced. Shared across SDK loads
+ * so a later load wraps that function instead of stacking another wrapper.
+ */
+const ORIGINAL_FN = Symbol.for("lancedb.originalNativeFn");
+/**
+ * WeakMap of native objects to the translator for the SDK load that owns them.
+ * Stored on the shared native constructor so every load sees the same map.
+ */
+const TRANSLATORS = Symbol.for("lancedb.errorTranslators");
+
+type ErrorTranslator = (error: unknown) => unknown;
+
+type TranslatorHost = {
+  [TRANSLATORS]?: WeakMap<object, ErrorTranslator>;
+};
+/**
+ * Marks a translated LanceDB error. A later SDK load cannot use `instanceof`
+ * against a class from an earlier load, but this symbol is shared by the
+ * process, so the later load can rebuild its own subclass.
+ */
+export const LANCE_ERROR_MARK = Symbol.for("lancedb.LanceError");
+
+const METADATA_KEYS = [
+  "requestId",
+  "statusCode",
+  "errorCode",
+  "resourceKind",
+  "resourceName",
+  "namespacePath",
+  "tableName",
+  "columnName",
+  "databaseName",
+  "indexName",
+  "functionName",
+  "path",
+  "jobId",
+  "sqlJobId",
+  "jobRequestId",
+  "grpcCode",
+  "phase",
+  "retryable",
+  "requestFailures",
+  "maxRequestFailures",
+  "connectFailures",
+  "maxConnectFailures",
+  "readFailures",
+  "maxReadFailures",
+] as const;
 
 type AnyFn = (...args: unknown[]) => unknown;
 
@@ -96,6 +134,26 @@ interface ErrorPayload {
  * Subclasses exist so application code can branch with `instanceof`. A kind
  * that does not have its own class is still a {@link LanceError}; `code` then
  * carries the Rust variant name.
+ *
+ * Stream-time failures and native constructor validation can still arrive as a
+ * plain `Error`. Handle that case as a fallback.
+ *
+ * ```ts
+ * import * as lancedb from "@lancedb/lancedb";
+ *
+ * try {
+ *   await db.openTable("missing");
+ * } catch (error) {
+ *   if (error instanceof lancedb.TableNotFoundError) {
+ *     error.tableName; // "missing"
+ *     error.cause; // underlying error, when Rust supplied one
+ *   } else if (error instanceof Error) {
+ *     // Stream-time failures and native constructor validation can still
+ *     // arrive untyped.
+ *     error.message;
+ *   }
+ * }
+ * ```
  */
 export class LanceError extends Error {
   static readonly code: string = "Error";
@@ -155,6 +213,7 @@ export class LanceError extends Error {
     this.maxConnectFailures = options?.maxConnectFailures;
     this.readFailures = options?.readFailures;
     this.maxReadFailures = options?.maxReadFailures;
+    Object.defineProperty(this, LANCE_ERROR_MARK, { value: true });
   }
 }
 
@@ -381,10 +440,20 @@ export function isAlreadyExistsError(
  *
  * Errors that did not come from Rust, including plain `Error`s thrown by the
  * TypeScript layer, are returned unchanged.
+ *
+ * An error already translated by another SDK load is not an `instanceof` this
+ * load's classes. Its kind and fields are copied onto a new subclass so
+ * `instanceof` and metadata such as `tableName` stay valid here.
  */
 export function materializeLanceError(error: unknown, depth = 0): unknown {
-  if (error instanceof LanceError || depth > MAX_CAUSE_DEPTH) {
+  if (depth > MAX_CAUSE_DEPTH) {
     return error;
+  }
+  if (error instanceof LanceError) {
+    return error;
+  }
+  if (isMarkedLanceError(error)) {
+    return rebuildMarked(error, depth);
   }
   if (!isErrorLike(error)) {
     return error;
@@ -411,18 +480,81 @@ export function materializeLanceError(error: unknown, depth = 0): unknown {
     return error instanceof Error ? error : copyForeignError(error, cause);
   }
   const message = error.message.slice(match[0].length) || payload.code;
-  const options = payloadOptions(payload, cause);
-  const Ctor = ERROR_CLASSES.get(payload.code);
-  const wrapped =
-    Ctor === undefined
-      ? new LanceError(message, { ...options, code: payload.code })
-      : new Ctor(message, options);
-  if (typeof error.stack === "string") {
-    const newline = error.stack.indexOf("\n");
-    const frames = newline === -1 ? "" : error.stack.slice(newline);
-    wrapped.stack = `${wrapped.name}: ${wrapped.message}${frames}`;
-  }
+  const wrapped = createLanceError(
+    message,
+    payload.code,
+    payloadOptions(payload, cause),
+  );
+  copyStack(error, wrapped);
   return wrapped;
+}
+
+function isMarkedLanceError(
+  error: unknown,
+): error is Error & { code: string; cause?: unknown } {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const candidate = error as {
+    code?: unknown;
+    message?: unknown;
+    [LANCE_ERROR_MARK]?: unknown;
+  };
+  return (
+    candidate[LANCE_ERROR_MARK] === true &&
+    typeof candidate.message === "string" &&
+    typeof candidate.code === "string" &&
+    candidate.code.length > 0
+  );
+}
+
+function rebuildMarked(
+  error: Error & { code: string; cause?: unknown },
+  depth: number,
+): LanceError {
+  const cause =
+    error.cause === undefined
+      ? undefined
+      : materializeLanceError(error.cause, depth + 1);
+  const wrapped = createLanceError(
+    error.message,
+    error.code,
+    payloadOptions(instancePayload(error), cause),
+  );
+  copyStack(error, wrapped);
+  return wrapped;
+}
+
+function createLanceError(
+  message: string,
+  code: string,
+  options: LanceErrorOptions,
+): LanceError {
+  const Ctor = ERROR_CLASSES.get(code);
+  if (Ctor === undefined) {
+    return new LanceError(message, { ...options, code });
+  }
+  return new Ctor(message, { ...options, code });
+}
+
+function instancePayload(error: object): ErrorPayload {
+  const source = error as Record<string, unknown>;
+  const payload: ErrorPayload = {};
+  for (const key of METADATA_KEYS) {
+    if (source[key] !== undefined) {
+      payload[key] = source[key];
+    }
+  }
+  return payload;
+}
+
+function copyStack(error: { stack?: unknown }, wrapped: LanceError): void {
+  if (typeof error.stack !== "string") {
+    return;
+  }
+  const newline = error.stack.indexOf("\n");
+  const frames = newline === -1 ? "" : error.stack.slice(newline);
+  wrapped.stack = `${wrapped.name}: ${wrapped.message}${frames}`;
 }
 
 function isErrorLike(value: unknown): value is Error {
@@ -511,7 +643,9 @@ function asStringArray(value: unknown): string[] | undefined {
 /**
  * Wrap the native module so Rust errors surface as {@link LanceError}s.
  *
- * Called while the package entrypoint loads. Idempotent.
+ * Called while the package entrypoint loads. Idempotent within one load.
+ * A later load replaces these wrappers and calls the original native function,
+ * so translation uses that load's classes instead of nesting on a previous one.
  */
 export function installLanceErrorTranslation(moduleNamespace: object): void {
   for (const key of Object.getOwnPropertyNames(moduleNamespace)) {
@@ -566,30 +700,30 @@ function replaceFunction(owner: object, key: string, fn: AnyFn): void {
   if (isWrapped(fn)) {
     return;
   }
+  const original = originalNative(fn);
   const wrapped = function (this: unknown, ...args: unknown[]) {
+    const fail = (error: unknown): never => {
+      throw translatorFor(this)(error);
+    };
     try {
-      const result = fn.apply(this, args);
+      const result = original.apply(this, args);
       // Native promises are created in Node's realm. `instanceof Promise` is
       // false when the caller is running in another realm, such as Jest.
       if (isThenable(result)) {
-        return Promise.resolve(result).then(
-          (value) => value,
-          (error: unknown) => {
-            throw materializeLanceError(error);
-          },
-        );
+        return Promise.resolve(result).then((value) => value, fail);
       }
       return result;
     } catch (error) {
-      throw materializeLanceError(error);
+      fail(error);
     }
   };
-  Object.defineProperty(wrapped, "name", { value: fn.name });
+  Object.defineProperty(wrapped, "name", { value: original.name });
   Object.defineProperty(wrapped, WRAPPED, { value: true });
+  Object.defineProperty(wrapped, ORIGINAL_FN, { value: original });
   const descriptor = Object.getOwnPropertyDescriptor(owner, key);
   try {
     Object.defineProperty(owner, key, {
-      configurable: descriptor?.configurable ?? true,
+      configurable: true,
       enumerable: descriptor?.enumerable ?? false,
       writable: descriptor?.writable ?? true,
       value: wrapped,
@@ -601,6 +735,70 @@ function replaceFunction(owner: object, key: string, fn: AnyFn): void {
 
 function isWrapped(fn: AnyFn): boolean {
   return Boolean((fn as unknown as Record<symbol, boolean>)[WRAPPED]);
+}
+
+function originalNative(fn: AnyFn): AnyFn {
+  const original = (fn as unknown as Record<symbol, unknown>)[ORIGINAL_FN];
+  return typeof original === "function" ? (original as AnyFn) : fn;
+}
+
+/**
+ * Remember which SDK load should translate errors thrown by `value`.
+ *
+ * Native classes are shared across loads. The load that wraps a native object
+ * in a TypeScript handle owns its errors, even if a later load replaces the
+ * method wrapper.
+ */
+export function bindErrorTranslator<T>(value: T): T {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof (value as { then?: unknown }).then === "function"
+  ) {
+    return value;
+  }
+  const host = translatorHost((value as object).constructor);
+  if (host === undefined) {
+    return value;
+  }
+  const map = translatorMap(host);
+  if (map !== undefined) {
+    map.set(value, materializeLanceError);
+  }
+  return value;
+}
+
+function translatorHost(ctor: unknown): TranslatorHost | undefined {
+  if (typeof ctor !== "function") {
+    return undefined;
+  }
+  return ctor as TranslatorHost;
+}
+
+function translatorMap(
+  host: TranslatorHost,
+): WeakMap<object, ErrorTranslator> | undefined {
+  if (host[TRANSLATORS] != null) {
+    return host[TRANSLATORS];
+  }
+  try {
+    const map = new WeakMap<object, ErrorTranslator>();
+    Object.defineProperty(host, TRANSLATORS, { value: map });
+    return map;
+  } catch {
+    return undefined;
+  }
+}
+
+function translatorFor(target: unknown): ErrorTranslator {
+  if (typeof target === "object" && target !== null) {
+    const host = translatorHost((target as object).constructor);
+    const bound = host?.[TRANSLATORS]?.get(target);
+    if (bound !== undefined) {
+      return bound;
+    }
+  }
+  return materializeLanceError;
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

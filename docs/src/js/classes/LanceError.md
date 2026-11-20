@@ -12,6 +12,26 @@ Subclasses exist so application code can branch with `instanceof`. A kind
 that does not have its own class is still a [LanceError](LanceError.md); `code` then
 carries the Rust variant name.
 
+Stream-time failures and native constructor validation can still arrive as a
+plain `Error`. Handle that case as a fallback.
+
+```ts
+import * as lancedb from "@lancedb/lancedb";
+
+try {
+  await db.openTable("missing");
+} catch (error) {
+  if (error instanceof lancedb.TableNotFoundError) {
+    error.tableName; // "missing"
+    error.cause; // underlying error, when Rust supplied one
+  } else if (error instanceof Error) {
+    // Stream-time failures and native constructor validation can still
+    // arrive untyped.
+    error.message;
+  }
+}
+```
+
 ## Extends
 
 - `Error`
