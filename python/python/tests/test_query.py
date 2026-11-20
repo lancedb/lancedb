@@ -1739,18 +1739,16 @@ def test_query_builder_with_different_vector_column():
     ds = mock.Mock()
     table.to_lance.return_value = ds
     builder.to_arrow()
-    table._execute_arrow.assert_called_once_with(
-        Query(
-            vector=query,
-            filter="b < 10",
-            limit=2,
-            distance_type="cosine",
-            columns=["b"],
-            vector_column="foo_vector",
-        ),
-        timeout=None,
-        blob_row_id_prepared=True,
+    expected = Query(
+        vector=query,
+        filter="b < 10",
+        limit=2,
+        distance_type="cosine",
+        columns=["b"],
+        vector_column="foo_vector",
     )
+    expected._blob_row_id_prepared = True
+    table._execute_arrow.assert_called_once_with(expected, timeout=None)
 
 
 def cosine_distance(vec1, vec2):
@@ -2699,12 +2697,18 @@ def test_sync_query_prepares_schema_once_per_execution(tmp_path, monkeypatch):
     table.search().where("id = 1").select(["id"]).to_batches().read_all()
     assert calls <= 1
 
-    builder = table.search().where("id = 1").select(["id", "extra"])
-    table.add_columns({"extra": "id + 10"})
+    builder = table.search().where("id = 1")
+    before = builder.to_arrow()
+    assert "extra" not in before.column_names
+    assert "image" not in before.column_names
+
+    table.add_columns(pa.schema([pa.field("extra", pa.int64()), lancedb.blob("image")]))
     calls = 0
-    actual = builder.to_arrow()
+    after = builder.to_arrow()
     assert calls <= 1
-    assert actual["extra"].to_pylist() == [11]
+    assert after["extra"].to_pylist() == [None]
+    assert "_lance_row_id" in str(after.schema)
+    assert "_rowid" not in after.column_names
 
 
 @pytest.mark.asyncio

@@ -1124,6 +1124,9 @@ class Query(pydantic.BaseModel):
         The default is False
     """
 
+    # Internal: the sync query layer already prepared blob row ids.
+    _blob_row_id_prepared: bool = pydantic.PrivateAttr(default=False)
+
     # The name of the vector column to use for vector search.
     vector_column: Optional[str] = None
 
@@ -1857,25 +1860,16 @@ class LanceQueryBuilder(ABC):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        if _is_remote_query_table(self._table):
-            return self._table._execute_query(
-                query, batch_size=batch_size, timeout=timeout
-            )
-        return self._table._execute_query(
-            query,
-            batch_size=batch_size,
-            timeout=timeout,
-            blob_row_id_prepared=True,
-        )
+        if not _is_remote_query_table(self._table):
+            query._blob_row_id_prepared = True
+        return self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
 
     def _execute_arrow_prepared(
         self, query: Query, *, timeout: Optional[timedelta] = None
     ) -> pa.Table:
-        if _is_remote_query_table(self._table):
-            return self._table._execute_arrow(query, timeout=timeout)
-        return self._table._execute_arrow(
-            query, timeout=timeout, blob_row_id_prepared=True
-        )
+        if not _is_remote_query_table(self._table):
+            query._blob_row_id_prepared = True
+        return self._table._execute_arrow(query, timeout=timeout)
 
     def _ensure_fragment_constraints_supported(self, operation: str) -> None:
         _raise_unsupported_fragment_constraints(
@@ -2649,14 +2643,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         """
         blob_sources, schema = self._prepare_blob_execution(blob_mode)
         if blob_mode != "lazy":
-            if blob_mode == "bytes" and blob_sources:
-                return self._to_batches_prepared(
-                    batch_size=None,
-                    timeout=timeout,
-                    blob_mode="bytes",
-                    blob_sources=blob_sources,
-                    schema=schema,
-                ).read_all()
+            # Materialize in lazy mode so reranking runs once over the full
+            # result before the requested aggregate blob conversion.
             return self._finalize_blob_query_table(
                 self._to_batches_prepared(
                     batch_size=None,
@@ -2723,6 +2711,31 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             order_by=self._order_by,
         )
 
+    def _to_batches_prepared(
+        self,
+        *,
+        batch_size: Optional[int],
+        timeout: Optional[timedelta],
+        blob_mode: BlobMode,
+        blob_sources: dict[str, str],
+        schema: Optional[pa.Schema],
+    ) -> pa.RecordBatchReader:
+        query = self._query_for_scan(blob_sources, schema)
+        result_set = self._execute_query_prepared(
+            query, batch_size=batch_size, timeout=timeout
+        )
+        if self._reranker is not None:
+            rs_table = result_set.read_all()
+            result_set = self._reranker.rerank_vector(self._str_query, rs_table)
+            check_reranker_result(result_set)
+            result_set = _merge_query_snapshot(result_set, rs_table)
+            # convert result_set back to RecordBatchReader
+            result_set = pa.RecordBatchReader.from_batches(
+                result_set.schema, result_set.to_batches()
+            )
+
+        return self._batches_in_mode(result_set, blob_mode, blob_sources, schema)
+
     def to_batches(
         self,
         /,
@@ -2752,21 +2765,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         pa.RecordBatchReader
         """
         blob_sources, schema = self._prepare_blob_execution(blob_mode)
-        query = self._query_for_scan(blob_sources, schema)
-        result_set = self._execute_query_prepared(
-            query, batch_size=batch_size, timeout=timeout
+        return self._to_batches_prepared(
+            batch_size=batch_size,
+            timeout=timeout,
+            blob_mode=blob_mode,
+            blob_sources=blob_sources,
+            schema=schema,
         )
-        if self._reranker is not None:
-            rs_table = result_set.read_all()
-            result_set = self._reranker.rerank_vector(self._str_query, rs_table)
-            check_reranker_result(result_set)
-            result_set = _merge_query_snapshot(result_set, rs_table)
-            # convert result_set back to RecordBatchReader
-            result_set = pa.RecordBatchReader.from_batches(
-                result_set.schema, result_set.to_batches()
-            )
-
-        return self._batches_in_mode(result_set, blob_mode, blob_sources, schema)
 
     def where(
         self, where: Union[str, Expr], prefilter: bool = None
@@ -3270,11 +3275,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         timeout: Optional[timedelta] = None,
         blob_mode: BlobMode = "lazy",
     ) -> pa.Table:
-        blob_sources = self._validated_blob_sources(blob_mode)
+        blob_sources, schema = self._prepare_blob_execution(blob_mode)
         # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
         return _wal_hybrid.with_pk_fallback(
             lambda: self._run_hybrid(
-                timeout=timeout, blob_mode=blob_mode, blob_sources=blob_sources
+                timeout=timeout,
+                blob_mode=blob_mode,
+                blob_sources=blob_sources,
+                schema=schema,
             ),
             self._table,
             fused=lambda: self._pk_fusion is not None,
@@ -3287,6 +3295,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         timeout: Optional[timedelta] = None,
         blob_mode: BlobMode,
         blob_sources: dict[str, str],
+        schema: Optional[pa.Schema],
     ) -> pa.Table:
         self._create_query_builders()
         fts_query, vector_query = self._fts_query, self._vector_query
@@ -3316,7 +3325,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         results = _merge_query_snapshot(results, fts_results, vector_results)
         return self._finish_hybrid_results(
-            results, blob_mode=blob_mode, blob_sources=blob_sources
+            results,
+            blob_mode=blob_mode,
+            blob_sources=blob_sources,
+            schema=schema,
         )
 
     def _finish_hybrid_results(
@@ -3325,6 +3337,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         *,
         blob_mode: BlobMode,
         blob_sources: dict[str, str],
+        schema: Optional[pa.Schema],
     ) -> pa.Table:
         if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
             return self._apply_arrow_blob_mode(
@@ -3332,9 +3345,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
         if self._user_requested_row_id():
             return self._apply_arrow_blob_mode(results, blob_mode, blob_sources)
-        if self._blob_auto_row_id_enabled():
+        if self._blob_auto_row_id_enabled(schema):
             return self._finalize_blob_query_table(
-                results, blob_mode=blob_mode, blob_sources=blob_sources
+                results,
+                blob_mode=blob_mode,
+                blob_sources=blob_sources,
+                schema=schema,
             )
         if "_rowid" in results.column_names:
             # Fetch bytes before dropping _rowid.

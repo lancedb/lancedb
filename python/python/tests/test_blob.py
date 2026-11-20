@@ -2384,6 +2384,77 @@ class _KeepAllScoresReranker(Reranker):
         return combined.append_column("_relevance_score", scores)
 
 
+class _RecordingVectorReranker(Reranker):
+    def __init__(self):
+        super().__init__(return_score="all")
+        self.calls = []
+
+    def rerank_hybrid(self, query, vector_results, fts_results):
+        raise AssertionError("vector queries must not call rerank_hybrid")
+
+    def rerank_vector(self, query, vector_results):
+        self.calls.append((query, vector_results))
+        return vector_results.append_column(
+            "_relevance_score",
+            pa.array([1.0] * len(vector_results), type=pa.float32()),
+        )
+
+
+@pytest.mark.parametrize("blob_mode", ["descriptions", "bytes"])
+def test_vector_to_arrow_reranks_before_blob_conversion(blob_mode, monkeypatch):
+    db = lancedb.connect("memory:///")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("image"),
+        ]
+    )
+    table = db.create_table(f"vector_rerank_{blob_mode}", schema=schema)
+    rows = 1100
+    table.add(
+        [
+            {
+                "id": row_id,
+                "vector": [1.0, float(row_id % 2)],
+                "image": f"image-{row_id}".encode(),
+            }
+            for row_id in range(rows)
+        ]
+    )
+    fetched = []
+    fetch_blobs = table.fetch_blobs
+
+    def fetch(column, row_ids):
+        fetched.append((column, len(row_ids)))
+        return fetch_blobs(column, row_ids)
+
+    monkeypatch.setattr(table, "fetch_blobs", fetch)
+    reranker = _RecordingVectorReranker()
+    hits = (
+        table.search([1.0, 0.0])
+        .limit(rows)
+        .select(["id", "image"])
+        .rerank(reranker, "hello")
+        .to_arrow(blob_mode=blob_mode)
+    )
+
+    assert len(reranker.calls) == 1
+    query, source = reranker.calls[0]
+    assert query == "hello"
+    # The reranker sees descriptors, not already-converted payload bytes.
+    assert not pa.types.is_large_binary(source.schema.field("image").type)
+    assert "_relevance_score" in hits.column_names
+    assert len(hits) == rows
+    if blob_mode == "bytes":
+        # The whole lazy result is materialized before one aggregate conversion.
+        assert fetched == [("image", rows)]
+        assert pa.types.is_large_binary(hits.schema.field("image").type)
+    else:
+        assert fetched == []
+        assert not pa.types.is_large_binary(hits.schema.field("image").type)
+
+
 def test_bytes_mode_rejects_legacy_blob_after_reranker_drops_metadata(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table(

@@ -2924,7 +2924,6 @@ class Table(ABC):
         *,
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
-        blob_row_id_prepared: bool = False,
     ) -> pa.RecordBatchReader: ...
 
     def _execute_arrow(
@@ -2932,12 +2931,9 @@ class Table(ABC):
         query: Query,
         *,
         timeout: Optional[timedelta] = None,
-        blob_row_id_prepared: bool = False,
     ) -> pa.Table:
         """Execute a query and collect the whole result eagerly."""
-        return self._execute_query(
-            query, timeout=timeout, blob_row_id_prepared=blob_row_id_prepared
-        ).read_all()
+        return self._execute_query(query, timeout=timeout).read_all()
 
     @abstractmethod
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
@@ -5977,7 +5973,6 @@ class LanceTable(Table):
         *,
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
-        blob_row_id_prepared: bool = False,
     ) -> pa.RecordBatchReader:
         # Branch queries run locally: the server-side query protocol can't
         # carry a branch yet.
@@ -5996,12 +5991,7 @@ class LanceTable(Table):
             return _execute_server_side_query(self._namespace_client, table_id, query)
 
         async_iter = LOOP.run(
-            self._table._execute_query(
-                query,
-                batch_size=batch_size,
-                timeout=timeout,
-                blob_row_id_prepared=blob_row_id_prepared,
-            )
+            self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
         )
 
         def iter_sync():
@@ -6018,7 +6008,6 @@ class LanceTable(Table):
         query: Query,
         *,
         timeout: Optional[timedelta] = None,
-        blob_row_id_prepared: bool = False,
     ) -> pa.Table:
         # Keep the Python namespace pushdown path, including its branch rule.
         if (
@@ -6032,7 +6021,7 @@ class LanceTable(Table):
             return self._execute_query(query, timeout=timeout).read_all()
 
         async_query = self._table._sync_query_to_async(query)
-        async_query._blob_row_id_prepared = blob_row_id_prepared
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
         return LOOP.run(async_query._execute_eager(timeout=timeout))
 
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
@@ -8529,7 +8518,6 @@ class AsyncTable:
         *,
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
-        blob_row_id_prepared: bool = False,
     ) -> pa.RecordBatchReader:
         if (
             _should_push_down_query_table(
@@ -8548,7 +8536,7 @@ class AsyncTable:
         # used for that code path right now.
 
         async_query = self._sync_query_to_async(query)
-        async_query._blob_row_id_prepared = blob_row_id_prepared
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
 
         return await async_query.to_batches(
             max_batch_length=batch_size, timeout=timeout
@@ -8559,7 +8547,6 @@ class AsyncTable:
         query: Query,
         *,
         timeout: Optional[timedelta] = None,
-        blob_row_id_prepared: bool = False,
     ) -> pa.Table:
         if (
             _should_push_down_query_table(
@@ -8571,7 +8558,7 @@ class AsyncTable:
             return (await self._execute_query(query, timeout=timeout)).read_all()
 
         async_query = self._sync_query_to_async(query)
-        async_query._blob_row_id_prepared = blob_row_id_prepared
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
         return await async_query._execute_eager(timeout=timeout)
 
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
