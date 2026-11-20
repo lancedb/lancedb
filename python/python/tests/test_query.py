@@ -621,6 +621,12 @@ async def test_async_fts_count_rows_rejects_fragment_constraints(
     with pytest.raises(NotImplementedError, match="fragment selection"):
         await query.count_rows()
 
+    transitioned = _apply_fragment_restriction(
+        table.query(), restriction, fragment
+    ).nearest_to_text("one")
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await transitioned.count_rows()
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("restriction", ["ids", "empty", "fragments"])
