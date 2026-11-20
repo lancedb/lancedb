@@ -275,6 +275,41 @@ def test_split_hash(mem_db):
     assert data["split_id"] == data2["split_id"]  # Should be identical
 
 
+def test_split_hash_default_discard_weight_matches_zero(mem_db):
+    """Omitting discard_weight must assign every row like discard_weight=0."""
+    tbl = mem_db.create_table(
+        "test_table",
+        pa.table(
+            {
+                "id": range(100),
+                "category": (["A", "B", "C"] * 34)[:100],
+                "value": range(100),
+            }
+        ),
+    )
+
+    default = (
+        permutation_builder(tbl)
+        .split_hash(["category"], [1, 1], split_names=["train", "test"])
+        .execute()
+    )
+    explicit_zero = (
+        permutation_builder(tbl)
+        .split_hash(
+            ["category"], [1, 1], discard_weight=0, split_names=["train", "test"]
+        )
+        .execute()
+    )
+
+    default_data = default.search(None).to_arrow().to_pydict()
+    explicit_data = explicit_zero.search(None).to_arrow().to_pydict()
+    assert default.count_rows() == 100
+    assert default.count_rows() == explicit_zero.count_rows()
+    assert dict(zip(default_data["row_id"], default_data["split_id"])) == dict(
+        zip(explicit_data["row_id"], explicit_data["split_id"])
+    )
+
+
 def test_split_hash_with_discard(mem_db):
     """Test hash-based splitting with discard weight."""
     tbl = mem_db.create_table(
