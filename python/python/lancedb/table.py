@@ -10281,6 +10281,26 @@ class FragmentSummaryStats:
     p99: int
 
 
+def _validate_branch_source(
+    from_ref: Optional[str],
+    from_version: Optional[int],
+    from_tag: Optional[str],
+) -> None:
+    if from_tag is None:
+        return
+    conflicts = [
+        name
+        for name, value in (("from_ref", from_ref), ("from_version", from_version))
+        if value is not None
+    ]
+    if conflicts:
+        raise ValueError(
+            "from_tag cannot be combined with "
+            + " or ".join(conflicts)
+            + "; pass only one source"
+        )
+
+
 class Tags:
     """
     Table tag manager.
@@ -10311,7 +10331,7 @@ class Tags:
         """
         return LOOP.run(self._table.tags.get_version(tag))
 
-    def create(self, tag: str, version: int) -> None:
+    def create(self, tag: str, version: Optional[int] = None) -> None:
         """
         Create a tag for a given table version.
 
@@ -10320,8 +10340,9 @@ class Tags:
         tag: str,
             The name of the tag to create. This name must be unique among all tag
             names for the table.
-        version: int,
-            The table version to tag.
+        version: int, optional
+            The table version to tag. Defaults to the version visible to this
+            handle, including a checked-out version.
         """
         LOOP.run(self._table.tags.create(tag, version))
 
@@ -10368,6 +10389,8 @@ class Branches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
+        *,
+        from_tag: Optional[str] = None,
     ) -> "Table":
         """Create a branch and return a handle scoped to it.
 
@@ -10379,9 +10402,13 @@ class Branches:
             Source branch to fork from. Defaults to ``main``.
         from_version: int, optional
             A specific version on ``from_ref`` to fork from. Defaults to latest.
+        from_tag: str, optional
+            Source tag to fork from. Cannot be combined with ``from_ref`` or
+            ``from_version``.
         """
+        _validate_branch_source(from_ref, from_version, from_tag)
         async_table = LOOP.run(
-            self._table.branches.create(name, from_ref, from_version)
+            self._table.branches.create(name, from_ref, from_version, from_tag=from_tag)
         )
         return self._wrap(async_table)
 
@@ -10463,7 +10490,7 @@ class AsyncTags:
         """
         return await self._table.tags.get_version(tag)
 
-    async def create(self, tag: str, version: int) -> None:
+    async def create(self, tag: str, version: Optional[int] = None) -> None:
         """
         Create a tag for a given table version.
 
@@ -10472,8 +10499,9 @@ class AsyncTags:
         tag: str,
             The name of the tag to create. This name must be unique among all tag
             names for the table.
-        version: int,
-            The table version to tag.
+        version: int, optional
+            The table version to tag. Defaults to the version visible to this
+            handle, including a checked-out version.
         """
         await self._table.tags.create(tag, version)
 
@@ -10517,6 +10545,8 @@ class AsyncBranches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
+        *,
+        from_tag: Optional[str] = None,
     ) -> "AsyncTable":
         """Create a branch and return a handle scoped to it.
 
@@ -10528,12 +10558,19 @@ class AsyncBranches:
             Source branch to fork from. Defaults to ``main``.
         from_version: int, optional
             A specific version on ``from_ref`` to fork from. Defaults to latest.
+        from_tag: str, optional
+            Source tag to fork from. Cannot be combined with ``from_ref`` or
+            ``from_version``.
         """
+        _validate_branch_source(from_ref, from_version, from_tag)
         # "main" and None are two spellings of the root branch in lance; normalize
-        # so from_ref="main" behaves identically to the default.
+        # so from_ref="main" behaves identically to the default. This must happen
+        # after validating from_tag conflicts so an explicit from_ref is not lost.
         if from_ref == "main":
             from_ref = None
-        inner = await self._table.branches.create(name, from_ref, from_version)
+        inner = await self._table.branches.create(
+            name, from_ref, from_version, from_tag=from_tag
+        )
         return AsyncTable(inner)
 
     async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":

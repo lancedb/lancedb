@@ -5814,6 +5814,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_branch_from_tag_on_branch_with_same_version_as_main() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let fork_point = table.version().await.unwrap();
+
+        // Advance exp and main to the same version number with different rows.
+        let exp = table.create_branch("exp", fork_point).await.unwrap();
+        exp.add(sample_rows(vec![10])).execute().await.unwrap();
+        let exp_version = exp.version().await.unwrap();
+        table.add(sample_rows(vec![100])).execute().await.unwrap();
+        assert_eq!(exp_version, table.version().await.unwrap());
+
+        // Tag exp at that shared version number. The tag must keep exp's branch
+        // identity, so forking from it sees exp's snapshot rather than main's
+        // version with the same number.
+        let mut tags = exp.tags().await.unwrap();
+        tags.create("exp-v2", exp_version).await.unwrap();
+
+        let from_tag = table
+            .create_branch(
+                "from-tag",
+                lance::dataset::refs::Ref::Tag("exp-v2".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(from_tag.current_branch().as_deref(), Some("from-tag"));
+        assert_eq!(
+            from_tag
+                .count_rows(Some("i = 10".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            from_tag
+                .count_rows(Some("i = 100".to_string()))
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn test_branch_name_validation() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();

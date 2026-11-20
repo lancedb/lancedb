@@ -1742,6 +1742,11 @@ page).
 The tags API supports the standard CRUD operations (create, list, update, delete),
 plus checking out by tag name.
 
+In Python, `tags.create()` accepts an optional `version`. If you omit it, the
+tag uses the version the table handle currently shows. That includes a handle
+checked out to an older version, so pass `version` explicitly when the tag must
+not depend on the handle's checkout state.
+
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {VersioningTags}
