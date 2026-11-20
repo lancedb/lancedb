@@ -55,6 +55,28 @@ def test_plain_sync_batches_use_pull_reader(mem_db, monkeypatch, batch_size, row
         assert all(batch.num_rows <= row_limit for batch in batches)
 
 
+def test_scan_in_order_routes_through_pull_reader(tmp_db, monkeypatch):
+    table = tmp_db.create_table("ordered_pull_reader", pa.table({"id": [0, 1]}))
+    table.add(pa.table({"id": [2, 3]}))
+    table.add(pa.table({"id": [4, 5]}))
+    table.checkout(table.version)
+    calls = _spy_on_pull_reader(monkeypatch)
+
+    reader = table.search().scan_in_order(True).select(["id"]).to_batches(batch_size=2)
+
+    assert calls == [(2, None)]
+    assert [value for batch in reader for value in batch["id"].to_pylist()] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    with pytest.raises(ValueError, match="nonempty order_by"):
+        table.search().scan_in_order(True).order_by("id").to_batches()
+
+
 def test_plain_sync_batches_do_not_enter_background_loop(mem_db, monkeypatch):
     table = _table(mem_db)
 
