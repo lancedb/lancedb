@@ -507,6 +507,8 @@ class DBConnection(EnforceOverrides):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -570,6 +572,23 @@ class DBConnection(EnforceOverrides):
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it, so a create with data stays atomic. Each
+            entry can be a [BasePath][lancedb.schema.BasePath], a dict with
+            `path`, `name`, `is_dataset_root`, and `id` keys, or a
+            `lance.DatasetBasePath`. Blob URIs that fall under a registered
+            base are stored relative to it; other URIs need
+            `allow_external_blob_outside_bases=True`. `None` and an empty
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. Set
+            `initial_bases` instead when the URIs share a registered prefix.
+            Defaults to rejecting such URIs. The opt-in applies only to the
+            initial data; a later `add()` must enable it again.
         Returns
         -------
         LanceTable
@@ -1936,10 +1955,39 @@ class LanceDBConnection(DBConnection):
                 "manifest_enabled": self._manifest_enabled,
                 "namespace_client_properties": self._namespace_client_properties,
                 "read_consistency_interval_seconds": (
-                    rci.total_seconds() if rci else None
+                    rci.total_seconds() if rci is not None else None
                 ),
             }
         )
+
+    def _pickle_state(self) -> str:
+        """Serialize this connection for pickle-based workers."""
+        if self._session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceDBConnection created with a Session; "
+                "Session objects are not serializable. Create the Session in "
+                "each worker process instead."
+            )
+        if self.uri.startswith("memory://"):
+            raise TypeError(
+                "Cannot pickle an in-memory LanceDBConnection because its tables "
+                "exist only in this process. Pickle a LanceTable instead to "
+                "export its data, or connect to a persistent URI."
+            )
+        return self.serialize()
+
+    def __getstate__(self) -> dict[str, str]:
+        return {"serialized": self._pickle_state()}
+
+    def __setstate__(self, state: dict[str, str]) -> None:
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["serialized"], for_worker=True)
+        if not isinstance(connection, LanceDBConnection):
+            raise TypeError(
+                "Serialized connection did not reconstruct a LanceDBConnection"
+            )
+        self.__dict__.update(connection.__dict__)
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
@@ -2127,6 +2175,8 @@ class LanceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -2157,6 +2207,8 @@ class LanceDBConnection(DBConnection):
             storage_options=storage_options,
             data_storage_version=data_storage_version,
             enable_v2_manifest_paths=enable_v2_manifest_paths,
+            initial_bases=initial_bases,
+            allow_external_blob_outside_bases=allow_external_blob_outside_bases,
         )
         return tbl
 
@@ -2168,6 +2220,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
     ) -> LanceTable:
@@ -2180,6 +2233,10 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.  When non-empty, the
             table is resolved through the directory namespace client.
+        location: str, optional
+            The explicit location (URI) of the table. If provided, the table will be
+            opened from this location instead of deriving it from the database URI
+            and table name.
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
@@ -2213,6 +2270,7 @@ class LanceDBConnection(DBConnection):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
+                location=location,
             )
         except (RuntimeError, ValueError) as e:
             if namespace_path and (
@@ -3261,6 +3319,8 @@ class AsyncConnection(object):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -3318,6 +3378,23 @@ class AsyncConnection(object):
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
             to `"true"` in storage_options when connecting to the database.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it, so a create with data stays atomic. Each
+            entry can be a [BasePath][lancedb.schema.BasePath], a dict with
+            `path`, `name`, `is_dataset_root`, and `id` keys, or a
+            `lance.DatasetBasePath`. Blob URIs that fall under a registered
+            base are stored relative to it; other URIs need
+            `allow_external_blob_outside_bases=True`. `None` and an empty
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. Requires
+            initial `data`; the opt-in applies only to that initial write, and
+            a later `add()` must enable it again. Defaults to rejecting such
+            URIs.
 
         Returns
         -------
@@ -3429,6 +3506,25 @@ class AsyncConnection(object):
         """
         if namespace_path is None:
             namespace_path = []
+        if get_uri_scheme(self.uri) == "db":
+            # The Enterprise create endpoint has no way to express either
+            # option. Reject before sanitizing or reading `data`, and do not
+            # point at a local-only or remote `add` path.
+            if initial_bases:
+                raise NotImplementedError(
+                    "initial_bases is not supported for table creation in "
+                    "LanceDB Enterprise"
+                )
+            if allow_external_blob_outside_bases:
+                raise NotImplementedError(
+                    "allow_external_blob_outside_bases is not supported for table "
+                    "creation in LanceDB Enterprise"
+                )
+        if data is None and allow_external_blob_outside_bases:
+            raise ValueError(
+                "allow_external_blob_outside_bases requires initial data; "
+                "pass it to add() for later writes"
+            )
         metadata = None
 
         if embedding_functions is not None:
@@ -3475,6 +3571,7 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
             )
         else:
             data = data_to_reader(data, schema)
@@ -3486,6 +3583,8 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
 
         return AsyncTable(new_table)

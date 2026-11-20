@@ -80,7 +80,7 @@ use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, Version, WriteParams};
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
@@ -2683,6 +2683,44 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
+/// Reject per-write layout options that the remote insert protocol cannot carry.
+///
+/// Remote inserts only transmit `mode`; file and row-group sizing is managed by
+/// the server. Silently dropping these values would produce a different layout
+/// than the caller requested.
+fn ensure_remote_add_supports_write_params(write_params: Option<&WriteParams>) -> Result<()> {
+    let Some(write_params) = write_params else {
+        return Ok(());
+    };
+    let defaults = WriteParams::default();
+    let unsupported: Vec<&str> = [
+        (
+            "max_rows_per_file",
+            write_params.max_rows_per_file != defaults.max_rows_per_file,
+        ),
+        (
+            "max_rows_per_group",
+            write_params.max_rows_per_group != defaults.max_rows_per_group,
+        ),
+        (
+            "max_bytes_per_file",
+            write_params.max_bytes_per_file != defaults.max_bytes_per_file,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, differs)| differs.then_some(name))
+    .collect();
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+    Err(Error::NotSupported {
+        message: format!(
+            "write_options.lance_write_params layout options are not supported when adding data to a LanceDB Enterprise table: {}; only mode=overwrite is supported",
+            unsupported.join(", ")
+        ),
+    })
+}
+
 #[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -3341,6 +3379,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
+        ensure_remote_add_supports_write_params(add.write_options.lance_write_params.as_ref())?;
 
         if add.allow_external_blob_outside_bases {
             return Err(Error::NotSupported {
@@ -5538,6 +5577,96 @@ mod tests {
 
         assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
         assert!(err.to_string().contains("LanceDB Embedded"));
+    }
+
+    #[rstest]
+    #[case("max_rows_per_file")]
+    #[case("max_rows_per_group")]
+    #[case("max_bytes_per_file")]
+    #[tokio::test]
+    async fn add_rejects_layout_write_params_before_any_request(#[case] field: &str) {
+        for write_parallelism in [None, Some(2)] {
+            let table = Table::new_with_handler::<String>("my_table", |request| {
+                panic!("Unexpected request: {}", request.url().path())
+            });
+            let data = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+            let mut params = WriteParams::default();
+            match field {
+                "max_rows_per_file" => params.max_rows_per_file = 50_000,
+                "max_rows_per_group" => params.max_rows_per_group = 100,
+                "max_bytes_per_file" => params.max_bytes_per_file = 64 * 1024 * 1024,
+                other => panic!("unexpected field: {other}"),
+            }
+
+            let mut add = table.add(data).write_options(crate::table::WriteOptions {
+                lance_write_params: Some(params),
+            });
+            if let Some(write_parallelism) = write_parallelism {
+                add = add.write_parallelism(write_parallelism);
+            }
+
+            let err = add.execute().await.unwrap_err();
+            assert!(
+                matches!(err, Error::NotSupported { .. }),
+                "{field}: {err:?}"
+            );
+            let message = err.to_string();
+            assert!(message.contains(field), "{field}: {message}");
+            assert!(
+                message.contains("only mode=overwrite is supported"),
+                "{field}: {message}"
+            );
+        }
+    }
+
+    #[rstest]
+    #[case(None, false)]
+    #[case(Some(lance::dataset::WriteMode::Create), false)]
+    #[case(Some(lance::dataset::WriteMode::Append), false)]
+    #[case(Some(lance::dataset::WriteMode::Overwrite), true)]
+    #[tokio::test]
+    async fn add_preserves_supported_write_params(
+        #[case] mode: Option<lance::dataset::WriteMode>,
+        #[case] expect_overwrite: bool,
+    ) {
+        let data = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let describe_body = describe_response(&data.schema());
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    let mode = request
+                        .url()
+                        .query_pairs()
+                        .find(|(k, _)| k == "mode")
+                        .map(|(_, v)| v.into_owned());
+                    assert_eq!(
+                        mode.as_deref(),
+                        expect_overwrite.then_some("overwrite"),
+                        "unexpected insert mode for {mode:?}"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 9}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected request path: {}", path),
+            });
+
+        let mut add = table.add(data);
+        if let Some(mode) = mode {
+            add = add.write_options(crate::table::WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    mode,
+                    ..Default::default()
+                }),
+            });
+        }
+
+        assert_eq!(add.execute().await.unwrap().version, 9);
     }
 
     #[tokio::test]

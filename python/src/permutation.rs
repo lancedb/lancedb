@@ -123,14 +123,15 @@ impl PyAsyncPermutationBuilder {
         })
     }
 
-    #[pyo3(signature = (columns, split_weights, *, discard_weight=0, split_names=None))]
+    #[pyo3(signature = (columns, split_weights, *, discard_weight=None, split_names=None))]
     pub fn split_hash(
         slf: PyRefMut<'_, Self>,
         columns: Vec<String>,
         split_weights: Vec<u64>,
-        discard_weight: u64,
+        discard_weight: Option<u64>,
         split_names: Option<Vec<String>>,
     ) -> PyResult<Self> {
+        let discard_weight = discard_weight.unwrap_or(0);
         slf.modify(|builder| {
             builder.with_split_strategy(
                 SplitStrategy::Hash {

@@ -217,12 +217,23 @@ dataloader = torch.utils.data.DataLoader(
 ```
 </CodeGroup>
 
-By default, `StreamingDataset` serializes enough table state to reopen the
-table in each worker. Remote LanceDB Enterprise tables (`db://...`) work the
-same way: workers reopen the table from the pickled connection state.
-Replace the URI, API key, region and endpoint below with your deployment
-details. In application code, load credentials from environment variables
-or a secrets manager:
+By default, `StreamingDataset` and `Permutation` pickle the native table's
+reopen state, including its connection, table identity, open options and
+explicit storage overrides. A standard-mode handle reopens at the latest
+version; `checkout(version)` and branch-scoped handles keep their pinned
+version and branch. `memory://` tables are exported as an Arrow snapshot, so
+workers see the data as of pickling; an in-memory connection by itself is not
+picklable.
+
+Connections opened with a `Session` cannot be pickled. For a Session-backed
+table, pass a picklable `connection_factory` to
+`Permutation.with_connection_factory` or `StreamingDataset(connection_factory=...)`
+so each worker creates its own connection and Session.
+
+Remote LanceDB Enterprise tables (`db://...`) work the same way: workers
+reopen the table from the pickled connection state. Replace the URI, API key,
+region and endpoint below with your deployment details. In application code,
+load credentials from environment variables or a secrets manager:
 
 <CodeGroup>
 ```py Python icon=Python

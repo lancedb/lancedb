@@ -2280,15 +2280,29 @@ impl Table {
     }
 
     /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids, buffer_size=None))]
+    #[pyo3(signature = (column, row_ids, buffer_size=None, *, version=None, snapshot_identity=None))]
     pub fn fetch_blob_files(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
         buffer_size: Option<usize>,
+        version: Option<u64>,
+        snapshot_identity: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
+            let inner = match (version, snapshot_identity) {
+                (None, None) => inner,
+                (Some(version), Some(identity)) => inner
+                    .query_snapshot_with_identity(version, &identity)
+                    .await
+                    .infer_error()?,
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "deferred blob reads require both query version and snapshot identity",
+                    ));
+                }
+            };
             let handles = inner
                 .fetch_blob_files(column.as_str(), &row_ids)
                 .await

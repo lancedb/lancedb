@@ -1655,7 +1655,9 @@ def test_fts_phrase_query_is_preserved_in_query_object():
 def test_fts_phrase_query_execution_preserves_user_text():
     table = mock.Mock()
     table.schema = pa.schema([])
-    table._execute_query.return_value = pa.table({"text": ["result"]}).to_reader()
+    # to_arrow() collects through the eager path; keep a real Table so the
+    # reranker still receives and returns the real result contract.
+    table._execute_arrow.return_value = pa.table({"text": ["result"]})
 
     class CapturingReranker:
         score = "relevance"
@@ -1677,7 +1679,7 @@ def test_fts_phrase_query_execution_preserves_user_text():
 
     query.to_arrow()
 
-    backend_query = table._execute_query.call_args.args[0]
+    backend_query = table._execute_arrow.call_args.args[0]
     assert (
         backend_query.full_text_query.query,
         reranker.queries,

@@ -334,6 +334,9 @@ class Connection(object):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -343,6 +346,8 @@ class Connection(object):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
     ) -> Table: ...
     async def open_table(
         self,
@@ -897,7 +902,13 @@ class Table:
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
-        self, column: str, row_ids: list[int], buffer_size: Optional[int] = None
+        self,
+        column: str,
+        row_ids: list[int],
+        buffer_size: Optional[int] = None,
+        *,
+        version: Optional[int] = None,
+        snapshot_identity: Optional[str] = None,
     ) -> list[Optional[BlobFile]]: ...
     async def open_blob_file(
         self, descriptor: str, buffer_size: Optional[int] = None
@@ -1002,6 +1013,9 @@ class Query:
     async def execute(
         self, max_batch_length: Optional[int], timeout: Optional[timedelta]
     ) -> RecordBatchStream: ...
+    async def execute_to_reader(
+        self, max_batch_length: Optional[int], timeout: Optional[timedelta]
+    ) -> pa.RecordBatchReader: ...
     async def explain_plan(self, verbose: Optional[bool]) -> str: ...
     async def analyze_plan(
         self, distributed_metrics: Optional[AnalyzePlanDistributedMetrics] = None
@@ -1014,6 +1028,9 @@ class TakeQuery:
     def use_rte(self, enable: bool): ...
     async def output_schema(self) -> pa.Schema: ...
     async def execute(self) -> RecordBatchStream: ...
+    async def execute_to_reader(
+        self, max_batch_length: Optional[int], timeout: Optional[timedelta]
+    ) -> pa.RecordBatchReader: ...
     async def explain_plan(self, verbose: Optional[bool]) -> str: ...
     async def analyze_plan(
         self, distributed_metrics: Optional[AnalyzePlanDistributedMetrics] = None
@@ -1040,6 +1057,9 @@ class FTSQuery:
     async def execute(
         self, max_batch_length: Optional[int], timeout: Optional[timedelta]
     ) -> RecordBatchStream: ...
+    async def execute_to_reader(
+        self, max_batch_length: Optional[int], timeout: Optional[timedelta]
+    ) -> pa.RecordBatchReader: ...
     async def explain_plan(self, verbose: Optional[bool]) -> str: ...
     async def analyze_plan(
         self, distributed_metrics: Optional[AnalyzePlanDistributedMetrics] = None
@@ -1049,6 +1069,9 @@ class FTSQuery:
 class VectorQuery:
     async def output_schema(self) -> pa.Schema: ...
     async def execute(self) -> RecordBatchStream: ...
+    async def execute_to_reader(
+        self, max_batch_length: Optional[int], timeout: Optional[timedelta]
+    ) -> pa.RecordBatchReader: ...
     def where(self, filter: str): ...
     def where_expr(self, expr: PyExpr): ...
     def select(self, columns: List[Tuple[str, str]]): ...
@@ -1320,7 +1343,12 @@ class AsyncPermutationBuilder:
         seed: Optional[int] = None,
     ) -> "AsyncPermutationBuilder": ...
     def split_hash(
-        self, columns: List[str], split_weights: List[int], *, discard_weight: int = 0
+        self,
+        columns: List[str],
+        split_weights: List[int],
+        *,
+        discard_weight: Optional[int] = None,
+        split_names: Optional[List[str]] = None,
     ) -> "AsyncPermutationBuilder": ...
     def split_sequential(
         self,

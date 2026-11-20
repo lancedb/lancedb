@@ -37,6 +37,14 @@ embedding_functions`. Prefer keyword arguments for optional parameters.
 
 ::: lancedb.db.DBConnection
 
+Embedded connections support `location=` on `open_table` to open a table from an
+explicit dataset URI instead of the derived `<database>/<name>.lance` path:
+
+```python
+db = lancedb.connect("./data")
+table = db.open_table("events", location="./datasets/events.lance")
+```
+
 Use `db.server_info()` (or `await db.server_info()` on an asynchronous connection)
 to include the responding server's release, Git revision, build date and Function
 runtime information in a bug report. It returns a JSON-compatible dictionary and
@@ -449,7 +457,9 @@ and then call the returned instance; call `close()` if the class defines it. Thi
 path uses the current Python environment and does not create a registered
 `FunctionVersion`, build the declared remote runtime, resolve Secrets, or execute
 the remote Arrow adapter. A registered `FunctionVersion` call instead binds
-`col(...)` inputs and returns a remote `FunctionApplication`.
+`col(...)` inputs and returns a remote `FunctionApplication`. Passing an `Expr`
+such as `col("value")` to a definition raises `TypeError` before the callable
+runs; bind it on the registered `FunctionVersion` instead.
 
 ```python
 from lancedb import function
@@ -793,6 +803,8 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 
 ::: lancedb.query.Query
 
+::: lancedb.query.ColumnOrdering
+
 ::: lancedb.query.LanceQueryBuilder
 
 ::: lancedb.query.LanceVectorQueryBuilder
@@ -903,6 +915,18 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Row positions are not row IDs. To read by position, call
+`take_offsets(offsets, with_row_id=True)` first and pass the resulting `_rowid`
+values; `fetch_blobs` remains row-ID based. A query result table that carries
+snapshot metadata keeps the snapshot that produced it on LanceDB Enterprise, so
+the fetched bytes or files stay pinned if the table changes. Metadata-free
+inputs, including legacy query responses and plain row-ID lists, are read from
+the table handle's current snapshot; keep the source unchanged between selection
+and fetching. Partial snapshot metadata fails explicitly. For `fetch_blob_files`,
+a snapshot-bound read also fails explicitly when the serving node cannot echo
+the immutable identity. The basic remote Blob API floor (server 0.5.0) does not
+by itself provide that echo capability.
+
 Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
 default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
 `open_blob_files` for sparse reads, or choose another window size in bytes.
@@ -936,9 +960,42 @@ PyArrow's `RecordBatch.from_pylist(..., schema=...)` cannot convert raw bytes
 into the blob extension type; use `blob_array` and `RecordBatch.from_arrays`
 when constructing batches explicitly.
 
-For external blob references, construct the descriptor struct described by
-[blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
-Inline `data` and external `uri` representations are mutually exclusive.
+For external blob references, use [blob_uri_array][lancedb.blob_uri_array]. It builds the
+same extension type from URI strings and optional `(position, size)` byte
+ranges without requiring pylance. Inline `data` and external `uri` representations
+are mutually exclusive.
+
+Register the object prefix with [BasePath][lancedb.BasePath] on
+`create_table(..., initial_bases=[...])` to store a matched absolute blob URI
+relative to a base and to scope credentials with `base_<id>.<option>` storage
+options. A create with data stays a single atomic request; without a matching
+base, pass `allow_external_blob_outside_bases=True` to keep the absolute URI
+instead. That opt-in still expects a valid absolute URI and applies to one
+write; a later `add()` needs its own opt-in. When registering several bases,
+supply distinct explicit non-zero IDs: the pinned Lance release can collide
+when automatic and explicit IDs are mixed, leaving a listed but unopenable name
+after a failed create; retrying with distinct explicit IDs succeeds.
+
+```python
+from lancedb import BasePath, blob, blob_uri_array
+
+schema = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        blob("video").with_metadata({"lancedb:logical_type": "mp4"}),
+    ]
+)
+videos = blob_uri_array(
+    ["s3://bucket/clip-0.mp4", "s3://bucket/clip-1.mp4"],
+    positions=[0, 0],
+    sizes=[1 << 20, 1 << 20],
+)
+db.create_table(
+    "videos",
+    data=pa.RecordBatch.from_arrays([pa.array([0, 1]), videos], schema=schema),
+    initial_bases=[BasePath("s3://bucket")],
+)
+```
 
 LanceDB Enterprise SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
@@ -999,6 +1056,10 @@ so the fetch APIs cannot read their bytes yet.
 ::: lancedb.blob
 
 ::: lancedb.schema.blob_array
+
+::: lancedb.blob_uri_array
+
+::: lancedb.BasePath
 
 ::: lancedb._blob.BlobFile
     options:

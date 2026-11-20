@@ -147,6 +147,9 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        # The namespace QueryTable request has no order_by field. Pushing a
+        # nonempty ordering down would drop it and return the wrong top-K rows.
+        or bool(query.order_by)
         or (
             query.full_text_query is not None
             and query.fast_search is True
@@ -300,7 +303,7 @@ def _maybe_add_fts_error_note(
 
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
+    from .db import DBConnection, LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -2880,6 +2883,15 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         results are returned.
 
+        A query result table that carries snapshot metadata keeps the snapshot
+        that produced it on LanceDB Enterprise. A query result without that
+        metadata, including a legacy query response, and a plain list are read
+        from the table's current snapshot; keep the source unchanged between
+        selection and fetching. Partial snapshot metadata is rejected. Row
+        positions are not row IDs: to read by position, call
+        ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
+        resulting ``_rowid`` values.
+
         Blobs inside lists cannot be fetched by row id yet.
 
         LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
@@ -2946,6 +2958,17 @@ class Table(ABC):
         row ids.
         One missing or deleted row ID rejects the entire batch; no partial
         handles are returned.
+
+        A query result table that carries snapshot metadata keeps the snapshot
+        that produced it on LanceDB Enterprise, so every returned handle reads
+        that snapshot. Metadata-free query results, including legacy server
+        responses, and plain lists are read from the table's current snapshot.
+        Partial snapshot metadata is rejected. A snapshot-bound handle fails
+        explicitly when the serving node cannot echo the query snapshot
+        identity; the 0.5.0 floor covers the basic remote Blob API but not that
+        echo. Row positions are not row IDs: call
+        ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
+        resulting ``_rowid`` values.
         """
 
     @abstractmethod
@@ -3003,6 +3026,15 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
+
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute a query and collect the whole result eagerly."""
+        return self._execute_query(query, timeout=timeout).read_all()
 
     @abstractmethod
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
@@ -4272,7 +4304,10 @@ class LanceTable(Table):
             namespace_path = []
         self._conn = connection
         self._namespace_path = namespace_path
+        self._storage_options = storage_options
+        self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
+        self._managed_versioning = managed_versioning
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         # When the connection built the namespace client natively (e.g. an
@@ -4299,6 +4334,154 @@ class LanceTable(Table):
             )
         # Take queries read the pushdown set from the inner table.
         self._table._pushdown_operations = self._pushdown_operations
+        # These coordinates live on the Python wrapper: the native table only
+        # reports its current branch and version, not whether it is pinned.
+        self._branch = self._table.current_branch()
+        self._checkout_version: Optional[int] = None
+
+    def _pickle_connection_state(self) -> str:
+        """Serialize the connection, rejecting state a worker cannot recreate."""
+        connection = self._conn
+        namespace_client = getattr(connection, "_namespace_client", None)
+        namespace_impl = getattr(connection, "_namespace_client_impl", None)
+        if namespace_client is not None and namespace_impl is None:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r} backed by a namespace "
+                "connection whose custom namespace_client cannot be "
+                "reconstructed. Connect through connect_namespace(impl, "
+                "properties) or provide a picklable worker-side namespace "
+                "connection instead."
+            )
+
+        pickle_state = getattr(connection, "_pickle_state", None)
+        if pickle_state is not None:
+            return pickle_state()
+
+        session = getattr(connection, "session", None)
+        if session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceTable whose connection was created with a "
+                "Session; Session objects are not serializable. Create the "
+                "Session in each worker process instead."
+            )
+        return connection.serialize()
+
+    def _namespace_client_for_pickle(self) -> Optional[Any]:
+        """Keep a table-level namespace client only when pickle can carry it."""
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            return None
+        if namespace_client is getattr(self._conn, "_namespace_client", None):
+            # The serialized connection rebuilds its own namespace client.
+            return None
+        if namespace_client is getattr(self._conn, "_cached_namespace_client", None):
+            # Local manifest-mode connections cache their namespace client here.
+            return None
+
+        import pickle
+
+        try:
+            pickle.dumps(namespace_client)
+        except Exception as error:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r}: its custom "
+                f"namespace_client ({type(namespace_client).__name__}) is not "
+                "serializable. Reopen the table in the worker through a "
+                "picklable namespace connection instead."
+            ) from error
+        return namespace_client
+
+    @classmethod
+    def _open_from_pickle_state(
+        cls, connection: "DBConnection", state: dict[str, Any]
+    ) -> "LanceTable":
+        """Reopen a table from the state returned by ``__getstate__``."""
+        async_connection = getattr(connection, "_conn", None)
+        if async_connection is None:
+            async_connection = connection._inner
+
+        # Only a table-level explicit client travels in the state. A connection
+        # namespace client must reopen through its own provider path so caller
+        # storage options keep their layering; passing the reconstructed client
+        # here would turn it into an explicit table provider.
+        namespace_client = state.get("namespace_client")
+
+        async_table = LOOP.run(
+            async_connection.open_table(
+                state["name"],
+                namespace_path=state["namespace_path"],
+                storage_options=state["storage_options"],
+                index_cache_size=state["index_cache_size"],
+                location=state["location"],
+                namespace_client=namespace_client,
+                managed_versioning=state["managed_versioning"],
+            )
+        )
+        table = cls(
+            connection,
+            state["name"],
+            namespace_path=state["namespace_path"],
+            storage_options=state["storage_options"],
+            index_cache_size=state["index_cache_size"],
+            location=state["location"],
+            namespace_client=namespace_client,
+            managed_versioning=state["managed_versioning"],
+            pushdown_operations=state["pushdown_operations"],
+            route_pushdown_to_rust=state["route_pushdown_to_rust"],
+            _async=async_table,
+        )
+
+        version = state["checkout_version"]
+        if state["branch"] is not None:
+            table = table.branches.checkout(state["branch"], version)
+        elif version is not None:
+            table.checkout(version)
+        return table
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return a process-independent state for pickle-based workers."""
+        if self._conn.uri.startswith("memory://"):
+            # In-memory databases cannot be reopened by name in another process.
+            # Keep the established behavior of exporting the visible table.
+            return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
+
+        # The native handle is authoritative: a tag checkout can move this
+        # wrapper onto another branch, so never trust the branch captured at
+        # construction time.
+        self._branch = self.current_branch()
+        return {
+            "kind": "lance",
+            "connection_state": self._pickle_connection_state(),
+            "name": self.name,
+            "namespace_path": list(self._namespace_path),
+            # Only caller-supplied overrides are safe to replay. Namespace-provided
+            # initial options may contain rotating credentials and must be fetched
+            # again by the reopened connection's storage-options provider.
+            "storage_options": self._storage_options,
+            "index_cache_size": self._index_cache_size,
+            "location": self._location,
+            "namespace_client": self._namespace_client_for_pickle(),
+            "managed_versioning": self._managed_versioning,
+            "pushdown_operations": set(self._pushdown_operations),
+            "route_pushdown_to_rust": self._route_pushdown_to_rust,
+            "branch": self._branch,
+            "checkout_version": self._checkout_version,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Rebuild a table from ``__getstate__`` in the current process."""
+        if state.get("kind") == "memory":
+            from . import connect
+
+            rebuilt = connect("memory://").create_table(state["name"], state["data"])
+            self.__dict__.update(rebuilt.__dict__)
+            return
+
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["connection_state"], for_worker=True)
+        reopened = type(self)._open_from_pickle_state(connection, state)
+        self.__dict__.update(reopened.__dict__)
 
     @property
     def name(self) -> str:
@@ -4537,18 +4720,23 @@ class LanceTable(Table):
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
-        # version is unused locally: the pin already lives on async_table and a
-        # local handle is not reopened via a serialized connection.
-        return LanceTable(
+        table = LanceTable(
             self._conn,
             async_table.name,
             namespace_path=self._namespace_path,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
             namespace_client=self._namespace_client,
+            managed_versioning=self._managed_versioning,
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
+        # The native handle knows its branch but not whether this wrapper is a
+        # pinned branch version, so carry that coordinate explicitly.
+        table._checkout_version = version
+        return table
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -4587,6 +4775,8 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         LOOP.run(self._table.checkout(version))
+        self._checkout_version = self.version
+        self._branch = self.current_branch()
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -4595,6 +4785,8 @@ class LanceTable(Table):
         version of the table.
         """
         LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
+        self._branch = self.current_branch()
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -4643,6 +4835,8 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+        self._checkout_version = None
+        self._branch = self.current_branch()
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -5673,6 +5867,8 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
         route_pushdown_to_rust: bool = False,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ):
         """
         Create a new table.
@@ -5726,13 +5922,29 @@ class LanceTable(Table):
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it. Each entry can be a
+            [BasePath][lancedb.schema.BasePath], a dict with `path`, `name`,
+            `is_dataset_root`, and `id` keys, or a `lance.DatasetBasePath`.
+            Blob URIs under a registered base are stored relative to it. When
+            supplying IDs for multiple bases, use distinct explicit non-zero
+            IDs; [BasePath][lancedb.schema.BasePath] describes the pinned-Lance
+            limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. The
+            opt-in applies only to the initial data; a later `add()` must
+            enable it again.
         """
         if namespace_path is None:
             namespace_path = []
         self = cls.__new__(cls)
         self._conn = db
         self._namespace_path = namespace_path
+        self._index_cache_size = None
         self._location = location
+        self._managed_versioning = None
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         self._route_pushdown_to_rust = route_pushdown_to_rust
@@ -5760,6 +5972,7 @@ class LanceTable(Table):
                 enable_v2_manifest_paths
             ).lower()
 
+        self._storage_options = storage_options
         self._table = LOOP.run(
             self._conn._conn.create_table(
                 name,
@@ -5774,8 +5987,12 @@ class LanceTable(Table):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         )
+        self._branch = self._table.current_branch()
+        self._checkout_version = None
         return self
 
     def delete(self, where: Union[str, Expr]) -> DeleteResult:
@@ -5878,6 +6095,26 @@ class LanceTable(Table):
                 return
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        # Keep the Python namespace pushdown path, including its branch rule.
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and self.current_branch() is None
+            and not _requires_local_namespace_execution(query)
+        ):
+            return self._execute_query(query, timeout=timeout).read_all()
+
+        async_query = self._table._sync_query_to_async(query)
+        return LOOP.run(async_query._execute_eager(timeout=timeout))
 
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
@@ -8435,6 +8672,24 @@ class AsyncTable:
             max_batch_length=batch_size, timeout=timeout
         )
 
+    async def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and not _requires_local_namespace_execution(query)
+        ):
+            return (await self._execute_query(query, timeout=timeout)).read_all()
+
+        async_query = self._sync_query_to_async(query)
+        return await async_query._execute_eager(timeout=timeout)
+
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
@@ -9596,8 +9851,12 @@ class AsyncTable:
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
+        selection = _normalize_blob_row_ids(row_ids, column)
         return await self._inner.fetch_blobs(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column,
+            selection.row_ids,
+            version=selection.version,
+            snapshot_identity=selection.snapshot_identity,
         )
 
     async def fetch_blob_ranges(
@@ -9623,8 +9882,13 @@ class AsyncTable:
         See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
         """
         buffer_size = _validate_blob_buffer_size(buffer_size)
+        selection = _normalize_blob_row_ids(row_ids, column)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column), buffer_size
+            column,
+            selection.row_ids,
+            buffer_size=buffer_size,
+            version=selection.version,
+            snapshot_identity=selection.snapshot_identity,
         )
         return _wrap_blob_files(handles)
 
