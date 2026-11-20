@@ -120,10 +120,18 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
-    // For use_rte that is worse than a tuning miss: RTE read routing lives only
-    // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_rte.is_some() || query.base().has_take() {
+    // The namespace QueryTable request cannot represent approx_mode, search_effort,
+    // use_rte or order_by. For use_rte that is worse than a tuning miss: RTE read
+    // routing lives only in `create_plan`, so a pushed-down query would return
+    // stale base-only data. A dropped order_by would return the wrong top-K rows.
+    if query.base().use_rte.is_some()
+        || query.base().has_take()
+        || query
+            .base()
+            .order_by
+            .as_ref()
+            .is_some_and(|order_by| !order_by.is_empty())
+    {
         return true;
     }
     if matches!(query, AnyQuery::Query(query) if query.fast_search && query.full_text_search.is_some())
@@ -1855,6 +1863,60 @@ mod tests {
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
         assert_eq!(count, 1);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_order_by_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        // Insertion order differs from ascending id, so a pushed-down query that
+        // drops order_by would return 3 instead of the correct top-1 row 1.
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![3, 1, 2]))]).unwrap();
+
+        let table = conn
+            .create_table("test_order_by_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            limit: Some(1),
+            order_by: Some(vec![ColumnOrdering::asc_nulls_first("id".to_string())]),
+            ..Default::default()
+        });
+
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let ids: Vec<i32> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+
+        assert_eq!(ids, vec![1]);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 

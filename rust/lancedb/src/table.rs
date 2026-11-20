@@ -4172,10 +4172,18 @@ impl BaseTable for NativeTable {
         self
     }
 
-    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
-    /// never clear it), so repeated identical scans agree.
+    /// Lance scans fragments in order at one dataset version (`Scanner::ordered`
+    /// defaults to true, and we never clear it), so repeated scans of a local
+    /// handle agree. A main/latest handle that may push its query to a namespace
+    /// server does not: the QueryTable request carries no order.
     fn scan_order_is_deterministic(&self) -> bool {
-        true
+        let may_push_down_namespace_query = self.namespace_client.is_some()
+            && self
+                .pushdown_operations
+                .contains(&NamespaceClientPushdownOperation::QueryTable)
+            && self.dataset.current_branch().is_none()
+            && self.dataset.time_travel_version().is_none();
+        !may_push_down_namespace_query
     }
 
     fn name(&self) -> &str {
@@ -4215,6 +4223,14 @@ impl BaseTable for NativeTable {
             dataset,
             ..self.clone()
         }))
+    }
+
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        // A native handle can advance between requests when read consistency
+        // refreshes, and a namespace-backed handle can answer a query from a
+        // different snapshot than the local count/version. Hand the caller an
+        // independent time-travel handle so one build sees one dataset.
+        Ok(Some(self.checkout_current().await?))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
