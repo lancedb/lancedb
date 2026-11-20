@@ -92,3 +92,30 @@ class JobNotFoundError(ValueError):
     """Exception raised when opening a job the server does not have."""
 
     pass
+
+
+class PrewarmRunError(RuntimeError):
+    """Exception raised when a prewarm run call is refused or the run ended.
+
+    ``run_id`` identifies the run, or is empty when opening it failed.
+    ``code`` is the server's error code, such as ``run_failed`` when the run
+    could not keep upcoming waves in the cache, ``run_released`` after the run
+    ended, or ``wave_consumed`` when this rank fell behind the others.
+    """
+
+    def __init__(self, message: str, run_id: str, code: str):
+        super().__init__(message)
+        self.run_id = run_id
+        self.code = code
+
+
+class NotResidentError(RuntimeError):
+    """Exception raised when a cache-only query needs data the cache does not hold.
+
+    Raised by queries on a handle from ``Table.cache_only()``. In a prewarm
+    run, re-warm the rows the query asked for, wait for them, and retry.
+    """
+
+    def __init__(self, message: str, request_id: str):
+        super().__init__(message)
+        self.request_id = request_id

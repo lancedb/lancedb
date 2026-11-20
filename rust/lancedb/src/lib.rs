@@ -213,6 +213,7 @@ pub mod materialized_view;
 pub mod metrics_otel;
 #[cfg(feature = "polars")]
 mod polars_arrow_convertors;
+pub mod prewarm_run;
 pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;

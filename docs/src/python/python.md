@@ -1190,6 +1190,10 @@ generic HTTP/SQL exceptions with their transport status and current request ID.
 
 ::: lancedb.exceptions.JobCancelledError
 
+::: lancedb.exceptions.PrewarmRunError
+
+::: lancedb.exceptions.NotResidentError
+
 ## Integrations
 
 ## Pydantic
@@ -1238,6 +1242,29 @@ and sample positions.
 ::: lancedb.permutation.Permutation
 
 ::: lancedb.permutation.Transforms
+
+### Prewarm runs
+
+LanceDB Enterprise can warm a training job's data a wave at a time, ahead of
+its reads. [Table.open_prewarm_run][lancedb.table.Table.open_prewarm_run]
+opens a run, each rank joins it, and readers read through
+[Table.cache_only][lancedb.table.Table.cache_only].
+
+[StreamingDataset][lancedb.streaming.StreamingDataset] does this by itself on
+a LanceDB Enterprise table whose server supports runs, and reads as it always
+has otherwise, logging a warning that says why. With DataLoader workers it
+needs [StreamingDataLoader][lancedb.streaming.StreamingDataLoader]. The
+classes below are for loaders that drive a run themselves.
+
+::: lancedb.prewarm_run.PrewarmRun
+
+::: lancedb.prewarm_run.PrewarmRunRank
+
+::: lancedb.prewarm_run.PrewarmRunReader
+
+::: lancedb.prewarm_run.RunView
+
+::: lancedb.prewarm_run.RowRange
 
 ## Reranking
 
@@ -1316,6 +1343,12 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+::: lancedb.prewarm_run.AsyncPrewarmRun
+
+::: lancedb.prewarm_run.AsyncPrewarmRunRank
+
+::: lancedb.prewarm_run.AsyncPrewarmRunReader
 
 ## Materialized Views (Asynchronous)
 

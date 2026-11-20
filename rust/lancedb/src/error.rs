@@ -332,6 +332,15 @@ impl Display for JobFailure {
     }
 }
 
+/// A run that failed to open has no id yet, so the label leaves it out.
+fn prewarm_run_label(run_id: &str) -> String {
+    if run_id.is_empty() {
+        "Prewarm run".to_string()
+    } else {
+        format!("Prewarm run {run_id}")
+    }
+}
+
 fn server_build_suffix(_source: &(dyn std::error::Error + Send + Sync + 'static)) -> String {
     #[cfg(feature = "remote")]
     if let Some(server) = _source
@@ -458,6 +467,18 @@ pub enum Error {
     JobCancelled { job_id: Option<String> },
     #[snafu(display("Job '{job_id}' was not found{}", server_build_suffix(source.as_ref())))]
     JobNotFound { job_id: String, source: BoxError },
+    /// A cache-only query needed data the server's cache does not hold.
+    #[snafu(display("Data is not in the cache: {message} (request_id={request_id})"))]
+    NotResident { message: String, request_id: String },
+    /// A prewarm run call the server refused, or a run that ended. `code`
+    /// is one of [`crate::prewarm_run::error_codes`]. `run_id` is empty when
+    /// the run could not be opened.
+    #[snafu(display("{}: {message}", prewarm_run_label(run_id)))]
+    PrewarmRun {
+        run_id: String,
+        code: String,
+        message: String,
+    },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]

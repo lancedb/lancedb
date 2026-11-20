@@ -247,6 +247,10 @@ impl PyAsyncPermutationBuilder {
         slf.modify(|builder| builder.with_filter(filter))
     }
 
+    pub fn with_row_addresses(slf: PyRefMut<'_, Self>) -> PyResult<Self> {
+        slf.modify(|builder| builder.with_row_addresses())
+    }
+
     pub fn execute(slf: PyRefMut<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let mut state = slf.state.lock().unwrap();
         let builder = state

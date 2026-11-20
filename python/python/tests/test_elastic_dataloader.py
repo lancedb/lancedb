@@ -1932,13 +1932,20 @@ def test_fetch_and_transform_time_positive_after_iteration(lance_table):
 
 
 def test_fetch_time_excludes_transform(lance_table):
-    """fetch_time does not include transform time: fetch + transform < total wall time,
-    and neither counter bleeds into the other."""
+    """Time spent in the transform is counted in transform_time, not fetch_time."""
     import pyarrow as pa
     import time
 
+    # Long enough that the total dwarfs a slow fetch on a loaded CI runner.
+    # Comparing the two counters directly with a short sleep was flaky: the
+    # fetch of this small table sometimes took longer than the transform.
+    transform_sleep_s = 0.1
+    calls = 0
+
     def slow_transform(batch: pa.RecordBatch) -> list:
-        time.sleep(0.01)  # 10 ms of artificial transform work
+        nonlocal calls
+        calls += 1
+        time.sleep(transform_sleep_s)
         return batch.to_pydict()["id"]
 
     ds = StreamingDataset(
@@ -1949,8 +1956,11 @@ def test_fetch_time_excludes_transform(lance_table):
     )
     list(ds)
 
-    # The slow transform should dominate transform_time.
-    assert ds.transform_time > ds.fetch_time
+    slept = calls * transform_sleep_s
+    assert calls > 0
+    assert ds.transform_time >= slept
+    # Had the fetch timer covered the transform, it would hold all of the sleep.
+    assert ds.fetch_time < slept
 
 
 def test_bytes_loaded_increases_after_iteration(lance_table):
@@ -2393,6 +2403,53 @@ def test_columns_invalid_column_raises(tmp_path):
     )
     with pytest.raises(ValueError):
         list(ds)
+
+
+@pytest.fixture
+def struct_table(tmp_path):
+    """A table with a struct column, ``location {city, zip}``."""
+    db = lancedb.connect(tmp_path)
+    rows = [
+        {"id": i, "location": {"city": f"city-{i}", "zip": i}} for i in range(NUM_ROWS)
+    ]
+    return db.create_table("data", pa.Table.from_pylist(rows))
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["location.city", "id * 2", "id AS renamed"],
+    ids=["nested_field", "expression", "alias"],
+)
+def test_columns_take_top_level_names_only(struct_table, column):
+    """``columns`` names top-level columns. A nested field or an expression is
+    rejected by name, though a plain query on the table accepts both. A prewarm
+    run relies on this: it can serve only selections whose schema comes from
+    the table without a query."""
+    ds = StreamingDataset(
+        struct_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id", column],
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        list(ds)
+
+
+def test_columns_select_a_whole_struct(struct_table):
+    """A struct column is a top-level column, so it is read whole."""
+    ds = StreamingDataset(
+        struct_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id", "location"],
+    )
+    items = list(ds)
+    assert len(items) == NUM_ROWS
+    assert all(list(item.keys()) == ["id", "location"] for item in items)
+    assert all(
+        item["location"] == {"city": f"city-{item['id']}", "zip": item["id"]}
+        for item in items
+    )
 
 
 def test_shuffle_clump_size_yields_all_rows(lance_table):

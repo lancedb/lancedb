@@ -50,6 +50,7 @@ from lancedb.arrow import peek_reader
 from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.prewarm_run import AsyncPrewarmRun, PrewarmRun
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult
 from .dependencies import (
@@ -2079,6 +2080,86 @@ class Table(ABC):
         """
         raise NotImplementedError(
             "data prewarm previews are only supported on remote tables"
+        )
+
+    def open_prewarm_run(
+        self,
+        run_key: str,
+        *,
+        version: int,
+        world_size: int,
+        columns: Optional[List[str]] = None,
+        row_addresses: bool = False,
+        num_splits: Optional[int] = None,
+    ) -> PrewarmRun:
+        """Open a prewarm run for a training job reading this table.
+
+        A prewarm run warms the data a training job reads a wave at a time,
+        ahead of the reads. Every rank calls this with the same arguments and
+        gets the same run, then joins it with its own rank. Only supported by
+        LanceDB Enterprise.
+
+        Parameters
+        ----------
+        run_key: str
+            Identifies one training attempt. Every rank of the attempt must
+            pass the same key, and a restarted attempt a new one: a key whose
+            run has ended never opens a second run.
+        version: int
+            The table version the run reads. The run holds it until it ends.
+        world_size: int
+            Number of ranks. Fixed for the life of the run.
+        columns: list of str, optional
+            Columns to warm. If None, all columns are warmed.
+        row_addresses: bool, default False
+            Whether the row ranges this client announces are cut from true
+            row addresses, as they are from a permutation built with
+            ``with_row_addresses``. Ranges cut from row ids are only right on
+            a table without stable row ids, so a server needs this to accept
+            a table that has them.
+        num_splits: int, optional
+            How many splits the permutation has. A wave holds that many
+            splits' rows, so the server sizes waves from it to keep one
+            wave's announcement under its request size limit. Every rank must
+            pass the same value. If None, the server uses its default wave
+            size.
+
+        Examples
+        --------
+        >>> run = table.open_prewarm_run(  # doctest: +SKIP
+        ...     "job-1234-attempt-0-epoch-0", version=42, world_size=8)
+        >>> rank = run.join(0)  # doctest: +SKIP
+        >>> rank.wait_ready(0, timeout=600)  # doctest: +SKIP
+        """
+        raise NotImplementedError("prewarm runs are only supported on remote tables")
+
+    def attach_prewarm_run(self, run_id: str, version: int) -> PrewarmRun:
+        """A handle to a prewarm run another process opened, by its id and version.
+
+        Makes no server call. Processes that read for a rank, such as DataLoader
+        workers, use this with
+        [PrewarmRun.reader][lancedb.prewarm_run.PrewarmRun.reader], since a joined
+        rank's heartbeat cannot move between processes.
+        """
+        raise NotImplementedError("prewarm runs are only supported on remote tables")
+
+    def cache_only(self) -> "Table":
+        """A handle to this table whose queries read only from the cache.
+
+        A query that needs data LanceDB Enterprise does not hold in its cache
+        raises [NotResidentError][lancedb.exceptions.NotResidentError] instead of
+        reading storage. A training job in a prewarm run reads through this
+        handle, re-warms the rows a failed read asked for, waits for them, and
+        retries. Check out the run's version before calling this.
+
+        Every query on the handle asks to be served from the cache, and the
+        server decides which kinds it can serve that way. Today that is takes
+        by row id or offset; it refuses a scan or search on this handle
+        instead of reading storage for it. Calls that are not queries behave
+        as usual.
+        """
+        raise NotImplementedError(
+            "cache-only reads are only supported on remote tables"
         )
 
     def prewarm_data_async(
@@ -7875,6 +7956,45 @@ class AsyncTable:
         """
         await self.prewarm_data_async(
             columns, filter=filter, concurrency=concurrency, parameters=parameters
+        )
+
+    def attach_prewarm_run(self, run_id: str, version: int) -> AsyncPrewarmRun:
+        """A handle to a prewarm run another process opened. Makes no server call.
+
+        See [Table.attach_prewarm_run][lancedb.table.Table.attach_prewarm_run].
+        """
+        return AsyncPrewarmRun(self._inner.attach_prewarm_run(run_id, version))
+
+    async def cache_only(self) -> "AsyncTable":
+        """A handle to this table whose queries read only from the cache.
+
+        See [Table.cache_only][lancedb.table.Table.cache_only].
+        """
+        return AsyncTable(await self._inner.cache_only())
+
+    async def open_prewarm_run(
+        self,
+        run_key: str,
+        *,
+        version: int,
+        world_size: int,
+        columns: Optional[List[str]] = None,
+        row_addresses: bool = False,
+        num_splits: Optional[int] = None,
+    ) -> AsyncPrewarmRun:
+        """Open a prewarm run for a training job reading this table.
+
+        See [Table.open_prewarm_run][lancedb.table.Table.open_prewarm_run].
+        """
+        return AsyncPrewarmRun(
+            await self._inner.open_prewarm_run(
+                run_key,
+                version=version,
+                world_size=world_size,
+                columns=columns,
+                row_addresses=row_addresses,
+                num_splits=num_splits,
+            )
         )
 
     async def explain_prewarm_data(

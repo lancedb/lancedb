@@ -6,6 +6,7 @@ pub mod insert;
 mod ipc_stream;
 mod optimize;
 mod prewarm;
+mod prewarm_run;
 #[cfg(test)]
 mod write_tests;
 
@@ -662,6 +663,9 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     /// on the branch's own version chain rather than main's.
     branch: Option<String>,
     expected_query_snapshot: Option<String>,
+    /// Queries read only what the server's cache holds and fail with
+    /// [`Error::NotResident`] instead of reading storage.
+    cache_only: bool,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
@@ -910,6 +914,7 @@ impl<S: HttpSend> RemoteTable<S> {
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
             expected_query_snapshot: None,
+            cache_only: false,
         }
     }
 
@@ -920,6 +925,21 @@ impl<S: HttpSend> RemoteTable<S> {
                 .is_some_and(|value| value == "1"),
             AtomicOrdering::Relaxed,
         );
+    }
+
+    /// A cache-only handle reads the one version and branch a prewarm run
+    /// warmed. Moving it would send cache-only reads at data nobody warmed,
+    /// so the calls that move a handle refuse instead.
+    fn refuse_to_move_cache_only(&self, action: &str) -> Result<()> {
+        if self.cache_only {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "cannot {action} on a cache-only table handle; it is fixed to the \
+                     version and branch it was made from"
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Seed the schema cache from a `describe` body the caller already fetched.
@@ -940,6 +960,10 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Return a new handle scoped to `branch`, sharing the client but with fresh
     /// caches and version/freshness state (the branch tracks its own latest).
     /// Mirrors `NativeTable`'s handle-per-branch model.
+    ///
+    /// `cache_only()` builds its handle here and then copies back the version,
+    /// location and query snapshot this resets. A field added to the struct
+    /// that a cache-only handle should share needs the same treatment there.
     pub(super) fn with_branch(&self, branch: Option<String>) -> Self {
         Self {
             client: self.client.clone(),
@@ -957,6 +981,7 @@ impl<S: HttpSend> RemoteTable<S> {
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
             expected_query_snapshot: None,
+            cache_only: self.cache_only,
         }
     }
 
@@ -1723,6 +1748,9 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/query/", self.identifier))
             .header(ACCEPT, QUERY_ACCEPT);
+        if self.cache_only {
+            request = request.header(prewarm_run::CACHE_ONLY_HEADER, "true");
+        }
 
         // The timeout bounds the whole query, including reading the response, as
         // the server's own deadline for this request does. A deadline too far
@@ -1749,6 +1777,11 @@ impl<S: HttpSend> RemoteTable<S> {
             let (request_id, response) = self
                 .send_with_freshness(req, true, read_snapshot.freshness)
                 .await?;
+            let response = if self.cache_only {
+                prewarm_run::reject_not_resident(&request_id, response).await?
+            } else {
+                response
+            };
             self.read_arrow_response(&request_id, response).await
         });
         let streams = futures::future::try_join_all(futures);
@@ -2114,6 +2147,7 @@ mod test_utils {
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
                 expected_query_snapshot: None,
+                cache_only: false,
             }
         }
 
@@ -2143,6 +2177,7 @@ mod test_utils {
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
                 expected_query_snapshot: None,
+                cache_only: false,
             }
         }
 
@@ -2181,6 +2216,7 @@ mod test_utils {
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
                 expected_query_snapshot: None,
+                cache_only: false,
             }
         }
     }
@@ -2863,6 +2899,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
+        self.refuse_to_move_cache_only("check out another version")?;
         // Validate the version exists. The describe is sent without freshness
         // headers so a stale `min_version` from a previous write doesn't ride
         // along on an explicit time-travel request.
@@ -2892,6 +2929,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
     async fn checkout_latest(&self) -> Result<()> {
+        self.refuse_to_move_cache_only("check out the latest version")?;
         let mut write_guard = self.version.write().await;
         // Drop any per-handle read/write tracking; subsequent reads use the
         // baseline timestamp captured now to guarantee freshness.
@@ -3066,6 +3104,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<Arc<dyn BaseTable>> {
         use lance::dataset::refs::Ref;
 
+        self.refuse_to_move_cache_only("create a branch")?;
         if name.trim().is_empty() {
             return Err(Error::InvalidInput {
                 message: "branch name must be a non-empty string".into(),
@@ -3138,6 +3177,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
+        self.refuse_to_move_cache_only("check out a branch")?;
         // `main` / empty normalizes to the main-branch handle.
         let Some(branch) = normalize_branch(Some(name.to_string())) else {
             return Ok(Arc::new(self.with_branch(None)));
@@ -3154,6 +3194,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
 
         Ok(Arc::new(self.with_branch(Some(branch))))
+    }
+
+    async fn checkout_branch_version(
+        &self,
+        name: &str,
+        version: Option<u64>,
+    ) -> Result<Arc<dyn BaseTable>> {
+        if self.cache_only {
+            // Code that pins a table to a recorded branch and version, such
+            // as a permutation reader, asks for the place a cache-only handle
+            // already reads. That moves nothing, so it gets another handle on
+            // the same data. Anywhere else is refused.
+            let same_branch = normalize_branch(Some(name.to_string())) == self.branch;
+            if same_branch && version.is_some() && version == *self.version.read().await {
+                return self.cache_only().await;
+            }
+            self.refuse_to_move_cache_only("check out another branch or version")?;
+        }
+        let branch = self.checkout_branch(name).await?;
+        if let Some(version) = version {
+            branch.checkout(version).await?;
+        }
+        Ok(branch)
     }
 
     async fn list_branches(&self) -> Result<HashMap<String, lance::dataset::refs::BranchContents>> {
@@ -4073,6 +4136,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(Box::new(RemoteTags { inner: self }))
     }
     async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        self.refuse_to_move_cache_only("check out a tag")?;
         // Resolve the tag without attaching freshness headers; a stale
         // `min_version` from a previous write should not ride along on an
         // explicit time-travel request.
@@ -4895,6 +4959,45 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             batches.push(batch);
         }
         prewarm::plan(&batches)
+    }
+
+    async fn open_prewarm_run(
+        &self,
+        options: crate::prewarm_run::PrewarmRunOptions,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        let mut body = serde_json::json!({});
+        self.apply_branch_body(&mut body);
+        prewarm_run::open(&self.client, &self.identifier, body, &options).await
+    }
+
+    fn attach_prewarm_run(
+        &self,
+        run_id: &str,
+        version: u64,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        Ok(prewarm_run::attach(
+            &self.client,
+            &self.identifier,
+            run_id.to_string(),
+            version,
+            None,
+        ))
+    }
+
+    async fn cache_only(&self) -> Result<Arc<dyn BaseTable>> {
+        let Some(version) = *self.version.read().await else {
+            return Err(Error::InvalidInput {
+                message: "cache-only reads need a fixed version; check out the \
+                          prewarm run's version first"
+                    .into(),
+            });
+        };
+        let mut handle = self.with_branch(self.branch.clone());
+        *handle.version.write().await = Some(version);
+        *handle.location.write().await = self.location.read().await.clone();
+        handle.expected_query_snapshot = self.expected_query_snapshot.clone();
+        handle.cache_only = true;
+        Ok(Arc::new(handle))
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
