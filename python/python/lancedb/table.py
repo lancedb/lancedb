@@ -2101,9 +2101,9 @@ class Table(ABC):
 
         Returns once accepted. ``job.wait()`` waits for warming to finish and
         returns [PrewarmDataResult][lancedb.prewarm.PrewarmDataResult].
-        Save ``job.id`` to resume with ``db.open_job(id)``. A wait timeout does
-        not cancel the operation. After ``job.refresh()``,
-        ``job.spec["table_version"]`` identifies the pinned source version.
+        Save ``job.id()`` to resume with ``db.open_job(id)``. A wait timeout does
+        not cancel the operation. After ``job.checkout_latest()``,
+        ``job.spec()["table_version"]`` identifies the pinned source version.
 
         Examples
         --------
@@ -3154,7 +3154,7 @@ class Table(ABC):
         runs report uncommitted rows and ``more_work``; unknown file statistics
         are None. Servers without a result payload raise an error rather than
         returning fabricated zero statistics. Wait timeouts do not cancel work.
-        Save ``job.id`` and reopen with ``db.open_job(id)``. Monitoring and
+        Save ``job.id()`` and reopen with ``db.open_job(id)``. Monitoring and
         cancellation use generic HTTP job APIs and their existing permissions.
 
         >>> job = table.compact_async(  # doctest: +SKIP

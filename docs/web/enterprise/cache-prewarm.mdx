@@ -94,12 +94,12 @@ job = table.prewarm_data_async(
     ["video"], filter="quality > $minimum",
     parameters={"minimum": 0.7}, concurrency=4
 )
-print(job.id)
+print(job.id())
 result = job.wait(timeout=timedelta(minutes=10), progress=print)
 print(result.table_version, result.executors_completed, result.fragments_selected)
 
 # Reattach in a later process using the same database connection settings.
-db.open_job(job.id).wait()
+db.open_job(job.id()).wait()
 ```
 </Tab>
 <Tab title="TypeScript">
@@ -156,7 +156,7 @@ if let Some(id) = job.id() {
 
 The method returns when the job is accepted. Waiting finishes when warming
 reaches a terminal state; a timeout does not cancel the job. Use
-`job.refresh()` and `job.spec["table_version"]` to inspect the captured source
+`job.checkout_latest()` and `job.spec()["table_version"]` to inspect the captured source
 version. In Python's asynchronous API, await submission and `job.wait()`.
 The TypeScript SDK exposes
 `table.prewarmDataAsync({ columns, filter, parameters, concurrency })` with the

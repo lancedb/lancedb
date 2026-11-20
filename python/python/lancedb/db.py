@@ -1562,7 +1562,7 @@ class DBConnection(EnforceOverrides):
         [RefreshColumnResult][lancedb.functions.RefreshColumnResult], including
         when the refresh was started through SQL. Other job types return
         ``None`` from ``wait()``; their persisted result is available through
-        ``job.result`` after ``job.refresh()``.
+        ``job.result()`` after ``job.checkout_latest()``.
 
         Raises `JobNotFoundError` when the server has no such job, the way
         `open_table` does for a missing table.

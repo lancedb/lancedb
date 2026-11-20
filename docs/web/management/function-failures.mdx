@@ -162,7 +162,7 @@ print(result.rows_assigned, result.rows_failed, result.rows_remaining)
 Choose limits for your workload; these example limits stop work when more
 than 100 rows or more than 10% fail. `skip` does not make initialization,
 infrastructure or publication failures successful. If `wait()` raises,
-[refresh the job record](/basics/jobs#snapshots), inspect `job.failure`, and
+[refresh the job record](/basics/jobs#snapshots), inspect `job.failure()`, and
 inspect any recorded row errors. A failed/cancelled job can have committed
 some output, but retention of every successful call is not guaranteed.
 External effects are not rolled back and can be repeated during recovery.
@@ -174,7 +174,7 @@ Scope diagnostics to the job you are investigating:
 ```python
 from collections import Counter
 
-errors = table.function_errors(job_id=job.id, column="embedding", limit=10000)
+errors = table.function_errors(job_id=job.id(), column="embedding", limit=10000)
 groups = Counter((r.error_type, r.error_message) for r in errors.records)
 for cause, count in groups.most_common():
     print(count, cause)
