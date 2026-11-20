@@ -3768,6 +3768,16 @@ def function(
         GPUs allocated together to each Function worker. Requires ``gpu=True``
         and defaults to one. Must be a positive integer. Refresh
         ``total_gpu_count`` limits the total GPUs across the worker fleet.
+    code : sequence of module, optional
+        Top-level modules or packages shipped with the Function and importable
+        by their own names. Package resources, including binary data and
+        vendored subpackages, retain their relative paths and exact bytes.
+        Source and resource changes both create a new Function version.
+        Caches and hidden paths are excluded. Symlinks and unsafe paths are
+        skipped with a warning. Compiled dependencies must match the remote
+        runtime; use ``pip=`` or ``conda=`` for platform-specific distributions
+        and ``models=`` for large model snapshots. Resource bundles require
+        server support for the ``python_bundle.resources`` field.
     models : sequence of HuggingFaceModel, optional
         Immutable Hugging Face repository snapshots prepared in the worker
         node cache before user code starts. A Function may declare a
