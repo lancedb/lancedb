@@ -1789,6 +1789,31 @@ class TestPushdownOperations:
         assert result.column("id").to_pylist() == [1]
         assert namespace_client.requests == []
 
+    def test_lance_table_scan_in_order_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = lancedb.connect(str(tmp_path / "db"))
+        table = db.create_table("hist", data=[{"id": 3}, {"id": 1}])
+        table.add([{"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = table._execute_query(
+            Query(
+                limit=2,
+                filter="id >= 1",
+                columns=["id"],
+                scan_in_order=True,
+            )
+        ).read_all()
+
+        # The namespace request has no scan-order field. Local execution keeps
+        # membership order, projection and limit; a dropped order or a sort
+        # would return [1, 3] or [1, 2].
+        assert result.column("id").to_pylist() == [3, 1]
+        assert namespace_client.requests == []
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
@@ -1867,6 +1892,29 @@ class TestAsyncPushdownOperations:
         # Pushing this query down would drop order_by and return id 3.
         batches = await result.read_all()
         assert pa.Table.from_batches(batches).column("id").to_pylist() == [1]
+        assert namespace_client.requests == []
+
+    async def test_async_table_scan_in_order_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = await lancedb.connect_async(str(tmp_path / "db"))
+        table = await db.create_table("hist", data=[{"id": 3}, {"id": 1}])
+        await table.add([{"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = await table._execute_query(
+            Query(
+                limit=2,
+                filter="id >= 1",
+                columns=["id"],
+                scan_in_order=True,
+            )
+        )
+
+        batches = await result.read_all()
+        assert pa.Table.from_batches(batches).column("id").to_pylist() == [3, 1]
         assert namespace_client.requests == []
 
     @pytest.mark.parametrize(

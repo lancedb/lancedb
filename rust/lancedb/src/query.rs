@@ -742,8 +742,14 @@ pub trait ExecutableQuery {
     /// an Stream of Arrow [`arrow_array::RecordBatch`] (and you can also independently
     /// access the [`arrow_schema::Schema`] without polling the stream).
     ///
-    /// Note: The size of the returned batches and the order of individual rows is
-    /// not deterministic.
+    /// Note: The size of the returned batches is not deterministic. Row order
+    /// depends on the query shape: an ordinary unfiltered base-only scan of a
+    /// fixed table version in Embedded returns manifest order unless
+    /// [`Query::scan_in_order`] is set to `false` or a nonempty
+    /// [`QueryBase::order_by`] adds a sort. RTE
+    /// tables scan the LSM by default; use `use_rte(false)` for the base-only
+    /// guarantee. Ranked searches return rank order, while Enterprise and
+    /// namespace-pushed scans have no order guarantee.
     ///
     /// LanceDb will use many threads to calculate results and, when
     /// the result set is large, multiple batches will be processed at one time.
@@ -922,6 +928,11 @@ pub struct QueryRequest {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     pub order_by: Option<Vec<ColumnOrdering>>,
 
+    /// Require (`Some(true)`), allow (`Some(false)`), or leave unchanged (`None`)
+    /// the scan order. See [`Query::scan_in_order`] for the contract and its
+    /// boundaries.
+    pub scan_in_order: Option<bool>,
+
     /// Controls RTE read routing. When unset (the default), a query against a
     /// table that carries an RTE write spec (see
     /// [`crate::Table::enable_rte`]) is routed through the LSM scanner so
@@ -956,6 +967,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
+            scan_in_order: None,
             use_rte: None,
         }
     }
@@ -1042,6 +1054,64 @@ impl Query {
     /// single query object for both vector and plain queries.
     pub(crate) fn into_vector(self) -> VectorQuery {
         VectorQuery::new(self)
+    }
+
+    /// Require the results to follow storage order instead of allowing an
+    /// unordered scan.
+    ///
+    /// An unfiltered plain base-only scan of an Embedded table, pinned to one
+    /// dataset version, returns rows in that version's manifest order:
+    /// fragments in manifest order, then rows in fragment order. Ordinary
+    /// unfiltered base-only scans already use Lance's ordered scan by default,
+    /// so leaving this unset preserves that behavior. RTE tables scan the LSM
+    /// by default and do not provide this guarantee unless `use_rte(false)`
+    /// selects the base table. Use `true` when a caller assigns meaning to row
+    /// positions and must fail instead of silently receiving a different order.
+    ///
+    /// Explicit `true` also disables scalar-index filter planning. Legacy
+    /// scalar-index plans can materialize index rows in a different sequence,
+    /// so filters are evaluated over the manifest-ordered scan instead. Default
+    /// filtered scans can still use those plans and may not preserve manifest
+    /// order. The filter result is unchanged, but the scan can read more data.
+    ///
+    /// Leaving this unset preserves the backend default. In particular, a
+    /// namespace-backed native table configured for `QueryTable` pushdown may
+    /// not preserve order because the request has no order field; request
+    /// `true` to execute against Embedded storage.
+    ///
+    /// The order is fixed only for the dataset version being scanned.
+    /// Compaction, updates, or opening a newer version can change it, so pin a
+    /// version when positions must remain stable across executions. A latest
+    /// handle can also observe a different version between two executions.
+    ///
+    /// - `true` requires manifest order without adding a sort. A nonempty
+    ///   [`QueryBase::order_by`], take query, vector, full-text, hybrid, or
+    ///   reranked query conflicts with storage order and fails with
+    ///   [`Error::InvalidInput`].
+    ///   Enterprise tables and RTE/LSM reads fail with [`Error::NotSupported`]
+    ///   because they cannot uphold the requirement; set `use_rte(false)` to
+    ///   read the RTE base table in storage order. Namespace-backed native
+    ///   tables execute against Embedded storage instead of using `QueryTable`
+    ///   pushdown, which has no order field, and fail if that storage cannot be
+    ///   read.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use lancedb::query::ExecutableQuery;
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let rows = table.query().scan_in_order(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    /// - `false` allows the backend to scan without preserving order. An
+    ///   explicit nonempty `order_by` still applies its sort.
+    ///
+    /// A nonempty `order_by` replaces manifest order with a global sort. Vector
+    /// and full-text searches return ranked results regardless of this option.
+    pub fn scan_in_order(mut self, ordered: bool) -> Self {
+        self.request.scan_in_order = Some(ordered);
+        self
     }
 
     /// Find the nearest vectors to the given query vector.
@@ -2086,6 +2156,20 @@ struct TakeLookup {
     output_projection: Option<Vec<(String, String)>>,
 }
 
+/// Take queries restore rows in the requested offset or row-id order, so an
+/// explicit storage-order requirement cannot be honored. Check this before the
+/// lookup strips the take selectors and hands the inner request to a scan.
+pub(crate) fn validate_take_scan_in_order(request: &QueryRequest) -> Result<()> {
+    if request.scan_in_order == Some(true) {
+        return Err(Error::InvalidInput {
+            message: "scan_in_order(true) conflicts with take by row id or offset, which \
+                      defines its own result order"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
 impl TakeQuery {
     /// Create a new `TakeQuery` that will return rows at the given offsets.
     ///
@@ -2200,6 +2284,7 @@ impl TakeQuery {
         request: &QueryRequest,
         preserve_order: bool,
     ) -> Result<TakeLookup> {
+        validate_take_scan_in_order(request)?;
         let (indices, by_row_id) = match (&request.take_offsets, &request.take_row_ids) {
             (Some(indices), None) => (indices.clone(), false),
             (None, Some(indices)) => (indices.clone(), true),
@@ -4562,6 +4647,78 @@ mod tests {
         assert!(analyzed.contains("GlobalLimitExec"));
         assert!(analyzed.contains("TakeRestoreExec"));
         assert!(!analyzed.contains("CoalescePartitionsExec"));
+    }
+
+    #[tokio::test]
+    async fn test_take_scan_in_order_is_rejected_before_lookup() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let mut offsets = table
+            .take_offsets(vec![5, 1, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(2)
+            .offset(1);
+        offsets.mut_query().scan_in_order = Some(true);
+
+        let plan_err = offsets
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .expect_err("take planning must reject scan_in_order(true)");
+        assert!(
+            matches!(&plan_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {plan_err}"
+        );
+
+        let execution_err = offsets
+            .execute()
+            .await
+            .err()
+            .expect("take execution must reject scan_in_order(true)");
+        assert!(
+            matches!(&execution_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {execution_err}"
+        );
+
+        let explain_err = offsets
+            .explain_plan(false)
+            .await
+            .expect_err("take explain must reject scan_in_order(true)");
+        assert!(
+            matches!(&explain_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {explain_err}"
+        );
+
+        let mut row_ids = table.take_row_ids(vec![5, 1]);
+        row_ids.mut_query().scan_in_order = Some(true);
+        let row_id_err = row_ids
+            .execute()
+            .await
+            .err()
+            .expect("take by row id must reject scan_in_order(true)");
+        assert!(
+            matches!(&row_id_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {row_id_err}"
+        );
+
+        // Allowing unordered scans leaves an ordinary take unchanged.
+        let mut allowed = table.take_offsets(vec![5, 1]);
+        allowed.mut_query().scan_in_order = Some(false);
+        let batches = allowed
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2
+        );
     }
 
     #[rstest::rstest]

@@ -183,6 +183,11 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     if query.base.order_by.is_some() {
         return unsupported("order_by");
     }
+    if query.base.scan_in_order == Some(true) {
+        return unsupported(
+            "scan_in_order(true) (the LSM scanner does not preserve base manifest order)",
+        );
+    }
     // Vector-only knobs the LSM scanner cannot honor. Both change results rather
     // than just recall, so error instead of silently ignoring them: distance_range
     // would return rows outside the bound, and use_index(false) asks for a

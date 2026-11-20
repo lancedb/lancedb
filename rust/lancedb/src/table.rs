@@ -1897,9 +1897,16 @@ impl Table {
     /// Create a [`Query`] Builder.
     ///
     /// Queries allow you to search your existing data.  By default the query will
-    /// return all the data in the table in no particular order.  The builder
+    /// return all the data in the table.  The builder
     /// returned by this method can be used to control the query using filtering,
     /// vector similarity, sorting, and more.
+    ///
+    /// An ordinary unfiltered base-only scan of a fixed table version in
+    /// Embedded returns manifest order: fragments in manifest order, then rows
+    /// in fragment order. RTE tables scan the LSM by default; use
+    /// `use_rte(false)` for the base table guarantee. Compaction, updates, and
+    /// newer versions can change that order. Use [`Query::scan_in_order`] to
+    /// require it explicitly and fail on paths that cannot uphold it.
     ///
     /// Note: By default, all columns are returned.  For best performance, you should
     /// only fetch the columns you need.  See [`Query::select_with_projection`] for
@@ -1967,8 +1974,10 @@ impl Table {
     ///
     /// ## Full scan
     ///
-    /// This query will return everything in the table in no particular
-    /// order.
+    /// This query returns everything in the table. On an Embedded table, an
+    /// ordinary unfiltered base-only scan of a fixed version returns manifest
+    /// order. RTE tables scan the LSM by default and need `use_rte(false)` for
+    /// base manifest order.
     ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
