@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+// Exercise released Compact request shapes alongside the preferred API.
+#![allow(deprecated)]
+
 use std::sync::atomic::AtomicUsize;
 
 use arrow_array::builder::{ListBuilder, StringBuilder, StringDictionaryBuilder};
@@ -2693,6 +2696,7 @@ async fn remote_drop_materialized_view_uses_a_query_job() {
 async fn remote_optimize_submits_a_compaction_job_over_sql() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2713,14 +2717,14 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
 
     let stats = table
         .optimize(crate::table::optimize::OptimizeAction::Compact {
-            options: crate::table::optimize::CompactionOptions::default(),
+            options: lance::dataset::optimize::CompactionOptions::default(),
             remap_options: None,
         })
         .await
         .unwrap();
 
-    // The SQL job adapter does not expose compaction metrics, so
-    // `compaction` is a zeroed placeholder, not real numbers -- but it must
+    // Convenience submission discards the job handle and returns placeholder
+    // statistics rather than waiting for committed metrics. `compaction` must
     // be `Some`: callers (including the Python/Node bindings) unwrap it
     // unconditionally on success.
     assert_eq!(
@@ -2746,6 +2750,7 @@ async fn remote_optimize_submits_a_compaction_job_over_sql() {
 async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2766,7 +2771,7 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
 
     table
         .optimize(crate::table::optimize::OptimizeAction::Compact {
-            options: crate::table::optimize::CompactionOptions::default(),
+            options: lance::dataset::optimize::CompactionOptions::default(),
             remap_options: None,
         })
         .await
@@ -2784,13 +2789,14 @@ async fn remote_optimize_on_a_branch_submits_a_with_clause_over_sql() {
 /// action because `Prune` and `Index` are not supported remotely -- so a
 /// retry on that failure resubmitted another compaction job. `optimize_full`
 /// is what both the Python and Node bindings now call instead of
-/// orchestrating `Compact`, `Prune`, and `Index` themselves; on a remote
+/// orchestrating data rewrites, `Prune`, and `Index` themselves; on a remote
 /// table it must submit only the compaction job and return zeroed prune
 /// stats rather than attempting `Prune` and `Index` at all.
 #[tokio::test]
 async fn remote_optimize_full_skips_prune_and_index() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2816,7 +2822,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
 
     let stats = table
         .optimize_full(
-            crate::table::optimize::CompactionOptions::default(),
+            lance::dataset::optimize::CompactionOptions::default(),
             None,
             None,
             None,
@@ -2851,6 +2857,7 @@ async fn remote_optimize_full_skips_prune_and_index() {
 async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
     let service = TestSqlService {
         adaptive: true,
+        result: optimize_result(),
         ..Default::default()
     };
     let statements = service.statements.clone();
@@ -2876,7 +2883,7 @@ async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
 
     let stats = table
         .optimize_full(
-            crate::table::optimize::CompactionOptions::default(),
+            lance::dataset::optimize::CompactionOptions::default(),
             None,
             None,
             Some(false),
@@ -2897,7 +2904,7 @@ async fn remote_optimize_full_treats_delete_unverified_false_as_default() {
 /// `delete_unverified=True`) used to get a success result reporting zero
 /// bytes removed, even though no pruning was attempted at all -- silently
 /// dropping their storage-reclaim request. It must instead reject before
-/// anything is submitted, the same way a non-default `CompactionOptions` is.
+/// anything is submitted, the same way a non-default `OptimizeOptions` is.
 #[tokio::test]
 async fn remote_optimize_full_rejects_explicit_pruning_options() {
     async fn assert_rejected_before_submission(
@@ -2907,6 +2914,7 @@ async fn remote_optimize_full_rejects_explicit_pruning_options() {
     ) {
         let service = TestSqlService {
             adaptive: true,
+            result: optimize_result(),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -2932,7 +2940,7 @@ async fn remote_optimize_full_rejects_explicit_pruning_options() {
 
         let error = table
             .optimize_full(
-                crate::table::optimize::CompactionOptions::default(),
+                lance::dataset::optimize::CompactionOptions::default(),
                 older_than,
                 before_timestamp,
                 delete_unverified,
@@ -4260,6 +4268,7 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
     for branch in [None, Some("o'brien")] {
         let service = TestSqlService {
             adaptive: true,
+            result: optimize_result(),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4280,7 +4289,7 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
         .with_branch(branch.map(str::to_string));
         table
             .optimize(crate::table::optimize::OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions {
+                options: lance::dataset::optimize::CompactionOptions {
                     target_rows_per_fragment: 100,
                     max_source_rows: Some(500),
                     io_buffer_size: Some(0),
@@ -4314,20 +4323,21 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
 }
 
 #[tokio::test]
-async fn remote_compact_preserves_omissions_and_explicit_default_values() {
-    use crate::table::{CompactionOptions, CompactionOverrides};
-    let target = CompactionOptions::default().target_rows_per_fragment;
+async fn remote_optimize_preserves_omissions_and_explicit_default_values() {
+    use crate::table::OptimizeOverrides;
+    use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
+    let target = OptimizeOptions::default().target_rows_per_fragment;
     for (options, suffix) in [
-        (CompactionOverrides::default(), String::new()),
+        (OptimizeOverrides::default(), String::new()),
         (
-            CompactionOverrides {
+            OptimizeOverrides {
                 target_rows_per_fragment: Some(target),
                 ..Default::default()
             },
             format!(" WITH (target_rows_per_fragment = {target})"),
         ),
         (
-            CompactionOverrides {
+            OptimizeOverrides {
                 io_buffer_size: Some(0),
                 ..Default::default()
             },
@@ -4336,6 +4346,7 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
     ] {
         let service = TestSqlService {
             adaptive: true,
+            result: optimize_result(),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4352,7 +4363,13 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
             Default::default(),
             Some(sql_client),
         );
-        table.compact(options).await.unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::RewriteData {
+                options: (options).into(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
         assert_eq!(
             *statements.lock().unwrap(),
             [format!("OPTIMIZE \"events\" REWRITE DATA{suffix}")]
@@ -4363,7 +4380,7 @@ async fn remote_compact_preserves_omissions_and_explicit_default_values() {
 
 #[tokio::test]
 async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
-    use crate::table::optimize::CompactionOverrides;
+    use crate::table::optimize::OptimizeOverrides;
     for (code, message, unsupported) in [
         (
             tonic::Code::InvalidArgument,
@@ -4424,7 +4441,10 @@ async fn remote_optimize_parser_errors_are_clear_without_resubmission() {
             Some(sql_client),
         );
         let error = table
-            .compact(CompactionOverrides::default())
+            .optimize(crate::table::OptimizeAction::RewriteData {
+                options: (OptimizeOverrides::default()).into(),
+                remap_options: None,
+            })
             .await
             .unwrap_err();
         assert_eq!(
@@ -4462,9 +4482,13 @@ async fn remote_optimize_branch_options_are_not_dropped() {
     )
     .with_branch(Some("exp".into()));
     let error = table
-        .compact(crate::table::optimize::CompactionOverrides {
-            io_buffer_size: Some(0),
-            ..Default::default()
+        .optimize(crate::table::OptimizeAction::RewriteData {
+            options: (crate::table::optimize::OptimizeOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            })
+            .into(),
+            remap_options: None,
         })
         .await
         .unwrap_err();
@@ -4475,6 +4499,23 @@ async fn remote_optimize_branch_options_are_not_dropped() {
         ["OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'exp', io_buffer_size = 0)"]
     );
     shutdown.send(()).unwrap();
+}
+
+/// Exercise the public facade without permitting unrelated database requests.
+fn public_remote_table(inner: impl crate::table::BaseTable + 'static) -> crate::Table {
+    let database =
+        RemoteDatabase::new_mock(|request: reqwest::Request| -> http::Response<String> {
+            panic!("unexpected database request: {}", request.url());
+        });
+    crate::Table::new(Arc::new(inner), Arc::new(database))
+}
+
+fn optimize_result() -> RecordBatch {
+    RecordBatch::try_from_iter([(
+        "job_id",
+        Arc::new(StringArray::from(vec!["optimize-job"])) as ArrayRef,
+    )])
+    .unwrap()
 }
 
 fn prewarm_result() -> RecordBatch {
@@ -4573,7 +4614,7 @@ async fn remote_prewarm_data_returns_the_durable_job_without_polling() {
 }
 
 #[tokio::test]
-async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
+async fn remote_public_prewarm_preserves_column_selectors() {
     for columns in [None, Some(vec![]), Some(vec!["payload".into()])] {
         let service = TestSqlService {
             adaptive: true,
@@ -4596,7 +4637,12 @@ async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
             Default::default(),
             Some(sql),
         );
-        table.prewarm_data(columns.clone()).await.unwrap();
+        let table = public_remote_table(table);
+        if columns.is_none() {
+            table.prewarm_data(None).await.unwrap();
+        } else {
+            table.prewarm_data(columns.clone()).await.unwrap();
+        }
         let projection = if columns.as_ref().is_some_and(|c| !c.is_empty()) {
             "\"payload\""
         } else {
@@ -4804,7 +4850,7 @@ async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
 
 #[tokio::test]
 async fn remote_compaction_tracks_registry_job_and_real_result() {
-    use crate::table::optimize::CompactionOverrides;
+    use crate::table::optimize::OptimizeOverrides;
     let service = TestSqlService {
         adaptive: true,
         result: RecordBatch::try_from_iter([(
@@ -4847,7 +4893,7 @@ async fn remote_compaction_tracks_registry_job_and_real_result() {
     )
     .with_branch(Some("experiment".into()));
     let job = table
-        .compact_async(CompactionOverrides {
+        .optimize_async(OptimizeOverrides {
             target_rows_per_fragment: Some(100),
             ..Default::default()
         })
@@ -4939,6 +4985,445 @@ async fn remote_prewarm_preview_uses_sql_without_any_http_jobs() {
                 .unwrap()
                 .iter()
                 .all(|h| h.namespace_path == "team" && h.database == "analytics")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_public_prewarm_accepts_shared_options_without_polling() {
+    use crate::table::PrewarmDataOptions;
+    for (options, tail) in [
+        (
+            PrewarmDataOptions::new()
+                .columns(["payload"])
+                .filter("id >= 10")
+                .concurrency(4),
+            ", concurrency = 4) AS SELECT \"payload\" FROM \"clips\" WHERE id >= 10",
+        ),
+        (
+            PrewarmDataOptions::new().filter("id >= 10"),
+            ") AS SELECT * FROM \"clips\" WHERE id >= 10",
+        ),
+        (
+            PrewarmDataOptions::new()
+                .columns(["payload"])
+                .concurrency(2),
+            ", concurrency = 2) AS SELECT \"payload\" FROM \"clips\"",
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: prewarm_result(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let remote = RemoteTable::new_with_sql_client(
+            client_with_handler(|request| -> http::Response<String> {
+                panic!("convenience prewarm must not use HTTP: {}", request.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec!["team".into(), "inner".into()],
+            "team$inner$clips".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("o'brien".into()));
+        let table = public_remote_table(remote);
+        table.prewarm_data(options).await.unwrap();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [format!("PREWARM WITH (branch = 'o''brien'{tail}")]
+        );
+        let headers = headers.lock().unwrap();
+        assert!(!headers.is_empty());
+        assert!(
+            headers
+                .iter()
+                .all(|h| h.database == "analytics" && h.namespace_path == "team$inner")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_public_prewarm_rejects_invalid_options_before_submission() {
+    use crate::table::PrewarmDataOptions;
+    let service = TestSqlService {
+        adaptive: true,
+        result: prewarm_result(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = public_remote_table(RemoteTable::new_with_sql_client(
+        client_with_handler(|request| -> http::Response<String> {
+            panic!("invalid prewarm must not use HTTP: {}", request.url());
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    ));
+    for options in [
+        PrewarmDataOptions::new().concurrency(0),
+        PrewarmDataOptions::new().filter(" "),
+        PrewarmDataOptions::new().filter("id > 0; DROP TABLE clips"),
+    ] {
+        assert!(matches!(
+            table.prewarm_data(options).await.unwrap_err(),
+            Error::InvalidInput { .. }
+        ));
+    }
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn remote_public_optimize_options_preserve_submission_contract() {
+    use crate::table::OptimizeOverrides;
+    use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
+    enum Input {
+        Preferred(crate::table::optimize::OptimizeOptions),
+        Options(OptimizeOptions),
+        Overrides(OptimizeOverrides),
+        Legacy(crate::table::CompactionOverrides),
+    }
+    let default_target = OptimizeOptions::default().target_rows_per_fragment;
+    let tuned_suffix = ", target_rows_per_fragment = 100, max_source_rows = 500, \
+                        io_buffer_size = 0, batch_size = 16";
+    for (input, suffix) in [
+        (Input::Options(OptimizeOptions::default()), String::new()),
+        (
+            Input::Preferred(crate::table::optimize::OptimizeOptions::default()),
+            String::new(),
+        ),
+        (
+            Input::Preferred(crate::table::optimize::OptimizeOptions {
+                target_rows_per_fragment: Some(default_target),
+                io_buffer_size: Some(0),
+                ..Default::default()
+            }),
+            format!(", target_rows_per_fragment = {default_target}, io_buffer_size = 0"),
+        ),
+        (
+            Input::Legacy(crate::table::CompactionOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            }),
+            ", io_buffer_size = 0".into(),
+        ),
+        (
+            Input::Overrides(OptimizeOverrides::default()),
+            String::new(),
+        ),
+        (
+            Input::Options(OptimizeOptions {
+                target_rows_per_fragment: 100,
+                max_source_rows: Some(500),
+                io_buffer_size: Some(0),
+                batch_size: Some(16),
+                ..Default::default()
+            }),
+            tuned_suffix.into(),
+        ),
+        (
+            Input::Overrides(OptimizeOverrides {
+                target_rows_per_fragment: Some(100),
+                max_source_rows: Some(500),
+                io_buffer_size: Some(0),
+                batch_size: Some(16),
+            }),
+            tuned_suffix.into(),
+        ),
+        (
+            Input::Overrides(OptimizeOverrides {
+                target_rows_per_fragment: Some(default_target),
+                io_buffer_size: Some(0),
+                ..Default::default()
+            }),
+            format!(", target_rows_per_fragment = {default_target}, io_buffer_size = 0"),
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: RecordBatch::try_from_iter([(
+                "job_id",
+                Arc::new(StringArray::from(vec!["public-compaction-job"])) as ArrayRef,
+            )])
+            .unwrap(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["job_id"], "public-compaction-job");
+            observed.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({
+                    "job_id": "public-compaction-job", "job_type": "compact", "job_state": "DONE",
+                    "result": {
+                        "partial_commit": false, "rows_succeeded": 12, "rows_failed": 0,
+                        "completion_percentage": 100.0, "files_added": 1, "files_removed": 3,
+                        "fragments_added": 1, "fragments_removed": 3
+                    }
+                }).to_string())
+                .unwrap()
+        });
+        let remote = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "events".into(),
+            vec!["team".into(), "reports".into()],
+            "team$reports$events".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("o'brien".into()));
+        let table = public_remote_table(remote);
+        let job = match input {
+            Input::Preferred(options) => table.optimize_async(options).await.unwrap(),
+            Input::Options(options) => table.optimize_async(options).await.unwrap(),
+            Input::Overrides(options) => table.optimize_async(options).await.unwrap(),
+            Input::Legacy(options) => table.compact_async(options).await.unwrap(),
+        };
+        assert_eq!(job.id(), Some("public-compaction-job"));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+        let expected =
+            format!("OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'o''brien'{suffix})");
+        assert_eq!(
+            statements.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected)
+        );
+        let result = job.wait().await.unwrap();
+        assert_eq!(result.rows_succeeded, 12);
+        assert_eq!(result.fragments_removed, Some(3));
+        assert!(polls.load(Ordering::SeqCst) > 0);
+        assert_eq!(*statements.lock().unwrap(), [expected]);
+        let headers = headers.lock().unwrap();
+        assert!(!headers.is_empty());
+        assert!(
+            headers
+                .iter()
+                .all(|h| h.database == "analytics" && h.namespace_path == "team$reports")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_public_optimize_rejects_unsupported_requests_before_submission() {
+    use crate::table::{IndexOptimizeOptions, OptimizeAction, OptimizeOverrides};
+    use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = public_remote_table(RemoteTable::new_with_sql_client(
+        client_with_handler(|request| -> http::Response<String> {
+            panic!("invalid optimize must not use HTTP: {}", request.url());
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        Some(sql),
+    ));
+    for action in [
+        OptimizeAction::All,
+        OptimizeAction::Prune {
+            older_than: Some(chrono::Duration::days(1)),
+            delete_unverified: None,
+            error_if_tagged_old_versions: None,
+        },
+        OptimizeAction::Index(IndexOptimizeOptions::default()),
+    ] {
+        assert!(matches!(
+            table.optimize_async(action).await.unwrap_err(),
+            Error::NotSupported { .. }
+        ));
+    }
+    assert!(matches!(
+        table
+            .optimize_async(OptimizeOptions {
+                max_source_bytes: Some(1024),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err(),
+        Error::NotSupported { .. }
+    ));
+    assert!(matches!(
+        table
+            .optimize_async(OptimizeOverrides {
+                max_source_rows: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err(),
+        Error::InvalidInput { .. }
+    ));
+    assert!(statements.lock().unwrap().is_empty());
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_optimize_convenience_and_durable_validate_the_same_receipt() {
+    use crate::table::OptimizeOverrides;
+    for result in [
+        RecordBatch::try_from_iter([(
+            "other",
+            Arc::new(StringArray::from(vec!["id"])) as ArrayRef,
+        )])
+        .unwrap(),
+        RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())) as ArrayRef,
+        )])
+        .unwrap(),
+        RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec![None::<&str>])) as ArrayRef,
+        )])
+        .unwrap(),
+        RecordBatch::try_from_iter([("job_id", Arc::new(StringArray::from(vec![""])) as ArrayRef)])
+            .unwrap(),
+        RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["one", "two"])) as ArrayRef,
+        )])
+        .unwrap(),
+        optimize_result(),
+    ] {
+        let valid = result == optimize_result();
+        for (adaptive, defer) in [(false, false), (true, false), (true, true)] {
+            for durable in [false, true] {
+                let service = TestSqlService {
+                    adaptive,
+                    defer,
+                    result: result.clone(),
+                    ..Default::default()
+                };
+                let statements = service.statements.clone();
+                let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+                let table = public_remote_table(RemoteTable::new_with_sql_client(
+                    client_with_handler(|request| -> http::Response<String> {
+                        panic!(
+                            "Optimize submission must not poll or use REST: {}",
+                            request.url()
+                        );
+                    }),
+                    "analytics".into(),
+                    "events".into(),
+                    vec![],
+                    "events".into(),
+                    Default::default(),
+                    Some(sql),
+                ));
+                let submitted = if durable {
+                    table
+                        .optimize_async(OptimizeOverrides::default())
+                        .await
+                        .map(|job| {
+                            assert_eq!(job.id(), Some("optimize-job"));
+                        })
+                } else {
+                    table
+                        .optimize(OptimizeOverrides::default())
+                        .await
+                        .map(|stats| {
+                            assert_eq!(
+                                stats.compaction,
+                                Some(lance::dataset::optimize::CompactionMetrics::default())
+                            );
+                            assert!(stats.prune.is_some());
+                        })
+                };
+                if valid {
+                    submitted.unwrap();
+                } else {
+                    let error = submitted.unwrap_err();
+                    assert!(matches!(error, Error::Runtime { .. }), "{error}");
+                    assert!(error.to_string().contains("inspect jobs before retrying"));
+                }
+                assert_eq!(
+                    *statements.lock().unwrap(),
+                    ["OPTIMIZE \"events\" REWRITE DATA"]
+                );
+                shutdown.send(()).unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn remote_optimize_legacy_compact_convenience_preserves_settings_without_polling() {
+    for preferred in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: RecordBatch::try_from_iter([(
+                "job_id",
+                Arc::new(StringArray::from(vec!["legacy-optimize-job"])) as ArrayRef,
+            )])
+            .unwrap(),
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = public_remote_table(RemoteTable::new_with_sql_client(
+            client_with_handler(|request| -> http::Response<String> {
+                panic!("legacy convenience must not poll jobs: {}", request.url());
+            }),
+            "analytics".into(),
+            "clips".into(),
+            vec![],
+            "clips".into(),
+            Default::default(),
+            Some(sql),
+        ));
+        let result = if preferred {
+            table
+                .optimize(crate::table::optimize::OptimizeOptions {
+                    target_rows_per_fragment: Some(100),
+                    io_buffer_size: Some(0),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+        } else {
+            table
+                .compact(crate::table::CompactionOverrides {
+                    target_rows_per_fragment: Some(100),
+                    io_buffer_size: Some(0),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+        };
+        assert_eq!(result.prune.is_some(), preferred);
+        assert!(result.compaction.is_some());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "OPTIMIZE \"clips\" REWRITE DATA WITH (target_rows_per_fragment = 100, io_buffer_size = 0)"
+            ]
         );
         shutdown.send(()).unwrap();
     }

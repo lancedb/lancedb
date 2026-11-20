@@ -4,13 +4,19 @@
 
 [@lancedb/lancedb](../globals.md) / CompactionOptions
 
-# Interface: CompactionOptions
+# Interface: ~~CompactionOptions~~
 
-Per-invocation compaction settings. Values must be safe integers.
+## Deprecated
+
+Use OptimizeOptions with flat rewrite settings.
+
+## Extends
+
+- `Pick`&lt;[`OptimizeOptions`](OptimizeOptions.md), `"targetRowsPerFragment"` \| `"maxSourceRows"` \| `"ioBufferSize"` \| `"batchSize"`&gt;
 
 ## Properties
 
-### batchSize?
+### ~~batchSize?~~
 
 ```ts
 optional batchSize: number;
@@ -18,32 +24,48 @@ optional batchSize: number;
 
 Positive scanner batch size in rows.
 
+#### Inherited from
+
+`Pick.batchSize`
+
 ***
 
-### ioBufferSize?
+### ~~ioBufferSize?~~
 
 ```ts
 optional ioBufferSize: number;
 ```
 
-Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure.
+Scanner read-ahead budget in bytes; zero disables byte-based backpressure.
+
+#### Inherited from
+
+`Pick.ioBufferSize`
 
 ***
 
-### maxSourceRows?
+### ~~maxSourceRows?~~
 
 ```ts
 optional maxSourceRows: number;
 ```
 
-Positive live-source-row budget across whole tasks; an oversized first task can produce no work.
+Positive live-source-row budget across whole rewrite tasks.
+
+#### Inherited from
+
+`Pick.maxSourceRows`
 
 ***
 
-### targetRowsPerFragment?
+### ~~targetRowsPerFragment?~~
 
 ```ts
 optional targetRowsPerFragment: number;
 ```
 
-Positive target rows per output fragment; also affects candidate selection.
+Positive target rows per output fragment. Omitted Enterprise values inherit table policy.
+
+#### Inherited from
+
+`Pick.targetRowsPerFragment`

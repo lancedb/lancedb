@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Compaction options supported by the remote SQL submission protocol.
+//! Optimize options supported by the Enterprise SQL submission protocol.
 use crate::error::{Error, Result};
 
 pub(super) fn statement(
     table: &str,
     branch: Option<&str>,
-    options: &crate::table::optimize::CompactionOverrides,
+    options: &crate::table::optimize::OptimizeOverrides,
 ) -> Result<String> {
-    let mut settings = compaction_sql_options(options)?;
+    let mut settings = rewrite_sql_options(options)?;
     if let Some(branch) = branch {
         settings.insert(0, format!("branch = {}", super::quote_sql_string(branch)));
     }
@@ -28,7 +28,7 @@ pub(super) fn statement(
 pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
     use arrow_array::{Array, StringArray};
     let invalid = || {
-        Error::Runtime { message: "OPTIMIZE did not return a single nonempty job_id receipt; inspect jobs before retrying because compaction may already have been submitted".into() }
+        Error::Runtime { message: "OPTIMIZE did not return a single nonempty job_id receipt; inspect jobs before retrying because Optimize may already have been submitted".into() }
     };
     if batches.iter().map(|batch| batch.num_rows()).sum::<usize>() != 1 {
         return Err(invalid());
@@ -47,8 +47,8 @@ pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
     Ok(ids.value(0).into())
 }
 
-pub(super) fn compaction_sql_options(
-    options: &crate::table::optimize::CompactionOverrides,
+pub(super) fn rewrite_sql_options(
+    options: &crate::table::optimize::OptimizeOverrides,
 ) -> Result<Vec<String>> {
     for (name, value) in [
         ("target_rows_per_fragment", options.target_rows_per_fragment),
@@ -78,8 +78,8 @@ pub(super) fn compaction_sql_options(
     Ok(result)
 }
 
-const UNSUPPORTED_OPTIMIZE: &str = "Compaction on an Enterprise table requires support for OPTIMIZE <table> REWRITE DATA. Upgrade LanceDB Enterprise to a compatible release.";
-const UNSUPPORTED_OPTIONS: &str = "The requested compaction options are not supported by this version of LanceDB Enterprise. Upgrade to a compatible release; requested options will not be removed or retried.";
+const UNSUPPORTED_OPTIMIZE: &str = "Optimize on an Enterprise table requires support for OPTIMIZE <table> REWRITE DATA. Upgrade LanceDB Enterprise to a compatible release.";
+const UNSUPPORTED_OPTIONS: &str = "The requested Optimize options are not supported by this version of LanceDB Enterprise. Upgrade to a compatible release; requested options will not be removed or retried.";
 
 /// The client generates the whole statement, so parser errors indicate a
 /// client/server syntax mismatch. Match option errors without enumerating names.
@@ -129,7 +129,8 @@ pub(super) fn map_optimize_error(error: Error) -> Error {
 mod tests {
     use super::*;
     use crate::error::JobFailure;
-    use crate::table::{CompactionOptions, CompactionOverrides};
+    use crate::table::OptimizeOverrides;
+    use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
     use std::sync::Arc;
 
     fn sql_error(code: tonic::Code, message: &str) -> Error {
@@ -248,13 +249,13 @@ mod tests {
     #[test]
     fn omissions_and_explicit_default_target_are_distinct() {
         assert!(
-            compaction_sql_options(&CompactionOverrides::default())
+            rewrite_sql_options(&OptimizeOverrides::default())
                 .unwrap()
                 .is_empty()
         );
-        let target = CompactionOptions::default().target_rows_per_fragment;
+        let target = OptimizeOptions::default().target_rows_per_fragment;
         assert_eq!(
-            compaction_sql_options(&CompactionOverrides {
+            rewrite_sql_options(&OptimizeOverrides {
                 target_rows_per_fragment: Some(target),
                 io_buffer_size: Some(0),
                 ..Default::default()
@@ -270,7 +271,7 @@ mod tests {
     #[test]
     fn unsupported_settings_are_rejected() {
         assert!(matches!(
-            CompactionOverrides::try_from(CompactionOptions {
+            OptimizeOverrides::try_from(OptimizeOptions {
                 max_source_bytes: Some(1024),
                 ..Default::default()
             }),
@@ -281,21 +282,21 @@ mod tests {
     #[test]
     fn invalid_row_settings_are_rejected() {
         for options in [
-            CompactionOverrides {
+            OptimizeOverrides {
                 target_rows_per_fragment: Some(0),
                 ..Default::default()
             },
-            CompactionOverrides {
+            OptimizeOverrides {
                 max_source_rows: Some(0),
                 ..Default::default()
             },
-            CompactionOverrides {
+            OptimizeOverrides {
                 batch_size: Some(0),
                 ..Default::default()
             },
         ] {
             assert!(matches!(
-                compaction_sql_options(&options),
+                rewrite_sql_options(&options),
                 Err(Error::InvalidInput { .. })
             ));
         }
@@ -309,7 +310,7 @@ mod receipt_tests {
     use std::sync::Arc;
 
     #[test]
-    fn compaction_receipt_requires_one_unambiguous_registry_id() {
+    fn optimize_receipt_requires_one_unambiguous_registry_id() {
         let batch = |ids: Vec<Option<&str>>| {
             RecordBatch::try_from_iter([("job_id", Arc::new(StringArray::from(ids)) as ArrayRef)])
                 .unwrap()

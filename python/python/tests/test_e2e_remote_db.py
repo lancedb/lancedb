@@ -11,7 +11,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from lancedb import LanceDBConnection, function
-from lancedb.compaction import CompactionResult
+from lancedb.optimize import OptimizeResult
 from lancedb.index import FTS
 from lancedb.prewarm import PrewarmDataResult
 
@@ -70,12 +70,10 @@ async def test_maintenance_job_result_and_reopen_against_server(
         version = await table.version() if asynchronous else table.version
         if operation == "compact":
             job = await call(
-                table.compact_async,
-                compaction_options={
-                    "target_rows_per_fragment": 100,
-                    "batch_size": 128,
-                    "io_buffer_size": 0,
-                },
+                table.optimize_async,
+                target_rows_per_fragment=100,
+                batch_size=128,
+                io_buffer_size=0,
             )
         elif operation == "prewarm_legacy":
             assert (
@@ -113,7 +111,7 @@ async def test_maintenance_job_result_and_reopen_against_server(
         await call(job.refresh)
         assert await call(job.status) == "finished"
         if operation == "compact":
-            assert isinstance(result, CompactionResult)
+            assert isinstance(result, OptimizeResult)
             assert job.job_type == "compact"
             assert not result.partial_commit and result.rows_failed == 0
             assert result.completion_percentage == 100

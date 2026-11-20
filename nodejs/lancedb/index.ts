@@ -667,6 +667,7 @@ export {
 
 export { Listing, ListingOptions } from "./listing";
 
+export type { OptimizeResult } from "./optimize";
 export type { CompactionResult } from "./compaction";
 
 export type {

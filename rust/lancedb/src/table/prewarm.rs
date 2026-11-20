@@ -3,8 +3,7 @@
 
 //! Options, previews, and results for data-cache prewarm.
 
-/// Data prewarm settings for [`super::Table::prewarm_data_async`] and
-/// [`super::Table::explain_prewarm_data`].
+/// Shared settings for data prewarm submission and preview methods on [`super::Table`].
 ///
 /// The table handle supplies the database, namespace, and branch. Omitted
 /// columns warm all fields. The filter selects conservative metadata ranges;
@@ -34,6 +33,12 @@ impl std::fmt::Debug for PrewarmDataOptions {
                 &self.parameters.as_ref().map(|batch| batch.num_columns()),
             )
             .finish()
+    }
+}
+
+impl From<Option<Vec<String>>> for PrewarmDataOptions {
+    fn from(columns: Option<Vec<String>>) -> Self {
+        Self::new().columns(columns.unwrap_or_default())
     }
 }
 

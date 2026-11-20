@@ -12,8 +12,11 @@ import {
   type BlobInput,
   type BlobMode,
   type CompactionOptions,
+  type CompactionResult,
   Connection,
+  type Job,
   MatchQuery,
+  type OptimizeOptions,
   PhraseQuery,
   Query,
   Table,
@@ -4111,23 +4114,29 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
 
   await table.optimize({ cleanupOlderThan: cutoff, deleteUnverified: true });
 
-  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true, undefined);
+  expect(optimize).toHaveBeenCalledWith(
+    cutoff.getTime(),
+    true,
+    undefined,
+    undefined,
+  );
 });
 
 it("forwards per-job compaction options to the native binding", async () => {
   const optimize = jest.fn().mockResolvedValue({});
   const table = new LocalTable({ optimize } as never);
-  const compactionOptions = {
+  const dataOptions = {
     targetRowsPerFragment: 20,
     maxSourceRows: 25,
     ioBufferSize: 0,
     batchSize: 8,
   };
-  await table.optimize({ compactionOptions });
+  await table.optimize({ ...dataOptions });
   expect(optimize).toHaveBeenCalledWith(
     undefined,
     undefined,
-    compactionOptions,
+    dataOptions,
+    undefined,
   );
 });
 
@@ -4136,11 +4145,11 @@ it("rejects unsupported JavaScript compaction options before native submission",
   const table = new LocalTable({ optimize } as never);
   await expect(
     table.optimize({
-      compactionOptions: {
+      ...({
         maxSourceBytes: 1024,
-      } as unknown as CompactionOptions,
+      } as unknown as OptimizeOptions),
     }),
-  ).rejects.toThrow("Unsupported compaction option: maxSourceBytes");
+  ).rejects.toThrow("Unsupported Optimize option: maxSourceBytes");
   expect(optimize).not.toHaveBeenCalled();
 });
 
@@ -4165,12 +4174,10 @@ describe("per-job compaction options", () => {
   });
   it("bounds source work and preserves zero I/O buffering", async () => {
     const stats = await table.optimize({
-      compactionOptions: {
-        targetRowsPerFragment: 20,
-        maxSourceRows: 25,
-        ioBufferSize: 0,
-        batchSize: 8,
-      },
+      targetRowsPerFragment: 20,
+      maxSourceRows: 25,
+      ioBufferSize: 0,
+      batchSize: 8,
     });
     expect(stats.compaction.fragmentsRemoved).toBe(2);
     expect(stats.compaction.fragmentsAdded).toBe(1);
@@ -4180,7 +4187,7 @@ describe("per-job compaction options", () => {
     expect(defaults.compaction.fragmentsAdded).toBe(1);
     expect(await table.countRows()).toBe(80);
   });
-  const invalid: CompactionOptions[] = [
+  const invalid: OptimizeOptions[] = [
     { targetRowsPerFragment: 0 },
     { maxSourceRows: 0 },
     { batchSize: 0 },
@@ -4192,8 +4199,8 @@ describe("per-job compaction options", () => {
     { targetRowsPerFragment: 2 ** 32 },
     { batchSize: 2 ** 32 },
   ];
-  it.each(invalid)("rejects invalid settings %p", async (compactionOptions) => {
-    await expect(table.optimize({ compactionOptions })).rejects.toThrow(
+  it.each(invalid)("rejects invalid settings %p", async (dataOptions) => {
+    await expect(table.optimize({ ...dataOptions })).rejects.toThrow(
       /safe integer/,
     );
     expect(await table.countRows()).toBe(80);
@@ -6000,14 +6007,12 @@ describe("durable compaction validation", () => {
   test("rejects local tables and unknown options", async () => {
     const db = await connect(`memory://compaction-job-${Date.now()}`);
     const table = await db.createTable("test", [{ id: 1 }]);
-    await expect(table.compactAsync()).rejects.toThrow(
-      "only supported on remote tables",
-    );
+    await expect(table.optimizeAsync()).rejects.toThrow("LanceDB Enterprise");
     await expect(
-      table.compactAsync({ unrecognizedLimit: 1 } as never),
-    ).rejects.toThrow("Unsupported compaction option");
+      table.optimizeAsync({ unrecognizedLimit: 1 } as never),
+    ).rejects.toThrow("Unsupported Optimize option");
     await expect(
-      table.compactAsync({ targetRowsPerFragment: 0 }),
+      table.optimizeAsync({ targetRowsPerFragment: 0 }),
     ).rejects.toThrow("safe integer");
   });
 });
@@ -6056,4 +6061,116 @@ describe("Enterprise table overrides", () => {
       tmpDir.removeCallback();
     }
   });
+});
+
+describe("Optimize action selection", () => {
+  test("rewrites data while retaining versions and deferring index maintenance", async () => {
+    const db = await connect(`memory://optimize-action-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+    await table.createIndex("id", { config: Index.btree() });
+    await table.add([{ id: 3 }]);
+    await table.add([{ id: 4 }]);
+    const before = await table.listVersions();
+    const stats = await table.optimize({ action: "rewrite_data" });
+    expect(stats.compaction.fragmentsRemoved).toBe(4);
+    expect(stats.compaction.fragmentsAdded).toBe(2);
+    expect(stats.prune.oldVersionsRemoved).toBe(0);
+    expect((await table.listVersions()).length).toBeGreaterThan(before.length);
+    expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(2);
+    await table.optimize({ targetRowsPerFragment: 100 });
+    expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(0);
+    await table.checkout(1);
+    expect(await table.countRows()).toBe(1);
+    expect("compactAsync" in table).toBe(true);
+  });
+
+  test("rejects unknown actions and conflicting cleanup requests before changes", async () => {
+    const db = await connect(`memory://optimize-invalid-${Date.now()}`);
+    const table = await db.createTable("test", [{ id: 1 }]);
+    for (const options of [
+      { action: "unknown" },
+      { action: "rewrite_data", cleanupOlderThan: new Date() },
+      { action: "rewrite_data", deleteUnverified: true },
+    ]) {
+      await expect(table.optimize(options as never)).rejects.toThrow("action");
+    }
+    expect(await table.version()).toBe(1);
+  });
+});
+
+test("preserves nested compactionOptions including explicit zero", async () => {
+  const optimize = jest.fn();
+  const table = new LocalTable({ optimize } as never);
+  await table.optimize({
+    compactionOptions: { maxSourceRows: 7, ioBufferSize: 0 },
+  });
+  expect(optimize).toHaveBeenCalledTimes(1);
+  expect(optimize).toHaveBeenCalledWith(
+    undefined,
+    undefined,
+    { maxSourceRows: 7, ioBufferSize: 0 },
+    undefined,
+  );
+});
+
+it("keeps the deprecated durable method on the same submission path", async () => {
+  const optimizeAsync = jest.fn().mockResolvedValue({});
+  const table = new LocalTable({ optimizeAsync } as never);
+  const options: CompactionOptions = { maxSourceRows: 7, ioBufferSize: 0 };
+  const job: Job<CompactionResult> = await table.compactAsync(options);
+  expect(job).toBeDefined();
+  expect(optimizeAsync).toHaveBeenCalledTimes(1);
+  expect(optimizeAsync).toHaveBeenCalledWith({
+    maxSourceRows: 7,
+    ioBufferSize: 0,
+  });
+});
+
+it.each([
+  { compactionOptions: { maxSourceRows: 7 }, batchSize: 16 },
+  { compactionOptions: { unknownLimit: 7 } },
+])(
+  "rejects ambiguous or unknown legacy settings before submission",
+  async (options) => {
+    const optimize = jest.fn();
+    const table = new LocalTable({ optimize } as never);
+    await expect(table.optimize(options as never)).rejects.toThrow();
+    expect(optimize).not.toHaveBeenCalled();
+  },
+);
+
+it("uses the same flat OptimizeOptions for durable submission", async () => {
+  const optimizeAsync = jest.fn().mockResolvedValue({});
+  const table = new LocalTable({ optimizeAsync } as never);
+  await table.optimizeAsync({
+    targetRowsPerFragment: 100,
+    ioBufferSize: 0,
+    action: "rewrite_data",
+  });
+  expect(optimizeAsync).toHaveBeenCalledWith({
+    targetRowsPerFragment: 100,
+    ioBufferSize: 0,
+  });
+});
+
+it.each([{ cleanupOlderThan: new Date() }, { deleteUnverified: true }])(
+  "rejects unsupported durable maintenance before submission: %p",
+  async (options) => {
+    const optimizeAsync = jest.fn();
+    const table = new LocalTable({ optimizeAsync } as never);
+    await expect(table.optimizeAsync(options)).rejects.toThrow(
+      "unsupported by Optimize jobs",
+    );
+    expect(optimizeAsync).not.toHaveBeenCalled();
+  },
+);
+
+it("rejects the removed dataOptions wrapper before submission", async () => {
+  const optimize = jest.fn();
+  const table = new LocalTable({ optimize } as never);
+  await expect(
+    table.optimize({ dataOptions: { maxSourceRows: 1 } } as never),
+  ).rejects.toThrow("Unsupported Optimize option: dataOptions");
+  expect(optimize).not.toHaveBeenCalled();
 });

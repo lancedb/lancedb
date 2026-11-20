@@ -67,9 +67,9 @@ even though `optimize()` bundles both in one LanceDB Embedded call.
 
 ## Track on-demand Enterprise compaction {#compaction-jobs}
 
-On compatible Enterprise deployments, `compact_async()` / `compactAsync()`
+On compatible Enterprise deployments, `optimize_async()` / `optimizeAsync()`
 submits SQL `OPTIMIZE ... REWRITE DATA` and returns a durable job handle.
-The table handle supplies the namespace and branch. The existing remote
+The table handle supplies the namespace and branch. The existing Enterprise
 `optimize()` call keeps returning after submission with placeholder statistics;
 use the job-returning API to wait for the actual rewrite and obtain its result.
 
@@ -77,8 +77,8 @@ use the job-returning API to wait for the actual rewrite and obtain its result.
 ```python Python
 from datetime import timedelta
 
-job = table.compact_async(
-    compaction_options={"target_rows_per_fragment": 1000, "batch_size": 128}
+job = table.optimize_async(
+    target_rows_per_fragment=1000, batch_size=128
 )
 result = job.wait(timeout=timedelta(minutes=10))
 print(result.rows_succeeded, result.fragments_removed, result.fragments_added)
@@ -87,24 +87,24 @@ print(result.rows_succeeded, result.fragments_removed, result.fragments_added)
 result = db.open_job(job.id).wait()
 ```
 ```typescript TypeScript
-import type { CompactionResult } from "@lancedb/lancedb";
+import type { OptimizeResult } from "@lancedb/lancedb";
 
-const job = await table.compactAsync({
+const job = await table.optimizeAsync({
   targetRowsPerFragment: 1000, batchSize: 128,
 });
 const result = await job.wait({ timeoutMs: 600_000 });
 console.log(result.rowsSucceeded, result.fragmentsRemoved, result.fragmentsAdded);
 
 if (job.id !== null) {
-  await (await db.openJob<CompactionResult>(job.id)).wait();
+  await (await db.openJob<OptimizeResult>(job.id)).wait();
 }
 ```
 ```rust Rust
 use std::time::Duration;
 use lancedb::job::JobWaitOptions;
-use lancedb::table::{CompactionResult, optimize::CompactionOverrides};
+use lancedb::table::{OptimizeResult, optimize::OptimizeOptions};
 
-let job = table.compact_async(CompactionOverrides {
+let job = table.optimize_async(OptimizeOptions {
     target_rows_per_fragment: Some(1000),
     batch_size: Some(128),
     ..Default::default()
@@ -115,7 +115,7 @@ let result = job.wait_with_options(
 println!("Committed {} rows", result.rows_succeeded);
 
 if let Some(id) = job.id() {
-    db.open_job(id).await?.into_typed::<CompactionResult>()?.wait().await?;
+    db.open_job(id).await?.into_typed::<OptimizeResult>()?.wait().await?;
 }
 ```
 </CodeGroup>
@@ -133,7 +133,7 @@ Submission requires Flight SQL connectivity and, under Standard authorization,
 table Ownership plus Usage on the database and namespace hierarchy. Status,
 progress, events, and cancellation use the generic HTTP job APIs and their
 existing permissions. A wait timeout or dropping the handle does not cancel
-the job. Local tables and historical-version checkouts are unsupported by the
+the job. Embedded tables and historical-version checkouts are unsupported by the
 job-returning API; ordinary embedded `optimize()` remains available.
 
 ## Submit Enterprise compaction {#enterprise-manual-compaction}
@@ -198,7 +198,7 @@ through the service catalog before creating a job.
 SQL and the CLI without `--wait` return after durable submission. The
 job-returning SDK methods above preserve the ID and return committed statistics
 when waiting completes. The CLI's `--wait` polls the same durable job and prints
-its result. A timeout leaves the job running. Legacy remote `optimize()` still
+its result. A timeout leaves the job running. Enterprise `optimize()` still
 returns after acceptance with placeholder statistics.
 
 Find earlier submissions with a table-scoped list, replacing `DATABASE` with
@@ -225,7 +225,7 @@ the job's existence; denied list/events requests return 403. Submission does not
 grant system-level access to job lists or events.
 
 Manual compaction uses one worker with atomic execution and inline index
-remapping. Remote `optimize` does not prune old versions or optimize indexes;
+remapping. Enterprise `optimize` does not prune old versions or optimize indexes;
 explicit pruning, index optimization, and unsupported non-default compaction
 settings are rejected. Cleanup continues through the deployment's separate
 [cleanup policy](/maintenance/cleanup).
@@ -372,18 +372,18 @@ attempts retain pending continuation; explicit cancellation clears it. Changing
 the effective source-row budget re-arms automatic failures recorded under a
 different budget; toggling automatic enablement alone does not reset backoff.
 
-SDKs forward supplied fields and leave inheritance to the server. An explicitly
-supplied SDK-default fragment target still overrides table tuning. Rust callers
-should use `Table::compact_async(CompactionOverrides)` for that distinction: the legacy
-`OptimizeAction::Compact` path treats its default-valued Lance fragment target
-as unspecified because the options type has no presence bit.
+SDKs forward supplied fields and leave Enterprise inheritance to the server.
+Embedded resolves omitted settings from `lance.compaction.*` table configuration,
+then built-in defaults. Explicit invocation settings override policy even when
+identical to a built-in default. Rust `OptimizeOptions` fields use `Option` to
+preserve that distinction. Nullable Embedded Python settings can also be cleared
+for one invocation by explicitly passing `None`.
 
 ## Retraining indexes {#retrain}
 
 Folding new rows into an index preserves the structure the index was trained on.
 When the data distribution has shifted enough that the index's clusters are a
 poor fit, recreate the index with `replace=True` to train it on the current data.
-The deprecated `retrain` argument to `optimize()` does not rebuild indexes.
 
 This example assumes a populated table whose `vector` column has an IVF_FLAT
 index configured for L2 distance and four partitions:
@@ -443,7 +443,7 @@ table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
 The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates. See [Incremental Indexing](/indexing/incremental-indexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed. Update or rebuild the index after large update batches.
 
 {/*
-Draft for the Python compaction_options release. Keep this section unpublished
+Draft for the Python Optimize tuning release. Keep this section unpublished
 until the first supported release is confirmed.
 
 ### Tune compaction for wide rows {#tune-wide-rows}
@@ -462,12 +462,13 @@ task at a time can also reduce memory use.
     </CodeBlock>
 </CodeGroup>
 
-The Rust example runs compaction only. Run pruning and index optimization
-separately when needed; Python's `optimize()` includes those steps.
+Python and Rust's options-only `optimize()` calls both run Embedded's full
+rewrite, prune, and index-maintenance cycle. Select the explicit rewrite-only
+action to preserve versions and skip separate index maintenance.
 
 TypeScript's `optimize()` exposes the fragment row target through
-`compactionOptions.targetRowsPerFragment` and the scanner batch size through
-`compactionOptions.batchSize`. Compaction thread count is not exposed. The tuning
+`targetRowsPerFragment` and the scanner batch size through
+`batchSize`. Compaction thread count is not exposed. The tuning
 examples above use Python and Rust tables in LanceDB Embedded.
 
 Planning remains row based. The row target bounds later passes after existing
@@ -477,6 +478,97 @@ limits output file size rather than compaction memory.
 
 The `max_source_rows` and `max_source_bytes` budgets admit whole planned tasks.
 If the first task exceeds a budget, that run performs no compaction. See the
-[CompactionOptions reference](https://lancedb.github.io/lancedb/python/python/#lancedb.table.CompactionOptions)
+[OptimizeOptions reference](https://lancedb.github.io/lancedb/python/python/#lancedb.table.OptimizeOptions)
 for all options and their limits.
 */}
+
+## Optimize submission and job handles
+
+Enterprise `optimize()` returns once the compaction request is accepted. Its
+statistics are placeholders, not completed-work metrics. Use the durable job
+method to wait for actual results:
+
+```python
+# Submit and discard the handle.
+table.optimize(target_rows_per_fragment=1000)
+# Submit and retain status, cancellation, and actual results.
+job = table.optimize_async(target_rows_per_fragment=1000)
+result = job.wait()
+# Async Python: job = await table.optimize_async(); result = await job.wait()
+```
+
+```typescript
+await table.optimize({ targetRowsPerFragment: 1000 });
+const job = await table.optimizeAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+```
+
+```rust
+use lancedb::table::optimize::OptimizeOptions;
+
+async fn optimize_table(table: &lancedb::Table) -> lancedb::Result<()> {
+    table.optimize(OptimizeOptions::default()).await?;
+    let job = table.optimize_async(OptimizeOptions::default()).await?;
+    let result = job.wait().await?;
+    println!("Committed {} rows", result.rows_succeeded);
+    Ok(())
+}
+```
+
+Embedded `optimize()` still waits for compaction, cleanup, and index maintenance,
+returning actual statistics. Select only data rewrites with Python
+`optimize(action="rewrite_data")`, TypeScript
+`optimize({ action: "rewrite_data" })`, or Rust
+`optimize(OptimizeAction::RewriteData { options: OptimizeOptions::default(), remap_options: None })`. Rewrite-only requests preserve old
+versions and skip the separate index maintenance phase. Cleanup arguments cannot
+be combined with a rewrite-only action.
+
+### Flat Optimize options
+
+Pass settings directly to both convenience and durable submissions:
+
+```python
+from lancedb import OptimizeOptions
+
+options: OptimizeOptions = {"target_rows_per_fragment": 1000, "batch_size": 128}
+table.optimize(**options)
+job = table.optimize_async(**options)
+```
+
+```typescript
+import type { OptimizeOptions } from "@lancedb/lancedb";
+
+const options: OptimizeOptions = { targetRowsPerFragment: 1000, batchSize: 128 };
+await table.optimize(options);
+const job = await table.optimizeAsync(options);
+```
+
+```rust
+use lancedb::table::optimize::OptimizeOptions;
+
+let options = OptimizeOptions {
+    target_rows_per_fragment: Some(1000),
+    batch_size: Some(128),
+    ..Default::default()
+};
+table.optimize(options.clone()).await?;
+let job = table.optimize_async(options).await?;
+```
+
+Python/TypeScript Embedded convenience Optimize also accepts cleanup settings in
+the same request.
+Durable Optimize jobs reject cleanup and separate index-maintenance requests before
+submission. Rust accepts `OptimizeOptions` directly for both submission methods. Its optional
+fields distinguish omitted settings from explicitly supplied defaults.
+Its separate index-maintenance options are `IndexOptimizeOptions`.
+Embedded resolves omitted rewrite settings from `lance.compaction.*` table configuration,
+then Lance defaults. Explicit invocation settings take precedence, including
+values equal to built-in defaults and zero I/O buffering.
+`OptimizeOptions` retains omitted-versus-explicit values when inheriting Enterprise
+policy. No `data_options` or `dataOptions` wrapper is accepted.
+
+Enterprise convenience and durable Optimize use the same SQL submission and
+job-receipt validation. A successful receipt contains exactly one nonempty
+`job_id`. A malformed receipt raises without resubmitting; inspect existing jobs
+before retrying because the server may already have accepted the work.
+Convenience calls discard the validated handle without polling for completion.

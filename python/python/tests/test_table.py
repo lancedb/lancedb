@@ -4841,10 +4841,10 @@ def test_compact_cleanup(tmp_db: DBConnection):
     assert len(table) == 3
     assert table.version == 2
 
-    stats = table.compact_files()
+    stats = table.optimize(action="rewrite_data").compaction
     assert len(table) == 3
-    # Compact_files bump 2 versions.
-    assert table.version == 4
+    optimized_version = table.version
+    assert optimized_version > 2
     assert stats.fragments_removed > 0
     assert stats.fragments_added == 1
 
@@ -4853,10 +4853,10 @@ def test_compact_cleanup(tmp_db: DBConnection):
 
     stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
     assert stats.bytes_removed > 0
-    assert table.version == 4
+    assert table.version == optimized_version
 
-    with pytest.raises(Exception, match="Version 3 no longer exists"):
-        table.checkout(3)
+    with pytest.raises(Exception, match="Version 2 no longer exists"):
+        table.checkout(2)
 
 
 def test_count_rows(mem_db: DBConnection):
@@ -5452,32 +5452,28 @@ async def test_optimize(mem_db_async: AsyncConnection):
 
 
 @pytest.mark.asyncio
-async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
+async def test_optimize_data_options(mem_db_async: AsyncConnection):
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     await table.add([{"x": 2}])
 
     stats = await table.optimize(
-        compaction_options={
-            "target_rows_per_fragment": 1,
-            "batch_size": 1,
-            "num_threads": 1,
-        }
+        target_rows_per_fragment=1, batch_size=1, num_threads=1
     )
     assert stats.compaction.fragments_removed == 0
     assert stats.compaction.fragments_added == 0
 
-    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    stats = await table.optimize(target_rows_per_fragment=3)
     assert stats.compaction.fragments_removed == 2
     assert stats.compaction.fragments_added == 1
 
-    with pytest.raises(ValueError, match="Invalid compaction option: unknown"):
-        await table.optimize(compaction_options={"unknown": 1})
+    with pytest.raises(TypeError, match="Unsupported Optimize option: unknown"):
+        await table.optimize(unknown=1)
 
 
-def test_optimize_compaction_options_sync(mem_db: DBConnection):
+def test_optimize_data_options_sync(mem_db: DBConnection):
     table = mem_db.create_table("test", data=[{"x": 1}])
     with pytest.raises(ValueError, match="target_rows_per_fragment must be between"):
-        table.optimize(compaction_options={"target_rows_per_fragment": 0})
+        table.optimize(target_rows_per_fragment=0)
 
 
 @pytest.mark.parametrize("option", ["max_source_rows", "max_source_bytes"])
@@ -5489,7 +5485,7 @@ async def test_optimize_compaction_source_limits(
     await table.add([{"x": 2}])
 
     stats = await table.optimize(
-        compaction_options={
+        **{
             "target_rows_per_fragment": 3,
             option: 1,
         }
@@ -5505,24 +5501,14 @@ async def test_optimize_compaction_data_storage_version(
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     await table.add([{"x": 2}])
 
-    stats = await table.optimize(
-        compaction_options={
-            "target_rows_per_fragment": 3,
-            "data_storage_version": "2.2",
-        }
-    )
+    stats = await table.optimize(target_rows_per_fragment=3, data_storage_version="2.2")
     assert stats.compaction.fragments_removed == 2
     assert stats.compaction.fragments_added == 1
 
     table = await mem_db_async.create_table("cross_family", data=[{"x": 1}])
     await table.add([{"x": 2}])
     with pytest.raises(ValueError, match="V1 and V2 storage versions cannot be mixed"):
-        await table.optimize(
-            compaction_options={
-                "target_rows_per_fragment": 3,
-                "data_storage_version": "legacy",
-            }
-        )
+        await table.optimize(target_rows_per_fragment=3, data_storage_version="legacy")
 
 
 @pytest.mark.asyncio
@@ -5530,16 +5516,11 @@ async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnect
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     await table.add([{"x": 2}])
 
-    stats = await table.optimize(
-        compaction_options={
-            "target_rows_per_fragment": 3,
-            "excluded_fragment_ids": [0],
-        }
-    )
+    stats = await table.optimize(target_rows_per_fragment=3, excluded_fragment_ids=[0])
     assert stats.compaction.fragments_removed == 0
     assert stats.compaction.fragments_added == 0
 
-    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    stats = await table.optimize(target_rows_per_fragment=3)
     assert stats.compaction.fragments_removed == 2
     assert stats.compaction.fragments_added == 1
 
@@ -5571,12 +5552,12 @@ async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnect
     ],
 )
 @pytest.mark.asyncio
-async def test_optimize_compaction_options_validation(
+async def test_optimize_data_options_validation(
     mem_db_async: AsyncConnection, option: str, value: Any, message: str
 ):
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     with pytest.raises(ValueError, match=message):
-        await table.optimize(compaction_options={option: value})
+        await table.optimize(**{option: value})
 
 
 @pytest.mark.asyncio
@@ -6435,3 +6416,129 @@ async def test_data_prewarm_job_is_unsupported_locally(tmp_path, asynchronous, m
             NotImplementedError, match="only supported on remote tables"
         ):
             getattr(table, method)(filter="id > 0", concurrency=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_optimize_rewrite_only_preserves_versions_and_index(
+    tmp_path, asynchronous
+):
+    """A rewrite must retain history and leave incremental indexing to full Optimize."""
+    db = (
+        (await lancedb.connect_async(str(tmp_path)))
+        if asynchronous
+        else lancedb.connect(str(tmp_path))
+    )
+
+    async def call(obj, name, *args, **kwargs):
+        result = getattr(obj, name)(*args, **kwargs)
+        return await result if asynchronous else result
+
+    table = await call(db, "create_table", "rewrite", [{"id": 1}])
+    await call(table, "add", [{"id": 2}])
+    await call(table, "create_index", "id", config=BTree())
+    await call(table, "add", [{"id": 3}])
+    await call(table, "add", [{"id": 4}])
+    before = await call(table, "list_versions")
+    stats = await call(table, "optimize", action="rewrite_data")
+    assert stats.compaction.fragments_removed == 4
+    assert stats.compaction.fragments_added == 2
+    assert stats.prune.old_versions_removed == 0
+    assert len(await call(table, "list_versions")) > len(before)
+    index_stats = await call(table, "index_stats", "id_idx")
+    assert (
+        index_stats.num_unindexed_rows
+        if asynchronous
+        else index_stats["num_unindexed_rows"]
+    ) == 2
+    await call(table, "optimize")
+    index_stats = await call(table, "index_stats", "id_idx")
+    assert (
+        index_stats.num_unindexed_rows
+        if asynchronous
+        else index_stats["num_unindexed_rows"]
+    ) == 0
+    await call(table, "checkout", 1)
+    assert await call(table, "count_rows") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"action": "unknown"},
+        {"action": "rewrite_data", "cleanup_older_than": timedelta(days=1)},
+        {"action": "rewrite_data", "delete_unverified": True},
+    ],
+)
+async def test_optimize_action_validation(mem_db_async, kwargs):
+    table = await mem_db_async.create_table("rewrite_invalid", [{"id": 1}])
+    with pytest.raises(ValueError, match="action"):
+        await table.optimize(**kwargs)
+    assert await table.version() == 1
+
+
+@pytest.mark.asyncio
+async def test_optimize_async_requires_remote(mem_db, mem_db_async):
+    table = mem_db.create_table("local_job", [{"id": 1}])
+    with pytest.raises(NotImplementedError, match="LanceDB Enterprise"):
+        table.optimize_async()
+    async_table = await mem_db_async.create_table("local_job", [{"id": 1}])
+    with pytest.raises(NotImplementedError, match="LanceDB Enterprise"):
+        await async_table.optimize_async()
+    assert hasattr(async_table, "compact_async")
+
+
+def test_legacy_compact_files_preserves_data_and_history(tmp_path):
+    pytest.importorskip("lance")
+    table = lancedb.connect(tmp_path).create_table("legacy", [{"id": 1}])
+    table.add([{"id": 2}])
+    with pytest.warns(DeprecationWarning):
+        stats = table.compact_files(target_rows_per_fragment=100)
+    assert stats.fragments_removed == 2
+    assert table.count_rows() == 2
+    table.checkout(1)
+    assert table.count_rows() == 1
+
+
+def test_legacy_optimize_nested_settings_embedded(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("legacy", [{"id": 1}])
+    table.add([{"id": 2}])
+    with pytest.warns(DeprecationWarning, match="compaction_options"):
+        stats = table.optimize(compaction_options={"target_rows_per_fragment": 100})
+    assert stats.compaction.fragments_removed == 2
+    assert table.count_rows() == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_optimize_inherits_embedded_table_config(tmp_path, asynchronous):
+    pytest.importorskip("lance")
+    seed = lancedb.connect(tmp_path).create_table("policy", [{"id": 1}])
+    seed.add([{"id": 2}])
+    seed.to_lance().update_config(
+        {
+            "lance.compaction.target_rows_per_fragment": "1",
+            "lance.compaction.io_buffer_size": "4096",
+            "lance.compaction.max_source_rows": "1",
+        }
+    )
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.open_table("policy")
+        stats = await table.optimize()
+        assert stats.compaction.fragments_removed == 0
+        stats = await table.optimize(
+            target_rows_per_fragment=100, io_buffer_size=0, max_source_rows=None
+        )
+        assert stats.compaction.fragments_removed == 2
+        assert await table.count_rows() == 2
+    else:
+        table = lancedb.connect(tmp_path).open_table("policy")
+        stats = table.optimize()
+        assert stats.compaction.fragments_removed == 0
+        stats = table.optimize(
+            target_rows_per_fragment=100, io_buffer_size=0, max_source_rows=None
+        )
+        assert stats.compaction.fragments_removed == 2
+        assert table.count_rows() == 2

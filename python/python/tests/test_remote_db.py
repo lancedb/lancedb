@@ -3611,7 +3611,7 @@ def test_remote_python_only_messages():
                 f"{method}() is not supported in LanceDB Enterprise. "
                 f"Use table.search().{method}() instead."
             )
-        for method in ["compact_files", "cleanup_old_versions"]:
+        for method in ["cleanup_old_versions"]:
             with pytest.warns(UserWarning) as warning:
                 getattr(table, method)()
             assert (
@@ -7543,6 +7543,7 @@ def test_remote_function_registration_transports_max_concurrency():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize(
     "options,sql_options",
@@ -7572,8 +7573,8 @@ def test_remote_function_registration_transports_max_concurrency():
         ({}, []),
     ],
 )
-async def test_remote_optimize_forwards_per_job_compaction_options(
-    asynchronous, options, sql_options
+async def test_remote_optimize_forwards_per_job_data_options(
+    asynchronous, method, options, sql_options
 ):
     flight = pytest.importorskip("pyarrow.flight")
 
@@ -7584,25 +7585,26 @@ async def test_remote_optimize_forwards_per_job_compaction_options(
 
         def do_get(self, context, ticket):
             self.tickets.append(ticket.ticket)
-            return flight.RecordBatchStream(
-                pa.table({"ok": pa.array([], type=pa.bool_())})
-            )
+            return flight.RecordBatchStream(pa.table({"job_id": ["optimize-job"]}))
 
     server = AckServer()
     with _mock_remote_sql_connection(server) as kwargs:
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
-            stats = await table.optimize(compaction_options=options)
+            stats = await getattr(table, method)(**options)
         else:
             table = lancedb.connect(**kwargs).create_table("test", [{"id": 1}])
-            stats = table.optimize(compaction_options=options)
+            stats = getattr(table, method)(**options)
     assert len(server.tickets) == 1
     assert b"OPTIMIZE" in server.tickets[0]
     assert all(option in server.tickets[0] for option in sql_options)
     if not sql_options:
         assert b"WITH (" not in server.tickets[0]
-    assert stats.prune.bytes_removed == 0
+    if method == "optimize":
+        assert stats.prune.bytes_removed == 0
+    else:
+        assert stats.id == "optimize-job"
 
 
 def test_remote_optimize_does_not_drop_options_after_server_rejection():
@@ -7620,7 +7622,7 @@ def test_remote_optimize_does_not_drop_options_after_server_rejection():
     server = OldServer()
     with _mock_remote_table_with_sql(server) as table:
         with pytest.raises(Exception, match="max_source_rows"):
-            table.optimize(compaction_options={"max_source_rows": 500})
+            table.optimize(max_source_rows=500)
     assert server.tickets
     assert all(b"max_source_rows = 500" in ticket for ticket in server.tickets)
 
@@ -7646,9 +7648,7 @@ def test_remote_optimize_skips_prune_and_index():
 
         def do_get(self, context, ticket):
             self.tickets.append(ticket.ticket)
-            return flight.RecordBatchStream(
-                pa.table({"ok": pa.array([], type=pa.bool_())})
-            )
+            return flight.RecordBatchStream(pa.table({"job_id": ["optimize-job"]}))
 
     server = AckServer()
     with _mock_remote_table_with_sql(server) as table:
@@ -7660,13 +7660,13 @@ def test_remote_optimize_skips_prune_and_index():
     assert stats.prune.old_versions_removed == 0
 
 
-def test_remote_optimize_rejects_unsupported_compaction_options_before_submitting():
+def test_remote_optimize_rejects_unsupported_data_options_before_submitting():
     """Regression test: `RemoteTable.optimize()` used to drop
-    `compaction_options` instead of forwarding it to the Rust layer, so a
+    `data_options` instead of forwarding it to the Rust layer, so a
     non-default value was silently ignored -- the server-side guard against
     unsupported options never saw it. It should now reach that guard and
     raise before any SQL statement is submitted."""
-    from lancedb.table import CompactionOptions
+    from lancedb.table import OptimizeOptions
 
     flight = pytest.importorskip("pyarrow.flight")
 
@@ -7682,10 +7682,10 @@ def test_remote_optimize_rejects_unsupported_compaction_options_before_submittin
             )
 
     server = UnreachableServer()
-    options: CompactionOptions = {"max_source_bytes": 1024}
+    options: OptimizeOptions = {"max_source_bytes": 1024}
     with _mock_remote_table_with_sql(server) as table:
-        with pytest.raises(NotImplementedError, match="CompactionOptions"):
-            table.optimize(compaction_options=options)
+        with pytest.raises(NotImplementedError, match="OptimizeOptions"):
+            table.optimize(**options)
 
     assert server.tickets == []
 
@@ -7695,7 +7695,7 @@ def test_remote_optimize_rejects_explicit_pruning_before_submitting():
     an explicit pruning request (`cleanup_older_than`), returning success
     with zero bytes removed even though nothing was pruned. It should now
     raise before any SQL statement is submitted, the same way a non-default
-    `compaction_options` does."""
+    `data_options` does."""
     from datetime import timedelta
 
     flight = pytest.importorskip("pyarrow.flight")
@@ -8471,9 +8471,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
         if asynchronous:
             db = await lancedb.connect_async(**kwargs)
             table = await db.create_table("test", [{"id": 1}])
-            job = await table.compact_async(
-                compaction_options={"target_rows_per_fragment": 100}
-            )
+            job = await table.optimize_async(target_rows_per_fragment=100)
             assert job.id == "compacting-job" and not polls
             if outcome in ("missing", "FAILED", "CANCELLED"):
                 with pytest.raises(
@@ -8492,9 +8490,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
         else:
             db = lancedb.connect(**kwargs)
             table = db.create_table("test", [{"id": 1}])
-            job = table.compact_async(
-                compaction_options={"target_rows_per_fragment": 100}
-            )
+            job = table.optimize_async(target_rows_per_fragment=100)
             assert job.id == "compacting-job" and not polls
             if outcome in ("missing", "FAILED", "CANCELLED"):
                 with pytest.raises(
@@ -8510,9 +8506,9 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
                 stats = job.wait()
                 assert db.open_job(job.id).wait() == stats
         if outcome in ("counts", "legacy", "partial", "bounded", "no_op"):
-            from lancedb.compaction import CompactionResult
+            from lancedb.optimize import OptimizeResult
 
-            assert isinstance(stats, CompactionResult)
+            assert isinstance(stats, OptimizeResult)
             assert stats.rows_succeeded == (
                 0 if outcome == "no_op" else 8 if outcome == "partial" else 12
             )
@@ -8527,8 +8523,13 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
     assert b"target_rows_per_fragment = 100" in server.tickets[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
 @pytest.mark.parametrize("ids", [[], [None], [""], ["a", "b"]])
-def test_remote_compaction_rejects_ambiguous_receipt_without_resubmission(ids):
+async def test_remote_optimize_rejects_ambiguous_receipt_without_resubmission(
+    asynchronous, method, ids
+):
     flight = pytest.importorskip("pyarrow.flight")
 
     class Server(flight.FlightServerBase):
@@ -8544,14 +8545,20 @@ def test_remote_compaction_rejects_ambiguous_receipt_without_resubmission(ids):
 
     server = Server()
     with _mock_remote_sql_connection(server) as kwargs:
-        db = lancedb.connect(**kwargs)
-        table = db.create_table("test", [{"id": 1}])
-        with pytest.raises(Exception, match="inspect jobs before retrying"):
-            table.compact_async()
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            with pytest.raises(Exception, match="inspect jobs before retrying"):
+                await getattr(table, method)()
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            with pytest.raises(Exception, match="inspect jobs before retrying"):
+                getattr(table, method)()
     assert server.calls == 1
 
 
-@pytest.mark.parametrize("method", ["compact_async", "optimize"])
+@pytest.mark.parametrize("method", ["optimize_async", "optimize"])
 @pytest.mark.parametrize(
     "option",
     ["target_rows_per_fragment", "max_source_rows", "io_buffer_size", "batch_size"],
@@ -8574,7 +8581,7 @@ def test_remote_compaction_rejects_boolean_budgets_without_submitting(
     server = UnusedServer()
     with _mock_remote_table_with_sql(server) as table:
         with pytest.raises(ValueError, match="must be an integer, not a bool"):
-            getattr(table, method)(compaction_options={option: value})
+            getattr(table, method)(**{option: value})
     assert server.calls == 0
 
 
@@ -8698,3 +8705,108 @@ def test_remote_prewarm_preview_reports_old_server_format_support():
         ):
             table.explain_prewarm_data()
     assert len(server.tickets) == 1
+
+
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
+@pytest.mark.parametrize("key", ["data_options"])
+def test_remote_optimize_rejects_wrapped_options_before_submission(method, key):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            raise AssertionError("wrapped settings must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(TypeError, match="Unsupported Optimize option"):
+            getattr(table, method)(**{key: {"max_source_rows": 1}})
+    assert server.calls == 0
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"cleanup_older_than": timedelta(days=1)},
+        {"delete_unverified": True},
+        {"retrain": True},
+    ],
+)
+def test_remote_optimize_job_rejects_maintenance_options_before_submission(options):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class UnusedServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.calls = 0
+
+        def do_get(self, context, ticket):
+            self.calls += 1
+            raise AssertionError("unsupported maintenance must not submit SQL")
+
+    server = UnusedServer()
+    with _mock_remote_table_with_sql(server) as table:
+        with pytest.raises(
+            (ValueError, TypeError),
+            match="unsupported by Optimize jobs|Unsupported Optimize option",
+        ):
+            table.optimize_async(**options)
+    assert server.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("method", ["optimize", "compact_async"])
+async def test_legacy_optimize_submits_once_with_settings(asynchronous, method):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"job_id": ["legacy-optimize-job"]})
+            )
+
+    server = Server()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            with pytest.warns(DeprecationWarning):
+                result = await getattr(table, method)(
+                    compaction_options={"io_buffer_size": 0, "max_source_rows": 7}
+                )
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            with pytest.warns(DeprecationWarning):
+                result = getattr(table, method)(
+                    compaction_options={"io_buffer_size": 0, "max_source_rows": 7}
+                )
+        if method == "compact_async":
+            assert result.id == "legacy-optimize-job"
+    assert len(server.tickets) == 1
+    assert b"io_buffer_size = 0" in server.tickets[0]
+    assert b"max_source_rows = 7" in server.tickets[0]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"compaction_options": {"max_source_rows": 7}, "batch_size": 16},
+        {"compaction_options": {"unknown_limit": 7}},
+    ],
+)
+def test_legacy_optimize_rejects_ambiguous_or_unknown_settings(options):
+    from lancedb.table import _split_optimize_options
+
+    with pytest.warns(DeprecationWarning), pytest.raises(TypeError):
+        _split_optimize_options(options)

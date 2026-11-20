@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
-import { decodeCompactionResult } from "./compaction";
 import { JobFailureInfo, Job as NativeJob } from "./native";
+import { decodeOptimizeResult } from "./optimize";
 import { decodePrewarmDataResult } from "./prewarm";
 
 /** Which of a job's events {@link Job.events} returns. */
@@ -122,7 +122,7 @@ export class Job<T = void> {
       (inner.jobType === "prewarm_page_cache"
         ? (decodePrewarmDataResult as (value: unknown) => T)
         : inner.jobType === "compact"
-          ? (decodeCompactionResult as (value: unknown) => T)
+          ? (decodeOptimizeResult as (value: unknown) => T)
           : undefined);
   }
 

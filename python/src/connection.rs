@@ -907,7 +907,7 @@ impl Connection {
                         .infer_error()?,
                 )),
                 Some("compact") => Ok(crate::job::Job::new_typed(
-                    job.into_typed::<lancedb::table::CompactionResult>()
+                    job.into_typed::<lancedb::table::OptimizeResult>()
                         .infer_error()?,
                 )),
                 _ => Ok(crate::job::Job::new(job)),

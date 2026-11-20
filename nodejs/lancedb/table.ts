@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { CompactionResult, decodeCompactionResult } from "./compaction";
+import { OptimizeResult, decodeOptimizeResult } from "./optimize";
 import {
   PrewarmDataPlan,
   PrewarmDataResult,
@@ -186,58 +186,37 @@ export interface PrewarmDataOptions {
   concurrency?: number;
 }
 
-/** Per-invocation compaction settings. Values must be safe integers. */
-export interface CompactionOptions {
-  /** Positive target rows per output fragment; also affects candidate selection. */
+/** Flat Optimize settings for submission and durable jobs.
+ * Enterprise jobs support data rewrites; cleanup options are Embedded-only. */
+export interface OptimizeOptions {
+  /** Positive target rows per output fragment. Omitted Enterprise values inherit table policy. */
   targetRowsPerFragment?: number;
-  /** Positive live-source-row budget across whole tasks; an oversized first task can produce no work. */
+  /** Positive live-source-row budget across whole rewrite tasks. */
   maxSourceRows?: number;
-  /** Scanner I/O read-ahead budget in bytes; zero disables byte-based I/O backpressure. */
+  /** Scanner read-ahead budget in bytes; zero disables byte-based backpressure. */
   ioBufferSize?: number;
   /** Positive scanner batch size in rows. */
   batchSize?: number;
+  /** @deprecated Pass rewrite settings directly on OptimizeOptions. */
+  compactionOptions?: CompactionOptions;
+  /** Select only data rewriting, retaining history and skipping separate index maintenance.
+   * For convenience calls, omit for Embedded's full rewrite/prune/index cycle.
+   * Enterprise, durable jobs, and previews support rewriting only. */
+  action?: "rewrite_data";
+  /** Embedded: remove versions committed before this cutoff. Defaults to seven days ago.
+   * Cannot be combined with action="rewrite_data" or used with durable Optimize jobs. */
+  cleanupOlderThan?: Date;
+  /** Embedded: also remove unverified files. Only enable when no other process
+   * can be writing this dataset. Defaults to false; unavailable for durable jobs. */
+  deleteUnverified?: boolean;
 }
 
-export interface OptimizeOptions {
-  /**
-   * Compaction settings for this invocation. Omitted remote values inherit table
-   * tuning, then deployment/built-in defaults.
-   * Remote tables require a server supporting these SQL options; settings do
-   * not change table policy. This is not a runtime or total-memory limit.
-   * @example
-   * await tbl.optimize({ compactionOptions: {
-   *   targetRowsPerFragment: 1000, maxSourceRows: 5000,
-   *   ioBufferSize: 64 * 1024 * 1024, batchSize: 128,
-   * } });
-   */
-  compactionOptions?: CompactionOptions;
-  /**
-   * If set then all versions older than the given date
-   * be removed.  The current version will never be removed.
-   * The default is 7 days
-   * @example
-   * // Delete all versions older than 1 day
-   * const olderThan = new Date();
-   * olderThan.setDate(olderThan.getDate() - 1));
-   * tbl.optimize({cleanupOlderThan: olderThan});
-   *
-   * // Delete versions committed before this point. Versions created by the
-   * // optimize call itself are newer than the cutoff and will be retained.
-   * tbl.optimize({cleanupOlderThan: new Date()});
-   */
-  cleanupOlderThan: Date;
-  /**
-   * Because they may be part of an in-progress transaction, files newer than
-   * 7 days old are not deleted by default. If you are sure that there are no
-   * in-progress transactions, then you can set this to true to delete all
-   * files older than `cleanupOlderThan`.
-   *
-   * **WARNING**: This should only be set to true if you can guarantee that
-   * no other process is currently working on this dataset. Otherwise the
-   * dataset could be put into a corrupted state.
-   */
-  deleteUnverified: boolean;
-}
+/** @deprecated Use OptimizeOptions with flat rewrite settings. */
+export interface CompactionOptions
+  extends Pick<
+    OptimizeOptions,
+    "targetRowsPerFragment" | "maxSourceRows" | "ioBufferSize" | "batchSize"
+  > {}
 
 export interface Version {
   version: number;
@@ -1063,8 +1042,8 @@ export abstract class Table {
    *
    * This is a metadata-only operation and does not remove the data from the
    * underlying storage. In order to remove the data, you must subsequently
-   * call ``compact_files`` to rewrite the data without the removed columns and
-   * then call ``cleanup_files`` to remove the old files.
+   * call `optimize({ action: "rewrite_data" })` to rewrite the data without the
+   * removed columns, then prune old versions using Optimize cleanup options.
    *
    * Local tables reject dropping source or vector columns referenced by
    * `embedding_functions` schema metadata, preserving the embedding binding.
@@ -1342,25 +1321,32 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
-   * Submit remote compaction and return its durable job after acceptance.
+   * Submit Enterprise Optimize and return its durable job after acceptance.
    *
    * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
-   * a compatible remote server and table Ownership plus parent Usage. Local and
+   * a compatible Enterprise server and table Ownership plus parent Usage. Embedded and
    * historical-version handles are unsupported. Existing optimize() behavior is unchanged.
    * Waiting tracks the rewrite itself and returns actual row/file statistics.
    * Missing result payloads are errors; older workers can omit file counts.
    * Status, progress, events and cancellation reuse the generic HTTP job APIs.
-   * Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+   * Reopen with db.openJob<OptimizeResult>(job.id!). A wait timeout does not cancel work.
    *
    * @example
-   * const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+   * const job = await table.optimizeAsync({ targetRowsPerFragment: 1000 });
    * const result = await job.wait();
    * console.log(result.rowsSucceeded, result.fragmentsRemoved);
    */
+  async optimizeAsync(
+    _options?: OptimizeOptions,
+  ): Promise<Job<OptimizeResult>> {
+    throw new Error("Optimize jobs are only supported in LanceDB Enterprise");
+  }
+
+  /** @deprecated Use optimizeAsync() instead. */
   async compactAsync(
-    _options?: CompactionOptions,
-  ): Promise<Job<CompactionResult>> {
-    throw new Error("compaction jobs are only supported on remote tables");
+    options?: CompactionOptions,
+  ): Promise<Job<OptimizeResult>> {
+    return this.optimizeAsync(options);
   }
 
   /**
@@ -1384,13 +1370,13 @@ export abstract class Table {
    * On a LanceDB Enterprise (remote) table, only compaction is currently
    * supported. Pruning old versions and index optimization are silently
    * skipped there instead of being attempted, so this call resolves
-   * successfully, with zeroed pruning statistics, once the compaction job
-   * has been submitted; it does not wait for that job to finish.
-   * `compactionOptions` can tune the four per-job settings documented in
-   * {@link CompactionOptions}. Older-server errors are propagated without
+   * successfully with placeholder statistics (not completed work) once the
+   * compaction job has been submitted; it does not wait for that job to finish.
+   * The flat options tune the four per-job settings documented in
+   * {@link OptimizeOptions}. Older-server errors are propagated without
    * retrying with the settings removed.
    */
-  abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
+  abstract optimize(options?: OptimizeOptions): Promise<OptimizeStats>;
   /**
    * List all indices that have been created with {@link Table.createIndex}
    *
@@ -2081,22 +2067,23 @@ export class LocalTable extends Table {
     return this.inner.currentBranch() ?? null;
   }
 
-  async compactAsync(
-    options?: CompactionOptions,
-  ): Promise<Job<CompactionResult>> {
-    validateCompactionOptions(options);
+  async optimizeAsync(options?: OptimizeOptions): Promise<Job<OptimizeResult>> {
+    options = normalizeOptimizeOptions(options);
+    validateOptimizeOptions(options, true);
     return new Job(
-      await this.inner.compactAsync(options),
-      decodeCompactionResult,
+      await this.inner.optimizeAsync(optimizeRewriteSettings(options)),
+      decodeOptimizeResult,
     );
   }
 
-  async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    validateCompactionOptions(options?.compactionOptions);
+  async optimize(options?: OptimizeOptions): Promise<OptimizeStats> {
+    options = normalizeOptimizeOptions(options);
+    validateOptimizeOptions(options);
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
-      options?.compactionOptions,
+      optimizeRewriteSettings(options),
+      options?.action,
     );
   }
 
@@ -2393,20 +2380,82 @@ function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
   });
 }
 
-function validateCompactionOptions(options?: CompactionOptions): void {
-  // JavaScript callers can supply extra keys that TypeScript would reject.
-  // Refuse them before the native binding can silently discard a work limit.
-  const supported = new Set([
+function normalizeOptimizeOptions(
+  options?: OptimizeOptions,
+): OptimizeOptions | undefined {
+  if (options?.compactionOptions === undefined) return options;
+  const { compactionOptions, ...flat } = options;
+  if (
+    compactionOptions === null ||
+    typeof compactionOptions !== "object" ||
+    Array.isArray(compactionOptions)
+  )
+    throw new Error("compactionOptions must be an object");
+  const rewriteKeys = new Set([
     "targetRowsPerFragment",
     "maxSourceRows",
     "ioBufferSize",
     "batchSize",
   ]);
-  for (const key of Object.keys(options ?? {})) {
-    if (!supported.has(key)) {
-      throw new Error(`Unsupported compaction option: ${key}`);
-    }
+  for (const key of Object.keys(compactionOptions)) {
+    if (!rewriteKeys.has(key))
+      throw new Error(`Unsupported Optimize option: ${key}`);
   }
+  if (Object.keys(flat).some((key) => rewriteKeys.has(key))) {
+    throw new Error(
+      "cannot combine compactionOptions with flat rewrite settings",
+    );
+  }
+  return { ...flat, ...compactionOptions };
+}
+
+function validateOptimizeOptions(
+  options?: OptimizeOptions,
+  durable = false,
+): void {
+  const supported = new Set([
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+    "action",
+    "cleanupOlderThan",
+    "deleteUnverified",
+    "compactionOptions",
+  ]);
+  for (const key of Object.keys(options ?? {})) {
+    if (!supported.has(key))
+      throw new Error(`Unsupported Optimize option: ${key}`);
+  }
+  if (options?.action !== undefined && options.action !== "rewrite_data") {
+    throw new Error('action must be "rewrite_data" or undefined');
+  }
+  const cleanup =
+    options?.cleanupOlderThan !== undefined ||
+    options?.deleteUnverified === true;
+  if (durable && cleanup)
+    throw new Error("cleanup options are unsupported by Optimize jobs");
+  if (options?.action === "rewrite_data" && cleanup) {
+    throw new Error(
+      'action="rewrite_data" cannot be combined with cleanup options',
+    );
+  }
+}
+
+function optimizeRewriteSettings(
+  options?: OptimizeOptions,
+): OptimizeOptions | undefined {
+  const tuning: OptimizeOptions = {};
+  for (const key of [
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+  ] as const) {
+    const value = options?.[key];
+    if (value !== undefined) tuning[key] = value;
+  }
+  return Object.keys(tuning).length ? tuning : undefined;
 }
 
 async function toNativePrewarmDataOptions(options?: PrewarmDataOptions) {

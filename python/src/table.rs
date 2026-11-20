@@ -28,11 +28,12 @@ use arrow::{
 use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
+use lancedb::table::optimize::OptimizeOptions;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
-    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionRefreshPlanningConfig,
-    FunctionRefreshPodResources, FunctionWorkerResourceBudget, IndexRemapMode, NewColumnTransform,
-    Ref, RefreshColumnOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
+    IndexRemapMode, NewColumnTransform, OptimizeDataMode, Ref, RefreshColumnOptions,
+    Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -487,10 +488,10 @@ fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Op
     Ok(value)
 }
 
-fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<CompactionOptions> {
-    let mut parsed = CompactionOptions::default();
+fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeOptions> {
+    let mut parsed = OptimizeOptions::default();
     let Some(options) = options else {
-        return Ok(parsed);
+        return Ok(OptimizeOptions::default());
     };
 
     for (key, value) in options.iter() {
@@ -505,30 +506,50 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
                 "{key} must be an integer, not a bool"
             )));
         }
+        if value.is_none()
+            && matches!(
+                key.as_str(),
+                "max_bytes_per_file"
+                    | "num_threads"
+                    | "batch_size"
+                    | "io_buffer_size"
+                    | "compaction_mode"
+                    | "binary_copy_read_batch_bytes"
+                    | "max_source_fragments"
+                    | "max_source_rows"
+                    | "max_source_bytes"
+                    | "max_overlays_per_fragment"
+                    | "data_storage_version"
+            )
+        {
+            parsed.cleared_fields.insert(key.clone());
+        }
         match key.as_str() {
             "target_rows_per_fragment" => {
-                parsed.target_rows_per_fragment = positive_u32(&value, &key)?
+                parsed.target_rows_per_fragment = Some(positive_u32(&value, &key)?)
             }
-            "max_rows_per_group" => parsed.max_rows_per_group = positive_u32(&value, &key)?,
+            "max_rows_per_group" => parsed.max_rows_per_group = Some(positive_u32(&value, &key)?),
             "max_bytes_per_file" => parsed.max_bytes_per_file = value.extract()?,
-            "materialize_deletions" => parsed.materialize_deletions = value.extract()?,
+            "materialize_deletions" => parsed.materialize_deletions = Some(value.extract()?),
             "materialize_deletions_threshold" => {
-                parsed.materialize_deletions_threshold = value.extract()?
+                parsed.materialize_deletions_threshold = Some(value.extract()?)
             }
             "num_threads" => parsed.num_threads = optional_positive_usize(&value, &key)?,
             "batch_size" => parsed.batch_size = optional_positive_u32(&value, &key)?,
             "io_buffer_size" => parsed.io_buffer_size = optional_i64_bounded_u64(&value, &key)?,
-            "defer_index_remap" => parsed.defer_index_remap = value.extract()?,
+            "defer_index_remap" => parsed.defer_index_remap = Some(value.extract()?),
             "index_remap_mode" => {
                 let mode: String = value.extract()?;
-                parsed.index_remap_mode = IndexRemapMode::try_from(mode.as_str())
-                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                parsed.index_remap_mode = Some(
+                    IndexRemapMode::try_from(mode.as_str())
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                );
             }
             "compaction_mode" => {
                 let mode: Option<String> = value.extract()?;
                 parsed.compaction_mode = mode
                     .map(|mode| {
-                        CompactionMode::try_from(mode.as_str())
+                        OptimizeDataMode::try_from(mode.as_str())
                             .map_err(|err| PyValueError::new_err(err.to_string()))
                     })
                     .transpose()?;
@@ -539,7 +560,7 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
             "max_source_fragments" => parsed.max_source_fragments = value.extract()?,
             "max_source_rows" => parsed.max_source_rows = optional_positive_usize(&value, &key)?,
             "max_source_bytes" => parsed.max_source_bytes = optional_positive_u64(&value, &key)?,
-            "excluded_fragment_ids" => parsed.excluded_fragment_ids = u32_list(&value, &key)?,
+            "excluded_fragment_ids" => parsed.excluded_fragment_ids = Some(u32_list(&value, &key)?),
             "max_overlays_per_fragment" => parsed.max_overlays_per_fragment = value.extract()?,
             "data_storage_version" => {
                 let version: String = value.extract()?;
@@ -551,7 +572,7 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
             }
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "Invalid compaction option: {key}"
+                    "Invalid Optimize option: {key}"
                 )));
             }
         }
@@ -2295,43 +2316,45 @@ impl Table {
         })
     }
 
-    /// Submit remote compaction and retain its durable job and actual result.
-    #[pyo3(signature = (compaction_options=None))]
-    pub fn compact_async<'py>(
+    /// Submit remote Optimize and retain its durable job and actual result.
+    #[pyo3(signature = (data_options=None))]
+    pub fn optimize_async<'py>(
         self_: PyRef<'py, Self>,
-        compaction_options: Option<&Bound<'py, PyDict>>,
+        data_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let target_specified = compaction_options
-            .map(|options| options.contains("target_rows_per_fragment"))
-            .transpose()?
-            .unwrap_or(false);
-        let options = parse_compaction_options(compaction_options)?;
-        let mut overrides =
-            lancedb::table::optimize::CompactionOverrides::try_from(options).infer_error()?;
-        if !target_specified {
-            overrides.target_rows_per_fragment = None;
-        }
+        let overrides = parse_optimize_options(data_options)?;
         future_into_py(self_.py(), async move {
-            let job = inner.compact_async(overrides).await.infer_error()?;
+            let job = inner.optimize_async(overrides).await.infer_error()?;
             Ok(crate::job::Job::new_typed(job))
         })
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, compaction_options=None))]
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, data_options=None, action=None))]
     pub fn optimize<'py>(
         self_: PyRef<'py, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
-        compaction_options: Option<&Bound<'py, PyDict>>,
+        data_options: Option<&Bound<'py, PyDict>>,
+        action: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let rewrite_only = match action.as_deref() {
+            None => false,
+            Some("rewrite_data") => true,
+            Some(_) => {
+                return Err(PyValueError::new_err(
+                    "action must be 'rewrite_data' or None",
+                ));
+            }
+        };
+        if rewrite_only && (cleanup_since_ms.is_some() || delete_unverified == Some(true)) {
+            return Err(PyValueError::new_err(
+                "action='rewrite_data' cannot be combined with cleanup options",
+            ));
+        }
         let inner = self_.inner_ref()?.clone();
-        let target_specified = compaction_options
-            .map(|options| options.contains("target_rows_per_fragment"))
-            .transpose()?
-            .unwrap_or(false);
-        let compaction_options = parse_compaction_options(compaction_options)?;
+        let data_options = parse_optimize_options(data_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
                 return Err(PyValueError::new_err(format!(
@@ -2345,24 +2368,21 @@ impl Table {
             None
         };
         future_into_py(self_.py(), async move {
-            let stats = if inner.as_native().is_some() {
+            let stats = if rewrite_only {
                 inner
-                    .optimize_full(compaction_options, older_than, None, delete_unverified)
+                    .optimize(lancedb::table::OptimizeAction::RewriteData {
+                        options: data_options,
+                        remap_options: None,
+                    })
                     .await
             } else {
-                let mut overrides =
-                    lancedb::table::optimize::CompactionOverrides::try_from(compaction_options)
-                        .infer_error()?;
-                if !target_specified {
-                    overrides.target_rows_per_fragment = None;
-                }
                 inner
-                    .optimize_full_with_overrides(overrides, older_than, None, delete_unverified)
+                    .optimize_full_with_options(data_options, older_than, None, delete_unverified)
                     .await
             }
             .infer_error()?;
             let compaction_stats = stats.compaction.unwrap();
-            let prune_stats = stats.prune.unwrap();
+            let prune_stats = stats.prune.unwrap_or_default();
             Ok(OptimizeStats {
                 compaction: CompactionStats {
                     files_added: compaction_stats.files_added as u64,

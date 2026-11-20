@@ -71,15 +71,15 @@ impl PrewarmDataOptions {
 
 /// Per-invocation file-compaction settings. All numbers must be safe integers.
 #[napi(object)]
-pub struct CompactionOptions {
+pub struct OptimizeOptions {
     pub target_rows_per_fragment: Option<f64>,
     pub max_source_rows: Option<f64>,
     pub io_buffer_size: Option<f64>,
     pub batch_size: Option<f64>,
 }
 
-impl CompactionOptions {
-    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
+impl OptimizeOptions {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::OptimizeOverrides> {
         const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
         fn integer(
             value: Option<f64>,
@@ -103,7 +103,7 @@ impl CompactionOptions {
             }
             Ok(Some(value as u64))
         }
-        let mut options = lancedb::table::optimize::CompactionOverrides::default();
+        let mut options = lancedb::table::optimize::OptimizeOverrides::default();
         if let Some(target) = integer(
             self.target_rows_per_fragment,
             "targetRowsPerFragment",
@@ -1002,17 +1002,17 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn compact_async(
+    pub async fn optimize_async(
         &self,
-        options: Option<CompactionOptions>,
+        options: Option<OptimizeOptions>,
     ) -> napi::Result<crate::job::Job> {
         let options = options
-            .map(CompactionOptions::into_overrides)
+            .map(OptimizeOptions::into_overrides)
             .transpose()?
             .unwrap_or_default();
         let job = self
             .inner_ref()?
-            .compact_async(options)
+            .optimize_async(options)
             .await
             .default_error()?;
         Ok(crate::job::Job::new_typed(job))
@@ -1023,8 +1023,23 @@ impl Table {
         &self,
         before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
-        compaction_options: Option<CompactionOptions>,
+        data_options: Option<OptimizeOptions>,
+        action: Option<String>,
     ) -> napi::Result<OptimizeStats> {
+        let rewrite_only = match action.as_deref() {
+            None => false,
+            Some("rewrite_data") => true,
+            Some(_) => {
+                return Err(napi::Error::from_reason(
+                    "action must be 'rewrite_data' or undefined",
+                ));
+            }
+        };
+        if rewrite_only && (before_timestamp_ms.is_some() || delete_unverified == Some(true)) {
+            return Err(napi::Error::from_reason(
+                "action='rewrite_data' cannot be combined with cleanup options",
+            ));
+        }
         let inner = self.inner_ref()?;
 
         let before_timestamp = before_timestamp_ms
@@ -1037,20 +1052,25 @@ impl Table {
             })
             .transpose()?;
 
-        let stats = inner
-            .optimize_full_with_overrides(
-                compaction_options
-                    .map(CompactionOptions::into_overrides)
-                    .transpose()?
-                    .unwrap_or_default(),
-                None,
-                before_timestamp,
-                delete_unverified,
-            )
-            .await
-            .default_error()?;
+        let overrides = data_options
+            .map(OptimizeOptions::into_overrides)
+            .transpose()?
+            .unwrap_or_default();
+        let stats = if rewrite_only {
+            inner
+                .optimize(lancedb::table::OptimizeAction::RewriteData {
+                    options: overrides.into(),
+                    remap_options: None,
+                })
+                .await
+        } else {
+            inner
+                .optimize_full_with_overrides(overrides, None, before_timestamp, delete_unverified)
+                .await
+        }
+        .default_error()?;
         let compaction_stats = stats.compaction.unwrap();
-        let prune_stats = stats.prune.unwrap();
+        let prune_stats = stats.prune.unwrap_or_default();
         Ok(OptimizeStats {
             compaction: CompactionStats {
                 files_added: compaction_stats.files_added as i64,

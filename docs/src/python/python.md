@@ -372,11 +372,12 @@ index statistics, and search. For example, `table.delete(where="id = 1")`,
 
 `create_scalar_index` defaults to `replace=True` on both backends. Both scalar
 and full-text index creation accept `wait_timeout`. LanceDB Enterprise maintenance methods
-accept the LanceDB Embedded options: cleanup and compaction warn that they are no-ops.
+use the same Optimize submission options. `cleanup_old_versions()` remains a
+warning-only no-op; the deprecated `compact_files()` method preserves that behavior.
 `optimize` submits a durable compaction job and returns once that submission is
 accepted, not once compaction itself finishes. Pruning and index optimization
 are not yet supported remotely, so it silently skips them and returns with
-zeroed pruning statistics. Remote `compaction_options` support per-job
+zeroed pruning statistics. Remote Optimize supports per-job
 `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and `batch_size`
 on compatible servers. Other non-default settings raise `NotImplementedError`
 before submission; older-server errors are returned without dropping options.
@@ -389,12 +390,10 @@ unchanged. Table `enabled` controls automatic scheduling; explicit manual runs
 remain allowed.
 
 ```python
-table.optimize(compaction_options={
-    "target_rows_per_fragment": 100_000,
-    "max_source_rows": 1_000_000,
-    "io_buffer_size": 64 * 1024 * 1024,
-    "batch_size": 1024,
-})
+table.optimize(target_rows_per_fragment=100_000,
+    max_source_rows=1_000_000,
+    io_buffer_size=64 * 1024 * 1024,
+    batch_size=1024)
 ```
 
 Removed Tantivy options produce the same explanatory errors on both backends.
@@ -409,6 +408,10 @@ code that used the former LanceDB Enterprise-only argument order.
 ::: lancedb.table.Table
 
 ::: lancedb.table.CompactionOptions
+
+Deprecated compatibility name for `OptimizeOptions`.
+
+::: lancedb.table.OptimizeOptions
 
 ::: lancedb.table.FragmentStatistics
 
@@ -1517,10 +1520,14 @@ that accepts `python_bundle.resources`.
 Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 `conda=` for platform-specific dependencies and `models=` for large model snapshots.
 
-::: lancedb.compaction.CompactionResult
+::: lancedb.optimize.OptimizeResult
 
 ::: lancedb.prewarm.PrewarmDataResult
 
 ::: lancedb.prewarm.PrewarmDataPlan
 
 ::: lancedb.prewarm.PrewarmPruningSummary
+
+::: lancedb.compaction.CompactionResult
+
+Deprecated compatibility name for `lancedb.optimize.OptimizeResult`.

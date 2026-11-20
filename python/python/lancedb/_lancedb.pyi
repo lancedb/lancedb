@@ -806,15 +806,16 @@ class Table:
     async def update_field_metadata(
         self, updates: list[dict[str, Any]]
     ) -> UpdateFieldMetadataResult: ...
-    async def compact_async(
-        self, compaction_options: Optional[Dict[str, Any]] = None
+    async def optimize_async(
+        self, data_options: Optional[Dict[str, Any]] = None
     ) -> Job: ...
     async def optimize(
         self,
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
-        compaction_options: Optional[Dict[str, Any]] = None,
+        data_options: Optional[Dict[str, Any]] = None,
+        action: Optional[str] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...

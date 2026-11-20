@@ -1196,7 +1196,9 @@ async fn fill_stream(
     }))
 }
 
+// Preserve coverage of released full-snapshot Compact requests.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::sync::Arc;
 
@@ -1719,7 +1721,7 @@ mod tests {
 
         table
             .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1835,7 +1837,7 @@ mod tests {
             .unwrap();
         table
             .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1892,7 +1894,7 @@ mod tests {
         table.checkout_latest().await.unwrap();
         table
             .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
@@ -1921,7 +1923,7 @@ mod tests {
         append(&table, vec![5]).await;
         table
             .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
@@ -2227,7 +2229,7 @@ mod tests {
         append(&table, vec![2_000_000]).await;
         table
             .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
@@ -2557,7 +2559,7 @@ mod tests {
             .unwrap();
         table
             .optimize(crate::table::OptimizeAction::Compact {
-                options: crate::table::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await

@@ -86,7 +86,9 @@ pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
-pub use optimize::CompactionResult;
+pub use optimize::OptimizeResult;
+#[allow(deprecated)]
+pub use optimize::{CompactionMode, CompactionOptions, CompactionOverrides, CompactionResult};
 mod prewarm;
 pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
@@ -118,10 +120,15 @@ pub use function_column_status::{
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
-pub use lance_index::optimize::OptimizeOptions;
+pub use lance_index::optimize::OptimizeOptions as IndexOptimizeOptions;
+/// Deprecated index-maintenance options. Use [`IndexOptimizeOptions`].
+/// Data-rewrite options live at [`optimize::OptimizeOptions`].
+#[deprecated(
+    note = "use IndexOptimizeOptions for index maintenance; use table::optimize::OptimizeOptions for data rewrites"
+)]
+pub type OptimizeOptions = IndexOptimizeOptions;
 pub use optimize::{
-    CompactionMode, CompactionOptions, CompactionOverrides, IndexRemapMode, OptimizeAction,
-    OptimizeStats,
+    IndexRemapMode, OptimizeAction, OptimizeDataMode, OptimizeOverrides, OptimizeStats,
 };
 pub use refresh::{
     FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
@@ -901,23 +908,43 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
-    /// Submit remote compaction and retain its durable job and actual outcome.
-    async fn compact_async(
+    /// Submit Enterprise Optimize and retain its durable job and actual outcome.
+    async fn optimize_async(
         &self,
-        _options: optimize::CompactionOverrides,
-    ) -> Result<Job<CompactionResult>> {
+        _options: optimize::OptimizeOverrides,
+    ) -> Result<Job<OptimizeResult>> {
         Err(Error::NotSupported {
-            message: "compaction jobs are only supported on remote tables".into(),
+            message: "Optimize jobs are only supported in LanceDB Enterprise".into(),
         })
     }
-    /// Compact with optional fields, preserving remote policy inheritance.
-    async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
+    /// Deprecated: use [`Self::optimize_async`].
+    #[deprecated(note = "use optimize_async")]
+    async fn compact_async(
+        &self,
+        options: optimize::OptimizeOverrides,
+    ) -> Result<Job<OptimizeResult>> {
+        self.optimize_async(options).await
+    }
+
+    /// Deprecated: use [`Self::optimize`].
+    #[deprecated(note = "use optimize with OptimizeAction::RewriteData")]
+    #[allow(deprecated)]
+    async fn compact(&self, options: optimize::OptimizeOverrides) -> Result<OptimizeStats> {
         self.optimize(OptimizeAction::Compact {
-            options: options.into_options(),
+            options: lance::dataset::optimize::CompactionOptions {
+                target_rows_per_fragment: options.target_rows_per_fragment.unwrap_or_else(|| {
+                    lance::dataset::optimize::CompactionOptions::default().target_rows_per_fragment
+                }),
+                max_source_rows: options.max_source_rows,
+                io_buffer_size: options.io_buffer_size,
+                batch_size: options.batch_size,
+                ..Default::default()
+            },
             remap_options: None,
         })
         .await
     }
+
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -2065,63 +2092,87 @@ impl Table {
     /// you have added or modified 100,000 or more records or run more than 20 data
     /// modification operations.
     ///
-    /// # LanceDB Enterprise (remote tables)
+    /// Passing [`optimize::OptimizeOptions`] runs the full Embedded maintenance
+    /// cycle (rewrite, prune, index maintenance), just like Python and TypeScript.
+    /// Enterprise submits its supported data rewrite and returns after acceptance;
+    /// convenience statistics are placeholders. Use [`Self::optimize_async`] for
+    /// a durable handle and actual results. Explicit cleanup/index requests remain
+    /// unsupported in Enterprise.
     ///
-    /// [`OptimizeAction::Compact`] supports per-job `target_rows_per_fragment`,
-    /// `max_source_rows`, `io_buffer_size`, and `batch_size`, with no custom
-    /// `remap_options`. Other non-default options, `All`, `Prune`, and `Index` return
-    /// [`crate::Error::NotSupported`]. See [`OptimizeAction::Compact`] for
-    /// what a remote call submits and what it does and does not wait for.
-    pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
-        self.inner.optimize(action).await
-    }
-
-    /// Compact data files with optional tuning fields. On remote tables,
-    /// omitted fields inherit table tuning, then deployment/built-in defaults.
-    /// Returns after job submission; remote statistics are placeholders.
+    /// Select [`OptimizeAction::RewriteData`] to preserve Embedded versions and
+    /// skip separate index maintenance. Omitted settings inherit table policy;
+    /// explicit values, including zero I/O buffering, override it.
     ///
-    /// ```
-    /// use lancedb::{Table, table::optimize::CompactionOverrides};
-    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
-    /// table.compact(CompactionOverrides {
-    ///     io_buffer_size: Some(64 * 1024 * 1024),
-    ///     ..Default::default()
+    /// ```no_run
+    /// # async fn optimize(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::{OptimizeAction, optimize::OptimizeOptions};
+    /// table.optimize(OptimizeOptions { io_buffer_size: Some(0), ..Default::default() }).await?;
+    /// table.optimize(OptimizeAction::RewriteData {
+    ///     options: OptimizeOptions { io_buffer_size: Some(0), ..Default::default() },
+    ///     remap_options: None,
     /// }).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn compact(&self, options: optimize::CompactionOverrides) -> Result<OptimizeStats> {
-        self.inner.compact(options).await
+    pub async fn optimize(&self, action: impl Into<OptimizeAction>) -> Result<OptimizeStats> {
+        match action.into() {
+            OptimizeAction::AllWithOptions(options) => {
+                self.optimize_full_with_options(options, None, None, None)
+                    .await
+            }
+            action => self.inner.optimize(action).await,
+        }
     }
 
-    /// Submit remote compaction and return its durable job after acceptance.
+    /// Submit Enterprise Optimize and return its durable job after acceptance.
     ///
     /// Uses SQL `OPTIMIZE ... REWRITE DATA` with the table handle's namespace
-    /// and branch. The four fields of [`optimize::CompactionOverrides`] retain
-    /// server defaults when omitted. Requires a compatible remote SQL server
+    /// and branch. Omitted [`optimize::OptimizeOptions`] fields retain table
+    /// policy and server defaults. Requires a compatible Enterprise SQL server
     /// and table Ownership plus database/namespace Usage under Standard authorization.
-    /// Historical-version and local handles are unsupported.
+    /// Historical-version and Embedded handles are unsupported.
     ///
     /// Unlike [`Self::optimize`], waiting on this handle waits for compaction
-    /// itself and returns actual [`CompactionResult`] values. Status, progress,
+    /// itself and returns actual [`OptimizeResult`] values. Status, progress,
     /// events, and cancellation use the generic HTTP job APIs. A timeout or
     /// dropping the handle does not cancel work. Missing result payloads are
     /// errors, never placeholder zero statistics. An older worker may omit
     /// file counts, represented as `None`. Reopen with
-    /// `connection.open_job(id).await?.into_typed::<CompactionResult>()?`.
+    /// `connection.open_job(id).await?.into_typed::<OptimizeResult>()?`.
+    ///
+    /// Accepts [`optimize::OptimizeOptions`] directly. Fields use `Option` so
+    /// explicit values, including SDK defaults and zero I/O buffering, override policy.
     ///
     /// ```no_run
-    /// # async fn compact(table: &lancedb::Table) -> lancedb::Result<()> {
-    /// let job = table.compact_async(Default::default()).await?;
+    /// # async fn optimize(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let job = table.optimize_async(lancedb::table::optimize::OptimizeOptions::default()).await?;
     /// let result = job.wait().await?;
     /// println!("Committed {} rows", result.rows_succeeded);
     /// # Ok(())
     /// # }
     /// ```
+    pub async fn optimize_async(
+        &self,
+        options: impl Into<OptimizeAction>,
+    ) -> Result<Job<OptimizeResult>> {
+        let options = options.into().into_remote_overrides()?;
+        self.inner.optimize_async(options).await
+    }
+
+    /// Deprecated: use [`Self::optimize`] with [`OptimizeAction::RewriteData`].
+    #[deprecated(note = "use optimize with OptimizeAction::RewriteData")]
+    pub async fn compact(&self, options: optimize::OptimizeOverrides) -> Result<OptimizeStats> {
+        #[allow(deprecated)]
+        self.inner.compact(options).await
+    }
+
+    /// Deprecated: use [`Self::optimize_async`].
+    #[deprecated(note = "use optimize_async")]
     pub async fn compact_async(
         &self,
-        options: optimize::CompactionOverrides,
-    ) -> Result<Job<CompactionResult>> {
+        options: optimize::OptimizeOverrides,
+    ) -> Result<Job<OptimizeResult>> {
+        #[allow(deprecated)]
         self.inner.compact_async(options).await
     }
 
@@ -2129,29 +2180,39 @@ impl Table {
     #[doc(hidden)]
     pub async fn optimize_full_with_overrides(
         &self,
-        options: optimize::CompactionOverrides,
+        options: optimize::OptimizeOverrides,
         older_than: Option<chrono::Duration>,
         before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
         delete_unverified: Option<bool>,
     ) -> Result<OptimizeStats> {
-        if self.as_native().is_some() {
-            return self
-                .optimize_full(
-                    options.into_options(),
-                    older_than,
-                    before_timestamp,
-                    delete_unverified,
-                )
-                .await;
-        }
-        if older_than.is_some() || before_timestamp.is_some() || delete_unverified == Some(true) {
-            return Err(Error::NotSupported { message: "pruning is not supported in LanceDB Enterprise; omit pruning options to run compaction only".into() });
-        }
-        let stats = self.compact(options).await?;
-        Ok(OptimizeStats {
-            compaction: stats.compaction,
-            prune: Some(RemovalStats::default()),
-        })
+        self.optimize_full_with_options(
+            options.into(),
+            older_than,
+            before_timestamp,
+            delete_unverified,
+        )
+        .await
+    }
+
+    /// Language-binding entry point retaining all provided rewrite fields.
+    #[doc(hidden)]
+    pub async fn optimize_full_with_options(
+        &self,
+        options: optimize::OptimizeOptions,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        self.optimize_full_action(
+            OptimizeAction::RewriteData {
+                options,
+                remap_options: None,
+            },
+            older_than,
+            before_timestamp,
+            delete_unverified,
+        )
+        .await
     }
 
     /// Prune versions committed before an absolute timestamp.
@@ -2182,27 +2243,47 @@ impl Table {
     }
 
     /// Run the maintenance cycle used by language bindings' `optimize()`
-    /// convenience method: compact, then -- on a local table -- prune and
+    /// convenience method: compact, then -- on a Embedded table -- prune and
     /// optimize indices.
     ///
-    /// This is an internal entry point for language bindings. On a remote
-    /// table (LanceDB Enterprise) only [`OptimizeAction::Compact`] with its
+    /// This is an internal entry point for language bindings. On a Enterprise
+    /// table (LanceDB Enterprise) only [`OptimizeAction::RewriteData`] with its
     /// supported per-job options is supported. A caller asking for anything pruning-related
     /// (`older_than`, `before_timestamp`, or `delete_unverified: Some(true)`)
     /// gets `NotSupported` before anything is submitted, the same way
-    /// unsupported `CompactionOptions` are rejected -- rather than a
+    /// unsupported `OptimizeOptions` are rejected -- rather than a
     /// success that silently reports zero bytes pruned when nothing was
     /// pruned at all. A plain call with none of those set only compacts:
     /// `Prune` and `Index` are skipped here rather than attempted and
     /// failed, since by this point the compaction job has already been
     /// durably submitted and a caller retrying on that failure would
     /// resubmit it. The returned prune stats are zeroed in that case. See
-    /// [`OptimizeAction::Compact`] for what the submission does and does not
+    /// [`OptimizeAction::RewriteData`] for what the submission does and does not
     /// wait for.
     #[doc(hidden)]
+    #[allow(deprecated)]
     pub async fn optimize_full(
         &self,
-        compaction_options: CompactionOptions,
+        data_options: lance::dataset::optimize::CompactionOptions,
+        older_than: Option<chrono::Duration>,
+        before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+        delete_unverified: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        self.optimize_full_action(
+            OptimizeAction::Compact {
+                options: data_options,
+                remap_options: None,
+            },
+            older_than,
+            before_timestamp,
+            delete_unverified,
+        )
+        .await
+    }
+
+    async fn optimize_full_action(
+        &self,
+        action: OptimizeAction,
         older_than: Option<chrono::Duration>,
         before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
         delete_unverified: Option<bool>,
@@ -2221,13 +2302,7 @@ impl Table {
                     .into(),
             });
         }
-        let compaction = self
-            .optimize(OptimizeAction::Compact {
-                options: compaction_options,
-                remap_options: None,
-            })
-            .await?
-            .compaction;
+        let compaction = self.inner.optimize(action).await?.compaction;
         if is_remote {
             return Ok(OptimizeStats {
                 compaction,
@@ -2239,15 +2314,17 @@ impl Table {
                 .await?
                 .prune
         } else {
-            self.optimize(OptimizeAction::Prune {
-                older_than,
-                delete_unverified,
-                error_if_tagged_old_versions: None,
-            })
-            .await?
-            .prune
+            self.inner
+                .optimize(OptimizeAction::Prune {
+                    older_than,
+                    delete_unverified,
+                    error_if_tagged_old_versions: None,
+                })
+                .await?
+                .prune
         };
-        self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
+        self.inner
+            .optimize(OptimizeAction::Index(IndexOptimizeOptions::default()))
             .await?;
         Ok(OptimizeStats { compaction, prune })
     }
@@ -3166,9 +3243,35 @@ impl Table {
     /// or binary data may not be practical to prewarm.  This feature is intended
     /// for workloads that issue many queries against the same columns.
     ///
-    /// If `columns` is `None`, all columns are prewarmed.
-    pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
-        self.inner.prewarm_data(columns).await
+    /// Accepts the same [`PrewarmDataOptions`] as [`Self::prewarm_data_async`]
+    /// and [`Self::explain_prewarm_data`], including filters and per-executor
+    /// concurrency. Existing `None` and `Some(Vec<String>)` column selectors
+    /// remain supported. Omitted or empty columns select all fields.
+    ///
+    /// ```no_run
+    /// # async fn warm(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// use lancedb::table::PrewarmDataOptions;
+    /// table.prewarm_data(PrewarmDataOptions::new()
+    ///     .columns(["video"])
+    ///     .filter("quality > 0.7")
+    ///     .concurrency(4)).await?;
+    /// // Existing column-only calls retain their behaviour.
+    /// table.prewarm_data(Some(vec!["video".to_owned()])).await?;
+    /// table.prewarm_data(None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn prewarm_data(&self, options: impl Into<PrewarmDataOptions>) -> Result<()> {
+        let options = options.into();
+        if options.filter.is_none() && options.concurrency.is_none() {
+            // Keep the established column-only hook for custom table implementations.
+            let columns = (!options.columns.is_empty()).then_some(options.columns);
+            self.inner.prewarm_data(columns).await
+        } else {
+            // Confirm submission, then discard the durable handle without polling.
+            self.inner.prewarm_data_async(options).await?;
+            Ok(())
+        }
     }
 
     /// Submit a durable data-cache prewarm job through SQL and return when accepted.
@@ -4548,6 +4651,15 @@ impl BaseTable for NativeTable {
         optimize::execute_optimize(self, action).await
     }
 
+    #[allow(deprecated)]
+    async fn compact(&self, options: optimize::OptimizeOverrides) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::RewriteData {
+            options: options.into(),
+            remap_options: None,
+        })
+        .await
+    }
+
     async fn add_columns(
         &self,
         transforms: NewColumnTransform,
@@ -4979,6 +5091,7 @@ pub struct FragmentSummaryStats {
     pub p99: usize,
 }
 
+// Preserve coverage of released full-snapshot Compact requests.
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
@@ -7102,7 +7215,7 @@ mod tests {
         // Compaction materializes the deletions.
         table
             .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+                options: lance::dataset::optimize::CompactionOptions {
                     target_rows_per_fragment: 1000,
                     ..Default::default()
                 },

@@ -12,6 +12,7 @@ use futures::TryStreamExt;
 use lance::Dataset;
 use lance::blob::blob_field as blob;
 use lance::dataset::WriteParams;
+use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_table::format::BasePath;
 use lancedb::{
@@ -23,7 +24,7 @@ use lancedb::{
         OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
+    table::{AddDataMode, OptimizeAction, OptimizeStats, WriteOptions},
 };
 use tempfile::tempdir;
 
@@ -1179,6 +1180,7 @@ async fn fetch_blobs_after_delete() -> Result<()> {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercise the released full-snapshot Compact action.
 async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap())
@@ -1196,7 +1198,7 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
 
     table
         .optimize(OptimizeAction::Compact {
-            options: CompactionOptions::default(),
+            options: OptimizeOptions::default(),
             remap_options: None,
         })
         .await?;

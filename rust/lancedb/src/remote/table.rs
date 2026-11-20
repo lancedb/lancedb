@@ -4040,99 +4040,40 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    /// Only `OptimizeAction::Compact` with supported `options` and no custom
-    /// `remap_options` is supported remotely: it submits a durable
-    /// compaction job through the server's `OPTIMIZE ... REWRITE DATA`
-    /// SQL statement, the same atomic, single-worker, index-safe path the
-    /// server uses for its own automatic compaction. `.wait()` below waits
-    /// for that SQL statement's own execution to finish, which only confirms
-    /// the compaction job was accepted into the server's job registry; the
-    /// compaction job itself then runs asynchronously on the server, so this
-    /// call can return well before the table is actually compacted.
-    /// `OptimizeStats::compaction` is `Some(CompactionMetrics::default())`,
-    /// a placeholder rather than `None` -- callers (including the
-    /// Python/Node bindings) unwrap it unconditionally on success -- because
-    /// the SQL job adapter does not expose per-job compaction metrics.
-    /// `OptimizeAction::All`, `::Prune`, and `::Index` remain unsupported
-    /// remotely: there is no SQL statement yet for version pruning or index
-    /// optimization. A branch-scoped table handle submits a
-    /// `WITH (branch = '<branch>')` clause; the server resolves and validates
-    /// the selected target. Per-job
-    /// `target_rows_per_fragment`, `max_source_rows`, `io_buffer_size`, and
-    /// `batch_size` are forwarded in the SQL `WITH` clause. Other non-default
-    /// options are rejected before submission. Servers must support these
-    /// SQL options. Parser errors and unknown optimize option errors become
-    /// `NotSupported` with the server diagnostic after one SQL submission.
-    /// No settings are removed and the operation is never resubmitted.
+    /// Submit through the same SQL receipt-validation path as `optimize_async`,
+    /// then discard the durable handle without polling for rewrite completion.
+    /// Convenience callers retain the existing placeholder statistics; actual
+    /// committed results are available by waiting on the job-returning method.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
-        self.check_mutable().await?;
-        let OptimizeAction::Compact {
-            options,
-            remap_options,
-        } = &action
-        else {
-            return Err(Error::NotSupported {
-                message: "optimize is only supported in LanceDB Enterprise for \
-                          OptimizeAction::Compact; version pruning and index \
-                          optimization are not yet supported remotely."
-                    .into(),
-            });
-        };
-        if remap_options.is_some() {
-            return Err(Error::NotSupported {
-                message: "a custom index remap strategy is not supported in LanceDB \
-                          Enterprise; omit remap_options to use the server's managed, \
-                          index-safe compaction path."
-                    .into(),
-            });
-        }
-        let mut overrides = crate::table::optimize::CompactionOverrides::try_from(options.clone())?;
-        // The legacy Lance options type has no presence bit for this field.
-        // Use Table::compact to explicitly send a target equal to Lance's default.
-        if options.target_rows_per_fragment
-            == crate::table::CompactionOptions::default().target_rows_per_fragment
-        {
-            overrides.target_rows_per_fragment = None;
-        }
-        self.compact(overrides).await
-    }
-
-    async fn compact(
-        &self,
-        options: crate::table::optimize::CompactionOverrides,
-    ) -> Result<OptimizeStats> {
-        self.check_mutable().await?;
-        let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
-        let sql_client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
-            message: "SQL is unavailable for this remote table client".to_string(),
-        })?;
-        // `OptimizeStats` carries `lance::dataset::optimize` metric types that
-        // are not `Serialize`/`Deserialize`/`Clone`, which `Job<T>` requires,
-        // so the job itself only signals completion; the real (placeholder)
-        // value is built afterward.
-        sql_client
-            .submit_as_job(statement, self.namespace.clone(), || async { Ok(()) })
-            .await
-            .map_err(optimize::map_optimize_error)?
-            .wait()
-            .await
-            .map_err(optimize::map_optimize_error)?;
+        self.optimize_async(action.into_remote_overrides()?).await?;
         Ok(OptimizeStats {
             compaction: Some(lance::dataset::optimize::CompactionMetrics::default()),
             prune: None,
         })
     }
-    async fn compact_async(
+    #[allow(deprecated)]
+    async fn compact(
         &self,
-        options: crate::table::optimize::CompactionOverrides,
-    ) -> Result<Job<crate::table::CompactionResult>> {
+        options: crate::table::optimize::OptimizeOverrides,
+    ) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::RewriteData {
+            options: options.into(),
+            remap_options: None,
+        })
+        .await
+    }
+
+    async fn optimize_async(
+        &self,
+        options: crate::table::optimize::OptimizeOverrides,
+    ) -> Result<Job<crate::table::OptimizeResult>> {
         self.check_mutable().await?;
         let statement = optimize::statement(&self.name, self.branch.as_deref(), &options)?;
         let client = self
             .sql_client
             .as_ref()
             .ok_or_else(|| Error::NotSupported {
-                message: "compaction jobs require a Flight SQL endpoint".into(),
+                message: "Optimize jobs require a Flight SQL endpoint".into(),
             })?;
         let query = client
             .execute(crate::database::ExecuteQueryRequest {
@@ -5010,7 +4951,9 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
     }
 }
 
+// Preserve coverage of released full-snapshot Compact requests.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -17876,12 +17819,17 @@ mod tests {
         });
         let error = table
             .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("SQL is unavailable"));
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("Optimize jobs require a Flight SQL endpoint")
+        );
     }
 
     #[tokio::test]
@@ -17892,7 +17840,7 @@ mod tests {
 
         let error = table
             .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: Some(Arc::new(lance::dataset::optimize::IgnoreRemap::default())),
             })
             .await
@@ -17903,14 +17851,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_rejects_unsupported_compaction_options() {
+    async fn test_optimize_rejects_unsupported_data_options() {
         let table = Table::new_with_handler("my_table", move |_| -> http::Response<String> {
             panic!("custom compaction options must be rejected before any request is sent")
         });
 
         let error = table
             .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions {
+                options: lance::dataset::optimize::CompactionOptions {
                     target_rows_per_fragment: 17,
                     max_source_bytes: Some(1024),
                     ..Default::default()
@@ -17921,7 +17869,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::NotSupported { .. }));
-        assert!(error.to_string().contains("CompactionOptions"));
+        assert!(error.to_string().contains("OptimizeOptions"));
     }
 
     #[tokio::test]
@@ -17964,18 +17912,23 @@ mod tests {
             .unwrap();
 
         // No SQL client is wired to this REST-only mock, so the branch-scoped
-        // handle hits the same "SQL is unavailable" check `optimize` runs for
-        // main -- it does not reject the branch itself, and it does not send
-        // a REST request (see `test_optimize_requires_sql`).
+        // handle hits the shared missing-endpoint check used on main; it does
+        // not reject the branch itself or send a REST request
+        // (see `test_optimize_requires_sql`).
         let error = branch
             .optimize(OptimizeAction::Compact {
-                options: crate::table::optimize::CompactionOptions::default(),
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("SQL is unavailable"));
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("Optimize jobs require a Flight SQL endpoint")
+        );
     }
 
     #[tokio::test]

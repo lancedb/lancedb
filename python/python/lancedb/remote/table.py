@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing_extensions import Unpack
+
 from collections.abc import Mapping
 from datetime import timedelta
 import deprecation
@@ -65,7 +67,11 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb._blob import validate_blob_mode
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
-from lancedb.table import _normalize_progress
+from lancedb.table import (
+    _normalize_progress,
+    _split_optimize_options,
+    _optimize_cleanup_since_ms,
+)
 
 from ..query import (
     FullTextOperator,
@@ -80,7 +86,8 @@ from ..table import (
     BlobMode,
     Branches,
     CompactionOptions,
-    CompactionResult,
+    OptimizeOptions,
+    OptimizeResult,
     IndexStatistics,
     Query,
     Table,
@@ -90,6 +97,8 @@ from ..types import BaseTokenizerType, ScalarIndexType
 from ..util import infer_vector_column_name
 
 if TYPE_CHECKING:
+    from lancedb._lancedb import OptimizeStats
+
     import lance
     import polars as pl
 
@@ -1110,23 +1119,25 @@ class RemoteTable(Table):
 
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
-    ) -> Job[CompactionResult]:
-        return Job(
-            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+    ) -> Job[OptimizeResult]:
+        """Deprecated: use optimize_async() with flat rewrite settings."""
+        warnings.warn(
+            "compact_async() is deprecated; use optimize_async()",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        return self.optimize_async(**(compaction_options or {}))
+
+    def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
+        return Job(LOOP.run(self._table.optimize_async(**options)))
 
     def optimize(
-        self,
-        *,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
-        compaction_options: Optional[CompactionOptions] = None,
-    ):
+        self, *, retrain: bool = False, **options: Unpack[OptimizeOptions]
+    ) -> OptimizeStats:
         """Compact the table's data files via a durable, asynchronous
         Enterprise job. Pruning old versions and index optimization are not
-        yet supported remotely, so this call skips them and returns
-        successfully with zeroed pruning statistics once the compaction job
+        yet supported in Enterprise, so this call skips them and returns
+        successfully with placeholder statistics once the compaction job
         has been submitted; it does not wait for that job to finish. The
         per-job options ``target_rows_per_fragment``, ``max_source_rows``,
         ``io_buffer_size``, and ``batch_size`` are supported on compatible
@@ -1135,12 +1146,13 @@ class RemoteTable(Table):
         before submission. Errors from older servers are propagated without
         retrying with the settings removed.
         """
+        tuning, cleanup, delete_unverified, action = _split_optimize_options(options)
         return LOOP.run(
-            self._table.optimize(
-                cleanup_older_than=cleanup_older_than,
-                delete_unverified=delete_unverified,
-                retrain=retrain,
-                compaction_options=compaction_options,
+            self._table._do_optimize(
+                _optimize_cleanup_since_ms(cleanup, retrain),
+                delete_unverified,
+                tuning,
+                action,
             )
         )
 

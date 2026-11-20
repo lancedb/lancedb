@@ -544,7 +544,9 @@ impl NativeTable {
     }
 }
 
+// Preserve coverage of released full-snapshot Compact requests.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use lance::index::DatasetIndexExt;
     use std::sync::Arc;
@@ -573,7 +575,8 @@ mod tests {
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     };
     use crate::query::{ExecutableQuery, QueryBase};
-    use crate::table::optimize::{CompactionOptions, OptimizeAction};
+    use crate::table::optimize::OptimizeAction;
+    use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
     use lance_index::scalar::FullTextSearchQuery;
     use lance_index::scalar::inverted::query::{FtsQuery, MatchQuery};
 
@@ -2560,7 +2563,7 @@ mod tests {
 
         table
             .optimize(OptimizeAction::Compact {
-                options: CompactionOptions {
+                options: OptimizeOptions {
                     target_rows_per_fragment: 2_000,
                     defer_index_remap: true,
                     ..Default::default()

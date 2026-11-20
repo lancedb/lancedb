@@ -25,7 +25,7 @@ import pytest
         "create_fts_index",
         "search",
         "cleanup_old_versions",
-        "compact_files",
+        "optimize_async",
         "optimize",
         "to_polars",
     ],
@@ -179,7 +179,6 @@ def test_fts_unsupported_options(sync_table, kwargs, message):
             "cleanup_old_versions",
             {"older_than": timedelta(days=1), "delete_unverified": True},
         ),
-        ("compact_files", {"target_rows_per_fragment": 1000}),
     ],
 )
 def test_remote_maintenance_options_warn(method, kwargs):
@@ -190,17 +189,12 @@ def test_remote_maintenance_options_warn(method, kwargs):
 
 def test_remote_optimize_options():
     handle = MagicMock()
-    handle.optimize = AsyncMock(side_effect=NotImplementedError("remote optimize"))
+    handle._do_optimize = AsyncMock(side_effect=NotImplementedError("remote optimize"))
     table = RemoteTable(handle, "test_db")
     age = timedelta(days=1)
     with pytest.raises(NotImplementedError, match="remote optimize"):
         table.optimize(cleanup_older_than=age, delete_unverified=True, retrain=True)
-    handle.optimize.assert_awaited_once_with(
-        cleanup_older_than=age,
-        delete_unverified=True,
-        retrain=True,
-        compaction_options=None,
-    )
+    handle._do_optimize.assert_awaited_once_with(86_400_000, True, None, None)
 
 
 @pytest.mark.parametrize(
@@ -258,3 +252,88 @@ def test_index_replacement_defaults(tmp_path):
         with pytest.warns(DeprecationWarning):
             sync.create_scalar_index("id")
     assert len(list(table.list_indices())) == 1
+
+
+@pytest.mark.parametrize("cls", [Table, LanceTable, RemoteTable])
+def test_optimize_retains_legacy_compaction_aliases(cls):
+    assert hasattr(cls, "compact_files")
+    assert hasattr(cls, "compact_async")
+
+
+def test_remote_optimize_rewrite_action():
+    handle = MagicMock()
+    handle._do_optimize = AsyncMock(return_value="accepted")
+    table = RemoteTable(handle, "test_db")
+    assert table.optimize(action="rewrite_data") == "accepted"
+    handle._do_optimize.assert_awaited_once_with(None, False, None, "rewrite_data")
+
+
+@pytest.mark.parametrize("cls", [Table, LanceTable, RemoteTable])
+@pytest.mark.parametrize("method", ["optimize", "optimize_async"])
+def test_optimize_public_options_names(cls, method):
+    parameters = inspect.signature(getattr(cls, method)).parameters
+    assert parameters["options"].kind is inspect.Parameter.VAR_KEYWORD
+    assert "data_options" not in parameters
+    assert "compaction_options" not in parameters
+
+
+def test_optimize_public_types():
+    import importlib.util
+    from lancedb.optimize import OptimizeResult
+    from lancedb.table import OptimizeOptions
+
+    assert lancedb.OptimizeOptions is OptimizeOptions
+    assert "retrain" not in OptimizeOptions.__annotations__
+    assert lancedb.CompactionOptions is OptimizeOptions
+    assert not hasattr(lancedb, "OptimizeDataOptions")
+    assert importlib.util.find_spec("lancedb.compaction") is not None
+    from lancedb.compaction import CompactionResult
+
+    assert CompactionResult is OptimizeResult
+    result = OptimizeResult.from_json(
+        '{"partial_commit":false,"rows_succeeded":1,"rows_failed":0,'
+        '"completion_percentage":100}'
+    )
+    assert result.rows_succeeded == 1
+
+
+def test_flat_optimize_forwarding(sync_table):
+    table, handle = sync_table
+    handle._do_optimize = AsyncMock(return_value="accepted")
+    assert table.optimize(target_rows_per_fragment=100, io_buffer_size=0) == "accepted"
+    handle._do_optimize.assert_awaited_once_with(
+        None, False, {"target_rows_per_fragment": 100, "io_buffer_size": 0}, None
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"compaction_options": {"target_rows_per_fragment": 100, "io_buffer_size": 0}},
+    ],
+)
+def test_legacy_optimize_options_forwarded(sync_table, options):
+    table, handle = sync_table
+    handle._do_optimize = AsyncMock(return_value="accepted")
+    with pytest.warns(DeprecationWarning, match="compaction_options"):
+        assert table.optimize(**options) == "accepted"
+    handle._do_optimize.assert_awaited_once_with(
+        None, False, {"target_rows_per_fragment": 100, "io_buffer_size": 0}, None
+    )
+
+
+def test_legacy_compact_async_forwarded(sync_table):
+    table, handle = sync_table
+    handle.optimize_async = AsyncMock(return_value=MagicMock())
+    with pytest.warns(DeprecationWarning, match="compact_async"):
+        table.compact_async(compaction_options={"io_buffer_size": 0})
+    handle.optimize_async.assert_awaited_once_with(io_buffer_size=0)
+
+
+def test_remote_legacy_compact_files_is_still_noop():
+    handle = MagicMock()
+    table = RemoteTable(handle, "test_db")
+    with pytest.warns(UserWarning, match="no-op"):
+        assert table.compact_files(target_rows_per_fragment=10) is None
+    handle.optimize_async.assert_not_called()
+    handle._do_optimize.assert_not_called()
