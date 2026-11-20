@@ -793,6 +793,8 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 
 ::: lancedb.query.Query
 
+::: lancedb.query.ColumnOrdering
+
 ::: lancedb.query.LanceQueryBuilder
 
 ::: lancedb.query.LanceVectorQueryBuilder
