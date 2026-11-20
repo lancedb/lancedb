@@ -4051,6 +4051,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
+    #[allow(deprecated)]
+    async fn compact(
+        &self,
+        options: crate::table::optimize::OptimizeOverrides,
+    ) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::RewriteData {
+            options: options.into(),
+            remap_options: None,
+        })
+        .await
+    }
+
     async fn optimize_async(
         &self,
         options: crate::table::optimize::OptimizeOverrides,
@@ -4939,7 +4951,9 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
     }
 }
 
+// Preserve coverage of released full-snapshot Compact requests.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -17804,8 +17818,8 @@ mod tests {
             panic!("unexpected REST request: {}", request.url().path())
         });
         let error = table
-            .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeOptions::default(),
+            .optimize(OptimizeAction::Compact {
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await
@@ -17825,8 +17839,8 @@ mod tests {
         });
 
         let error = table
-            .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeOptions::default(),
+            .optimize(OptimizeAction::Compact {
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: Some(Arc::new(lance::dataset::optimize::IgnoreRemap::default())),
             })
             .await
@@ -17843,8 +17857,8 @@ mod tests {
         });
 
         let error = table
-            .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeOptions {
+            .optimize(OptimizeAction::Compact {
+                options: lance::dataset::optimize::CompactionOptions {
                     target_rows_per_fragment: 17,
                     max_source_bytes: Some(1024),
                     ..Default::default()
@@ -17902,8 +17916,8 @@ mod tests {
         // not reject the branch itself or send a REST request
         // (see `test_optimize_requires_sql`).
         let error = branch
-            .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: crate::table::optimize::OptimizeOptions::default(),
+            .optimize(OptimizeAction::Compact {
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await

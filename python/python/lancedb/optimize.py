@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Results of durable remote Optimize jobs."""
+"""Results of durable Enterprise Optimize jobs."""
 
 from dataclasses import dataclass, fields
 import json
@@ -10,7 +10,7 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class OptimizeResult:
-    """Actual committed outcome of one remote Optimize data rewrite.
+    """Actual committed outcome of one Enterprise Optimize data rewrite.
 
     ``rows_failed`` counts planned live rows that were not committed, including
     partial progress. ``more_work`` means a bounded run left eligible work for

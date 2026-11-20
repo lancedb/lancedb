@@ -8750,7 +8750,10 @@ def test_remote_optimize_job_rejects_maintenance_options_before_submission(optio
 
     server = UnusedServer()
     with _mock_remote_table_with_sql(server) as table:
-        with pytest.raises(ValueError, match="unsupported by Optimize jobs"):
+        with pytest.raises(
+            (ValueError, TypeError),
+            match="unsupported by Optimize jobs|Unsupported Optimize option",
+        ):
             table.optimize_async(**options)
     assert server.calls == 0
 

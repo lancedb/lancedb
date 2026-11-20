@@ -381,6 +381,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercise the released full-snapshot Compact action.
 async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Result<()> {
     use arrow_array::{LargeBinaryArray, StringArray, StructArray, types::Float32Type};
     for stable in [false, true] {
@@ -434,8 +435,8 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
             .await?;
         table.delete("id = 5").await?;
         table
-            .optimize(lancedb::table::OptimizeAction::RewriteDataWithOptions {
-                options: lancedb::table::optimize::OptimizeOptions::default(),
+            .optimize(lancedb::table::OptimizeAction::Compact {
+                options: lance::dataset::optimize::CompactionOptions::default(),
                 remap_options: None,
             })
             .await?;

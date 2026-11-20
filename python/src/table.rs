@@ -32,8 +32,8 @@ use lancedb::table::optimize::OptimizeOptions;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
-    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeOverrides, Ref,
-    RefreshColumnOptions, Table as LanceDbTable,
+    IndexRemapMode, NewColumnTransform, OptimizeDataMode, Ref, RefreshColumnOptions,
+    Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -488,27 +488,10 @@ fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Op
     Ok(value)
 }
 
-/// Preserve Python field presence while sharing Embedded and Enterprise parsing.
-#[derive(Default)]
-struct ParsedOptimizeOptions {
-    options: OptimizeOptions,
-    target_specified: bool,
-}
-
-impl ParsedOptimizeOptions {
-    fn into_remote_overrides(self) -> PyResult<OptimizeOverrides> {
-        let mut overrides = OptimizeOverrides::try_from(self.options).infer_error()?;
-        if !self.target_specified {
-            overrides.target_rows_per_fragment = None;
-        }
-        Ok(overrides)
-    }
-}
-
-fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<ParsedOptimizeOptions> {
+fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<OptimizeOptions> {
     let mut parsed = OptimizeOptions::default();
     let Some(options) = options else {
-        return Ok(ParsedOptimizeOptions::default());
+        return Ok(OptimizeOptions::default());
     };
 
     for (key, value) in options.iter() {
@@ -523,24 +506,44 @@ fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Parse
                 "{key} must be an integer, not a bool"
             )));
         }
+        if value.is_none()
+            && matches!(
+                key.as_str(),
+                "max_bytes_per_file"
+                    | "num_threads"
+                    | "batch_size"
+                    | "io_buffer_size"
+                    | "compaction_mode"
+                    | "binary_copy_read_batch_bytes"
+                    | "max_source_fragments"
+                    | "max_source_rows"
+                    | "max_source_bytes"
+                    | "max_overlays_per_fragment"
+                    | "data_storage_version"
+            )
+        {
+            parsed.cleared_fields.insert(key.clone());
+        }
         match key.as_str() {
             "target_rows_per_fragment" => {
-                parsed.target_rows_per_fragment = positive_u32(&value, &key)?
+                parsed.target_rows_per_fragment = Some(positive_u32(&value, &key)?)
             }
-            "max_rows_per_group" => parsed.max_rows_per_group = positive_u32(&value, &key)?,
+            "max_rows_per_group" => parsed.max_rows_per_group = Some(positive_u32(&value, &key)?),
             "max_bytes_per_file" => parsed.max_bytes_per_file = value.extract()?,
-            "materialize_deletions" => parsed.materialize_deletions = value.extract()?,
+            "materialize_deletions" => parsed.materialize_deletions = Some(value.extract()?),
             "materialize_deletions_threshold" => {
-                parsed.materialize_deletions_threshold = value.extract()?
+                parsed.materialize_deletions_threshold = Some(value.extract()?)
             }
             "num_threads" => parsed.num_threads = optional_positive_usize(&value, &key)?,
             "batch_size" => parsed.batch_size = optional_positive_u32(&value, &key)?,
             "io_buffer_size" => parsed.io_buffer_size = optional_i64_bounded_u64(&value, &key)?,
-            "defer_index_remap" => parsed.defer_index_remap = value.extract()?,
+            "defer_index_remap" => parsed.defer_index_remap = Some(value.extract()?),
             "index_remap_mode" => {
                 let mode: String = value.extract()?;
-                parsed.index_remap_mode = IndexRemapMode::try_from(mode.as_str())
-                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                parsed.index_remap_mode = Some(
+                    IndexRemapMode::try_from(mode.as_str())
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                );
             }
             "compaction_mode" => {
                 let mode: Option<String> = value.extract()?;
@@ -557,7 +560,7 @@ fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Parse
             "max_source_fragments" => parsed.max_source_fragments = value.extract()?,
             "max_source_rows" => parsed.max_source_rows = optional_positive_usize(&value, &key)?,
             "max_source_bytes" => parsed.max_source_bytes = optional_positive_u64(&value, &key)?,
-            "excluded_fragment_ids" => parsed.excluded_fragment_ids = u32_list(&value, &key)?,
+            "excluded_fragment_ids" => parsed.excluded_fragment_ids = Some(u32_list(&value, &key)?),
             "max_overlays_per_fragment" => parsed.max_overlays_per_fragment = value.extract()?,
             "data_storage_version" => {
                 let version: String = value.extract()?;
@@ -575,10 +578,7 @@ fn parse_optimize_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Parse
         }
     }
 
-    Ok(ParsedOptimizeOptions {
-        options: parsed,
-        target_specified: options.contains("target_rows_per_fragment")?,
-    })
+    Ok(parsed)
 }
 
 /// Statistics about a compaction operation.
@@ -2323,7 +2323,7 @@ impl Table {
         data_options: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let overrides = parse_optimize_options(data_options)?.into_remote_overrides()?;
+        let overrides = parse_optimize_options(data_options)?;
         future_into_py(self_.py(), async move {
             let job = inner.optimize_async(overrides).await.infer_error()?;
             Ok(crate::job::Job::new_typed(job))
@@ -2368,33 +2368,17 @@ impl Table {
             None
         };
         future_into_py(self_.py(), async move {
-            let stats = if inner.as_native().is_some() {
-                if rewrite_only {
-                    inner
-                        .optimize(lancedb::table::OptimizeAction::RewriteDataWithOptions {
-                            options: data_options.options,
-                            remap_options: None,
-                        })
-                        .await
-                } else {
-                    inner
-                        .optimize_full(data_options.options, older_than, None, delete_unverified)
-                        .await
-                }
+            let stats = if rewrite_only {
+                inner
+                    .optimize(lancedb::table::OptimizeAction::RewriteData {
+                        options: data_options,
+                        remap_options: None,
+                    })
+                    .await
             } else {
-                let overrides = data_options.into_remote_overrides()?;
-                if rewrite_only {
-                    inner.optimize(overrides).await
-                } else {
-                    inner
-                        .optimize_full_with_overrides(
-                            overrides,
-                            older_than,
-                            None,
-                            delete_unverified,
-                        )
-                        .await
-                }
+                inner
+                    .optimize_full_with_options(data_options, older_than, None, delete_unverified)
+                    .await
             }
             .infer_error()?;
             let compaction_stats = stats.compaction.unwrap();

@@ -283,6 +283,7 @@ def test_optimize_public_types():
     from lancedb.table import OptimizeOptions
 
     assert lancedb.OptimizeOptions is OptimizeOptions
+    assert "retrain" not in OptimizeOptions.__annotations__
     assert lancedb.CompactionOptions is OptimizeOptions
     assert not hasattr(lancedb, "OptimizeDataOptions")
     assert importlib.util.find_spec("lancedb.compaction") is not None

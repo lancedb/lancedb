@@ -7,7 +7,7 @@
 # Interface: OptimizeOptions
 
 Flat Optimize settings for submission and durable jobs.
-Remote jobs support data rewrites; cleanup options are Embedded-only.
+Enterprise jobs support data rewrites; cleanup options are Embedded-only.
 
 ## Properties
 
@@ -17,7 +17,9 @@ Remote jobs support data rewrites; cleanup options are Embedded-only.
 optional action: "rewrite_data";
 ```
 
-Run only data rewriting, retaining history and skipping separate index maintenance.
+Select only data rewriting, retaining history and skipping separate index maintenance.
+For convenience calls, omit for Embedded's full rewrite/prune/index cycle.
+Enterprise, durable jobs, and previews support rewriting only.
 
 ***
 
@@ -91,4 +93,4 @@ Positive live-source-row budget across whole rewrite tasks.
 optional targetRowsPerFragment: number;
 ```
 
-Positive target rows per output fragment. Omitted remote values inherit table policy.
+Positive target rows per output fragment. Omitted Enterprise values inherit table policy.

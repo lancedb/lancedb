@@ -12,9 +12,9 @@ use futures::TryStreamExt;
 use lance::Dataset;
 use lance::blob::blob_field as blob;
 use lance::dataset::WriteParams;
+use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_table::format::BasePath;
-use lancedb::table::optimize::OptimizeOptions;
 use lancedb::{
     Connection, Error, Result, Table,
     blob::BlobRangeRequest,
@@ -1180,6 +1180,7 @@ async fn fetch_blobs_after_delete() -> Result<()> {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercise the released full-snapshot Compact action.
 async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap())
@@ -1196,7 +1197,7 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
     let ids_before: Vec<u64> = pairs_before.iter().map(|(_, rowid)| *rowid).collect();
 
     table
-        .optimize(OptimizeAction::RewriteDataWithOptions {
+        .optimize(OptimizeAction::Compact {
             options: OptimizeOptions::default(),
             remap_options: None,
         })

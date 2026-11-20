@@ -357,12 +357,12 @@ class OptimizeOptions(TypedDict, total=False):
 
     Cleanup controls apply to Embedded convenience Optimize. Durable jobs
     reject cleanup and separate index-maintenance requests before submission.
-    Unspecified options use Lance's defaults for local tables. Remote tables
+    Unspecified options use Lance's defaults for Embedded tables. Enterprise tables
     forward ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
     and ``batch_size`` as per-job SQL options; other non-default settings are
-    unsupported. Omitted remote options inherit table tuning, then deployment/built-in
-    defaults. The server must support these SQL options. These settings do not
-    change table policy.
+    unsupported. Omitted Enterprise options inherit table tuning, then
+    deployment/built-in defaults. The server must support these SQL options.
+    These settings do not change table policy.
 
     Compaction planning is row based. Lowering ``target_rows_per_fragment``
     based on the expected row size can bound later compaction passes once
@@ -449,16 +449,16 @@ class OptimizeOptions(TypedDict, total=False):
     """Deprecated nested rewrite settings; pass the settings as flat keywords."""
 
     cleanup_older_than: Optional[timedelta]
-    """Embedded version-retention age; unsupported by remote Optimize jobs."""
+    """Embedded version-retention age; unsupported by Enterprise Optimize jobs."""
 
     delete_unverified: bool
     """Allow Embedded cleanup of unverified files; default False."""
 
-    retrain: bool
-    """Deprecated convenience argument; unsupported by durable Optimize jobs."""
-
     action: Optional[Literal["rewrite_data"]]
-    """Select only data rewriting; omit for Embedded's full maintenance cycle."""
+    """Convenience calls: omit for Embedded's full maintenance cycle;
+    Enterprise submits rewriting only. Jobs and previews always cover rewriting.
+    The only explicit action currently supported is ``rewrite_data``.
+    """
 
 
 # Deprecated compatibility name; use OptimizeOptions for new code.
@@ -470,7 +470,6 @@ def _split_optimize_options(
 ) -> Tuple[
     Optional[Dict[str, Any]],
     Optional[timedelta],
-    bool,
     bool,
     Optional[Literal["rewrite_data"]],
 ]:
@@ -507,11 +506,10 @@ def _split_optimize_options(
         tuning.update(legacy)
     cleanup_older_than = tuning.pop("cleanup_older_than", None)
     delete_unverified = tuning.pop("delete_unverified", False)
-    retrain = tuning.pop("retrain", False)
     action = tuning.pop("action", None)
     if action not in (None, "rewrite_data"):
         raise ValueError("action must be 'rewrite_data' or None")
-    if durable and (cleanup_older_than is not None or delete_unverified or retrain):
+    if durable and (cleanup_older_than is not None or delete_unverified):
         raise ValueError(
             "cleanup and index-maintenance options are unsupported by Optimize jobs"
         )
@@ -521,7 +519,7 @@ def _split_optimize_options(
         raise ValueError(
             "action='rewrite_data' cannot be combined with cleanup options"
         )
-    return tuning or None, cleanup_older_than, delete_unverified, retrain, action
+    return tuning or None, cleanup_older_than, delete_unverified, action
 
 
 # Known distance metrics for legacy API detection
@@ -3231,14 +3229,14 @@ class Table(ABC):
         return self.optimize_async(**(compaction_options or {}))
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
-        """Submit remote Optimize and return a durable job after acceptance.
+        """Submit Enterprise Optimize and return a durable job after acceptance.
 
         Uses SQL OPTIMIZE with the table handle's branch and namespace. Supports
         the four per-job settings in
         [OptimizeOptions][lancedb.table.OptimizeOptions].
-        Requires a compatible remote server, table Ownership and parent Usage.
-        Local and historical-version handles are unsupported. Existing
-        ``optimize()`` retains its return-on-submission behavior remotely.
+        Requires a compatible Enterprise server, table Ownership and parent Usage.
+        Embedded and historical-version handles are unsupported. Existing
+        ``optimize()`` retains its return-on-submission behavior in Enterprise.
 
         ``job.wait()`` waits for the actual rewrite and returns
         [OptimizeResult][lancedb.optimize.OptimizeResult]. Partial/bounded
@@ -3253,21 +3251,25 @@ class Table(ABC):
         >>> result = job.wait()  # doctest: +SKIP
         >>> print(result.rows_succeeded)  # doctest: +SKIP
         """
-        raise NotImplementedError("Optimize jobs are only supported on remote tables")
+        raise NotImplementedError(
+            "Optimize jobs are only supported in LanceDB Enterprise"
+        )
 
     @abstractmethod
-    def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
+    def optimize(
+        self, *, retrain: bool = False, **options: Unpack[OptimizeOptions]
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
         .. note::
 
-            On a LanceDB Enterprise (remote) table, only compaction is
+            On a LanceDB Enterprise (Enterprise) table, only compaction is
             currently supported. Pruning old versions and index optimization
             are silently skipped there instead of being attempted, so this
             call returns placeholder statistics (not completed work) once
             the compaction job has been submitted; it does not wait for that
-            job to finish. Remote compaction supports per-job
+            job to finish. Enterprise compaction supports per-job
             ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
             and ``batch_size``. Omitted fields inherit table tuning, then
             deployment/built-in defaults. Other non-default compaction settings raise
@@ -5989,7 +5991,9 @@ class LanceTable(Table):
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         return Job(LOOP.run(self._table.optimize_async(**options)))
 
-    def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
+    def optimize(
+        self, *, retrain: bool = False, **options: Unpack[OptimizeOptions]
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -6048,9 +6052,7 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        tuning, cleanup, delete_unverified, retrain, action = _split_optimize_options(
-            options
-        )
+        tuning, cleanup, delete_unverified, action = _split_optimize_options(options)
         return LOOP.run(
             self._table._do_optimize(
                 _optimize_cleanup_since_ms(cleanup, retrain),
@@ -9689,29 +9691,31 @@ class AsyncTable:
     async def optimize_async(
         self, **options: Unpack[OptimizeOptions]
     ) -> AsyncJob[OptimizeResult]:
-        """Submit remote Optimize; await the returned job for actual results.
+        """Submit Enterprise Optimize; await the returned job for actual results.
 
         See [Table.optimize_async][lancedb.table.Table.optimize_async] for options,
         permissions, completion semantics and compatibility requirements.
         """
-        data_options, _, _, _, _ = _split_optimize_options(options, durable=True)
+        data_options, _, _, _ = _split_optimize_options(options, durable=True)
         return _typed_job(
             await self._inner.optimize_async(data_options),
             OptimizeResult.from_json,
         )
 
-    async def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
+    async def optimize(
+        self, *, retrain: bool = False, **options: Unpack[OptimizeOptions]
+    ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
 
         .. note::
 
-            On a LanceDB Enterprise (remote) table, only compaction is
+            On a LanceDB Enterprise (Enterprise) table, only compaction is
             currently supported. Pruning old versions and index optimization
             are silently skipped there instead of being attempted, so this
             call returns placeholder statistics (not completed work) once
             the compaction job has been submitted; it does not wait for that
-            job to finish. Remote compaction supports per-job
+            job to finish. Enterprise compaction supports per-job
             ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
             and ``batch_size``. Omitted fields inherit table tuning, then
             deployment/built-in defaults. Other non-default compaction settings raise
@@ -9774,7 +9778,7 @@ class AsyncTable:
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        data_options, cleanup_older_than, delete_unverified, retrain, action = (
+        data_options, cleanup_older_than, delete_unverified, action = (
             _split_optimize_options(options)
         )
         return await self._do_optimize(

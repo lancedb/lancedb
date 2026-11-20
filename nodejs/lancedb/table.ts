@@ -187,9 +187,9 @@ export interface PrewarmDataOptions {
 }
 
 /** Flat Optimize settings for submission and durable jobs.
- * Remote jobs support data rewrites; cleanup options are Embedded-only. */
+ * Enterprise jobs support data rewrites; cleanup options are Embedded-only. */
 export interface OptimizeOptions {
-  /** Positive target rows per output fragment. Omitted remote values inherit table policy. */
+  /** Positive target rows per output fragment. Omitted Enterprise values inherit table policy. */
   targetRowsPerFragment?: number;
   /** Positive live-source-row budget across whole rewrite tasks. */
   maxSourceRows?: number;
@@ -199,7 +199,9 @@ export interface OptimizeOptions {
   batchSize?: number;
   /** @deprecated Pass rewrite settings directly on OptimizeOptions. */
   compactionOptions?: CompactionOptions;
-  /** Run only data rewriting, retaining history and skipping separate index maintenance. */
+  /** Select only data rewriting, retaining history and skipping separate index maintenance.
+   * For convenience calls, omit for Embedded's full rewrite/prune/index cycle.
+   * Enterprise, durable jobs, and previews support rewriting only. */
   action?: "rewrite_data";
   /** Embedded: remove versions committed before this cutoff. Defaults to seven days ago.
    * Cannot be combined with action="rewrite_data" or used with durable Optimize jobs. */
@@ -1319,10 +1321,10 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
-   * Submit remote Optimize and return its durable job after acceptance.
+   * Submit Enterprise Optimize and return its durable job after acceptance.
    *
    * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
-   * a compatible remote server and table Ownership plus parent Usage. Local and
+   * a compatible Enterprise server and table Ownership plus parent Usage. Embedded and
    * historical-version handles are unsupported. Existing optimize() behavior is unchanged.
    * Waiting tracks the rewrite itself and returns actual row/file statistics.
    * Missing result payloads are errors; older workers can omit file counts.
@@ -1337,7 +1339,7 @@ export abstract class Table {
   async optimizeAsync(
     _options?: OptimizeOptions,
   ): Promise<Job<OptimizeResult>> {
-    throw new Error("Optimize jobs are only supported on remote tables");
+    throw new Error("Optimize jobs are only supported in LanceDB Enterprise");
   }
 
   /** @deprecated Use optimizeAsync() instead. */

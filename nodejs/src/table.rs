@@ -1057,7 +1057,12 @@ impl Table {
             .transpose()?
             .unwrap_or_default();
         let stats = if rewrite_only {
-            inner.optimize(overrides).await
+            inner
+                .optimize(lancedb::table::OptimizeAction::RewriteData {
+                    options: overrides.into(),
+                    remap_options: None,
+                })
+                .await
         } else {
             inner
                 .optimize_full_with_overrides(overrides, None, before_timestamp, delete_unverified)

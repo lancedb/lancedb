@@ -14,6 +14,8 @@ from lancedb.optimize import OptimizeResult
 def synchronous(table: Table) -> None:
     options: OptimizeOptions = {"target_rows_per_fragment": 100, "io_buffer_size": 0}
     assert_type(table.optimize(**options), OptimizeStats)
+    assert_type(table.optimize(retrain=False), OptimizeStats)
+    table.optimize_async(retrain=True)  # pyright: ignore[reportCallIssue]
     assert_type(table.optimize_async(**options), Job[OptimizeResult])
     assert_type(table.optimize(cleanup_older_than=timedelta(days=1)), OptimizeStats)
     table.optimize(data_options={"max_source_rows": 1})  # pyright: ignore[reportCallIssue]

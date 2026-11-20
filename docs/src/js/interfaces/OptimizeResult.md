@@ -6,7 +6,7 @@
 
 # Interface: OptimizeResult
 
-Actual committed outcome of one remote Optimize data rewrite.
+Actual committed outcome of one Enterprise Optimize data rewrite.
 
 ## Properties
 

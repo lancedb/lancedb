@@ -64,7 +64,7 @@ Positive live-source-row budget across whole rewrite tasks.
 optional targetRowsPerFragment: number;
 ```
 
-Positive target rows per output fragment. Omitted remote values inherit table policy.
+Positive target rows per output fragment. Omitted Enterprise values inherit table policy.
 
 #### Inherited from
 

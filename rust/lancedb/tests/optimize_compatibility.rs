@@ -21,7 +21,7 @@ fn released_type_paths_keep_their_meaning() {
     );
     assert_eq!(
         TypeId::of::<CompactionOptions>(),
-        TypeId::of::<lancedb::table::optimize::OptimizeOptions>()
+        TypeId::of::<lance::dataset::optimize::CompactionOptions>()
     );
     assert_eq!(
         TypeId::of::<CompactionMode>(),

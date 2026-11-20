@@ -6007,9 +6007,7 @@ describe("durable compaction validation", () => {
   test("rejects local tables and unknown options", async () => {
     const db = await connect(`memory://compaction-job-${Date.now()}`);
     const table = await db.createTable("test", [{ id: 1 }]);
-    await expect(table.optimizeAsync()).rejects.toThrow(
-      "only supported on remote tables",
-    );
+    await expect(table.optimizeAsync()).rejects.toThrow("LanceDB Enterprise");
     await expect(
       table.optimizeAsync({ unrecognizedLimit: 1 } as never),
     ).rejects.toThrow("Unsupported Optimize option");
@@ -6080,7 +6078,7 @@ describe("Optimize action selection", () => {
     expect(stats.prune.oldVersionsRemoved).toBe(0);
     expect((await table.listVersions()).length).toBeGreaterThan(before.length);
     expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(2);
-    await table.optimize();
+    await table.optimize({ targetRowsPerFragment: 100 });
     expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(0);
     await table.checkout(1);
     expect(await table.countRows()).toBe(1);

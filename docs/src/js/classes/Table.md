@@ -1125,10 +1125,10 @@ retrying with the settings removed.
 optimizeAsync(_options?): Promise<Job<OptimizeResult>>
 ```
 
-Submit remote Optimize and return its durable job after acceptance.
+Submit Enterprise Optimize and return its durable job after acceptance.
 
 Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
-a compatible remote server and table Ownership plus parent Usage. Local and
+a compatible Enterprise server and table Ownership plus parent Usage. Embedded and
 historical-version handles are unsupported. Existing optimize() behavior is unchanged.
 Waiting tracks the rewrite itself and returns actual row/file statistics.
 Missing result payloads are errors; older workers can omit file counts.

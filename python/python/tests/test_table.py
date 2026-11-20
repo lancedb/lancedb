@@ -6481,10 +6481,10 @@ async def test_optimize_action_validation(mem_db_async, kwargs):
 @pytest.mark.asyncio
 async def test_optimize_async_requires_remote(mem_db, mem_db_async):
     table = mem_db.create_table("local_job", [{"id": 1}])
-    with pytest.raises(NotImplementedError, match="only supported on remote tables"):
+    with pytest.raises(NotImplementedError, match="LanceDB Enterprise"):
         table.optimize_async()
     async_table = await mem_db_async.create_table("local_job", [{"id": 1}])
-    with pytest.raises(NotImplementedError, match="only supported on remote tables"):
+    with pytest.raises(NotImplementedError, match="LanceDB Enterprise"):
         await async_table.optimize_async()
     assert hasattr(async_table, "compact_async")
 
@@ -6507,3 +6507,36 @@ def test_legacy_optimize_nested_settings_embedded(tmp_path):
         stats = table.optimize(compaction_options={"target_rows_per_fragment": 100})
     assert stats.compaction.fragments_removed == 2
     assert table.count_rows() == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_optimize_inherits_embedded_table_config(tmp_path, asynchronous):
+    seed = lancedb.connect(tmp_path).create_table("policy", [{"id": 1}])
+    seed.add([{"id": 2}])
+    seed.to_lance().update_config(
+        {
+            "lance.compaction.target_rows_per_fragment": "1",
+            "lance.compaction.io_buffer_size": "4096",
+            "lance.compaction.max_source_rows": "1",
+        }
+    )
+    if asynchronous:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.open_table("policy")
+        stats = await table.optimize()
+        assert stats.compaction.fragments_removed == 0
+        stats = await table.optimize(
+            target_rows_per_fragment=100, io_buffer_size=0, max_source_rows=None
+        )
+        assert stats.compaction.fragments_removed == 2
+        assert await table.count_rows() == 2
+    else:
+        table = lancedb.connect(tmp_path).open_table("policy")
+        stats = table.optimize()
+        assert stats.compaction.fragments_removed == 0
+        stats = table.optimize(
+            target_rows_per_fragment=100, io_buffer_size=0, max_source_rows=None
+        )
+        assert stats.compaction.fragments_removed == 2
+        assert table.count_rows() == 2

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-/** Actual committed outcome of one remote Optimize data rewrite. */
+/** Actual committed outcome of one Enterprise Optimize data rewrite. */
 export interface OptimizeResult {
   /** A bounded run left eligible work for another invocation. */
   moreWork: boolean;

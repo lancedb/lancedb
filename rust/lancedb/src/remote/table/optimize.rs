@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Optimize options supported by the remote SQL submission protocol.
+//! Optimize options supported by the Enterprise SQL submission protocol.
 use crate::error::{Error, Result};
 
 pub(super) fn statement(
@@ -130,7 +130,7 @@ mod tests {
     use super::*;
     use crate::error::JobFailure;
     use crate::table::OptimizeOverrides;
-    use crate::table::optimize::OptimizeOptions;
+    use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
     use std::sync::Arc;
 
     fn sql_error(code: tonic::Code, message: &str) -> Error {

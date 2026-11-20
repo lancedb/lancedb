@@ -2286,7 +2286,9 @@ impl Connection {
     }
 }
 
+// Preserve coverage of released full-snapshot Compact requests.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, record_batch};
     use futures::TryStreamExt;
@@ -2702,7 +2704,7 @@ mod tests {
     async fn indexes_and_optimize_still_apply_to_a_view() {
         use crate::index::Index;
         use crate::table::OptimizeAction;
-        use crate::table::optimize::OptimizeOptions;
+        use lance::dataset::optimize::CompactionOptions as OptimizeOptions;
 
         let conn = connect("memory://").execute().await.unwrap();
         let source = conn
@@ -2722,7 +2724,7 @@ mod tests {
             .unwrap();
         assert_eq!(view.table().list_indices().await.unwrap().len(), 1);
         view.table()
-            .optimize(OptimizeAction::RewriteDataWithOptions {
+            .optimize(OptimizeAction::Compact {
                 options: OptimizeOptions::default(),
                 remap_options: None,
             })

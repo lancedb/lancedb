@@ -1131,10 +1131,12 @@ class RemoteTable(Table):
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         return Job(LOOP.run(self._table.optimize_async(**options)))
 
-    def optimize(self, **options: Unpack[OptimizeOptions]) -> OptimizeStats:
+    def optimize(
+        self, *, retrain: bool = False, **options: Unpack[OptimizeOptions]
+    ) -> OptimizeStats:
         """Compact the table's data files via a durable, asynchronous
         Enterprise job. Pruning old versions and index optimization are not
-        yet supported remotely, so this call skips them and returns
+        yet supported in Enterprise, so this call skips them and returns
         successfully with placeholder statistics once the compaction job
         has been submitted; it does not wait for that job to finish. The
         per-job options ``target_rows_per_fragment``, ``max_source_rows``,
@@ -1144,9 +1146,7 @@ class RemoteTable(Table):
         before submission. Errors from older servers are propagated without
         retrying with the settings removed.
         """
-        tuning, cleanup, delete_unverified, retrain, action = _split_optimize_options(
-            options
-        )
+        tuning, cleanup, delete_unverified, action = _split_optimize_options(options)
         return LOOP.run(
             self._table._do_optimize(
                 _optimize_cleanup_since_ms(cleanup, retrain),
