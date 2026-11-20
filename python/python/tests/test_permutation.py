@@ -7,7 +7,13 @@ import pytest
 
 from lancedb import DBConnection, Table, connect
 from lancedb.background_loop import LOOP
-from lancedb.permutation import Permutation, Permutations, permutation_builder
+from lancedb.permutation import (
+    DEFAULT_BATCH_SIZE,
+    Permutation,
+    Permutations,
+    Transforms,
+    permutation_builder,
+)
 from utils import (
     MockPermutationServer,
     assert_server_safe_row_id_requests,
@@ -79,6 +85,43 @@ def test_pickled_permutation_reads_pinned_version(tmp_path):
     assert len(restored) == 20
     rows = restored.__getitems__(list(range(20)))
     assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
+def test_builder_copy_is_shallow_and_does_not_materialize(
+    some_table: Table, some_perm_table: Table, monkeypatch
+):
+    """The with_* builders use copy.copy, which must stay a shallow copy.
+
+    Without ``Permutation.__copy__`` the copy falls back to the pickle path,
+    which materializes the permutation table with ``to_arrow()`` before
+    rebuilding the base table and reader. That is expensive for in-memory
+    tables and fails for remote permutation tables.
+    """
+    permutation = Permutation.from_tables(some_table, some_perm_table)
+
+    def fail_materialize(*args, **kwargs):
+        raise AssertionError("copy.copy must not materialize the permutation table")
+
+    def fail_getstate(_self):
+        raise AssertionError("copy.copy must not pickle the permutation")
+
+    monkeypatch.setattr(permutation.permutation_table, "to_arrow", fail_materialize)
+    monkeypatch.setattr(Permutation, "__getstate__", fail_getstate)
+
+    formatted = permutation.with_format("arrow")
+    assert formatted is not permutation
+    assert formatted.transform_fn is Transforms.arrow2arrow
+    assert permutation.transform_fn is Transforms.arrow2python
+    assert formatted.base_table is permutation.base_table
+    assert formatted.permutation_table is permutation.permutation_table
+    assert formatted.reader is permutation.reader
+
+    resized = permutation.with_batch_size(7)
+    assert resized.batch_size == 7
+    assert permutation.batch_size == DEFAULT_BATCH_SIZE
+    assert resized.selection is permutation.selection
+    resized.selection = {"id": "id"}
+    assert permutation.selection is not resized.selection
 
 
 def test_split_random_counts(mem_db):

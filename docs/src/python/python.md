@@ -449,7 +449,9 @@ and then call the returned instance; call `close()` if the class defines it. Thi
 path uses the current Python environment and does not create a registered
 `FunctionVersion`, build the declared remote runtime, resolve Secrets, or execute
 the remote Arrow adapter. A registered `FunctionVersion` call instead binds
-`col(...)` inputs and returns a remote `FunctionApplication`.
+`col(...)` inputs and returns a remote `FunctionApplication`. Passing an `Expr`
+such as `col("value")` to a definition raises `TypeError` before the callable
+runs; bind it on the registered `FunctionVersion` instead.
 
 ```python
 from lancedb import function
@@ -792,6 +794,8 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 ## Querying (Synchronous)
 
 ::: lancedb.query.Query
+
+::: lancedb.query.ColumnOrdering
 
 ::: lancedb.query.LanceQueryBuilder
 

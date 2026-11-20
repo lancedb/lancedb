@@ -589,9 +589,105 @@ def ensure_vector_query(
 
 
 class ColumnOrdering(pydantic.BaseModel):
+    """A single sort key for ``order_by``.
+
+    Attributes
+    ----------
+    column_name: str
+        The column to sort by.
+    ascending: bool, default True
+        Sort ascending when true, descending otherwise.
+    nulls_first: bool, default False
+        Place null values before non-null values when true.
+    """
+
     column_name: str
     ascending: bool = True
     nulls_first: bool = False
+
+
+_OrderingItem = Union[str, Tuple[str, str], ColumnOrdering, Dict[str, Any]]
+_OrderingInput = Optional[Union[_OrderingItem, List[_OrderingItem]]]
+_COLUMN_ORDERING_KEYS = frozenset({"column_name", "ascending", "nulls_first"})
+_ORDERING_EXAMPLE = '[{"column_name": "uris", "ascending": True}]'
+
+
+def _normalize_ordering(ordering: _OrderingInput) -> Optional[List[ColumnOrdering]]:
+    """Normalize the accepted ``order_by`` inputs into ``ColumnOrdering`` models.
+
+    ``None`` and an empty list clear the ordering. A tuple is always a single
+    ``(column_name, "asc"|"desc")`` pair, while a list is always a sequence of
+    separate orderings, so ``("a", "desc")`` and ``["a", "desc"]`` differ.
+    """
+    if ordering is None:
+        return None
+    if isinstance(ordering, tuple):
+        items: List[Any] = [ordering]
+    elif isinstance(ordering, list):
+        items = ordering
+    else:
+        items = [ordering]
+
+    normalized = [
+        _normalize_ordering_item(item, index) for index, item in enumerate(items)
+    ]
+    return normalized or None
+
+
+def _normalize_ordering_item(item: Any, index: int) -> ColumnOrdering:
+    prefix = f"order_by entry {index}"
+    if isinstance(item, ColumnOrdering):
+        if not item.column_name:
+            raise ValueError(f"{prefix} has an empty column_name")
+        return item
+    if isinstance(item, str):
+        if not item:
+            raise ValueError(f"{prefix} is an empty column name")
+        return ColumnOrdering(column_name=item)
+    if isinstance(item, tuple):
+        if len(item) != 2:
+            raise ValueError(
+                f"{prefix} must be a (column_name, 'asc'|'desc') tuple; got {item!r}"
+            )
+        column_name, direction = item
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError(
+                f"{prefix} must start with a non-empty column name; got {item!r}"
+            )
+        if not isinstance(direction, str) or direction.lower() not in ("asc", "desc"):
+            raise ValueError(
+                f"{prefix} has invalid direction {direction!r}; "
+                "expected 'asc' or 'desc'"
+            )
+        return ColumnOrdering(
+            column_name=column_name, ascending=direction.lower() == "asc"
+        )
+    if isinstance(item, dict):
+        unknown_keys = set(item) - _COLUMN_ORDERING_KEYS
+        if unknown_keys:
+            raise ValueError(
+                f"{prefix} has unsupported key(s) {sorted(map(str, unknown_keys))}; "
+                f"expected keys: {sorted(_COLUMN_ORDERING_KEYS)}. "
+                f"Example: {_ORDERING_EXAMPLE}"
+            )
+        if "column_name" not in item:
+            raise ValueError(
+                f"{prefix} is missing 'column_name'. Example: {_ORDERING_EXAMPLE}"
+            )
+        try:
+            normalized = ColumnOrdering(**item)
+        except pydantic.ValidationError as err:
+            raise ValueError(
+                f"{prefix} is not a valid ordering: {err}. Example: {_ORDERING_EXAMPLE}"
+            ) from err
+        if not normalized.column_name:
+            raise ValueError(f"{prefix} has an empty column_name")
+        return normalized
+    raise TypeError(
+        f"{prefix} must be a column name, a (column_name, 'asc'|'desc') tuple, "
+        f"a ColumnOrdering, or a dict with 'column_name'; "
+        f"got {type(item).__name__}"
+    )
 
 
 class FullTextQueryType(str, Enum):
@@ -1955,22 +2051,37 @@ class LanceQueryBuilder(ABC):
         self._ensure_fragment_constraints_supported("explain_plan()")
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
-    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
         """
         Set the ordering for the results.
 
         Parameters
         ----------
-        ordering: Optional[List[ColumnOrdering]]
-            The ordering to use for the results.  If None, then the default ordering
-            will be used.
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            The ordering to use for the results. Each entry can be a column
+            name, a ``(column_name, "asc"|"desc")`` tuple, a
+            [ColumnOrdering][lancedb.query.ColumnOrdering], or a dict with a
+            ``column_name`` key. A bare tuple is a single direction pair, while
+            a list contains separate orderings, so ``("a", "desc")`` sorts by
+            ``a`` descending and ``["a", "desc"]`` sorts by both columns.
+            Pass ``None`` or an empty list to clear the ordering.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("ordering", [{"name": "b"}, {"name": "a"}])
+        >>> table.search().order_by(["name"]).to_list()
+        [{'name': 'a'}, {'name': 'b'}]
+        >>> table.search().order_by([("name", "desc")]).to_list()
+        [{'name': 'b'}, {'name': 'a'}]
         """
-        self._order_by = ordering
+        self._order_by = _normalize_ordering(ordering)
         return self
 
     def analyze_plan(
@@ -2929,6 +3040,29 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # `_with_row_id` is also turned on by `rerank(return_score="all")` for
         # the reranker's own use, so it cannot answer "did the caller ask?".
         self._caller_requested_row_id = False
+
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
+        """
+        Set the ordering for the results.
+
+        Hybrid results are fused and reranked, so ordering the two search legs
+        does not define the final result order. Order the returned rows after
+        reranking instead.
+
+        Parameters
+        ----------
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            Must be ``None`` or an empty list. Any non-empty ordering raises
+            ``NotImplementedError``.
+        """
+        normalized = _normalize_ordering(ordering)
+        if normalized:
+            raise NotImplementedError(
+                "order_by is not supported for hybrid queries; "
+                "sort the returned results after reranking instead."
+            )
+        self._order_by = None
+        return self
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -4434,20 +4568,36 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.offset(offset)
         return self
 
-    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+    def order_by(self, ordering: _OrderingInput = None) -> Self:
         """
         Set the ordering for the results.
 
         Parameters
         ----------
-        ordering: Optional[List[ColumnOrdering]]
-            The ordering to use for the results.  If None, then the default ordering
-            will be used.
+        ordering: Optional[Union[str, tuple, ColumnOrdering, dict, list]]
+            The ordering to use for the results. Each entry can be a column
+            name, a ``(column_name, "asc"|"desc")`` tuple, a
+            [ColumnOrdering][lancedb.query.ColumnOrdering], or a dict with a
+            ``column_name`` key. A bare tuple is a single direction pair, while
+            a list contains separate orderings, so ``("a", "desc")`` sorts by
+            ``a`` descending and ``["a", "desc"]`` sorts by both columns.
+            Pass ``None`` or an empty list to clear the ordering.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = await lancedb.connect_async("memory://")  # doctest: +SKIP
+        >>> table = await db.create_table(  # doctest: +SKIP
+        ...     "ordering", [{"name": "b"}, {"name": "a"}]
+        ... )
+        >>> await table.query().order_by(["name"]).to_list()  # doctest: +SKIP
+        [{'name': 'a'}, {'name': 'b'}]
         """
-        if ordering is None:
+        normalized = _normalize_ordering(ordering)
+        if normalized is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by([o.model_dump() for o in ordering])
+            self._inner.order_by([o.model_dump() for o in normalized])
         return self
 
     def fast_search(self) -> Self:

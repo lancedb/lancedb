@@ -5490,12 +5490,10 @@ def test_background_loop_cancellation(exception):
     mock_future = MagicMock()
     mock_future.result.side_effect = exception()
 
-    with (
-        patch.object(BackgroundEventLoop, "__init__", return_value=None),
-        patch("asyncio.run_coroutine_threadsafe", return_value=mock_future),
-    ):
+    with patch("asyncio.run_coroutine_threadsafe", return_value=mock_future):
         loop = BackgroundEventLoop()
         loop.loop = MagicMock()
+        loop.thread = MagicMock()
         with pytest.raises(exception):
             loop.run(None)
         mock_future.cancel.assert_called_once()
