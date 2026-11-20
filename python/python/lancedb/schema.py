@@ -453,9 +453,10 @@ def blob_uri_array(
     uris:
         An iterable of absolute URI strings or ``None`` for a null blob. A
         URI under a registered base is matched and stored in the descriptor
-        relative to that base. An unmatched URI is rejected unless the table
-        was created with ``allow_external_blob_outside_bases=True``; even then it
-        must be a valid absolute URI.
+        relative to that base. An unmatched URI requires the write that
+        inserts the row to opt in with
+        ``allow_external_blob_outside_bases``, and must always be a valid
+        absolute URI.
     positions:
         Optional byte offsets, one per URI. Provide together with ``sizes``;
         each entry is an ``int`` or ``None``. A range requires both fields.
