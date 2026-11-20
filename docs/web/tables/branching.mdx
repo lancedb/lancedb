@@ -130,8 +130,9 @@ Forking from `main` returns a table handle scoped to the new branch. `main` is
 the reserved default source, so `create` needs only a name. To fork from another
 branch, pass `from_ref`, optionally with `from_version`. In Python, use
 keyword-only `from_tag` to fork from a tag; it cannot be combined with
-`from_ref` or `from_version`. A tag carries its own branch and version, so
-`from_tag` forks from that exact snapshot.
+`from_ref` or `from_version`. In Rust, pass `Ref::Tag` to `create_branch`. A
+tag carries its own branch and version, so the tag source forks from that exact
+snapshot.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
