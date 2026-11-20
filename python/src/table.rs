@@ -36,7 +36,7 @@ use lancedb::table::{
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
-    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyErr, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{
@@ -3261,9 +3261,14 @@ impl Tags {
         })
     }
 
-    pub fn create(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+    #[pyo3(signature = (tag, version=None))]
+    pub fn create(self_: PyRef<Self>, tag: String, version: Option<u64>) -> PyResult<Bound<PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
+            let version = match version {
+                Some(version) => version,
+                None => inner.version().await.infer_error()?,
+            };
             let mut tags = inner.tags().await.infer_error()?;
             tags.create(tag.as_str(), version).await.infer_error()?;
             Ok(())
@@ -3300,6 +3305,35 @@ impl Branches {
     }
 }
 
+/// Add the from_tag hint to a native branch lookup failure.
+///
+/// The caller only invokes this for a native `NotFound`, which identifies an
+/// unresolved branch path. A missing version is `VersionNotFound`, and a REST
+/// 404 is an ambiguous `TableNotFound`, so neither gets the hint. The original
+/// exception class and message are preserved apart from the added note.
+fn add_from_tag_hint(error: PyErr, branch: &str) -> PyErr {
+    let hint = format!("If '{branch}' is a tag, pass from_tag='{branch}' instead of from_ref.");
+    Python::attach(|py| {
+        let value = error.value(py);
+        if value.hasattr("add_note").unwrap_or(false)
+            && value.call_method1("add_note", (hint.clone(),)).is_ok()
+        {
+            return error;
+        }
+        // Python 3.10 has no BaseException.add_note. Native branch lookup
+        // failures are runtime errors with one string argument, so append the
+        // hint to that message without changing the exception class.
+        let Ok(args) = value.getattr("args") else {
+            return error;
+        };
+        let Ok(original) = args.get_item(0).and_then(|arg| arg.extract::<String>()) else {
+            return error;
+        };
+        let _ = value.setattr("args", (format!("{original}\n{hint}"),));
+        error
+    })
+}
+
 #[pymethods]
 impl Branches {
     pub fn list(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
@@ -3320,18 +3354,42 @@ impl Branches {
         })
     }
 
-    #[pyo3(signature = (name, from_ref=None, from_version=None))]
+    #[pyo3(signature = (name, from_ref=None, from_version=None, *, from_tag=None))]
     pub fn create(
         self_: PyRef<'_, Self>,
         name: String,
         from_ref: Option<String>,
         from_version: Option<u64>,
+        from_tag: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let from = Ref::Version(from_ref, from_version);
-            let table = inner.create_branch(&name, from).await.infer_error()?;
-            Ok(Table::new(table))
+            let from_branch = if from_tag.is_none() {
+                from_ref.clone()
+            } else {
+                None
+            };
+            let from = match from_tag {
+                Some(tag) => Ref::Tag(tag),
+                None => Ref::Version(from_ref, from_version),
+            };
+            match inner.create_branch(&name, from).await {
+                Ok(table) => Ok(Table::new(table)),
+                Err(error) => {
+                    // A missing branch is a native NotFound. A missing version
+                    // is VersionNotFound, and a remote 404 is an ambiguous
+                    // TableNotFound, so only the native branch case hints.
+                    let missing_branch = matches!(
+                        &error,
+                        lancedb::Error::Lance { source } if source.is_not_found()
+                    );
+                    let error = Err::<(), _>(error).infer_error().unwrap_err();
+                    match from_branch {
+                        Some(branch) if missing_branch => Err(add_from_tag_hint(error, &branch)),
+                        _ => Err(error),
+                    }
+                }
+            }
         })
     }
 
