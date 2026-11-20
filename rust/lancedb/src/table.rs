@@ -3268,13 +3268,10 @@ impl Table {
     /// # use lancedb::prewarm_run::PrewarmRunOptions;
     /// # async fn run(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let run = table
-    ///     .open_prewarm_run(PrewarmRunOptions {
-    ///         run_key: "job-1234-attempt-0-epoch-0".into(),
-    ///         version: 42,
-    ///         columns: vec!["image".into(), "label".into()],
-    ///         world_size: 8,
-    ///         row_addresses: false,
-    ///     })
+    ///     .open_prewarm_run(
+    ///         PrewarmRunOptions::new("job-1234-attempt-0-epoch-0", 42, 8)
+    ///             .with_columns(["image", "label"]),
+    ///     )
     ///     .await?;
     /// let rank = run.join(0, 0).await?;
     /// rank.wait_ready(0, Duration::from_secs(600)).await?;

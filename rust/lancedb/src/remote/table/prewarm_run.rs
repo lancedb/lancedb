@@ -25,6 +25,11 @@ struct ErrorBody {
     error_code: Option<String>,
 }
 
+/// How many times `open` is sent before a gateway or connection failure is
+/// returned, and the wait before the second attempt, which doubles after.
+const OPEN_ATTEMPTS: u32 = 4;
+const OPEN_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Marks a query as cache-only.
 pub(super) const CACHE_ONLY_HEADER: &str = "x-lancedb-cache-only";
 
@@ -83,12 +88,6 @@ pub(super) async fn open<S: HttpSend>(
     mut body: Value,
     options: &PrewarmRunOptions,
 ) -> Result<PrewarmRun> {
-    #[derive(Deserialize)]
-    struct Reply {
-        run_id: String,
-        version: u64,
-        wave_positions: u64,
-    }
     body["run_key"] = json!(options.run_key);
     body["version"] = json!(options.version);
     body["columns"] = json!(options.columns);
@@ -98,16 +97,54 @@ pub(super) async fn open<S: HttpSend>(
     if options.row_addresses {
         body["row_addresses"] = json!(true);
     }
+    // Opening is safe to repeat: the same `run_key` finds the same run. It
+    // does not reach the run's coordinator, so a few attempts cover a
+    // gateway blip and the long deadline of later calls is not needed.
+    let mut backoff = OPEN_RETRY_BACKOFF;
+    let mut attempt = 1;
+    loop {
+        match open_once(client, identifier, &body).await {
+            Err((error, true)) if attempt < OPEN_ATTEMPTS => {
+                log::warn!("opening a prewarm run failed, retrying: {error}");
+                tokio::time::sleep(backoff).await;
+                backoff *= 2;
+                attempt += 1;
+            }
+            Err((error, _)) => return Err(error),
+            Ok(run) => return Ok(run),
+        }
+    }
+}
+
+/// One attempt at `open`. The flag on an error says whether another attempt
+/// may succeed.
+///
+/// The client's own retries are not used here: they repeat a 409 until they
+/// give up and return a retry error, which would hide `run_key_conflict`.
+async fn open_once<S: HttpSend>(
+    client: &RestfulLanceDbClient<S>,
+    identifier: &str,
+    body: &Value,
+) -> std::result::Result<PrewarmRun, (Error, bool)> {
+    #[derive(Deserialize)]
+    struct Reply {
+        run_id: String,
+        version: u64,
+        wave_positions: u64,
+    }
     let request = client
         .post(&format!("/v1/table/{identifier}/prewarm_run/"))
-        .json(&body);
-    let (request_id, response) = client.send(request).await?;
+        .json(body);
+    let (request_id, response) = client.send(request).await.map_err(|error| (error, true))?;
     let status = response.status();
     if status.is_success() {
-        let reply: Reply = response.json().await.map_err(|error| Error::Http {
-            source: Box::new(error),
-            request_id,
-            status_code: Some(status),
+        let reply: Reply = response.json().await.map_err(|error| {
+            let error = Error::Http {
+                source: Box::new(error),
+                request_id,
+                status_code: Some(status),
+            };
+            (error, false)
         })?;
         return Ok(attach(
             client,
@@ -120,22 +157,40 @@ pub(super) async fn open<S: HttpSend>(
     let text = response.text().await.unwrap_or_default();
     let body = serde_json::from_str::<ErrorBody>(&text).ok();
     let code = body.as_ref().and_then(|body| body.error_code.clone());
-    match code {
+    Err(match code {
         // A 404 without a code is a server that does not know the route.
-        None if status == StatusCode::NOT_FOUND => Err(Error::NotSupported {
-            message: "this server does not support prewarm runs".into(),
-        }),
-        Some(code) => Err(Error::PrewarmRun {
-            run_id: String::new(),
-            code,
-            message: body.and_then(|body| body.error).unwrap_or(text),
-        }),
-        None => Err(Error::Http {
-            source: format!("{status}: {text}").into(),
-            request_id,
-            status_code: Some(status),
-        }),
-    }
+        None if status == StatusCode::NOT_FOUND => (
+            Error::NotSupported {
+                message: "this server does not support prewarm runs".into(),
+            },
+            false,
+        ),
+        Some(code) => (
+            Error::PrewarmRun {
+                run_id: String::new(),
+                code,
+                message: body.and_then(|body| body.error).unwrap_or(text),
+            },
+            false,
+        ),
+        None => (
+            Error::Http {
+                source: format!("{status}: {text}").into(),
+                request_id,
+                status_code: Some(status),
+            },
+            is_gateway_error(status),
+        ),
+    })
+}
+
+/// A status a gateway returns when it could not reach the server, as
+/// opposed to one the server chose.
+fn is_gateway_error(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 #[async_trait]
@@ -193,11 +248,10 @@ impl<S: HttpSend> PrewarmRunTransport for RemotePrewarmRunTransport<S> {
             request_id,
             status_code: Some(status),
         };
-        match status {
-            StatusCode::BAD_GATEWAY
-            | StatusCode::SERVICE_UNAVAILABLE
-            | StatusCode::GATEWAY_TIMEOUT => Err(CallError::Transient(error)),
-            _ => Err(CallError::Other(error)),
+        if is_gateway_error(status) {
+            Err(CallError::Transient(error))
+        } else {
+            Err(CallError::Other(error))
         }
     }
 }
@@ -298,13 +352,7 @@ mod tests {
     }
 
     fn options() -> PrewarmRunOptions {
-        PrewarmRunOptions {
-            run_key: "job-7-attempt-0-epoch-0".into(),
-            version: 42,
-            columns: vec!["image".into()],
-            world_size: 2,
-            row_addresses: false,
-        }
+        PrewarmRunOptions::new("job-7-attempt-0-epoch-0", 42, 2).with_columns(["image"])
     }
 
     /// A script with an open run and a join whose heartbeats stay quiet.
@@ -339,10 +387,7 @@ mod tests {
     #[tokio::test]
     async fn open_says_when_ranges_are_cut_from_row_addresses() {
         let script = opened();
-        let options = PrewarmRunOptions {
-            row_addresses: true,
-            ..options()
-        };
+        let options = options().with_row_addresses(true);
         script.table().open_prewarm_run(options).await.unwrap();
         assert_eq!(script.calls("open")[0]["row_addresses"], json!(true));
     }
@@ -370,6 +415,37 @@ mod tests {
             matches!(&error, Error::PrewarmRun { code, .. } if code == error_codes::RUN_KEY_CONFLICT),
             "{error:?}"
         );
+        // No run was opened, so the message names none.
+        assert_eq!(
+            error.to_string(),
+            "Prewarm run: server says run_key_conflict"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn open_retries_a_gateway_error() {
+        let script = Script::default()
+            .reply("open", 502, json!("bad gateway"))
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 4096 }),
+            );
+        let run = script.table().open_prewarm_run(options()).await.unwrap();
+        assert_eq!(run.run_id(), "run-1");
+        assert_eq!(script.calls("open").len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn open_gives_up_on_a_gateway_that_stays_down() {
+        let script = Script::default().reply("open", 502, json!("bad gateway"));
+        let error = script
+            .table()
+            .open_prewarm_run(options())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Http { .. }), "{error:?}");
+        assert_eq!(script.calls("open").len(), 4);
     }
 
     #[tokio::test]
@@ -385,12 +461,18 @@ mod tests {
                 200,
                 json!({ "wave": 0, "status": "warming" }),
             )
+            // A state from a newer server is not ready, so the wait goes on.
+            .reply(
+                "wave_status",
+                200,
+                json!({ "wave": 0, "status": "a_state_added_later" }),
+            )
             .reply("wave_status", 200, json!({ "wave": 0, "status": "ready" }));
         let run = script.table().open_prewarm_run(options()).await.unwrap();
         let rank = run.join(1, 0).await.unwrap();
         rank.wait_ready(0, Duration::from_secs(60)).await.unwrap();
         let polls = script.calls("wave_status");
-        assert_eq!(polls.len(), 3);
+        assert_eq!(polls.len(), 4);
         assert_eq!(polls[0]["rank"], 1);
         assert_eq!(polls[0]["wave"], 0);
         assert!(polls[0]["wait_ms"].as_u64().unwrap() <= 20_000);
@@ -418,6 +500,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Timeout { .. }), "{error:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn close_does_not_wait_out_a_supervisor_that_is_away() {
+        let script = opened().reply("close", 503, error(error_codes::NOT_READY));
+        let run = script.table().open_prewarm_run(options()).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
+        let started = tokio::time::Instant::now();
+        let error = rank.close().await.unwrap_err();
+        assert!(matches!(error, Error::Timeout { .. }), "{error:?}");
+        assert!(started.elapsed() <= Duration::from_secs(5));
     }
 
     #[tokio::test]

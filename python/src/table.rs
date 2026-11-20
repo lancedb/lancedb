@@ -1944,13 +1944,9 @@ impl Table {
         row_addresses: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let options = lancedb::prewarm_run::PrewarmRunOptions {
-            run_key,
-            version,
-            columns: columns.unwrap_or_default(),
-            world_size,
-            row_addresses,
-        };
+        let options = lancedb::prewarm_run::PrewarmRunOptions::new(run_key, version, world_size)
+            .with_columns(columns.unwrap_or_default())
+            .with_row_addresses(row_addresses);
         future_into_py(self_.py(), async move {
             let run = inner.open_prewarm_run(options).await.infer_error()?;
             Ok(crate::prewarm_run::PrewarmRun::new(run))

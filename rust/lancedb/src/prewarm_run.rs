@@ -30,6 +30,11 @@ use crate::error::{Error, Result};
 /// failure; the value is provisional until that has been measured.
 pub const DEFAULT_RUN_CALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+/// How long `close` keeps retrying. Leaving is a courtesy: the server drops
+/// a rank whose heartbeats stop, so a job shutting down does not wait out a
+/// coordinator that is away.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The longest a single `wave_status` call waits on the server. Kept below
 /// common proxy idle timeouts; [`PrewarmRunRank::wait_ready`] loops it.
 const MAX_WAVE_STATUS_WAIT: Duration = Duration::from_secs(20);
@@ -58,7 +63,10 @@ pub mod error_codes {
 }
 
 /// What a run warms and how many ranks read it.
+///
+/// Build it with [`PrewarmRunOptions::new`]; the struct may gain fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PrewarmRunOptions {
     /// Chosen by the caller and identical on every rank of one training
     /// attempt. Every rank that opens a run with the same key gets the same
@@ -78,6 +86,32 @@ pub struct PrewarmRunOptions {
     ///
     /// [`with_row_addresses`]: crate::dataloader::permutation::builder::PermutationBuilder::with_row_addresses
     pub row_addresses: bool,
+}
+
+impl PrewarmRunOptions {
+    /// Options that warm every column, for ranges cut from row ids.
+    pub fn new(run_key: impl Into<String>, version: u64, world_size: u32) -> Self {
+        Self {
+            run_key: run_key.into(),
+            version,
+            columns: Vec::new(),
+            world_size,
+            row_addresses: false,
+        }
+    }
+
+    /// Warm only these columns. Empty means all columns.
+    pub fn with_columns(mut self, columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.columns = columns.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Say whether announced ranges are cut from true row addresses; see
+    /// [`row_addresses`](Self::row_addresses).
+    pub fn with_row_addresses(mut self, row_addresses: bool) -> Self {
+        self.row_addresses = row_addresses;
+        self
+    }
 }
 
 /// Rows `[start, end)` of one fragment.
@@ -136,6 +170,10 @@ pub enum WaveStatus {
     Warming,
     Ready,
     Consumed,
+    /// A state this client does not know, from a newer server. A waiter
+    /// treats it like the other states that are not ready yet.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A failed run call, as the transport saw it.
@@ -345,7 +383,10 @@ impl Member<'_> {
                         ),
                     });
                 }
-                WaveStatus::NotAnnounced | WaveStatus::Pending | WaveStatus::Warming => {}
+                WaveStatus::NotAnnounced
+                | WaveStatus::Pending
+                | WaveStatus::Warming
+                | WaveStatus::Unknown => {}
             }
         }
     }
@@ -467,7 +508,7 @@ impl PrewarmRunRank {
     /// counts as closed.
     pub async fn close(&self) -> Result<()> {
         self.stop_heartbeat();
-        let deadline = Instant::now() + DEFAULT_RUN_CALL_TIMEOUT;
+        let deadline = Instant::now() + CLOSE_TIMEOUT;
         let body = json!({ "rank": self.shared.rank });
         match call::<Value>(&self.shared.run, "close", body, deadline).await {
             Ok(_) => Ok(()),
@@ -540,6 +581,13 @@ async fn heartbeat_loop(shared: Arc<RankShared>) {
 
 /// Send one run call, retrying transient failures with backoff until
 /// `deadline`.
+///
+/// This does not use the client's `RetryConfig`. That gives up after a
+/// fixed number of attempts, which suits a query. A run call has to outlast
+/// the run's coordinator being replaced, which the server reports as
+/// `not_ready` in the reply body and which can take far longer than a few
+/// attempts, so the limit here is a deadline. The transport sends each
+/// attempt without the client's retries so that the two do not nest.
 async fn call<T: DeserializeOwned>(
     run: &PrewarmRun,
     name: &str,
