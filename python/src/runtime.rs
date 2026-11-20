@@ -164,9 +164,23 @@ fn create_runtime() -> runtime::Runtime {
     builder.build().expect("Failed to build tokio runtime")
 }
 
+/// Register the fork-child handler once, before any generation-scoped state
+/// is created.
+///
+/// The first top-level call deliberately installs the hook before it starts
+/// counting itself. Otherwise a fork between taking that first counter and
+/// `get_runtime()` installing the hook would leave the child sharing the
+/// parent's counter with no generation change to separate them.
+fn ensure_atfork_installed() {
+    if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
+        install_atfork();
+    }
+}
+
 /// Get the in-flight counter for the current fork generation, creating it on
 /// the first top-level call after a fork.
 fn current_calls() -> Arc<GenerationCalls> {
+    ensure_atfork_installed();
     let current_gen = GENERATION.load(Ordering::SeqCst);
     loop {
         let existing = CALLS.load_full();
@@ -197,6 +211,7 @@ fn current_calls() -> Arc<GenerationCalls> {
 /// Get a live, owned handle to the shared runtime, rebuilding it if the
 /// installed one predates the most recent `fork()`.
 fn get_runtime() -> Arc<Tagged> {
+    ensure_atfork_installed();
     let current_gen = GENERATION.load(Ordering::SeqCst);
     loop {
         let existing = RUNTIME.load_full();
@@ -204,9 +219,6 @@ fn get_runtime() -> Arc<Tagged> {
             && existing.generation == current_gen
         {
             return Arc::clone(existing);
-        }
-        if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
-            install_atfork();
         }
         // Built optimistically, outside any lock: on the rare race where two
         // threads both find the slot empty (or stale), one candidate wins
@@ -835,11 +847,11 @@ mod tests {
             .expect("parent task did not start");
 
         let child_result = run_in_forked_child(|| {
-            let start = Instant::now();
-            shutdown(Duration::from_secs(2));
-            let waited_for_parent = start.elapsed() >= Duration::from_secs(1);
-            let inherited_runtime_still_installed = RUNTIME.load_full().is_some();
-            i32::from(waited_for_parent || inherited_runtime_still_installed)
+            // Much longer than the watchdog: if this waits for inherited
+            // parent work at all, the child fails to report in time instead
+            // of the test comparing two elapsed durations.
+            shutdown(Duration::from_secs(30));
+            i32::from(RUNTIME.load_full().is_some())
         });
         assert_eq!(
             child_result,
@@ -882,22 +894,36 @@ mod tests {
         let child_result = run_in_forked_child(|| {
             let child_done = Arc::new(AtomicBool::new(false));
             let child_done_flag = Arc::clone(&child_done);
+            let (task_started_tx, task_started_rx) = mpsc::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
             let (child_tx, child_rx) = mpsc::channel();
             drop(LanceRuntime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                task_started_tx.send(()).unwrap();
+                let _ = release_rx.await;
                 child_done_flag.store(true, Ordering::SeqCst);
                 let _ = child_tx.send(());
             }));
+            task_started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("child task did not start");
 
-            let start = Instant::now();
-            shutdown(Duration::from_secs(2));
-            let elapsed = start.elapsed();
-            let drained = child_rx.recv_timeout(Duration::from_secs(1)).is_ok()
+            // Keep the child's own task outstanding while shutdown starts,
+            // then release it once the shutdown thread is about to enter.
+            let (shutdown_ready_tx, shutdown_ready_rx) = mpsc::channel();
+            let shutdown_thread = std::thread::spawn(move || {
+                shutdown_ready_tx.send(()).unwrap();
+                shutdown(Duration::from_secs(30));
+            });
+            shutdown_ready_rx.recv().unwrap();
+            release_tx.send(()).unwrap();
+            shutdown_thread.join().unwrap();
+
+            let drained = child_rx.recv_timeout(Duration::from_secs(5)).is_ok()
                 && child_done.load(Ordering::SeqCst);
             let retired = RUNTIME.load_full().is_none();
             let rebuilt = block_on(async { 40 + 2 }) == 42;
-            shutdown(Duration::from_secs(5));
-            i32::from(!(drained && retired && rebuilt && elapsed < Duration::from_secs(1)))
+            shutdown(Duration::from_secs(30));
+            i32::from(!(drained && retired && rebuilt))
         });
         assert_eq!(
             child_result,
@@ -923,11 +949,17 @@ mod tests {
     #[test]
     fn test_inherited_guard_does_not_corrupt_child_generation_counter() {
         use std::sync::mpsc;
+        use tokio::sync::oneshot;
 
         let _lock = lock_runtime_state_for_test();
         let _worker_threads = TestWorkerThreads::new(2);
         shutdown(Duration::from_secs(5));
 
+        // This test forks before any runtime exists, so make the hook
+        // initialization explicit through the same path the first top-level
+        // call uses; otherwise this test only works after a preceding test
+        // has installed the process-wide hook.
+        ensure_atfork_installed();
         // Stands in for a top-level call that was in progress when the
         // parent forked and is dropped by the child after it starts work.
         let inherited_guard = OutstandingGuard::new();
@@ -938,25 +970,37 @@ mod tests {
         let child_result = run_in_forked_child(move || {
             let child_done = Arc::new(AtomicBool::new(false));
             let child_done_flag = Arc::clone(&child_done);
+            let (task_started_tx, task_started_rx) = mpsc::channel();
+            let (release_tx, release_rx) = oneshot::channel::<()>();
             let (child_tx, child_rx) = mpsc::channel();
             drop(LanceRuntime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                task_started_tx.send(()).unwrap();
+                let _ = release_rx.await;
                 child_done_flag.store(true, Ordering::SeqCst);
                 let _ = child_tx.send(());
             }));
+            task_started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("child task did not start");
 
-            // Drop it only after the child has its own runtime and work, so
-            // a shared or reset counter would visibly perturb this child's
-            // accounting instead of landing harmlessly on a zero count.
+            // Drop the inherited guard while the child has its own task
+            // outstanding, so a shared or reset counter would visibly
+            // perturb the child's accounting.
             drop(inherited_guard);
 
-            let start = Instant::now();
-            shutdown(Duration::from_secs(2));
-            let drained = child_rx.recv_timeout(Duration::from_secs(1)).is_ok()
+            let (shutdown_ready_tx, shutdown_ready_rx) = mpsc::channel();
+            let shutdown_thread = std::thread::spawn(move || {
+                shutdown_ready_tx.send(()).unwrap();
+                shutdown(Duration::from_secs(30));
+            });
+            shutdown_ready_rx.recv().unwrap();
+            release_tx.send(()).unwrap();
+            shutdown_thread.join().unwrap();
+
+            let drained = child_rx.recv_timeout(Duration::from_secs(5)).is_ok()
                 && child_done.load(Ordering::SeqCst);
             let retired = RUNTIME.load_full().is_none();
-            let elapsed = start.elapsed();
-            i32::from(!(drained && retired && elapsed < Duration::from_secs(1)))
+            i32::from(!(drained && retired))
         });
         assert_eq!(
             child_result,
