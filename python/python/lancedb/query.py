@@ -273,6 +273,24 @@ def _query_needs_lance_scanner(builder: Any) -> bool:
     )
 
 
+def _raise_unsupported_fragment_constraints(
+    fragments: Optional[Any],
+    fragment_ids: Optional[List[int]],
+    *,
+    operation: str,
+) -> None:
+    """Reject fragment selection where execution would silently scan everything."""
+    if fragments is None and fragment_ids is None:
+        return
+    raise NotImplementedError(
+        "with_fragments() and fragment_ids() are only supported for embedded "
+        "plain-scan blob queries executed through to_pandas(). "
+        f"{operation} would ignore the fragment selection and scan the full "
+        "table. Remove the fragment constraint, or use table.to_lance() with "
+        "a Lance scanner for this query shape."
+    )
+
+
 def _query_is_plain_scan(query: Query) -> bool:
     return (
         query.vector is None
@@ -1686,10 +1704,18 @@ class LanceQueryBuilder(ABC):
         return self._user_requested_row_id() or self._blob_auto_row_id_enabled()
 
     def _query_for_scan(self, blob_sources: Optional[dict[str, str]] = None) -> Query:
+        self._ensure_fragment_constraints_supported("this query")
         query = self.to_query_object()
         if self._scan_needs_row_id() or blob_sources:
             query.with_row_id = True
         return query
+
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
 
     def _can_fetch_plain_legacy_blobs(self, blob_mode: BlobMode) -> bool:
         if blob_mode != "bytes":
@@ -1887,6 +1913,7 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
     def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
@@ -1961,6 +1988,7 @@ class LanceQueryBuilder(ABC):
         plan : str
             The physical query execution plan with runtime metrics.
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return self._table._analyze_plan(
             self.to_query_object(), distributed_metrics=distributed_metrics
         )
@@ -3522,6 +3550,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def _create_query_builders(self):
         """Set up and configure the vector and FTS query builders."""
+        self._ensure_fragment_constraints_supported("this hybrid query")
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
@@ -3639,6 +3668,13 @@ class AsyncQueryBase(object):
 
     def _user_requested_row_id(self) -> bool:
         return self._with_row_id is True
+
+    def _ensure_fragment_constraints_supported(self, operation: str) -> None:
+        _raise_unsupported_fragment_constraints(
+            self._fragments,
+            self._fragment_ids,
+            operation=operation,
+        )
 
     def _blob_auto_row_id_enabled(self) -> bool:
         return self._blob_auto_row_id
@@ -3838,6 +3874,7 @@ class AsyncQueryBase(object):
         timeout: Optional[timedelta] = None,
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
+        self._ensure_fragment_constraints_supported("to_batches()")
         if (
             blob_sources
             and not self._user_requested_row_id()
@@ -4245,6 +4282,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """  # noqa: E501
+        self._ensure_fragment_constraints_supported("explain_plan()")
         return await self._inner.explain_plan(verbose)
 
     async def analyze_plan(
@@ -4262,6 +4300,7 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """
+        self._ensure_fragment_constraints_supported("analyze_plan()")
         return await self._inner.analyze_plan(distributed_metrics)
 
 
@@ -5098,6 +5137,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the hybrid query itself. The key the legs are fused on, if any, is left
         on `self._pk_fusion`.
         """
+        self._ensure_fragment_constraints_supported("this hybrid query")
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 

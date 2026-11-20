@@ -69,6 +69,26 @@ def _blob_query_data():
     )
 
 
+def _fragment_query_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4], pa.int64()),
+            "text": pa.array(["one", "two", "three", "four"], pa.utf8()),
+            "vector": pa.array(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+
+
+def _fragment_query_table(db, name):
+    data = _fragment_query_data()
+    table = db.create_table(name, data.slice(0, 2))
+    table.add(data.slice(2, 2))
+    return table
+
+
 def _create_blob_v2_query_table(db, name):
     schema = pa.schema(
         [
@@ -434,6 +454,127 @@ def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
         .to_pandas(blob_mode="descriptions")
     )
     assert df_by_fragment["id"].tolist() == [1, 2]
+
+    empty = (
+        table.search()
+        .select(["id", "blob"])
+        .fragment_ids([])
+        .to_pandas(blob_mode="descriptions")
+    )
+    assert empty.empty
+    with pytest.raises(ValueError, match="fragment_ids not found in dataset: 999"):
+        (
+            table.search()
+            .select(["id", "blob"])
+            .fragment_ids([999])
+            .to_pandas(blob_mode="descriptions")
+        )
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        "to_arrow",
+        "to_batches",
+        "to_pandas",
+        "to_polars",
+        "to_list",
+        "explain_plan",
+        "analyze_plan",
+    ],
+)
+def test_fragment_constraints_fail_loud_on_unsupported_paths(tmp_db, terminal):
+    pytest.importorskip("lance")
+    table = _fragment_query_table(tmp_db, f"fragment_guard_{terminal}")
+    fragment_id = table.to_lance().get_fragments()[0].fragment_id
+    query = table.search().fragment_ids([fragment_id])
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        getattr(query, terminal)()
+
+
+def test_with_fragments_fails_loud_on_plain_and_vector_queries(tmp_db):
+    pytest.importorskip("lance")
+    table = _fragment_query_table(tmp_db, "fragment_guard_with_fragments")
+    fragment = table.to_lance().get_fragments()[0]
+
+    for query in (
+        table.search().with_fragments([fragment]),
+        table.search([0.0, 0.0]).with_fragments([fragment]),
+    ):
+        with pytest.raises(NotImplementedError, match="fragment selection"):
+            query.to_arrow()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        "to_arrow",
+        "to_batches",
+        "to_pandas",
+        "to_polars",
+        "to_list",
+        "explain_plan",
+        "analyze_plan",
+    ],
+)
+async def test_async_fragment_constraints_fail_loud_on_unsupported_paths(
+    tmp_db_async, terminal
+):
+    pytest.importorskip("lance")
+    data = _fragment_query_data()
+    table = await tmp_db_async.create_table(
+        f"async_fragment_guard_{terminal}", data.slice(0, 2)
+    )
+    await table.add(data.slice(2, 2))
+    fragments = (await table.to_lance()).get_fragments()
+    query = table.query().fragment_ids([fragments[0].fragment_id])
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await getattr(query, terminal)()
+
+
+@pytest.mark.asyncio
+async def test_async_with_fragments_fails_loud_on_plain_and_vector_queries(
+    tmp_db_async,
+):
+    pytest.importorskip("lance")
+    data = _fragment_query_data()
+    table = await tmp_db_async.create_table(
+        "async_fragment_guard_with_fragments", data.slice(0, 2)
+    )
+    await table.add(data.slice(2, 2))
+    fragments = (await table.to_lance()).get_fragments()
+
+    for query in (
+        table.query().with_fragments([fragments[0]]),
+        table.query().nearest_to([0.0, 0.0]).with_fragments([fragments[0]]),
+    ):
+        with pytest.raises(NotImplementedError, match="fragment selection"):
+            await query.to_arrow()
+
+
+@pytest.mark.asyncio
+async def test_async_plain_scan_fragment_constraints_preserved(tmp_db_async):
+    pytest.importorskip("lance")
+    data = _blob_query_data()
+    table = await tmp_db_async.create_table(
+        "async_fragment_supported",
+        data.slice(0, 2),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+    await table.add(data.slice(2, 2))
+    fragments = (await table.to_lance()).get_fragments()
+
+    df = await (
+        table.query()
+        .select(["id", "blob"])
+        .fragment_ids([fragments[1].fragment_id])
+        .to_pandas(blob_mode="descriptions")
+    )
+
+    assert df["id"].tolist() == [3, 4]
 
 
 @pytest.mark.asyncio
