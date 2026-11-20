@@ -814,6 +814,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cache_only_handle_can_be_checked_out_where_it_already_is() {
+        use crate::query::ExecutableQuery;
+
+        let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
+        table.checkout(42).await.unwrap();
+        let cache_only = table.cache_only().await.unwrap();
+
+        let same = cache_only.checkout_branch("main", Some(42)).await.unwrap();
+        assert_eq!(same.version().await.unwrap(), 42);
+        // Still cache-only: its query is the one the handler refuses.
+        let error = same.query().execute().await.err().unwrap();
+        assert!(matches!(error, Error::NotResident { .. }), "{error:?}");
+
+        for error in [
+            cache_only.checkout_branch("main", Some(41)).await,
+            cache_only.checkout_branch("main", None).await,
+            cache_only.checkout_branch("exp", Some(42)).await,
+        ] {
+            let error = error.err().unwrap();
+            assert!(matches!(error, Error::InvalidInput { .. }), "{error:?}");
+        }
+    }
+
+    /// A permutation records the version it was built against, and its
+    /// reader checks the base table out there. Under a run that base table
+    /// is a cache-only handle already at that version.
+    #[tokio::test]
+    async fn a_permutation_reader_pins_a_cache_only_table_to_the_version_it_reads() {
+        use crate::dataloader::permutation::builder::BASE_VERSION_CONFIG_KEY;
+        use crate::dataloader::permutation::reader::PermutationReader;
+        use arrow_array::{RecordBatch, UInt64Array};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let permutation = |base_version: u64| async move {
+            let metadata = [(
+                BASE_VERSION_CONFIG_KEY.to_string(),
+                base_version.to_string(),
+            )];
+            let schema = Schema::new(vec![
+                Field::new("row_id", DataType::UInt64, false),
+                Field::new("split_id", DataType::UInt64, false),
+            ])
+            .with_metadata(metadata.into());
+            let batch = RecordBatch::try_new(
+                Arc::new(schema),
+                vec![
+                    Arc::new(UInt64Array::from(vec![0, 1, 2])),
+                    Arc::new(UInt64Array::from(vec![0, 0, 0])),
+                ],
+            )
+            .unwrap();
+            let db = crate::connect("memory:///").execute().await.unwrap();
+            db.create_table("permutation", batch)
+                .execute()
+                .await
+                .unwrap()
+        };
+
+        let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
+        table.checkout(42).await.unwrap();
+        let cache_only = table.cache_only().await.unwrap();
+
+        PermutationReader::try_from_tables(
+            cache_only.base_table().clone(),
+            permutation(42).await.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        // A permutation built at another version names rows the run did not warm.
+        let error = PermutationReader::try_from_tables(
+            cache_only.base_table().clone(),
+            permutation(41).await.base_table().clone(),
+            0,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(error, Error::InvalidInput { .. }), "{error:?}");
+    }
+
+    #[tokio::test]
     async fn cache_only_needs_a_checked_out_version() {
         let table = cache_only_table(Arc::new(Mutex::new(Vec::new())));
         let error = table.cache_only().await.err().unwrap();

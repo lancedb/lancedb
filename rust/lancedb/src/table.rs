@@ -3337,7 +3337,9 @@ impl Table {
     /// [`checkout_latest`](Self::checkout_latest),
     /// [`checkout_branch`](Self::checkout_branch) and
     /// [`create_branch`](Self::create_branch) fail on it with
-    /// [`Error::InvalidInput`]. The table it was made from is not affected.
+    /// [`Error::InvalidInput`]. The one exception is `checkout_branch` to the
+    /// branch and version the handle already reads, which returns another
+    /// cache-only handle there. The table it was made from is not affected.
     pub async fn cache_only(&self) -> Result<Self> {
         Ok(Self {
             inner: self.inner.cache_only().await?,

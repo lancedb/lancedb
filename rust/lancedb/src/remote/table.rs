@@ -3189,6 +3189,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(Arc::new(self.with_branch(Some(branch))))
     }
 
+    async fn checkout_branch_version(
+        &self,
+        name: &str,
+        version: Option<u64>,
+    ) -> Result<Arc<dyn BaseTable>> {
+        if self.cache_only {
+            // Code that pins a table to a recorded branch and version, such
+            // as a permutation reader, asks for the place a cache-only handle
+            // already reads. That moves nothing, so it gets another handle on
+            // the same data. Anywhere else is refused.
+            let same_branch = normalize_branch(Some(name.to_string())) == self.branch;
+            if same_branch && version.is_some() && version == *self.version.read().await {
+                return self.cache_only().await;
+            }
+            self.refuse_to_move_cache_only("check out another branch or version")?;
+        }
+        let branch = self.checkout_branch(name).await?;
+        if let Some(version) = version {
+            branch.checkout(version).await?;
+        }
+        Ok(branch)
+    }
+
     async fn list_branches(&self) -> Result<HashMap<String, lance::dataset::refs::BranchContents>> {
         use lance::dataset::refs::BranchContents;
 
