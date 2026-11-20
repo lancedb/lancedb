@@ -82,11 +82,10 @@ async def test_async_hybrid_query_with_row_ids(table: AsyncTable):
 
 
 def test_hybrid_fragment_constraints_fail_loud(sync_table: Table):
-    fragments = sync_table.to_lance().get_fragments()
     query = (
         sync_table.search("dog", query_type="hybrid")
         .vector([0.5, -0.5])
-        .fragment_ids([fragments[0].fragment_id])
+        .fragment_ids([0])
     )
 
     with pytest.raises(NotImplementedError, match="fragment selection"):
@@ -97,12 +96,8 @@ def test_hybrid_fragment_constraints_fail_loud(sync_table: Table):
 
 @pytest.mark.asyncio
 async def test_async_hybrid_fragment_constraints_fail_loud(table: AsyncTable):
-    fragments = (await table.to_lance()).get_fragments()
     query = (
-        table.query()
-        .nearest_to([0.5, -0.5])
-        .nearest_to_text("dog")
-        .fragment_ids([fragments[0].fragment_id])
+        table.query().nearest_to([0.5, -0.5]).nearest_to_text("dog").fragment_ids([0])
     )
 
     with pytest.raises(NotImplementedError, match="fragment selection"):
