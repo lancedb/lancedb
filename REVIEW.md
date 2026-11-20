@@ -20,7 +20,20 @@ parity gaps when reviewing — but only flag real ones:
 * Stay silent on internal-only refactors, tests, docs, and changes with no cross-SDK
   surface.
 * Parity expectations apply to the Python and TypeScript (`nodejs`) SDKs. Java currently
-  implements only the remote table, not the local/embedded backend, so it is expected to
-  be partial — do not flag Java for missing local-only functionality.
+  implements only Enterprise tables, not the Embedded backend, so it is expected to
+  be partial — do not flag Java for missing Embedded-only functionality.
 * Keep parity feedback to a short, clearly-labeled note (e.g. "Possible SDK parity
   gap: …"). It is advisory, not a merge blocker.
+
+## User-facing text and API compatibility
+
+Check new user-facing text and public API changes against the rules in `AGENTS.md`:
+
+* Docs, docstrings, error messages, and examples say "Embedded" and "Enterprise", not
+  "local" or "remote" tables.
+* Released public APIs are deprecated rather than removed, and released names are not
+  reused for something with a different meaning.
+* User guides (`docs/web`) document only the current API, with no migration or
+  deprecation notices.
+* Breaking changes have `!` in the PR title and a `BREAKING CHANGE:` paragraph at the
+  top of the PR body.
