@@ -1739,17 +1739,16 @@ def test_query_builder_with_different_vector_column():
     ds = mock.Mock()
     table.to_lance.return_value = ds
     builder.to_arrow()
-    table._execute_arrow.assert_called_once_with(
-        Query(
-            vector=query,
-            filter="b < 10",
-            limit=2,
-            distance_type="cosine",
-            columns=["b"],
-            vector_column="foo_vector",
-        ),
-        timeout=None,
+    expected = Query(
+        vector=query,
+        filter="b < 10",
+        limit=2,
+        distance_type="cosine",
+        columns=["b"],
+        vector_column="foo_vector",
     )
+    expected._blob_row_id_prepared = True
+    table._execute_arrow.assert_called_once_with(expected, timeout=None)
 
 
 def cosine_distance(vec1, vec2):
@@ -2655,6 +2654,61 @@ def test_query_schema(tmp_path):
     assert tbl.take_offsets([0]).select(["text"]).output_schema() == pa.schema(
         {"text": pa.string()}
     )
+
+
+def test_sync_query_prepares_schema_once_per_execution(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3],
+                "vector": pa.array(
+                    [[1, 2], [3, 4], [5, 6]],
+                    pa.list_(pa.float32(), list_size=2),
+                ),
+            }
+        ),
+    )
+
+    calls = 0
+    original = AsyncTable.schema
+
+    async def counted(self):
+        nonlocal calls
+        calls += 1
+        return await original(self)
+
+    monkeypatch.setattr(AsyncTable, "schema", counted)
+
+    table.search().where("id = 1").select(["id"]).to_arrow()
+    assert calls <= 1
+
+    calls = 0
+    table.search([1, 2], vector_column_name="vector").limit(1).to_arrow()
+    assert calls <= 1
+
+    calls = 0
+    table.search([1, 2]).limit(1).to_arrow()
+    # At most one lookup infers the vector column, one prepares execution.
+    assert calls <= 2
+
+    calls = 0
+    table.search().where("id = 1").select(["id"]).to_batches().read_all()
+    assert calls <= 1
+
+    builder = table.search().where("id = 1")
+    before = builder.to_arrow()
+    assert "extra" not in before.column_names
+    assert "image" not in before.column_names
+
+    table.add_columns(pa.schema([pa.field("extra", pa.int64()), lancedb.blob("image")]))
+    calls = 0
+    after = builder.to_arrow()
+    assert calls <= 1
+    assert after["extra"].to_pylist() == [None]
+    assert "_lance_row_id" in str(after.schema)
+    assert "_rowid" not in after.column_names
 
 
 @pytest.mark.asyncio
