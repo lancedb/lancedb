@@ -118,10 +118,14 @@ impl LayeredStorageOptionsProvider {
         mut options: Option<HashMap<String, String>>,
     ) -> Option<HashMap<String, String>> {
         let mut merged = self.caller_options.clone();
-        if let Some(options) = options.take() {
-            merged.extend(options);
+        match options.take() {
+            Some(options) => {
+                merged.extend(options);
+                Some(merged)
+            }
+            None if merged.is_empty() => None,
+            None => Some(merged),
         }
-        (!merged.is_empty()).then_some(merged)
     }
 }
 
