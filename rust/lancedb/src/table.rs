@@ -1901,11 +1901,12 @@ impl Table {
     /// returned by this method can be used to control the query using filtering,
     /// vector similarity, sorting, and more.
     ///
-    /// An ordinary local scan of a fixed table version returns manifest order:
-    /// fragments in manifest order, then rows in fragment order. Compaction,
-    /// updates, and newer versions can change that order. Use
-    /// [`Query::scan_in_order`] to require it explicitly and fail on paths that
-    /// cannot uphold it.
+    /// An ordinary local base-only scan of a fixed table version returns
+    /// manifest order: fragments in manifest order, then rows in fragment
+    /// order. RTE tables scan the LSM by default; use `use_rte(false)` for the
+    /// base table guarantee. Compaction, updates, and newer versions can change
+    /// that order. Use [`Query::scan_in_order`] to require it explicitly and
+    /// fail on paths that cannot uphold it.
     ///
     /// Note: By default, all columns are returned.  For best performance, you should
     /// only fetch the columns you need.  See [`Query::select_with_projection`] for
@@ -1973,8 +1974,10 @@ impl Table {
     ///
     /// ## Full scan
     ///
-    /// This query returns everything in the table in manifest order for the
-    /// scanned version.
+    /// This query returns everything in the table. On an Embedded table, an
+    /// ordinary local base-only scan of a fixed version returns manifest order.
+    /// RTE tables scan the LSM by default and need `use_rte(false)` for base
+    /// manifest order.
     ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;

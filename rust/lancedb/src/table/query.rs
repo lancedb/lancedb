@@ -191,11 +191,7 @@ fn validate_scan_in_order(query: &AnyQuery) -> Result<()> {
     }
 
     if query.base().has_take() {
-        return Err(Error::InvalidInput {
-            message: "scan_in_order(true) conflicts with take by row id or offset, which \
-                      defines its own result order"
-                .to_string(),
-        });
+        return crate::query::validate_take_scan_in_order(query.base());
     }
 
     Ok(())
@@ -2633,6 +2629,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(collect_i32(&batches), vec![5, 4, 3, 2, 1, 0]);
+
+        // Deletions keep manifest order, and small output batches plus
+        // limit/offset must not disturb it.
+        table.checkout_latest().await.unwrap();
+        table.delete("id = 3").await.unwrap();
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(true)
+            .offset(1)
+            .limit(2)
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(
+            batches.iter().all(|batch| batch.num_rows() <= 1),
+            "max_batch_length must stay bounded"
+        );
+        assert_eq!(collect_i32(&batches), vec![1, 2]);
     }
 
     #[tokio::test]

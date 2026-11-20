@@ -3096,19 +3096,20 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             unordered. Leave the method uncalled to preserve the backend
             default.
 
-        A plain local scan of an Embedded table reads one dataset version and
-        returns manifest order by default. Compaction, updates, or opening a
-        newer version can change that order, so pin the table version when
-        positions must remain stable across executions. An explicit
-        ``order_by()`` replaces manifest order with a global sort, and vector,
-        full-text, hybrid, or reranked queries return ranked results; combining
-        those with ``scan_in_order(True)`` raises ``ValueError``. Remote
-        Enterprise tables and RTE/LSM reads raise ``NotImplementedError``
-        because they cannot uphold the order; set ``use_rte(False)`` to read
-        the RTE base table in storage order. When ``QueryTable`` pushdown is
-        enabled, the backend default may not preserve order; requesting ``True``
-        executes locally instead, because the namespace request has no order
-        field.
+        A plain local base-only scan of an Embedded table, pinned to one dataset
+        version, returns manifest order by default. RTE tables scan the LSM by
+        default and do not provide this guarantee unless ``use_rte(False)``
+        selects the base table. Compaction, updates, or opening a newer version
+        can change that order, so pin the table version when positions must
+        remain stable across executions. An explicit ``order_by()`` replaces
+        manifest order with a global sort, and vector, full-text, hybrid, or
+        reranked queries return ranked results; combining those with
+        ``scan_in_order(True)`` raises ``ValueError``. Remote Enterprise tables
+        and RTE/LSM reads raise ``NotImplementedError`` because they cannot
+        uphold the order; set ``use_rte(False)`` to read the RTE base table in
+        storage order. When ``QueryTable`` pushdown is enabled, the backend
+        default may not preserve order; requesting ``True`` executes locally
+        instead, because the namespace request has no order field.
         """
         self._scan_in_order = ordered
         return self
@@ -4877,19 +4878,20 @@ class AsyncQuery(AsyncStandardQuery):
             unordered. Leave the method uncalled to preserve the backend
             default.
 
-        A plain local scan of an Embedded table reads one dataset version and
-        returns manifest order by default. Compaction, updates, or opening a
-        newer version can change that order, so pin the table version when
-        positions must remain stable across executions. An explicit
-        ``order_by()`` replaces manifest order with a global sort, and vector,
-        full-text, hybrid, or reranked queries return ranked results; combining
-        those with ``scan_in_order(True)`` raises ``ValueError``. Remote
-        Enterprise tables and RTE/LSM reads raise ``NotImplementedError``
-        because they cannot uphold the order; set ``use_rte(False)`` to read
-        the RTE base table in storage order. When ``QueryTable`` pushdown is
-        enabled, the backend default may not preserve order; requesting ``True``
-        executes locally instead, because the namespace request has no order
-        field.
+        A plain local base-only scan of an Embedded table, pinned to one dataset
+        version, returns manifest order by default. RTE tables scan the LSM by
+        default and do not provide this guarantee unless ``use_rte(False)``
+        selects the base table. Compaction, updates, or opening a newer version
+        can change that order, so pin the table version when positions must
+        remain stable across executions. An explicit ``order_by()`` replaces
+        manifest order with a global sort, and vector, full-text, hybrid, or
+        reranked queries return ranked results; combining those with
+        ``scan_in_order(True)`` raises ``ValueError``. Remote Enterprise tables
+        and RTE/LSM reads raise ``NotImplementedError`` because they cannot
+        uphold the order; set ``use_rte(False)`` to read the RTE base table in
+        storage order. When ``QueryTable`` pushdown is enabled, the backend
+        default may not preserve order; requesting ``True`` executes locally
+        instead, because the namespace request has no order field.
         """
         self._inner.scan_in_order(ordered)
         return self
