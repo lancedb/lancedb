@@ -282,8 +282,10 @@ client and may read more pages. The displayed table name has no namespace;
 use a table name unique within the listed database for this TypeScript example.
 Use Python, Rust, or SQL for an exact namespaced table listing.
 
-SQL `SHOW JOBS` and `SHOW JOBS FOR TABLE events` expose the same metadata.
-SQL returns `columns` as a list and `failure` as nullable JSON text.
+SQL `SHOW JOBS EXTENDED` and `SHOW JOBS EXTENDED FOR TABLE events` expose the
+same metadata. Plain `SHOW JOBS` keeps its original nine-column result.
+The extended result returns `columns` as a list and `failure` as nullable JSON
+text.
 
 */}
 
