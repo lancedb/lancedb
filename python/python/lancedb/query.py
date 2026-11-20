@@ -371,6 +371,10 @@ def _scanner_kwargs_for_query(
         "with_row_id": with_row_id if with_row_id is not None else query.with_row_id,
         "with_row_address": query.with_row_address,
         "fast_search": query.fast_search,
+        "scan_in_order": query.scan_in_order,
+        # Legacy scalar-index plans can reorder rows. Explicit storage order
+        # evaluates filters over the manifest-ordered scan instead.
+        "use_scalar_index": False if query.scan_in_order is True else None,
         "blob_handling": BLOB_MODE_TO_HANDLING[blob_mode],
         "fragments": fragments,
     }
@@ -381,6 +385,12 @@ def _scanner_fragments_for_query(query: Query, dataset: Optional[Any]) -> Option
     if query.fragments is not None and query.fragment_ids is not None:
         raise ValueError("fragments and fragment_ids cannot both be set")
     if query.fragments is not None:
+        if query.scan_in_order is True:
+            raise ValueError(
+                "scan_in_order(True) cannot validate with_fragments() against "
+                "the scanned dataset version; use fragment_ids() to select "
+                "fragments by manifest id"
+            )
         return query.fragments
     if query.fragment_ids is None:
         return None
@@ -1208,6 +1218,10 @@ class Query(pydantic.BaseModel):
 
     order_by: Optional[List[ColumnOrdering]] = None
 
+    # Tri-state storage-order requirement: None preserves the backend default,
+    # True requires manifest order, False allows an unordered scan.
+    scan_in_order: Optional[bool] = None
+
     @classmethod
     def from_inner(cls, req: PyQueryRequest) -> Self:
         query = cls()
@@ -1241,6 +1255,7 @@ class Query(pydantic.BaseModel):
         query.postfilter = req.postfilter
         if req.order_by is not None:
             query.order_by = [ColumnOrdering(**o) for o in req.order_by]
+        query.scan_in_order = req.scan_in_order
         if req.full_text_search is not None:
             query.full_text_query = FullTextSearchQuery(
                 columns=None,
@@ -1415,6 +1430,7 @@ class LanceQueryBuilder(ABC):
         self._approx_mode = None
         self._bypass_vector_index = None
         self._order_by = None
+        self._scan_in_order = None
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -2040,7 +2056,9 @@ class LanceQueryBuilder(ABC):
         ----------
         fragments : list[lance.Fragment]
             Fragments from ``table.to_lance().get_fragments()``. Pass fragments
-            from the same dataset snapshot.
+            from the same dataset snapshot. Use ``fragment_ids()`` instead when
+            ``scan_in_order(True)`` is set; fragment objects cannot be validated
+            against the pinned dataset version.
 
         Returns
         -------
@@ -3099,6 +3117,52 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             schema=schema,
         )
 
+    def scan_in_order(self, ordered: bool = True) -> Self:
+        """Control whether an ordinary scan must preserve storage order.
+
+        Parameters
+        ----------
+        ordered: bool, default True
+            ``True`` requires manifest order: fragments in manifest order, then
+            rows in fragment order. ``False`` allows the backend to scan
+            unordered. Leave the method uncalled to preserve the backend
+            default.
+
+        An unfiltered plain base-only scan of an Embedded table, pinned to one
+        dataset version, returns manifest order by default. RTE tables scan the
+        LSM by default and do not provide this guarantee unless
+        ``use_rte(False)`` selects the base table. Explicit ``True`` also
+        disables scalar-index filter planning, because legacy scalar-index plans
+        can return a different sequence; default filtered scans can still use
+        those plans and may not preserve manifest order. Filters still apply,
+        but the scan can read more data. ``with_fragments()`` is not supported
+        with ``True`` because fragment objects cannot be validated against the
+        pinned dataset version; use ``fragment_ids()`` instead, which resolves
+        ids from the manifest and remains ordered. Compaction, updates, or
+        opening a newer version can change that order, so pin the table version
+        when positions must remain stable across executions. An explicit
+        ``order_by()`` replaces manifest order with a global sort, and vector,
+        full-text, hybrid, or reranked queries return ranked results; combining
+        those with ``scan_in_order(True)`` raises ``ValueError``. Enterprise
+        tables and RTE/LSM reads raise ``NotImplementedError`` because they
+        cannot uphold the order; set ``use_rte(False)`` to read the RTE base
+        table in storage order. When ``QueryTable`` pushdown is enabled, the
+        backend default may not preserve order; requesting ``True`` executes
+        against Embedded storage instead, because the namespace request has no
+        order field.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("scan_in_order", [{"id": 1}])
+        >>> query = table.search().scan_in_order(True).select(["id"])
+        >>> query.to_arrow()["id"].to_pylist()
+        [1]
+        """
+        self._scan_in_order = ordered
+        return self
+
     def to_query_object(self) -> Query:
         return Query(
             columns=self._columns,
@@ -3111,6 +3175,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             use_rte=self._use_rte,
             offset=self._offset,
             order_by=self._order_by,
+            scan_in_order=self._scan_in_order,
         )
 
     def output_schema(self) -> pa.Schema:
@@ -4159,7 +4224,9 @@ class AsyncQueryBase(object):
         query types. Other terminals and remote tables raise
         ``NotImplementedError`` before scanning instead of silently scanning
         the full table. Blob-specific ``to_pandas()`` fallbacks keep their
-        existing validation errors.
+        existing validation errors. Use ``fragment_ids()`` instead when
+        ``scan_in_order(True)`` is set; fragment objects cannot be validated
+        against the pinned dataset version.
         """
         self._fragments = fragments
         return self
@@ -4899,6 +4966,55 @@ class AsyncQuery(AsyncStandardQuery):
         self._ensure_fragment_constraints_supported("to_batches()")
         stream = self._inner.execute_sync(max_batch_length, timeout)
         return pa.RecordBatchReader.from_batches(stream.schema, stream)
+
+    def scan_in_order(self, ordered: bool = True) -> Self:
+        """Control whether an ordinary scan must preserve storage order.
+
+        Parameters
+        ----------
+        ordered: bool, default True
+            ``True`` requires manifest order: fragments in manifest order, then
+            rows in fragment order. ``False`` allows the backend to scan
+            unordered. Leave the method uncalled to preserve the backend
+            default.
+
+        An unfiltered plain base-only scan of an Embedded table, pinned to one
+        dataset version, returns manifest order by default. RTE tables scan the
+        LSM by default and do not provide this guarantee unless
+        ``use_rte(False)`` selects the base table. Explicit ``True`` also
+        disables scalar-index filter planning, because legacy scalar-index plans
+        can return a different sequence; default filtered scans can still use
+        those plans and may not preserve manifest order. Filters still apply,
+        but the scan can read more data. ``with_fragments()`` is not supported
+        with ``True`` because fragment objects cannot be validated against the
+        pinned dataset version; use ``fragment_ids()`` instead, which resolves
+        ids from the manifest and remains ordered. Compaction, updates, or
+        opening a newer version can change that order, so pin the table version
+        when positions must remain stable across executions. An explicit
+        ``order_by()`` replaces manifest order with a global sort, and vector,
+        full-text, hybrid, or reranked queries return ranked results; combining
+        those with ``scan_in_order(True)`` raises ``ValueError``. Enterprise
+        tables and RTE/LSM reads raise ``NotImplementedError`` because they
+        cannot uphold the order; set ``use_rte(False)`` to read the RTE base
+        table in storage order. When ``QueryTable`` pushdown is enabled, the
+        backend default may not preserve order; requesting ``True`` executes
+        against Embedded storage instead, because the namespace request has no
+        order field.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def example():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table("scan_in_order_async", [{"id": 1}])
+        ...     query = table.query().scan_in_order(True).select(["id"])
+        ...     return (await query.to_arrow())["id"].to_pylist()
+        >>> asyncio.run(example())
+        [1]
+        """
+        self._inner.scan_in_order(ordered)
+        return self
 
     @classmethod
     def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
