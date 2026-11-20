@@ -2657,6 +2657,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         For example, ``table.search("gripper closed", query_type="fts",``
         ``operator="AND").where("active = true").count_rows()``.
         """
+        self._ensure_fragment_constraints_supported("count_rows()")
         self._table._ensure_no_legacy_fts_index()
         query = self._table._table._sync_query_to_async(self.to_query_object())
         assert isinstance(query, AsyncFTSQuery)
@@ -3676,6 +3677,12 @@ class AsyncQueryBase(object):
             operation=operation,
         )
 
+    def _inherit_fragment_constraints(self, query: Any) -> Any:
+        """Carry a fragment selection across an async query conversion."""
+        query._fragments = self._fragments
+        query._fragment_ids = self._fragment_ids
+        return query
+
     def _blob_auto_row_id_enabled(self) -> bool:
         return self._blob_auto_row_id
 
@@ -4540,11 +4547,17 @@ class AsyncQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncVectorQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(new_self, self._table)
+            )
         else:
-            return AsyncVectorQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncVectorQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     def nearest_to_text(
@@ -4584,18 +4597,22 @@ class AsyncQuery(AsyncStandardQuery):
             columns = []
 
         if isinstance(query, str):
-            return AsyncFTSQuery(
-                self._inner.nearest_to_text(
-                    {
-                        "query": query,
-                        "columns": columns,
-                        "operator": fts_query.operator,
-                    }
-                ),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncFTSQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        return self._inherit_fragment_constraints(
+            AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        )
 
 
 class AsyncFTSQuery(AsyncStandardQuery):
@@ -4616,6 +4633,7 @@ class AsyncFTSQuery(AsyncStandardQuery):
         For example, ``await table.query().nearest_to_text("gripper closed",``
         ``operator="AND").where("active = true").count_rows()``.
         """
+        self._ensure_fragment_constraints_supported("count_rows()")
         try:
             return await self._inner.count_rows()
         except Exception as error:
@@ -4701,11 +4719,17 @@ class AsyncFTSQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncHybridQuery(new_self, self._table)
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(new_self, self._table)
+            )
         else:
-            return AsyncHybridQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     async def _execute_batches(
@@ -5041,15 +5065,21 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             columns = []
 
         if isinstance(query, str):
-            return AsyncHybridQuery(
-                self._inner.nearest_to_text(
-                    {"query": query, "columns": columns, "operator": fts_query.operator}
-                ),
-                self._table,
+            return self._inherit_fragment_constraints(
+                AsyncHybridQuery(
+                    self._inner.nearest_to_text(
+                        {
+                            "query": query,
+                            "columns": columns,
+                            "operator": fts_query.operator,
+                        }
+                    ),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query}), self._table
+        return self._inherit_fragment_constraints(
+            AsyncHybridQuery(self._inner.nearest_to_text({"query": query}), self._table)
         )
 
     async def _execute_batches(

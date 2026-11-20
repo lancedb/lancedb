@@ -89,6 +89,16 @@ def _fragment_query_table(db, name):
     return table
 
 
+def _apply_fragment_restriction(query, restriction, fragment):
+    if restriction == "ids":
+        return query.fragment_ids([fragment.fragment_id])
+    if restriction == "empty":
+        return query.fragment_ids([])
+    if restriction == "fragments":
+        return query.with_fragments([fragment])
+    raise AssertionError(f"unknown restriction: {restriction}")
+
+
 def _create_blob_v2_query_table(db, name):
     schema = pa.schema(
         [
@@ -506,6 +516,20 @@ def test_with_fragments_fails_loud_on_plain_and_vector_queries(tmp_db):
             query.to_arrow()
 
 
+@pytest.mark.parametrize("restriction", ["ids", "empty", "fragments"])
+def test_fts_count_rows_rejects_fragment_constraints(tmp_db, restriction):
+    pytest.importorskip("lance")
+    table = _fragment_query_table(tmp_db, f"fts_count_rows_{restriction}")
+    table.create_index("text", config=FTS(with_position=False))
+    fragment = table.to_lance().get_fragments()[1]
+    query = _apply_fragment_restriction(
+        table.search("one", query_type="fts"), restriction, fragment
+    )
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        query.count_rows()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "terminal",
@@ -575,6 +599,66 @@ async def test_async_plain_scan_fragment_constraints_preserved(tmp_db_async):
     )
 
     assert df["id"].tolist() == [3, 4]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restriction", ["ids", "empty", "fragments"])
+async def test_async_fts_count_rows_rejects_fragment_constraints(
+    tmp_db_async, restriction
+):
+    pytest.importorskip("lance")
+    data = _fragment_query_data()
+    table = await tmp_db_async.create_table(
+        f"async_fts_count_rows_{restriction}", data.slice(0, 2)
+    )
+    await table.add(data.slice(2, 2))
+    await table.create_index("text", config=FTS(with_position=False))
+    fragment = (await table.to_lance()).get_fragments()[1]
+    query = _apply_fragment_restriction(
+        table.query().nearest_to_text("one"), restriction, fragment
+    )
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await query.count_rows()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restriction", ["ids", "empty", "fragments"])
+@pytest.mark.parametrize(
+    "transition",
+    ["query_to_vector", "query_to_fts", "fts_to_hybrid", "vector_to_hybrid"],
+)
+async def test_async_fragment_constraints_survive_query_transitions(
+    tmp_db_async, transition, restriction
+):
+    pytest.importorskip("lance")
+    data = _fragment_query_data()
+    table = await tmp_db_async.create_table(
+        f"async_transition_{transition}_{restriction}", data.slice(0, 2)
+    )
+    await table.add(data.slice(2, 2))
+    await table.create_index("text", config=FTS(with_position=False))
+    fragment = (await table.to_lance()).get_fragments()[1]
+
+    if transition == "query_to_vector":
+        query = _apply_fragment_restriction(
+            table.query(), restriction, fragment
+        ).nearest_to([0.0, 0.0])
+    elif transition == "query_to_fts":
+        query = _apply_fragment_restriction(
+            table.query(), restriction, fragment
+        ).nearest_to_text("one")
+    elif transition == "fts_to_hybrid":
+        query = _apply_fragment_restriction(
+            table.query().nearest_to_text("one"), restriction, fragment
+        ).nearest_to([0.0, 0.0])
+    else:
+        query = _apply_fragment_restriction(
+            table.query().nearest_to([0.0, 0.0]), restriction, fragment
+        ).nearest_to_text("one")
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await query.to_arrow()
 
 
 @pytest.mark.asyncio
