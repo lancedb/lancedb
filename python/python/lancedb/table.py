@@ -52,6 +52,7 @@ from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
+from lancedb.compaction import CompactionResult  # noqa: F401 - public compatibility import
 from lancedb.optimize import OptimizeResult
 from .dependencies import (
     _check_for_hugging_face,
@@ -305,6 +306,7 @@ if TYPE_CHECKING:
         Table as LanceDBTable,
         OptimizeStats,
         CleanupStats,
+        CompactionStats,
         Tag,
         AddColumnsResult,
         RefreshColumnResult,
@@ -443,6 +445,9 @@ class OptimizeOptions(TypedDict, total=False):
     data_storage_version: str
     """Data-file version or release selector for compacted output."""
 
+    compaction_options: Optional[Mapping[str, Any]]
+    """Deprecated nested rewrite settings; pass the settings as flat keywords."""
+
     cleanup_older_than: Optional[timedelta]
     """Embedded version-retention age; unsupported by remote Optimize jobs."""
 
@@ -454,6 +459,10 @@ class OptimizeOptions(TypedDict, total=False):
 
     action: Optional[Literal["rewrite_data"]]
     """Select only data rewriting; omit for Embedded's full maintenance cycle."""
+
+
+# Deprecated compatibility name; use OptimizeOptions for new code.
+CompactionOptions = OptimizeOptions
 
 
 def _split_optimize_options(
@@ -470,6 +479,32 @@ def _split_optimize_options(
     if unknown:
         raise TypeError(f"Unsupported Optimize option: {sorted(unknown)[0]}")
     tuning: Dict[str, Any] = dict(options)
+    legacy = tuning.pop("compaction_options", None)
+    if legacy is not None:
+        warnings.warn(
+            "compaction_options is deprecated; pass Optimize settings as flat "
+            "keyword arguments",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if not isinstance(legacy, dict):
+            raise TypeError("compaction_options must be a dictionary")
+        controls = {
+            "cleanup_older_than",
+            "delete_unverified",
+            "retrain",
+            "action",
+            "compaction_options",
+        }
+        rewrite_keys = OptimizeOptions.__annotations__.keys() - controls
+        unknown_legacy = legacy.keys() - rewrite_keys
+        if unknown_legacy:
+            raise TypeError(f"Unsupported Optimize option: {sorted(unknown_legacy)[0]}")
+        if tuning.keys() & rewrite_keys:
+            raise TypeError(
+                "cannot combine compaction_options with flat rewrite settings"
+            )
+        tuning.update(legacy)
     cleanup_older_than = tuning.pop("cleanup_older_than", None)
     delete_unverified = tuning.pop("delete_unverified", False)
     retrain = tuning.pop("retrain", False)
@@ -3161,6 +3196,39 @@ class Table(ABC):
         This function is not available in LanceDB Enterprise, which manages
         cleanup for you automatically.
         """
+
+    @abstractmethod
+    def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto Lance's
+        `lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+
+        See Also
+        --------
+        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
+            optimization operation that includes cleanup as well as other operations.
+
+        Notes
+        -----
+        This function is not available in LanceDB Enterprise, which manages
+        compaction for you automatically.
+        """
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[OptimizeResult]:
+        """Deprecated: use optimize_async() with flat rewrite settings."""
+        warnings.warn(
+            "compact_async() is deprecated; use optimize_async()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.optimize_async(**(compaction_options or {}))
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         """Submit remote Optimize and return a durable job after acceptance.
@@ -5886,6 +5954,37 @@ class LanceTable(Table):
         return self.to_lance().cleanup_old_versions(
             older_than, delete_unverified=delete_unverified
         )
+
+    @deprecation.deprecated(
+        deprecated_in="0.21.0",
+        current_version=__version__,
+        details="Use `Table.optimize` instead.",
+    )
+    def compact_files(self, *args, **kwargs) -> CompactionStats:
+        """
+        Run the compaction process on the table.
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto `lance.dataset.DatasetOptimizer.compact_files`.
+         (see Lance documentation for more details) For most cases, the default
+        should be fine.
+        """
+        stats = self.to_lance().optimize.compact_files(*args, **kwargs)
+        self.checkout_latest()
+        return stats
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[OptimizeResult]:
+        """Deprecated: use optimize_async() with flat rewrite settings."""
+        warnings.warn(
+            "compact_async() is deprecated; use optimize_async()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.optimize_async(**(compaction_options or {}))
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         return Job(LOOP.run(self._table.optimize_async(**options)))
@@ -9575,6 +9674,17 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> AsyncJob[OptimizeResult]:
+        """Deprecated: use optimize_async() with flat rewrite settings."""
+        warnings.warn(
+            "compact_async() is deprecated; use optimize_async()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.optimize_async(**(compaction_options or {}))
 
     async def optimize_async(
         self, **options: Unpack[OptimizeOptions]

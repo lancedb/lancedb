@@ -197,6 +197,8 @@ export interface OptimizeOptions {
   ioBufferSize?: number;
   /** Positive scanner batch size in rows. */
   batchSize?: number;
+  /** @deprecated Pass rewrite settings directly on OptimizeOptions. */
+  compactionOptions?: CompactionOptions;
   /** Run only data rewriting, retaining history and skipping separate index maintenance. */
   action?: "rewrite_data";
   /** Embedded: remove versions committed before this cutoff. Defaults to seven days ago.
@@ -206,6 +208,13 @@ export interface OptimizeOptions {
    * can be writing this dataset. Defaults to false; unavailable for durable jobs. */
   deleteUnverified?: boolean;
 }
+
+/** @deprecated Use OptimizeOptions with flat rewrite settings. */
+export interface CompactionOptions
+  extends Pick<
+    OptimizeOptions,
+    "targetRowsPerFragment" | "maxSourceRows" | "ioBufferSize" | "batchSize"
+  > {}
 
 export interface Version {
   version: number;
@@ -1331,6 +1340,13 @@ export abstract class Table {
     throw new Error("Optimize jobs are only supported on remote tables");
   }
 
+  /** @deprecated Use optimizeAsync() instead. */
+  async compactAsync(
+    options?: CompactionOptions,
+  ): Promise<Job<OptimizeResult>> {
+    return this.optimizeAsync(options);
+  }
+
   /**
    * Optimize the on-disk data and indices for better performance.
    *
@@ -2050,6 +2066,7 @@ export class LocalTable extends Table {
   }
 
   async optimizeAsync(options?: OptimizeOptions): Promise<Job<OptimizeResult>> {
+    options = normalizeOptimizeOptions(options);
     validateOptimizeOptions(options, true);
     return new Job(
       await this.inner.optimizeAsync(optimizeRewriteSettings(options)),
@@ -2058,6 +2075,7 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: OptimizeOptions): Promise<OptimizeStats> {
+    options = normalizeOptimizeOptions(options);
     validateOptimizeOptions(options);
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
@@ -2360,6 +2378,35 @@ function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
   });
 }
 
+function normalizeOptimizeOptions(
+  options?: OptimizeOptions,
+): OptimizeOptions | undefined {
+  if (options?.compactionOptions === undefined) return options;
+  const { compactionOptions, ...flat } = options;
+  if (
+    compactionOptions === null ||
+    typeof compactionOptions !== "object" ||
+    Array.isArray(compactionOptions)
+  )
+    throw new Error("compactionOptions must be an object");
+  const rewriteKeys = new Set([
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+  ]);
+  for (const key of Object.keys(compactionOptions)) {
+    if (!rewriteKeys.has(key))
+      throw new Error(`Unsupported Optimize option: ${key}`);
+  }
+  if (Object.keys(flat).some((key) => rewriteKeys.has(key))) {
+    throw new Error(
+      "cannot combine compactionOptions with flat rewrite settings",
+    );
+  }
+  return { ...flat, ...compactionOptions };
+}
+
 function validateOptimizeOptions(
   options?: OptimizeOptions,
   durable = false,
@@ -2372,6 +2419,7 @@ function validateOptimizeOptions(
     "action",
     "cleanupOlderThan",
     "deleteUnverified",
+    "compactionOptions",
   ]);
   for (const key of Object.keys(options ?? {})) {
     if (!supported.has(key))

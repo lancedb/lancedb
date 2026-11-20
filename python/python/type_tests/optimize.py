@@ -24,4 +24,16 @@ async def asynchronous(table: AsyncTable) -> None:
     options: OptimizeOptions = {"target_rows_per_fragment": 100, "batch_size": 16}
     assert_type(await table.optimize(**options), OptimizeStats)
     assert_type(await table.optimize_async(**options), AsyncJob[OptimizeResult])
-    await table.optimize(compaction_options={"max_source_rows": 1})  # pyright: ignore[reportCallIssue]
+    await table.optimize(compaction_options={"max_source_rows": 1})
+
+
+async def legacy_types(table: AsyncTable) -> None:
+    from lancedb import CompactionOptions
+    from lancedb.compaction import CompactionResult
+
+    options: CompactionOptions = {"max_source_rows": 7}
+    assert_type(await table.optimize(compaction_options=options), OptimizeStats)
+    assert_type(
+        await table.compact_async(compaction_options=options),
+        AsyncJob[CompactionResult],
+    )

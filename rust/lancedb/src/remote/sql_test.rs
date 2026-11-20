@@ -4327,7 +4327,8 @@ async fn remote_optimize_forwards_per_job_options_on_main_and_branch() {
 
 #[tokio::test]
 async fn remote_optimize_preserves_omissions_and_explicit_default_values() {
-    use crate::table::{OptimizeOptions, OptimizeOverrides};
+    use crate::table::OptimizeOverrides;
+    use crate::table::optimize::OptimizeOptions;
     let target = OptimizeOptions::default().target_rows_per_fragment;
     for (options, suffix) in [
         (OptimizeOverrides::default(), String::new()),
@@ -5081,17 +5082,27 @@ async fn remote_public_prewarm_rejects_invalid_options_before_submission() {
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn remote_public_optimize_options_preserve_submission_contract() {
-    use crate::table::{OptimizeOptions, OptimizeOverrides};
+    use crate::table::OptimizeOverrides;
+    use crate::table::optimize::OptimizeOptions;
     enum Input {
         Options(OptimizeOptions),
         Overrides(OptimizeOverrides),
+        Legacy(crate::table::CompactionOverrides),
     }
     let default_target = OptimizeOptions::default().target_rows_per_fragment;
     let tuned_suffix = ", target_rows_per_fragment = 100, max_source_rows = 500, \
                         io_buffer_size = 0, batch_size = 16";
     for (input, suffix) in [
         (Input::Options(OptimizeOptions::default()), String::new()),
+        (
+            Input::Legacy(crate::table::CompactionOverrides {
+                io_buffer_size: Some(0),
+                ..Default::default()
+            }),
+            ", io_buffer_size = 0".into(),
+        ),
         (
             Input::Overrides(OptimizeOverrides::default()),
             String::new(),
@@ -5170,6 +5181,7 @@ async fn remote_public_optimize_options_preserve_submission_contract() {
         let job = match input {
             Input::Options(options) => table.optimize_async(options).await.unwrap(),
             Input::Overrides(options) => table.optimize_async(options).await.unwrap(),
+            Input::Legacy(options) => table.compact_async(options).await.unwrap(),
         };
         assert_eq!(job.id(), Some("public-compaction-job"));
         assert_eq!(polls.load(Ordering::SeqCst), 0);
@@ -5194,7 +5206,8 @@ async fn remote_public_optimize_options_preserve_submission_contract() {
 
 #[tokio::test]
 async fn remote_public_optimize_rejects_unsupported_requests_before_submission() {
-    use crate::table::{IndexOptimizeOptions, OptimizeAction, OptimizeOptions, OptimizeOverrides};
+    use crate::table::optimize::OptimizeOptions;
+    use crate::table::{IndexOptimizeOptions, OptimizeAction, OptimizeOverrides};
     let service = TestSqlService {
         adaptive: true,
         ..Default::default()
@@ -5337,4 +5350,47 @@ async fn remote_optimize_convenience_and_durable_validate_the_same_receipt() {
             }
         }
     }
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn remote_optimize_legacy_compact_convenience_preserves_settings_without_polling() {
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["legacy-optimize-job"])) as ArrayRef,
+        )])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = public_remote_table(RemoteTable::new_with_sql_client(
+        client_with_handler(|request| -> http::Response<String> {
+            panic!("legacy convenience must not poll jobs: {}", request.url());
+        }),
+        "analytics".into(),
+        "clips".into(),
+        vec![],
+        "clips".into(),
+        Default::default(),
+        Some(sql),
+    ));
+    let result = table
+        .compact(crate::table::CompactionOverrides {
+            target_rows_per_fragment: Some(100),
+            io_buffer_size: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(result.compaction.is_some());
+    assert_eq!(
+        *statements.lock().unwrap(),
+        [
+            "OPTIMIZE \"clips\" REWRITE DATA WITH (target_rows_per_fragment = 100, io_buffer_size = 0)"
+        ]
+    );
+    shutdown.send(()).unwrap();
 }

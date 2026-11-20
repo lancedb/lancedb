@@ -305,6 +305,26 @@ It is a no-op when no writers are cached.
 
 ***
 
+### ~~compactAsync()~~
+
+```ts
+compactAsync(options?): Promise<Job<OptimizeResult>>
+```
+
+#### Parameters
+
+* **options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`OptimizeResult`](../interfaces/OptimizeResult.md)&gt;&gt;
+
+#### Deprecated
+
+Use optimizeAsync() instead.
+
+***
+
 ### compactRTE()
 
 ```ts

@@ -373,7 +373,7 @@ index statistics, and search. For example, `table.delete(where="id = 1")`,
 `create_scalar_index` defaults to `replace=True` on both backends. Both scalar
 and full-text index creation accept `wait_timeout`. LanceDB Enterprise maintenance methods
 use the same Optimize submission options. `cleanup_old_versions()` remains a
-warning-only no-op; the former `compact_files()` method is removed.
+warning-only no-op; the deprecated `compact_files()` method preserves that behavior.
 `optimize` submits a durable compaction job and returns once that submission is
 accepted, not once compaction itself finishes. Pruning and index optimization
 are not yet supported remotely, so it silently skips them and returns with
@@ -406,6 +406,10 @@ documented by `Table` below; specify index options by keyword when migrating
 code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Table
+
+::: lancedb.table.CompactionOptions
+
+Deprecated compatibility name for `OptimizeOptions`.
 
 ::: lancedb.table.OptimizeOptions
 
@@ -1523,3 +1527,7 @@ Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 ::: lancedb.prewarm.PrewarmDataPlan
 
 ::: lancedb.prewarm.PrewarmPruningSummary
+
+::: lancedb.compaction.CompactionResult
+
+Deprecated compatibility name for `lancedb.optimize.OptimizeResult`.

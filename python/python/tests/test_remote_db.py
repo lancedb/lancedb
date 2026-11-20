@@ -8708,7 +8708,7 @@ def test_remote_prewarm_preview_reports_old_server_format_support():
 
 
 @pytest.mark.parametrize("method", ["optimize", "optimize_async"])
-@pytest.mark.parametrize("key", ["data_options", "compaction_options"])
+@pytest.mark.parametrize("key", ["data_options"])
 def test_remote_optimize_rejects_wrapped_options_before_submission(method, key):
     flight = pytest.importorskip("pyarrow.flight")
 
@@ -8753,3 +8753,57 @@ def test_remote_optimize_job_rejects_maintenance_options_before_submission(optio
         with pytest.raises(ValueError, match="unsupported by Optimize jobs"):
             table.optimize_async(**options)
     assert server.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("method", ["optimize", "compact_async"])
+async def test_legacy_optimize_submits_once_with_settings(asynchronous, method):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class Server(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.tickets = []
+
+        def do_get(self, context, ticket):
+            self.tickets.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"job_id": ["legacy-optimize-job"]})
+            )
+
+    server = Server()
+    with _mock_remote_sql_connection(server) as kwargs:
+        if asynchronous:
+            db = await lancedb.connect_async(**kwargs)
+            table = await db.create_table("test", [{"id": 1}])
+            with pytest.warns(DeprecationWarning):
+                result = await getattr(table, method)(
+                    compaction_options={"io_buffer_size": 0, "max_source_rows": 7}
+                )
+        else:
+            db = lancedb.connect(**kwargs)
+            table = db.create_table("test", [{"id": 1}])
+            with pytest.warns(DeprecationWarning):
+                result = getattr(table, method)(
+                    compaction_options={"io_buffer_size": 0, "max_source_rows": 7}
+                )
+        if method == "compact_async":
+            assert result.id == "legacy-optimize-job"
+    assert len(server.tickets) == 1
+    assert b"io_buffer_size = 0" in server.tickets[0]
+    assert b"max_source_rows = 7" in server.tickets[0]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"compaction_options": {"max_source_rows": 7}, "batch_size": 16},
+        {"compaction_options": {"unknown_limit": 7}},
+    ],
+)
+def test_legacy_optimize_rejects_ambiguous_or_unknown_settings(options):
+    from lancedb.table import _split_optimize_options
+
+    with pytest.warns(DeprecationWarning), pytest.raises(TypeError):
+        _split_optimize_options(options)

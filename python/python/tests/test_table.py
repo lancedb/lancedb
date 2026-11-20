@@ -6486,4 +6486,24 @@ async def test_optimize_async_requires_remote(mem_db, mem_db_async):
     async_table = await mem_db_async.create_table("local_job", [{"id": 1}])
     with pytest.raises(NotImplementedError, match="only supported on remote tables"):
         await async_table.optimize_async()
-    assert not hasattr(async_table, "compact_async")
+    assert hasattr(async_table, "compact_async")
+
+
+def test_legacy_compact_files_preserves_data_and_history(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("legacy", [{"id": 1}])
+    table.add([{"id": 2}])
+    with pytest.warns(DeprecationWarning):
+        stats = table.compact_files(target_rows_per_fragment=100)
+    assert stats.fragments_removed == 2
+    assert table.count_rows() == 2
+    table.checkout(1)
+    assert table.count_rows() == 1
+
+
+def test_legacy_optimize_nested_settings_embedded(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("legacy", [{"id": 1}])
+    table.add([{"id": 2}])
+    with pytest.warns(DeprecationWarning, match="compaction_options"):
+        stats = table.optimize(compaction_options={"target_rows_per_fragment": 100})
+    assert stats.compaction.fragments_removed == 2
+    assert table.count_rows() == 2

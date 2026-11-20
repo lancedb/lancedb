@@ -11,7 +11,10 @@ import {
   AutoQuery,
   type BlobInput,
   type BlobMode,
+  type CompactionOptions,
+  type CompactionResult,
   Connection,
+  type Job,
   MatchQuery,
   type OptimizeOptions,
   PhraseQuery,
@@ -6081,7 +6084,7 @@ describe("Optimize action selection", () => {
     expect((await table.indexStats("id_idx"))?.numUnindexedRows).toBe(0);
     await table.checkout(1);
     expect(await table.countRows()).toBe(1);
-    expect("compactAsync" in table).toBe(false);
+    expect("compactAsync" in table).toBe(true);
   });
 
   test("rejects unknown actions and conflicting cleanup requests before changes", async () => {
@@ -6098,14 +6101,46 @@ describe("Optimize action selection", () => {
   });
 });
 
-test("rejects removed compactionOptions without silently submitting defaults", async () => {
+test("preserves nested compactionOptions including explicit zero", async () => {
   const optimize = jest.fn();
   const table = new LocalTable({ optimize } as never);
-  await expect(
-    table.optimize({ compactionOptions: { maxSourceRows: 1 } } as never),
-  ).rejects.toThrow("Unsupported Optimize option: compactionOptions");
-  expect(optimize).not.toHaveBeenCalled();
+  await table.optimize({
+    compactionOptions: { maxSourceRows: 7, ioBufferSize: 0 },
+  });
+  expect(optimize).toHaveBeenCalledTimes(1);
+  expect(optimize).toHaveBeenCalledWith(
+    undefined,
+    undefined,
+    { maxSourceRows: 7, ioBufferSize: 0 },
+    undefined,
+  );
 });
+
+it("keeps the deprecated durable method on the same submission path", async () => {
+  const optimizeAsync = jest.fn().mockResolvedValue({});
+  const table = new LocalTable({ optimizeAsync } as never);
+  const options: CompactionOptions = { maxSourceRows: 7, ioBufferSize: 0 };
+  const job: Job<CompactionResult> = await table.compactAsync(options);
+  expect(job).toBeDefined();
+  expect(optimizeAsync).toHaveBeenCalledTimes(1);
+  expect(optimizeAsync).toHaveBeenCalledWith({
+    maxSourceRows: 7,
+    ioBufferSize: 0,
+  });
+});
+
+it.each([
+  { compactionOptions: { maxSourceRows: 7 }, batchSize: 16 },
+  { compactionOptions: { unknownLimit: 7 } },
+])(
+  "rejects ambiguous or unknown legacy settings before submission",
+  async (options) => {
+    const optimize = jest.fn();
+    const table = new LocalTable({ optimize } as never);
+    await expect(table.optimize(options as never)).rejects.toThrow();
+    expect(optimize).not.toHaveBeenCalled();
+  },
+);
 
 it("uses the same flat OptimizeOptions for durable submission", async () => {
   const optimizeAsync = jest.fn().mockResolvedValue({});

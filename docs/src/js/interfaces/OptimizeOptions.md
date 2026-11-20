@@ -42,6 +42,18 @@ Cannot be combined with action="rewrite_data" or used with durable Optimize jobs
 
 ***
 
+### ~~compactionOptions?~~
+
+```ts
+optional compactionOptions: CompactionOptions;
+```
+
+#### Deprecated
+
+Pass rewrite settings directly on OptimizeOptions.
+
+***
+
 ### deleteUnverified?
 
 ```ts

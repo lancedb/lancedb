@@ -85,6 +85,7 @@ from ..table import (
     AsyncTable,
     BlobMode,
     Branches,
+    CompactionOptions,
     OptimizeOptions,
     OptimizeResult,
     IndexStatistics,
@@ -1105,6 +1106,27 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         pass
+
+    def compact_files(self, *args, **kwargs):
+        """
+        compact_files() is a no-op in LanceDB Enterprise.
+        """
+        warnings.warn(
+            "compact_files() is a no-op in LanceDB Enterprise.",
+            stacklevel=2,
+        )
+        pass
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[OptimizeResult]:
+        """Deprecated: use optimize_async() with flat rewrite settings."""
+        warnings.warn(
+            "compact_async() is deprecated; use optimize_async()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.optimize_async(**(compaction_options or {}))
 
     def optimize_async(self, **options: Unpack[OptimizeOptions]) -> Job[OptimizeResult]:
         return Job(LOOP.run(self._table.optimize_async(**options)))

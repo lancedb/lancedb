@@ -87,6 +87,8 @@ pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub use optimize::OptimizeResult;
+#[allow(deprecated)]
+pub use optimize::{CompactionMode, CompactionOptions, CompactionOverrides, CompactionResult};
 mod prewarm;
 pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
@@ -119,9 +121,14 @@ use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions as IndexOptimizeOptions;
+/// Deprecated index-maintenance options. Use [`IndexOptimizeOptions`].
+/// Data-rewrite options live at [`optimize::OptimizeOptions`].
+#[deprecated(
+    note = "use IndexOptimizeOptions for index maintenance; use table::optimize::OptimizeOptions for data rewrites"
+)]
+pub type OptimizeOptions = IndexOptimizeOptions;
 pub use optimize::{
-    IndexRemapMode, OptimizeAction, OptimizeDataMode, OptimizeOptions, OptimizeOverrides,
-    OptimizeStats,
+    IndexRemapMode, OptimizeAction, OptimizeDataMode, OptimizeOverrides, OptimizeStats,
 };
 pub use refresh::{
     FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
@@ -910,6 +917,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "Optimize jobs are only supported on remote tables".into(),
         })
     }
+    /// Deprecated: use [`Self::optimize_async`].
+    #[deprecated(note = "use optimize_async")]
+    async fn compact_async(
+        &self,
+        options: optimize::OptimizeOverrides,
+    ) -> Result<Job<OptimizeResult>> {
+        self.optimize_async(options).await
+    }
+
+    /// Deprecated: use [`Self::optimize`].
+    #[deprecated(note = "use optimize with OptimizeOverrides")]
+    async fn compact(&self, options: optimize::OptimizeOverrides) -> Result<OptimizeStats> {
+        self.optimize(OptimizeAction::RewriteData(options)).await
+    }
+
     /// Add columns to the table.
     async fn add_columns(
         &self,
@@ -2098,12 +2120,12 @@ impl Table {
     /// file counts, represented as `None`. Reopen with
     /// `connection.open_job(id).await?.into_typed::<OptimizeResult>()?`.
     ///
-    /// Accepts flat [`OptimizeOptions`] directly, or [`optimize::OptimizeOverrides`]
+    /// Accepts flat [`optimize::OptimizeOptions`] directly, or [`optimize::OptimizeOverrides`]
     /// when omitted values must be distinguished from explicit SDK defaults.
     ///
     /// ```no_run
     /// # async fn optimize(table: &lancedb::Table) -> lancedb::Result<()> {
-    /// let job = table.optimize_async(lancedb::table::OptimizeOptions::default()).await?;
+    /// let job = table.optimize_async(lancedb::table::optimize::OptimizeOptions::default()).await?;
     /// let result = job.wait().await?;
     /// println!("Committed {} rows", result.rows_succeeded);
     /// # Ok(())
@@ -2115,6 +2137,23 @@ impl Table {
     ) -> Result<Job<OptimizeResult>> {
         let options = options.into().into_remote_overrides()?;
         self.inner.optimize_async(options).await
+    }
+
+    /// Deprecated: use [`Self::optimize`] with [`OptimizeOverrides`].
+    #[deprecated(note = "use optimize with OptimizeOverrides")]
+    pub async fn compact(&self, options: optimize::OptimizeOverrides) -> Result<OptimizeStats> {
+        #[allow(deprecated)]
+        self.inner.compact(options).await
+    }
+
+    /// Deprecated: use [`Self::optimize_async`].
+    #[deprecated(note = "use optimize_async")]
+    pub async fn compact_async(
+        &self,
+        options: optimize::OptimizeOverrides,
+    ) -> Result<Job<OptimizeResult>> {
+        #[allow(deprecated)]
+        self.inner.compact_async(options).await
     }
 
     /// Language-binding entry point retaining optional compaction fields.
@@ -2194,7 +2233,7 @@ impl Table {
     #[doc(hidden)]
     pub async fn optimize_full(
         &self,
-        data_options: OptimizeOptions,
+        data_options: optimize::OptimizeOptions,
         older_than: Option<chrono::Duration>,
         before_timestamp: Option<chrono::DateTime<chrono::Utc>>,
         delete_unverified: Option<bool>,
@@ -7120,7 +7159,7 @@ mod tests {
         // Compaction materializes the deletions.
         table
             .optimize(OptimizeAction::RewriteDataWithOptions {
-                options: OptimizeOptions {
+                options: optimize::OptimizeOptions {
                     target_rows_per_fragment: 1000,
                     ..Default::default()
                 },

@@ -28,10 +28,11 @@ use arrow::{
 use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
+use lancedb::table::optimize::OptimizeOptions;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig, FunctionRefreshPodResources, FunctionWorkerResourceBudget,
-    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeOptions, OptimizeOverrides, Ref,
+    IndexRemapMode, NewColumnTransform, OptimizeDataMode, OptimizeOverrides, Ref,
     RefreshColumnOptions, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;

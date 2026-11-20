@@ -129,7 +129,8 @@ pub(super) fn map_optimize_error(error: Error) -> Error {
 mod tests {
     use super::*;
     use crate::error::JobFailure;
-    use crate::table::{OptimizeOptions, OptimizeOverrides};
+    use crate::table::OptimizeOverrides;
+    use crate::table::optimize::OptimizeOptions;
     use std::sync::Arc;
 
     fn sql_error(code: tonic::Code, message: &str) -> Error {

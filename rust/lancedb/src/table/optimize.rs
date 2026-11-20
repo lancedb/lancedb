@@ -32,6 +32,19 @@ pub use lance::dataset::optimize::{
     CompactionMode as OptimizeDataMode, CompactionOptions as OptimizeOptions, IndexRemapMode,
 };
 
+/// Deprecated: use [`OptimizeOptions`].
+#[deprecated(note = "use table::optimize::OptimizeOptions")]
+pub type CompactionOptions = OptimizeOptions;
+/// Deprecated: use [`OptimizeDataMode`].
+#[deprecated(note = "use OptimizeDataMode")]
+pub type CompactionMode = OptimizeDataMode;
+/// Deprecated: use [`OptimizeOverrides`].
+#[deprecated(note = "use OptimizeOverrides")]
+pub type CompactionOverrides = OptimizeOverrides;
+/// Deprecated: use [`OptimizeResult`].
+#[deprecated(note = "use OptimizeResult")]
+pub type CompactionResult = OptimizeResult;
+
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
 
 /// Actual outcome of one remote Optimize data rewrite, returned by its job handle.
@@ -335,7 +348,7 @@ pub enum OptimizeAction {
     /// placeholder rather than the real counts a local table reports.
     ///
     /// ```
-    /// use lancedb::{Table, table::{OptimizeOptions, OptimizeAction}};
+    /// use lancedb::{Table, table::{optimize::OptimizeOptions, OptimizeAction}};
     /// # async fn optimize(table: &Table) -> lancedb::Result<()> {
     /// table.optimize(OptimizeAction::RewriteDataWithOptions {
     ///     options: OptimizeOptions {
@@ -357,6 +370,12 @@ pub enum OptimizeAction {
     /// Older servers may accept submission and fail the compaction job
     /// asynchronously instead.
     RewriteDataWithOptions {
+        options: OptimizeOptions,
+        remap_options: Option<Arc<dyn IndexRemapperOptions>>,
+    },
+    /// Deprecated spelling of [`Self::RewriteDataWithOptions`].
+    #[deprecated(note = "use RewriteDataWithOptions or RewriteData")]
+    Compact {
         options: OptimizeOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     },
@@ -409,13 +428,14 @@ pub enum OptimizeAction {
 
 impl OptimizeAction {
     /// Normalize an Enterprise data-rewrite request before any submission.
+    #[allow(deprecated)]
     pub(crate) fn into_remote_overrides(self) -> Result<OptimizeOverrides> {
         match self {
             OptimizeAction::RewriteData(options) => Ok(options),
             OptimizeAction::RewriteDataWithOptions {
                 options,
                 remap_options,
-            } => {
+            } | OptimizeAction::Compact { options, remap_options } => {
                 if remap_options.is_some() {
                     return Err(Error::NotSupported {
                         message: "a custom index remap strategy is not supported in LanceDB \
@@ -426,7 +446,7 @@ impl OptimizeAction {
                 }
                 let target = options.target_rows_per_fragment;
                 let mut overrides = crate::table::optimize::OptimizeOverrides::try_from(options)?;
-                if target == crate::table::OptimizeOptions::default().target_rows_per_fragment {
+                if target == crate::table::optimize::OptimizeOptions::default().target_rows_per_fragment {
                     overrides.target_rows_per_fragment = None;
                 }
                 Ok(overrides)
@@ -564,6 +584,7 @@ pub(crate) async fn compact_files_impl(
 /// Execute the optimize operation on the table.
 ///
 /// This is the main entry point for all optimization operations.
+#[allow(deprecated)]
 pub(crate) async fn execute_optimize(
     table: &NativeTable,
     action: OptimizeAction,
@@ -592,6 +613,10 @@ pub(crate) async fn execute_optimize(
             stats.compaction = Some(compact_files_impl(table, options.into_options(), None).await?);
         }
         OptimizeAction::RewriteDataWithOptions {
+            options,
+            remap_options,
+        }
+        | OptimizeAction::Compact {
             options,
             remap_options,
         } => {
@@ -643,7 +668,8 @@ mod tests {
         vector::{IvfHnswSqIndexBuilder, IvfRqIndexBuilder},
     };
     use crate::query::{ExecutableQuery, QueryBase};
-    use crate::table::{OptimizeAction, OptimizeOptions, OptimizeStats};
+    use crate::table::optimize::OptimizeOptions;
+    use crate::table::{OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
 
     /// Regression test for https://github.com/lancedb/lancedb/issues/2866.

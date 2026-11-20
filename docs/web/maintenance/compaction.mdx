@@ -504,7 +504,7 @@ const result = await job.wait();
 ```
 
 ```rust
-use lancedb::table::OptimizeOptions;
+use lancedb::table::optimize::OptimizeOptions;
 
 async fn optimize_table(table: &lancedb::Table) -> lancedb::Result<()> {
     table.optimize(OptimizeOptions::default()).await?;
@@ -523,11 +523,15 @@ returning actual statistics. Select only data rewrites with Python
 versions and skip the separate index maintenance phase. Cleanup arguments cannot
 be combined with a rewrite-only action.
 
-The former `compact_async()` / `compactAsync()` methods are now
+The preferred replacements for `compact_async()` / `compactAsync()` are
 `optimize_async()` / `optimizeAsync()`. Rust `compact(overrides)` becomes
 `optimize(overrides)`. Python `compact_files()` becomes
 `optimize(action="rewrite_data", target_rows_per_fragment=1000)`, with rewrite metrics
-under `stats.compaction`. The old names are removed without aliases.
+under `stats.compaction`. The old methods and imports remain available for compatibility.
+Python warns on deprecated methods and nested settings; TypeScript and Rust mark
+legacy APIs deprecated. The Embedded `compact_files()` implementation still accepts
+Lance options and returns its original statistics; the remote method remains a
+warning-only no-op.
 
 ### Optimize naming migration
 
@@ -536,18 +540,29 @@ The SDK uses Optimize names for submission, settings, and durable results:
 | Previous name | Current name |
 | --- | --- |
 | `CompactionResult` | `OptimizeResult` |
-| `CompactionOptions` | `OptimizeOptions` |
+| Python/TypeScript `CompactionOptions` | `OptimizeOptions` |
+| Rust `CompactionOptions` | `table::optimize::OptimizeOptions` |
 | Rust `CompactionOverrides` | `OptimizeOverrides` |
 | Rust `CompactionMode` | `OptimizeDataMode` |
-| Rust index-maintenance `OptimizeOptions` | `IndexOptimizeOptions` |
-| Python `compaction_options=` / `data_options=` | Flat keyword arguments |
-| TypeScript `compactionOptions` / `dataOptions` | Flat `OptimizeOptions` fields |
+| Rust `table::OptimizeOptions` (index maintenance) | `table::IndexOptimizeOptions` |
+| Python `compaction_options=` | Flat keyword arguments |
+| TypeScript `compactionOptions` | Flat `OptimizeOptions` fields |
 | Python `lancedb.compaction` | `lancedb.optimize` |
 | Rust `OptimizeAction::Compact` | `OptimizeAction::RewriteDataWithOptions` |
 
-These names are replaced without compatibility aliases. TypeScript rejects the
-removed `compactionOptions` and `dataOptions` properties before submission.
-Python rejects the old wrapper keywords. This prevents a requested work limit from being silently ignored.
+Released names remain as deprecated compatibility APIs. Existing Python
+`optimize(compaction_options=...)` and TypeScript `optimize({ compactionOptions: ... })`
+calls preserve their settings. Combining nested and flat rewrite settings is rejected
+before submission, as are unknown nested settings. The intermediate, unreleased
+`data_options` / `dataOptions` wrappers are unsupported.
+
+Rust retains `table::OptimizeOptions` as the index-maintenance type so existing
+`OptimizeAction::Index(...)` calls keep their meaning. Import data-rewrite options
+from `table::optimize::OptimizeOptions`; `table::IndexOptimizeOptions` is the preferred
+explicit name for index-maintenance settings.
+
+`OptimizeAction` also has new rewrite variants. Rust callers that exhaustively
+match this enum must handle those variants when upgrading.
 
 `CompactionStats` and `OptimizeStats.compaction` still identify the compaction
 phase within Embedded's broader maintenance cycle. The algorithm-specific
@@ -577,7 +592,7 @@ const job = await table.optimizeAsync(options);
 ```
 
 ```rust
-use lancedb::table::OptimizeOptions;
+use lancedb::table::optimize::OptimizeOptions;
 
 let options = OptimizeOptions {
     target_rows_per_fragment: 1000,

@@ -14,6 +14,7 @@ use lance::blob::blob_field as blob;
 use lance::dataset::WriteParams;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_table::format::BasePath;
+use lancedb::table::optimize::OptimizeOptions;
 use lancedb::{
     Connection, Error, Result, Table,
     blob::BlobRangeRequest,
@@ -23,7 +24,7 @@ use lancedb::{
         OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, OptimizeAction, OptimizeOptions, OptimizeStats, WriteOptions},
+    table::{AddDataMode, OptimizeAction, OptimizeStats, WriteOptions},
 };
 use tempfile::tempdir;
 

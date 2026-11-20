@@ -2701,7 +2701,8 @@ mod tests {
     )]
     async fn indexes_and_optimize_still_apply_to_a_view() {
         use crate::index::Index;
-        use crate::table::{OptimizeAction, OptimizeOptions};
+        use crate::table::OptimizeAction;
+        use crate::table::optimize::OptimizeOptions;
 
         let conn = connect("memory://").execute().await.unwrap();
         let source = conn
