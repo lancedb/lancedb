@@ -146,6 +146,9 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        # The namespace QueryTable request has no order_by field. Pushing a
+        # nonempty ordering down would drop it and return the wrong top-K rows.
+        or bool(query.order_by)
         or (
             query.full_text_query is not None
             and query.fast_search is True
