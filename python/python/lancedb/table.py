@@ -9667,7 +9667,7 @@ class AsyncTable:
         See [Table.delta][lancedb.table.Table.delta] for endpoint, stable-row-id,
         and branch-tag semantics. The returned
         [AsyncTableDelta][lancedb.table.AsyncTableDelta] streams
-        [AsyncRecordBatchReader][lancedb.arrow.AsyncRecordBatchReader] values.
+        ``AsyncRecordBatchReader`` values.
         """
         return AsyncTableDelta(await self._inner.delta(from_version, to_version))
 
