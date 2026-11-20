@@ -1530,6 +1530,126 @@ def test_create_table_positional_parameters_match_base_contract():
     assert actual == expected
 
 
+def _unconsumed_create_input():
+    raise AssertionError("create_table consumed input before rejecting the option")
+    yield  # pragma: no cover
+
+
+def _assert_enterprise_rejection(error):
+    message = str(error)
+    assert "not supported for table creation in LanceDB Enterprise" in message
+    assert "Embedded" not in message
+    assert "add(" not in message
+
+
+def test_create_table_rejects_blob_base_options_before_request():
+    def handler(request):
+        raise AssertionError(f"unexpected request: {request.path}")
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NotImplementedError, match="initial_bases") as error:
+            db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                initial_bases=[{"path": "s3://bucket/prefix"}],
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            db.create_table(
+                "test",
+                schema=schema,
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+
+
+def test_create_table_accepts_empty_blob_base_options():
+    def handler(request):
+        assert request.path == "/v1/table/test/create/?mode=create"
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table(
+            "test",
+            schema=schema,
+            initial_bases=[],
+            allow_external_blob_outside_bases=False,
+        )
+        assert table is not None
+
+
+@pytest.mark.asyncio
+async def test_create_table_rejects_blob_base_options_before_request_async():
+    def handler(request):
+        raise AssertionError(f"unexpected request: {request.path}")
+
+    def reader():
+        schema = pa.schema([pa.field("id", pa.int64())])
+        return pa.RecordBatchReader.from_batches(schema, [])
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    async with mock_lancedb_connection_async(handler) as db:
+        with pytest.raises(NotImplementedError, match="initial_bases") as error:
+            await db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                initial_bases=[{"path": "s3://bucket/prefix"}],
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            await db.create_table(
+                "test",
+                data=_unconsumed_create_input(),
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ) as error:
+            await db.create_table(
+                "test",
+                schema=schema,
+                allow_external_blob_outside_bases=True,
+            )
+        _assert_enterprise_rejection(error.value)
+        # The lower-layer guard still maps Error::NotSupported for direct native
+        # calls that bypass the Python entrypoint.
+        with pytest.raises(NotImplementedError, match="initial_bases"):
+            await db._inner.create_table(
+                "test",
+                "create",
+                reader(),
+                initial_bases=[{"path": "s3://bucket/prefix"}],
+            )
+        with pytest.raises(
+            NotImplementedError, match="allow_external_blob_outside_bases"
+        ):
+            await db._inner.create_table(
+                "test",
+                "create",
+                reader(),
+                allow_external_blob_outside_bases=True,
+            )
+
+
 def test_create_table_exist_ok():
     def handler(request):
         if request.path == "/v1/table/test/create/?mode=exist_ok":
