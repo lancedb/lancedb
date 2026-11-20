@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import multiprocessing as mp
 import os
 import subprocess
 import sys
 import textwrap
-import traceback
 
 import pytest
 
@@ -14,7 +12,7 @@ import pytest
 BACKGROUND_THREAD_NAME = "LanceDBBackgroundEventLoop"
 
 
-def _run_in_subprocess(code: str) -> subprocess.CompletedProcess:
+def _run_in_subprocess(code: str, timeout: int = 30) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path)
     return subprocess.run(
@@ -23,7 +21,7 @@ def _run_in_subprocess(code: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         env=env,
-        timeout=30,
+        timeout=timeout,
     )
 
 
@@ -142,45 +140,6 @@ def test_concurrent_first_use_initializes_one_background_thread():
     _assert_subprocess_ok(result)
 
 
-def _fork_child_starts_lazily(queue):
-    def background_threads():
-        import threading
-
-        return [
-            thread
-            for thread in threading.enumerate()
-            if thread.name == BACKGROUND_THREAD_NAME
-        ]
-
-    try:
-        from lancedb.background_loop import LOOP
-
-        inherited_thread_is_none = LOOP.thread is None
-        inherited_loop_is_none = LOOP.loop is None
-        background_threads_before = [thread.name for thread in background_threads()]
-
-        import lancedb
-
-        db = lancedb.connect("memory://")
-        tables = db.table_names()
-
-        worker = LOOP.thread
-        queue.put(
-            {
-                "error": None,
-                "inherited_thread_is_none": inherited_thread_is_none,
-                "inherited_loop_is_none": inherited_loop_is_none,
-                "background_threads_before": background_threads_before,
-                "tables": tables,
-                "thread_alive": False if worker is None else worker.is_alive(),
-                "thread_daemon": False if worker is None else worker.daemon,
-                "background_thread_count": len(background_threads()),
-            }
-        )
-    except BaseException:
-        queue.put({"error": traceback.format_exc()})
-
-
 @pytest.mark.skipif(
     sys.platform != "linux",
     reason=(
@@ -189,48 +148,100 @@ def _fork_child_starts_lazily(queue):
     ),
 )
 def test_forked_child_starts_background_loop_lazily():
-    import asyncio
+    # Fork from a fresh interpreter: earlier tests in a shared pytest process
+    # may have left native runtime state that is not part of this scenario.
+    result = _run_in_subprocess(
+        f"""
+        import asyncio
+        import multiprocessing as mp
+        import threading
+        import traceback
 
-    from lancedb.background_loop import LOOP
+        from lancedb.background_loop import LOOP
 
-    assert LOOP.run(asyncio.sleep(0, result="parent-before")) == "parent-before"
-    parent_thread = LOOP.thread
-    assert parent_thread is not None
+        BACKGROUND_THREAD_NAME = {BACKGROUND_THREAD_NAME!r}
 
-    ctx = mp.get_context("fork")
-    queue = ctx.Queue()
+        def background_threads():
+            return [
+                thread
+                for thread in threading.enumerate()
+                if thread.name == BACKGROUND_THREAD_NAME
+            ]
 
-    # Simulate forking while another thread held the initialization lock. The
-    # child must replace the inherited lock instead of trying to acquire it.
-    LOOP._start_lock.acquire()
-    try:
-        proc = ctx.Process(target=_fork_child_starts_lazily, args=(queue,))
-        proc.start()
-    finally:
-        LOOP._start_lock.release()
+        def fork_child(queue):
+            try:
+                from lancedb.background_loop import LOOP
 
-    proc.join(timeout=20)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(timeout=5)
+                inherited_thread_is_none = LOOP.thread is None
+                inherited_loop_is_none = LOOP.loop is None
+                background_threads_before = [
+                    thread.name for thread in background_threads()
+                ]
+
+                import lancedb
+
+                db = lancedb.connect("memory://")
+                tables = db.table_names()
+
+                worker = LOOP.thread
+                queue.put(
+                    dict(
+                        error=None,
+                        inherited_thread_is_none=inherited_thread_is_none,
+                        inherited_loop_is_none=inherited_loop_is_none,
+                        background_threads_before=background_threads_before,
+                        tables=tables,
+                        thread_alive=False if worker is None else worker.is_alive(),
+                        thread_daemon=False if worker is None else worker.daemon,
+                        background_thread_count=len(background_threads()),
+                    )
+                )
+            except BaseException:
+                queue.put(dict(error=traceback.format_exc()))
+
+        assert LOOP.run(asyncio.sleep(0, result="parent-before")) == "parent-before"
+        parent_thread = LOOP.thread
+        assert parent_thread is not None
+
+        ctx = mp.get_context("fork")
+        queue = ctx.Queue()
+
+        # Simulate forking while another thread held the initialization lock. The
+        # child must replace the inherited lock instead of trying to acquire it.
+        LOOP._start_lock.acquire()
+        try:
+            proc = ctx.Process(target=fork_child, args=(queue,))
+            proc.start()
+        finally:
+            LOOP._start_lock.release()
+
+        proc.join(timeout=20)
         if proc.is_alive():
-            proc.kill()
-            proc.join()
-        pytest.fail("Forked child hung starting the background loop")
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            raise AssertionError("Forked child hung starting the background loop")
 
-    assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
-    payload = queue.get(timeout=5)
-    queue.close()
-    assert payload["error"] is None, payload["error"]
-    assert payload["inherited_thread_is_none"] is True
-    assert payload["inherited_loop_is_none"] is True
-    assert payload["background_threads_before"] == []
-    assert payload["tables"] == []
-    assert payload["thread_alive"] is True
-    assert payload["thread_daemon"] is True
-    assert payload["background_thread_count"] == 1
+        assert proc.exitcode == 0, "child exited with code %s" % proc.exitcode
+        payload = queue.get(timeout=5)
+        queue.close()
+        assert payload["error"] is None, payload["error"]
+        assert payload["inherited_thread_is_none"] is True
+        assert payload["inherited_loop_is_none"] is True
+        assert payload["background_threads_before"] == []
+        assert payload["tables"] == []
+        assert payload["thread_alive"] is True
+        assert payload["thread_daemon"] is True
+        assert payload["background_thread_count"] == 1
 
-    # The child's reset must not disturb the parent's loop.
-    assert LOOP.thread is parent_thread
-    assert parent_thread.is_alive()
-    assert LOOP.run(asyncio.sleep(0, result="parent-after")) == "parent-after"
+        # The child's reset must not disturb the parent's loop.
+        assert LOOP.thread is parent_thread
+        assert parent_thread.is_alive()
+        assert LOOP.run(asyncio.sleep(0, result="parent-after")) == "parent-after"
+        """,
+        # join(20) + terminate join(5) + queue get(5), plus startup and traceback.
+        timeout=40,
+    )
+    _assert_subprocess_ok(result)
