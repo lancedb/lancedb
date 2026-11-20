@@ -8407,7 +8407,7 @@ async def test_prewarm_bound_parameters_reach_flight(asynchronous, method, named
             assert result.table_version == 42
             assert result.pruning.selected_fragments == 1
         else:
-            assert result.id == "bound-job"
+            assert result.id() == "bound-job"
     ((command, received),) = server.calls
     assert b"PREWARM" in command and predicate.encode() in command
     if method == "explain_prewarm_data":

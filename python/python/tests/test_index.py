@@ -1045,7 +1045,7 @@ async def test_named_index_exist_ok_checks_before_column_validation(
     method = some_table.create_index_async if background else some_table.create_index
     result = await method("missing", config=BTree(), name="kept", exist_ok=True)
     if background:
-        assert result.id is None
+        assert result.id() is None
         await result.wait()
     assert await some_table.version() == version
     assert [index.name for index in await some_table.list_indices()] == ["kept"]
