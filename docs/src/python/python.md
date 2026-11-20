@@ -37,6 +37,14 @@ embedding_functions`. Prefer keyword arguments for optional parameters.
 
 ::: lancedb.db.DBConnection
 
+Embedded connections support `location=` on `open_table` to open a table from an
+explicit dataset URI instead of the derived `<database>/<name>.lance` path:
+
+```python
+db = lancedb.connect("./data")
+table = db.open_table("events", location="./datasets/events.lance")
+```
+
 Use `db.server_info()` (or `await db.server_info()` on an asynchronous connection)
 to include the responding server's release, Git revision, build date and Function
 runtime information in a bug report. It returns a JSON-compatible dictionary and
