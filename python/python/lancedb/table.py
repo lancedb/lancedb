@@ -357,11 +357,13 @@ class OptimizeOptions(TypedDict, total=False):
 
     Cleanup controls apply to Embedded convenience Optimize. Durable jobs
     reject cleanup and separate index-maintenance requests before submission.
-    Unspecified options use Lance's defaults for Embedded tables. Enterprise tables
-    forward ``target_rows_per_fragment``, ``max_source_rows``, ``io_buffer_size``,
-    and ``batch_size`` as per-job SQL options; other non-default settings are
-    unsupported. Omitted Enterprise options inherit table tuning, then
-    deployment/built-in defaults. The server must support these SQL options.
+    Omitted Embedded options inherit ``lance.compaction.*`` table settings, then
+    Lance's built-in defaults. Explicit options override table settings.
+    Enterprise tables forward ``target_rows_per_fragment``, ``max_source_rows``,
+    ``io_buffer_size``, and ``batch_size`` as per-job SQL options; other
+    non-default settings are unsupported. Omitted Enterprise options inherit
+    table tuning, then deployment/built-in defaults. The server must support
+    these SQL options.
     These settings do not change table policy.
 
     Compaction planning is row based. Lowering ``target_rows_per_fragment``

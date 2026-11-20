@@ -6490,6 +6490,7 @@ async def test_optimize_async_requires_remote(mem_db, mem_db_async):
 
 
 def test_legacy_compact_files_preserves_data_and_history(tmp_path):
+    pytest.importorskip("lance")
     table = lancedb.connect(tmp_path).create_table("legacy", [{"id": 1}])
     table.add([{"id": 2}])
     with pytest.warns(DeprecationWarning):
@@ -6512,6 +6513,7 @@ def test_legacy_optimize_nested_settings_embedded(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_optimize_inherits_embedded_table_config(tmp_path, asynchronous):
+    pytest.importorskip("lance")
     seed = lancedb.connect(tmp_path).create_table("policy", [{"id": 1}])
     seed.add([{"id": 2}])
     seed.to_lance().update_config(
