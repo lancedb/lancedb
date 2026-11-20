@@ -328,7 +328,7 @@ def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
 
 
 def infer_vector_column_name(
-    schema: pa.Schema,
+    schema: Optional[pa.Schema],
     query_type: str,
     query: Optional[Any],  # inferred later in query builder
     vector_column_name: Optional[str],
@@ -348,6 +348,8 @@ def infer_vector_column_name(
         # nothing to infer.
         return None
 
+    if schema is None:
+        raise ValueError("schema is required to infer a vector column")
     vector_column_name = inf_vector_column_query(schema, dim=_query_vector_dim(query))
 
     if vector_column_name is None:

@@ -913,7 +913,9 @@ class RemoteTable(Table):
         *,
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
+        blob_row_id_prepared: bool = False,
     ) -> pa.RecordBatchReader:
+        # Remote tables prepare blob row ids in their async query path.
         async_iter = LOOP.run(
             self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
         )
@@ -932,7 +934,9 @@ class RemoteTable(Table):
         query: Query,
         *,
         timeout: Optional[timedelta] = None,
+        blob_row_id_prepared: bool = False,
     ) -> pa.Table:
+        # Remote tables prepare blob row ids in their async query path.
         return LOOP.run(self._table._execute_arrow(query, timeout=timeout))
 
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:

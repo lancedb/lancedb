@@ -1749,6 +1749,7 @@ def test_query_builder_with_different_vector_column():
             vector_column="foo_vector",
         ),
         timeout=None,
+        blob_row_id_prepared=True,
     )
 
 
@@ -2655,6 +2656,55 @@ def test_query_schema(tmp_path):
     assert tbl.take_offsets([0]).select(["text"]).output_schema() == pa.schema(
         {"text": pa.string()}
     )
+
+
+def test_sync_query_prepares_schema_once_per_execution(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3],
+                "vector": pa.array(
+                    [[1, 2], [3, 4], [5, 6]],
+                    pa.list_(pa.float32(), list_size=2),
+                ),
+            }
+        ),
+    )
+
+    calls = 0
+    original = AsyncTable.schema
+
+    async def counted(self):
+        nonlocal calls
+        calls += 1
+        return await original(self)
+
+    monkeypatch.setattr(AsyncTable, "schema", counted)
+
+    table.search().where("id = 1").select(["id"]).to_arrow()
+    assert calls <= 1
+
+    calls = 0
+    table.search([1, 2], vector_column_name="vector").limit(1).to_arrow()
+    assert calls <= 1
+
+    calls = 0
+    table.search([1, 2]).limit(1).to_arrow()
+    # At most one lookup infers the vector column, one prepares execution.
+    assert calls <= 2
+
+    calls = 0
+    table.search().where("id = 1").select(["id"]).to_batches().read_all()
+    assert calls <= 1
+
+    builder = table.search().where("id = 1").select(["id", "extra"])
+    table.add_columns({"extra": "id + 10"})
+    calls = 0
+    actual = builder.to_arrow()
+    assert calls <= 1
+    assert actual["extra"].to_pylist() == [11]
 
 
 @pytest.mark.asyncio
