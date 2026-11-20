@@ -283,6 +283,10 @@ pub struct WriteOptions {
     ///
     /// Overlapping `OpenTableBuilder` options (e.g. [AddDataBuilder::mode]) will take
     /// precedence over their counterparts in `WriteOptions` (e.g. [WriteParams::mode]).
+    ///
+    /// In LanceDB Enterprise, `add` returns [`Error::NotSupported`] when
+    /// `max_rows_per_file`, `max_rows_per_group`, or `max_bytes_per_file` is
+    /// non-default, because the remote insert protocol only transmits the write mode.
     pub lance_write_params: Option<WriteParams>,
 }
 
