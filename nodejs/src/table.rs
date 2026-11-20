@@ -2380,7 +2380,7 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
     }
 }
 
-#[napi]
+#[napi(object)]
 pub struct TagContents {
     pub version: i64,
     pub manifest_size: i64,
