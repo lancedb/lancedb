@@ -2802,6 +2802,15 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         results are returned.
 
+        A query result table that carries snapshot metadata keeps the snapshot
+        that produced it on LanceDB Enterprise. A query result without that
+        metadata, including a legacy query response, and a plain list are read
+        from the table's current snapshot; keep the source unchanged between
+        selection and fetching. Partial snapshot metadata is rejected. Row
+        positions are not row IDs: to read by position, call
+        ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
+        resulting ``_rowid`` values.
+
         Blobs inside lists cannot be fetched by row id yet.
 
         LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
@@ -2868,6 +2877,17 @@ class Table(ABC):
         row ids.
         One missing or deleted row ID rejects the entire batch; no partial
         handles are returned.
+
+        A query result table that carries snapshot metadata keeps the snapshot
+        that produced it on LanceDB Enterprise, so every returned handle reads
+        that snapshot. Metadata-free query results, including legacy server
+        responses, and plain lists are read from the table's current snapshot.
+        Partial snapshot metadata is rejected. A snapshot-bound handle fails
+        explicitly when the serving node cannot echo the query snapshot
+        identity; the 0.5.0 floor covers the basic remote Blob API but not that
+        echo. Row positions are not row IDs: call
+        ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
+        resulting ``_rowid`` values.
         """
 
     @abstractmethod
@@ -9711,8 +9731,12 @@ class AsyncTable:
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
+        selection = _normalize_blob_row_ids(row_ids, column)
         return await self._inner.fetch_blobs(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column,
+            selection.row_ids,
+            version=selection.version,
+            snapshot_identity=selection.snapshot_identity,
         )
 
     async def fetch_blob_ranges(
@@ -9738,8 +9762,13 @@ class AsyncTable:
         See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
         """
         buffer_size = _validate_blob_buffer_size(buffer_size)
+        selection = _normalize_blob_row_ids(row_ids, column)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column), buffer_size
+            column,
+            selection.row_ids,
+            buffer_size=buffer_size,
+            version=selection.version,
+            snapshot_identity=selection.snapshot_identity,
         )
         return _wrap_blob_files(handles)
 

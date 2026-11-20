@@ -915,6 +915,18 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Row positions are not row IDs. To read by position, call
+`take_offsets(offsets, with_row_id=True)` first and pass the resulting `_rowid`
+values; `fetch_blobs` remains row-ID based. A query result table that carries
+snapshot metadata keeps the snapshot that produced it on LanceDB Enterprise, so
+the fetched bytes or files stay pinned if the table changes. Metadata-free
+inputs, including legacy query responses and plain row-ID lists, are read from
+the table handle's current snapshot; keep the source unchanged between selection
+and fetching. Partial snapshot metadata fails explicitly. For `fetch_blob_files`,
+a snapshot-bound read also fails explicitly when the serving node cannot echo
+the immutable identity. The basic remote Blob API floor (server 0.5.0) does not
+by itself provide that echo capability.
+
 Local and remote `BlobFile` handles prefetch 512 KiB for sequential reads by
 default. Pass `buffer_size=0` to `fetch_blob_files`, `open_blob_file`, or
 `open_blob_files` for sparse reads, or choose another window size in bytes.

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -48,6 +47,7 @@ from ._blob import (
     BLOB_MODE_TO_HANDLING,
     FetchBlobsAsync,
     FetchBlobsSync,
+    _remote_blob_snapshot,
     blob_auto_row_id_for_scan,
     blob_projection_sources,
     blob_v2_projection_sources,
@@ -203,25 +203,6 @@ def _supports_blob_fetch(
     return (
         not async_table._inner._is_native() or "QueryTable" not in pushdown_operations
     )
-
-
-def _remote_blob_snapshot(schema: pa.Schema) -> tuple[int, str]:
-    value = (schema.metadata or {}).get(b"lancedb:query_version", b"")
-    if not value.isdigit() or not 0 < int(value) < 2**64:
-        raise NotImplementedError(
-            "blob_mode='bytes' requires a stable table snapshot: the query response "
-            "has a missing, invalid, or inconsistent x-lancedb-query-version header. "
-            "Upgrade the server and use a table without Realtime/MemWAL, or use "
-            "blob_mode='descriptions'."
-        )
-    identity = (schema.metadata or {}).get(b"lancedb:query_snapshot", b"")
-    if not re.fullmatch(rb"v1:[0-9a-f]{64}", identity):
-        raise NotImplementedError(
-            "blob_mode='bytes' requires a trustworthy query snapshot identity: "
-            "missing or unsupported x-lancedb-query-snapshot. Upgrade the server "
-            "on every serving node, or use blob_mode='descriptions'."
-        )
-    return int(value), identity.decode("ascii")
 
 
 def _merge_query_snapshot(result: pa.Table, *sources: pa.Table) -> pa.Table:
