@@ -11,6 +11,7 @@ import pathlib
 import warnings
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from enum import Enum
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any, List
 from urllib.parse import urlparse
@@ -384,7 +385,8 @@ def _(value: bytes):
 
 @value_to_sql.register(int)
 def _(value: int):
-    return str(value)
+    # int() first: str() of an int-valued Enum member is its name, e.g. "P.HIGH".
+    return str(int(value))
 
 
 @value_to_sql.register(float)
@@ -396,7 +398,7 @@ def _(value: float):
         return (
             "CAST('Infinity' AS DOUBLE)" if value > 0 else "CAST('-Infinity' AS DOUBLE)"
         )
-    return str(value)
+    return str(float(value))
 
 
 @value_to_sql.register(Decimal)
@@ -415,6 +417,12 @@ def _(value: bool):
 @value_to_sql.register(type(None))
 def _(value: type(None)):
     return "NULL"
+
+
+@value_to_sql.register(Enum)
+def _(value: Enum):
+    # Write the member's value, as model_to_dict does for a LanceModel field.
+    return value_to_sql(value.value)
 
 
 @value_to_sql.register(datetime)
