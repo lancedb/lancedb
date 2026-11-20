@@ -862,7 +862,13 @@ class Table:
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
-        self, column: str, row_ids: list[int], buffer_size: Optional[int] = None
+        self,
+        column: str,
+        row_ids: list[int],
+        buffer_size: Optional[int] = None,
+        *,
+        version: Optional[int] = None,
+        snapshot_identity: Optional[str] = None,
     ) -> list[Optional[BlobFile]]: ...
     async def open_blob_file(
         self, descriptor: str, buffer_size: Optional[int] = None
