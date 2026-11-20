@@ -4287,9 +4287,11 @@ class LanceTable(Table):
         if async_connection is None:
             async_connection = connection._inner
 
+        # Only a table-level explicit client travels in the state. A connection
+        # namespace client must reopen through its own provider path so caller
+        # storage options keep their layering; passing the reconstructed client
+        # here would turn it into an explicit table provider.
         namespace_client = state.get("namespace_client")
-        if namespace_client is None:
-            namespace_client = getattr(connection, "_namespace_client", None)
 
         async_table = LOOP.run(
             async_connection.open_table(

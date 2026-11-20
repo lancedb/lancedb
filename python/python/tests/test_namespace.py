@@ -38,6 +38,22 @@ PUSHDOWN_DATA = pa.table(
 )
 
 
+class _RefreshNamespaceWithExpiringOptions(LanceNamespace):
+    def __init__(self, root):
+        self.root = root
+
+    def namespace_id(self):
+        return f"refresh-test:{self.root}"
+
+    def describe_table(self, request):
+        from pathlib import Path
+
+        return DescribeTableResponse(
+            location=str(Path(self.root) / "t.lance"),
+            storage_options={"vended": "fresh", "expires_at_millis": "1"},
+        )
+
+
 class _DeclaredNamespaceWithoutProperties(LanceNamespace):
     root = None
 
@@ -100,6 +116,21 @@ def test_table_pickle_rejects_custom_namespace_connection(tmp_path):
 
     with pytest.raises(TypeError, match="namespace"):
         pickle.dumps(table)
+
+
+def test_declared_namespace_pickle_keeps_caller_options_after_refresh(tmp_path):
+    lancedb.connect(tmp_path).create_table("t", [{"id": 1}])
+    db = lancedb.connect_namespace(
+        f"{__name__}._RefreshNamespaceWithExpiringOptions", {"root": str(tmp_path)}
+    )
+    table = db.open_table("t", storage_options={"caller_only": "keep"})
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    for current in (table, restored):
+        options = current.latest_storage_options()
+        assert options["caller_only"] == "keep"
+        assert options["vended"] == "fresh"
 
 
 def test_table_pickle_allows_declared_namespace_without_properties(tmp_path):
