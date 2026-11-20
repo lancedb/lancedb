@@ -1042,6 +1042,113 @@ async def test_order_by_async_query(mem_db_async: AsyncConnection):
     ]
 
 
+def test_order_by_accepts_strings_tuples_and_dicts(mem_db):
+    table = mem_db.create_table(
+        "test_order_by_forms",
+        pa.table(
+            {
+                "group": [1, 1, 1, 2],
+                "score": [None, 1.0, 1.0, 0.5],
+                "name": ["z", "b", "a", "c"],
+            }
+        ),
+    )
+
+    rows = (
+        table.search()
+        .order_by(
+            [
+                "group",
+                ("score", "desc"),
+                {"column_name": "name", "ascending": True},
+            ]
+        )
+        .select(["name"])
+        .to_list()
+    )
+    assert rows == [{"name": "a"}, {"name": "b"}, {"name": "z"}, {"name": "c"}]
+
+    # A bare tuple is one direction pair; a list holds separate orderings.
+    assert table.search().order_by("name").select(["name"]).to_list() == [
+        {"name": "a"},
+        {"name": "b"},
+        {"name": "c"},
+        {"name": "z"},
+    ]
+    assert table.search().order_by(("name", "desc")).select(["name"]).to_list() == [
+        {"name": "z"},
+        {"name": "c"},
+        {"name": "b"},
+        {"name": "a"},
+    ]
+    assert table.search().order_by(["group", "name"]).select(["name"]).to_list() == [
+        {"name": "a"},
+        {"name": "b"},
+        {"name": "z"},
+        {"name": "c"},
+    ]
+
+
+def test_order_by_clears_with_none_and_empty_list(mem_db):
+    table = mem_db.create_table("test_order_by_clear", [{"name": "a"}])
+
+    query = table.search().order_by("name")
+    assert query.to_query_object().order_by is not None
+    assert query.order_by(None).to_query_object().order_by is None
+    assert query.order_by([]).to_query_object().order_by is None
+
+
+def test_order_by_rejects_invalid_input_early(mem_db):
+    table = mem_db.create_table("test_order_by_invalid", [{"name": "a"}])
+
+    with pytest.raises(ValueError, match="unsupported key\\(s\\)"):
+        table.search().order_by([{"column": "name", "ascending": True}])
+    with pytest.raises(ValueError, match="missing 'column_name'"):
+        table.search().order_by({"ascending": True})
+    with pytest.raises(ValueError, match="invalid direction"):
+        table.search().order_by([("name", "sideways")])
+    with pytest.raises(TypeError, match="must be a column name"):
+        table.search().order_by([42])
+
+
+@pytest.mark.asyncio
+async def test_order_by_async_accepts_dicts_and_clears(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "test_order_by_async_forms",
+        pa.table({"name": ["z", "b", "a", "c"]}),
+    )
+
+    rows = await (
+        table.query().order_by([{"column_name": "name", "ascending": False}]).to_arrow()
+    )
+    assert rows["name"].to_pylist() == ["z", "c", "b", "a"]
+
+    query = table.query().order_by("name")
+    assert query.to_query_object().order_by is not None
+    assert query.order_by(None).to_query_object().order_by is None
+    assert query.order_by([]).to_query_object().order_by is None
+
+    with pytest.raises(ValueError, match="unsupported key\\(s\\)"):
+        table.query().order_by([{"column": "name"}])
+
+
+def test_column_ordering_is_exported_at_top_level():
+    assert lancedb.ColumnOrdering is ColumnOrdering
+
+
+def test_order_by_hybrid_sync_is_explicitly_unsupported(table):
+    query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("a")
+
+    with pytest.raises(NotImplementedError, match="order_by is not supported"):
+        query.order_by(["id"])
+
+    # Clearing is still allowed, and invalid input still fails on its own terms.
+    query.order_by(None)
+    query.order_by([])
+    with pytest.raises(ValueError, match="unsupported key\\(s\\)"):
+        query.order_by([{"column": "id"}])
+
+
 def test_query_builder(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
