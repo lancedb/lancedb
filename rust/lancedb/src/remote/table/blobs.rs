@@ -1192,9 +1192,20 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/query/", self.identifier))
             .json(&body);
+        // The query route opens the requested version and reports the identity of
+        // the dataset it actually read. It does not validate the request identity,
+        // so accept descriptors only after comparing the response echo.
+        let request = if let Some(identity) = &self.expected_query_snapshot {
+            request.header(QUERY_SNAPSHOT_HEADER, identity)
+        } else {
+            request
+        };
         let (request_id, response) = self
             .send_with_freshness(request, true, read_snapshot.freshness)
             .await?;
+        if response.status().is_success() {
+            check_query_snapshot_response(self.expected_query_snapshot.as_deref(), &response)?;
+        }
         let response_version = response
             .headers()
             .get(&VERSION_HEADER)
@@ -2046,6 +2057,80 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("overflows u64"), "{error}");
         assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_reject_unverified_descriptor_identity_before_values() {
+        const EXPECTED: &str =
+            "v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const OTHER: &str = "v1:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        for response_identity in [None, Some(OTHER)] {
+            let range_requests = Arc::new(AtomicUsize::new(0));
+            let captured_ranges = range_requests.clone();
+            let table = RemoteTable::new_mock(
+                "my_table".to_string(),
+                move |request| {
+                    let path = request.url().path().to_string();
+                    if path == "/v1/table/my_table/query/" {
+                        // Row 20 is NULL and row 40 is empty, so an unverified
+                        // result could escape without any payload request.
+                        assert_eq!(request.headers()[QUERY_SNAPSHOT_HEADER], EXPECTED);
+                        let body: serde_json::Value =
+                            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                                .unwrap();
+                        assert_eq!(filter_row_ids(body["filter"].as_str().unwrap()), [20, 40]);
+                        let batch = RecordBatch::try_from_iter([
+                            (
+                                "image",
+                                Arc::new(descriptors(&[None, Some((BlobKind::Inline, 0))]))
+                                    as Arc<dyn Array>,
+                            ),
+                            (
+                                ROW_ID,
+                                Arc::new(UInt64Array::from_iter_values([20, 40])) as Arc<dyn Array>,
+                            ),
+                        ])
+                        .unwrap();
+                        let mut body = Vec::new();
+                        let mut writer =
+                            arrow_ipc::writer::FileWriter::try_new(&mut body, &batch.schema())
+                                .unwrap();
+                        writer.write(&batch).unwrap();
+                        writer.finish().unwrap();
+                        drop(writer);
+                        let mut response = http::Response::builder()
+                            .status(200)
+                            .header(VERSION_HEADER, "42");
+                        if let Some(identity) = response_identity {
+                            response = response.header(QUERY_SNAPSHOT_HEADER, identity);
+                        }
+                        return response.body(body).unwrap();
+                    }
+                    if path.starts_with("/v1/table/my_table/blob/") {
+                        captured_ranges.fetch_add(1, Ordering::SeqCst);
+                        panic!("descriptor verification must fail before any payload read");
+                    }
+                    panic!("unexpected path: {path}");
+                },
+                Some(Version::new(0, 5, 0)),
+            );
+            let snapshot = table
+                .query_snapshot_with_identity(42, EXPECTED)
+                .await
+                .unwrap();
+
+            let error = snapshot
+                .fetch_blob_files("image", &[20, 40])
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("did not verify the query snapshot identity"),
+                "{error}"
+            );
+            assert_eq!(range_requests.load(Ordering::SeqCst), 0);
+        }
     }
 
     #[tokio::test]

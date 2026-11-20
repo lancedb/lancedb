@@ -2875,8 +2875,9 @@ class Table(ABC):
 
         A query result table passed as ``row_ids`` keeps the snapshot that
         produced it on LanceDB Enterprise, so every returned handle reads that
-        snapshot. A plain list is read from the table's current snapshot. Row
-        positions are not row IDs: call
+        snapshot. Serving nodes that cannot report the snapshot identity fail
+        closed for these handles. A plain list is read from the table's current
+        snapshot. Row positions are not row IDs: call
         ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
         resulting ``_rowid`` values.
         """
