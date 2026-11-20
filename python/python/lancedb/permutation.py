@@ -764,6 +764,11 @@ class Permutation:
         persisted_plan = permutation_table is not None and _is_persisted_plan(
             permutation_table
         )
+        if persisted_plan:
+            # Pin before reading metadata or constructing the reader. The caller's
+            # handle may keep tracking latest, but the live reader and pickle must
+            # share one immutable plan snapshot.
+            permutation_table = permutation_table._pin_current_snapshot()
         plan_metadata = None if permutation_table is not None else {}
         if permutation_table is not None and (isinstance(split, str) or persisted_plan):
             plan_metadata = dict(permutation_table.schema.metadata or {})

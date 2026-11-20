@@ -223,33 +223,54 @@ def test_base_branch_property_reads_plan_metadata(tmp_path):
 
 
 def test_persisted_plan_pickle_reopens_same_snapshot_after_overwrite(tmp_path):
+    from datetime import timedelta
     import pickle
 
-    db = connect(tmp_path)
+    db = connect(tmp_path, read_consistency_interval=timedelta(0))
     tbl = db.create_table("base", pa.table({"id": range(20)}))
-    plan = permutation_builder(tbl).persist(db, "splits").execute()
+    plan = permutation_builder(tbl).filter("id < 10").persist(db, "splits").execute()
     permutation = Permutation.from_tables(tbl, plan)
     old_base_version = permutation.base_version
+    old_plan_version = permutation._plan_version
     state = permutation.__getstate__()
     assert "permutation_data" not in state
-    assert state["permutation_table_state"]["state"]["checkout_version"] == plan.version
-    payload = pickle.dumps(permutation)
+    assert (
+        state["permutation_table_state"]["state"]["checkout_version"]
+        == old_plan_version
+    )
 
-    # Advance the base table and replace the plan at the same destination.
-    tbl.add(pa.table({"id": range(20, 40)}))
-    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+    # Replace the plan with disjoint rows of the same cardinality.
+    permutation_builder(tbl).filter("id >= 10").persist(
+        db, "splits", mode="overwrite"
+    ).execute()
+    assert plan.version == old_plan_version + 1
+    assert permutation.permutation_table.version == old_plan_version
 
-    restored = pickle.loads(payload)
+    live_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(permutation.num_rows)))
+    ]
+    assert live_ids == list(range(10))
+
+    # A reader recreated after the overwrite must still use the pinned snapshot.
+    permutation.reader = None
+    permutation._pid = None
+    recreated_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(permutation.num_rows)))
+    ]
+    assert recreated_ids == list(range(10))
+
+    restored = pickle.loads(pickle.dumps(permutation))
     assert restored.base_version == old_base_version
-    assert restored.num_rows == 20
-    assert sorted(
+    restored_ids = [
         row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
-    ) == list(range(20))
+    ]
+    assert restored_ids == list(range(10))
 
-    # A newly constructed permutation sees the overwritten plan and newer base rows.
+    # A newly constructed permutation sees the overwritten plan.
     fresh = Permutation.from_tables(tbl, db.open_table("splits"))
-    assert db.open_table("splits").count_rows() == 40
-    assert fresh.base_version > old_base_version
+    assert fresh.base_version == old_base_version
+    fresh_ids = [row["id"] for row in fresh.__getitems__(list(range(fresh.num_rows)))]
+    assert fresh_ids == list(range(10, 20))
 
 
 def test_persisted_plan_pickle_uses_captured_main_branch(tmp_path):

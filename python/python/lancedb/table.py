@@ -4666,6 +4666,16 @@ class LanceTable(Table):
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
 
+    def _pin_current_snapshot(self) -> "LanceTable":
+        """Return an independent handle pinned to this table's current snapshot."""
+
+        async def do_pin():
+            pinned = await self._table._checkout_current()
+            return pinned, await pinned.version()
+
+        pinned, version = LOOP.run(do_pin())
+        return self._wrap_branch_handle(pinned, version)
+
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
@@ -9618,6 +9628,10 @@ class AsyncTable:
         version.
         """
         return await self._inner.version()
+
+    async def _checkout_current(self) -> "AsyncTable":
+        """Return an independent handle pinned to the currently selected snapshot."""
+        return AsyncTable(await self._inner._checkout_current())
 
     async def list_versions(self):
         """
