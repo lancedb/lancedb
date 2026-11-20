@@ -215,11 +215,10 @@ class AsyncJob(Generic[T]):
     is the endpoint's terminal result type; unit-result jobs resolve to
     ``None``.
 
-    Properties such as ``state``, ``result`` and ``failure`` read cached values
-    without contacting the backend. Use ``await job.fetch_status()`` for a live
-    lifecycle check, ``await job.fetch_events()`` for event history, and
-    ``await job.refresh()`` to update cached details. ``status()`` and
-    ``events()`` remain available as backward-compatible methods.
+    Properties such as ``state``, ``result``, ``failure`` and ``spec`` read
+    cached values without contacting the backend. Use
+    ``await job.checkout_latest()`` to refresh the cached state and registry
+    details together. ``events()`` makes a separate request for event history.
     """
 
     def __init__(
@@ -249,33 +248,16 @@ class AsyncJob(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     async def status(self) -> str:
-        """Backward-compatible live lifecycle check.
+        """The operation's current lifecycle state: "running", "finished",
+        "failed", or "cancelled".
 
-        See [fetch_status()][lancedb.job.AsyncJob.fetch_status].
-        Call ``await job.fetch_status()`` for a live check; read ``job.state``
-        for the cached state. ``job.status`` without parentheses is a method,
-        not a lifecycle state.
+        A point snapshot; unlike `wait` it does not block or raise on a
+        terminal failure state. States a newer server reports that this
+        client version does not know pass through as-is.
         """
         if self._inner is None:
             return "finished"
         return await self._inner.status()
-
-    async def fetch_status(self) -> str:
-        """Fetch the operation's current lifecycle state: "running", "finished",
-        "failed", or "cancelled".
-
-        This live request updates the cached ``state`` and, for registry
-        jobs, the full record behind ``result``, ``failure`` and ``spec``.
-        Unlike [wait()][lancedb.job.AsyncJob.wait], it does not wait for completion or
-        raise on a terminal failure state. Request errors propagate. States a
-        newer server reports that this client does not know pass through as-is.
-
-        Examples
-        --------
-        >>> state = await job.fetch_status()  # doctest: +SKIP
-        >>> print(state, job.state)  # doctest: +SKIP
-        """
-        return await self.status()
 
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
@@ -465,21 +447,45 @@ class AsyncJob(Generic[T]):
         Registry details are `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
         expose only lifecycle state through this method. For registry jobs,
-        [fetch_status()][lancedb.job.AsyncJob.fetch_status] (also available as
-        ``status()``) fetches the whole record too; ``wait()`` records only the
-        terminal state it establishes.
+        `status` fetches the whole record too; `wait` records only the terminal
+        state it establishes.
         """
         if self._inner is None:
             return
         await self._inner.refresh()
 
+    async def checkout_latest(self) -> None:
+        """Refresh this handle's cached state and complete job record together.
+
+        For a registry job, each call fetches one current record and updates
+        ``state``, ``job_type``, ``creation_ms``, ``spec``, ``result`` and
+        ``failure`` from that observation. Reading those properties afterward
+        does not contact the backend. Query-backed and in-process jobs update
+        their lifecycle state without registry details.
+
+        Updates this handle in place and returns ``None``. It does not wait for
+        completion or restart the operation. Failed or cancelled states are
+        cached without raising a job-failure exception; request errors propagate
+        and leave the cached record unchanged. Event history remains a separate
+        live request through [events()][lancedb.job.AsyncJob.events].
+
+        [refresh()][lancedb.job.AsyncJob.refresh] remains available with the
+        same behavior.
+
+        Examples
+        --------
+        >>> await job.checkout_latest()  # doctest: +SKIP
+        >>> print(job.state, job.result, job.failure)  # doctest: +SKIP
+        """
+        await self.refresh()
+
     @property
     def state(self) -> Optional[str]:
         """The last observed lifecycle state, without contacting the backend.
 
-        `None` until the handle has talked to it. Use
-        [fetch_status()][lancedb.job.AsyncJob.fetch_status] for a live check, or
-        [refresh()][lancedb.job.AsyncJob.refresh] to update cached registry details.
+        `None` until the handle has talked to it. Call
+        [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] to refresh
+        the state and registry details together.
         """
         if self._inner is None:
             return "finished"
@@ -510,12 +516,12 @@ class AsyncJob(Generic[T]):
         """The cached job-specific terminal result, without a backend call.
 
         This is reported data rather than the typed model
-        [wait()][lancedb.job.AsyncJob.wait] returns.
-        It can remain `None` until a successful registry record is fetched with
-        [fetch_status()][lancedb.job.AsyncJob.fetch_status] or
-        [refresh()][lancedb.job.AsyncJob.refresh]. For ongoing progress, use
+        [wait()][lancedb.job.AsyncJob.wait] returns. It can remain `None` until
+        a successful registry record is fetched with
+        [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] or another
+        live status request. For ongoing progress, use
         [progress()][lancedb.job.AsyncJob.progress] or
-        [fetch_events()][lancedb.job.AsyncJob.fetch_events].
+        [events()][lancedb.job.AsyncJob.events].
         """
         return self._field("result")
 
@@ -617,32 +623,11 @@ class AsyncJob(Generic[T]):
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> "pa.Table":
-        """Backward-compatible event history request.
+        """This job's recorded lifecycle events.
 
-        See [fetch_events()][lancedb.job.AsyncJob.fetch_events].
-        Call ``await job.fetch_events(...)`` to request recorded event history.
-        """
-        if self._inner is None:
-            raise NotImplementedError(
-                _append_doc_url(
-                    "job event history is only available for server-side jobs",
-                    "jobs",
-                )
-            )
-        return await self._inner.events(limit=limit, filter=filter)
-
-    async def fetch_events(
-        self,
-        *,
-        limit: Optional[int] = None,
-        filter: Optional[str] = None,
-    ) -> "pa.Table":
-        """Fetch this job's recorded lifecycle events as a ``pyarrow.Table``.
-
-        Each call requests event history without updating cached properties
-        such as ``state``, ``result`` or ``failure``. Use
-        [fetch_status()][lancedb.job.AsyncJob.fetch_status] or
-        [refresh()][lancedb.job.AsyncJob.refresh] to update those properties.
+        Each call requests event history without updating cached properties.
+        Use [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] to refresh
+        the job's state and registry details together.
 
         Where the properties above report a terminal result only once the job
         reaches one, events are written as the job runs and outlive the workers
@@ -660,13 +645,15 @@ class AsyncJob(Generic[T]):
             SQL-like expression over the `state`, `updated_by`, `emitted_from`,
             `emitted_by`, and `claim_entity` columns, such as
             ``state = 'claim_complete'``.
-
-        Examples
-        --------
-        >>> events = await job.fetch_events(limit=100)  # doctest: +SKIP
-        >>> print(events.to_pylist())  # doctest: +SKIP
         """
-        return await self.events(limit=limit, filter=filter)
+        if self._inner is None:
+            raise NotImplementedError(
+                _append_doc_url(
+                    "job event history is only available for server-side jobs",
+                    "jobs",
+                )
+            )
+        return await self._inner.events(limit=limit, filter=filter)
 
     def __repr__(self) -> str:
         return _job_repr("AsyncJob", self)
@@ -723,10 +710,9 @@ def _job_repr(kind: str, job: Any) -> str:
 class Job(Generic[T]):
     """Synchronous counterpart of `AsyncJob` with the same result type.
 
-    Properties such as ``state``, ``result`` and ``failure`` read cached values.
-    Call ``job.fetch_status()`` for a live lifecycle check,
-    ``job.fetch_events()`` for event history, and ``job.refresh()`` to update
-    cached details. ``status()`` and ``events()`` remain compatible methods.
+    Read cached properties such as ``state``, ``result``, ``failure`` and
+    ``spec`` after calling ``job.checkout_latest()`` to refresh them together.
+    ``events()`` makes a separate live request for event history.
     """
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
@@ -741,31 +727,14 @@ class Job(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     def status(self) -> str:
-        """Backward-compatible live lifecycle check.
+        """The operation's current lifecycle state: "running", "finished",
+        "failed", or "cancelled".
 
-        See [fetch_status()][lancedb.job.Job.fetch_status].
-        Call ``job.fetch_status()`` for a live check; read ``job.state`` for
-        the cached state. ``job.status`` without parentheses is a method,
-        not a lifecycle state.
+        See :meth:`AsyncJob.status`.
         """
         if self._inner is None:
             return "finished"
         return LOOP.run(self._inner.status())
-
-    def fetch_status(self) -> str:
-        """Fetch the current lifecycle state: "running", "finished",
-        "failed", or "cancelled".
-
-        Updates cached state and registry details. Terminal failure states
-        are returned without raising; request errors propagate.
-        See [AsyncJob.fetch_status()][lancedb.job.AsyncJob.fetch_status].
-
-        Examples
-        --------
-        >>> state = job.fetch_status()  # doctest: +SKIP
-        >>> print(state, job.state)  # doctest: +SKIP
-        """
-        return self.status()
 
     def wait(
         self,
@@ -815,12 +784,25 @@ class Job(Generic[T]):
             return
         LOOP.run(self._inner.refresh())
 
+    def checkout_latest(self) -> None:
+        """Refresh this handle's cached state and complete job record together.
+
+        Updates this handle in place and returns ``None`` without waiting for
+        completion. See
+        [AsyncJob.checkout_latest()][lancedb.job.AsyncJob.checkout_latest]
+        for refreshed fields and availability. ``refresh()`` remains available
+        with the same behavior.
+
+        Examples
+        --------
+        >>> job.checkout_latest()  # doctest: +SKIP
+        >>> print(job.state, job.result, job.failure)  # doctest: +SKIP
+        """
+        self.refresh()
+
     @property
     def state(self) -> Optional[str]:
-        """Cached lifecycle state; no backend call.
-
-        See [AsyncJob.state][lancedb.job.AsyncJob.state].
-        """
+        """The last observed lifecycle state. See :attr:`AsyncJob.state`."""
         return self._inner.state if self._inner is not None else "finished"
 
     @property
@@ -912,9 +894,9 @@ class Job(Generic[T]):
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> "pa.Table":
-        """Backward-compatible event history request.
+        """This job's recorded lifecycle events.
 
-        See [fetch_events()][lancedb.job.Job.fetch_events].
+        See :meth:`AsyncJob.events`.
         """
         if self._inner is None:
             raise NotImplementedError(
@@ -924,24 +906,6 @@ class Job(Generic[T]):
                 )
             )
         return LOOP.run(self._inner.events(limit=limit, filter=filter))
-
-    def fetch_events(
-        self,
-        *,
-        limit: Optional[int] = None,
-        filter: Optional[str] = None,
-    ) -> "pa.Table":
-        """Fetch recorded events as a ``pyarrow.Table`` without updating caches.
-
-        See [AsyncJob.fetch_events()][lancedb.job.AsyncJob.fetch_events]
-        for parameters and availability.
-
-        Examples
-        --------
-        >>> events = job.fetch_events(limit=100)  # doctest: +SKIP
-        >>> print(events.to_pylist())  # doctest: +SKIP
-        """
-        return self.events(limit=limit, filter=filter)
 
     def __repr__(self) -> str:
         return _job_repr("Job", self)

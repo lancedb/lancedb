@@ -26,10 +26,11 @@ the method returns.
 <CodeGroup>
 ```python Python icon="python"
 job = tbl.create_index_async("vector", replace=True)
+job.checkout_latest()
 
 print(job.id)
 print(job.job_type)
-print(job.fetch_status())
+print(job.state)
 ```
 </CodeGroup>
 
@@ -39,6 +40,13 @@ Python job properties describe the last observation; reading them does not
 contact the server. Submission need not fetch the full registry record, so
 some properties can initially be `None`.
 
+Call `job.checkout_latest()` to update the handle's cached lifecycle state and
+complete registry record together. This updates `state`, `job_type`,
+`creation_ms`, `spec`, `result`, and `failure` from one server observation.
+It updates the existing handle in place, returns `None`, and does not wait for
+the job to finish or restart it. For SQL-backed or in-process jobs, it updates
+the lifecycle state without registry details.
+
 | Surface | Contract |
 | --- | --- |
 | `state` | Last observed lifecycle state. It does not update on its own. |
@@ -46,55 +54,53 @@ some properties can initially be `None`.
 | `spec` | Complete, job-specific submitted specification. Read this separately from the bounded `repr(job)` display. |
 | `result` | Cached, job-specific reported data; it is not necessarily the typed object returned by `wait()`. |
 | `failure` | Cached `JobFailureInfo`, when the server reports a terminal failure. |
-| `fetch_status()` | Live lifecycle request. For registry jobs it also caches the full record. A failed state is returned without raising a job-failure exception; request errors can still raise. |
-| `refresh()` | Fetch and cache the current record without waiting for completion. |
-| `fetch_events(...)` | Separate live request returning a `pyarrow.Table` of recorded events; it does not refresh the properties. |
+| `checkout_latest()` | Fetch and cache the latest lifecycle state and complete registry record together. Failed and cancelled states are cached without raising a job-failure exception; request errors can still raise. |
+| `status()` | Live lifecycle request. For registry jobs it also caches the full record. A failed state is returned without raising a job-failure exception; request errors can still raise. |
+| `refresh()` | Existing method with the same cache-update behavior as `checkout_latest()`. |
+| `events(...)` | Separate live request returning a `pyarrow.Table` of recorded events; it does not refresh the properties. |
 | `wait(...)` | Poll until completion and return the operation's typed result, or raise on failure/cancellation. Refresh afterward when you need the complete final registry record. |
 
-`status()` and `events(...)` remain backward-compatible methods with the same
-behavior as `fetch_status()` and `fetch_events(...)`. For a cached value, read
-`job.state`; for a live value, call `job.fetch_status()`. Reading `job.status`
-without parentheses returns a bound method, so comparing it to `"running"`
-does not poll the job.
+`status()`, `refresh()`, and `events(...)` remain available. Read `job.state`
+after `checkout_latest()` to poll using the same snapshot as `result` and
+`failure`. Reading `job.status` without parentheses returns a bound method;
+comparing it with `"running"` does not poll the job. Event history is a separate
+live request through `events(...)` and does not refresh these properties.
 
 <Note>
-The explicit `fetch_status()` and `fetch_events()` names require a Python SDK
-release that includes them. On older SDKs, call `status()` and `events(...)`
-with parentheses. Async handles require `await` for all these live methods.
+`checkout_latest()` requires a Python SDK release that includes this method.
+On older SDKs, use `refresh()` with the same cached properties. Async handles
+use `await job.checkout_latest()` or `await job.refresh()`.
 </Note>
 
-For example, poll a registry handle and then retrieve its final details.
-The synchronous and asynchronous APIs follow the same caching contract:
+For example, poll a registry handle and then retrieve its final details:
 
 <CodeGroup>
 ```python Synchronous icon="python"
 import time
 
-state = job.fetch_status()
-while state == "running":
-    print(job.state)
+job.checkout_latest()
+while job.state == "running":
+    print(job.state, job.failure)
     time.sleep(2)
-    state = job.fetch_status()
+    job.checkout_latest()
 
 result = job.wait()
-job.refresh()
+job.checkout_latest()
 print(result)
 print(job.spec)
 ```
 ```python Asynchronous icon="python"
 import asyncio
 
-state = await job.fetch_status()
-while state == "running":
-    print(job.state)
+await job.checkout_latest()
+while job.state == "running":
+    print(job.state, job.failure)
     await asyncio.sleep(2)
-    state = await job.fetch_status()
+    await job.checkout_latest()
 
 result = await job.wait()
-await job.refresh()
-events = await job.fetch_events(limit=100)
+await job.checkout_latest()
 print(result, job.spec)
-print(events.to_pylist())
 ```
 </CodeGroup>
 
@@ -112,7 +118,7 @@ SDK/server support; see [refresh admission](/feature-engineering/refresh-column#
     result. If it failed or was cancelled, inspect the failure details and any
     results it committed before stopping.
 
-In Python, `job.fetch_status()` returns the current state:
+In Python, `job.status()` returns the current state:
 
 | State | Meaning |
 | --- | --- |
@@ -121,7 +127,7 @@ In Python, `job.fetch_status()` returns the current state:
 | `failed` | The operation failed. |
 | `cancelled` | The operation was cancelled. |
 
-`job.fetch_status()` checks the current state without waiting for completion.
+`job.status()` checks the current state without waiting for completion.
 It returns `failed` or `cancelled` for unsuccessful jobs.
 
 Use `job.wait()` to wait for completion and raise if the job fails or is
@@ -151,7 +157,7 @@ except JobCancelledError:
 except ConnectionError as exc:
     print(exc)  # The job may still be running on the server.
 except TimeoutError:
-    print(f"still running: {job.fetch_status()}")
+    print(f"still running: {job.status()}")
 ```
 ```typescript TypeScript
 const result = await job.wait({
@@ -209,10 +215,10 @@ work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API
 <CodeGroup>
 ```python Python icon="python"
 job = db.open_job(job_id)  # raises JobNotFoundError if unknown
-job.refresh()              # pull the latest status from the server
-print(job.fetch_status())
+job.checkout_latest()
+print(job.state, job.result, job.failure)
 
-events = job.fetch_events(limit=100)
+events = job.events(limit=100)
 print(events.to_pylist())
 
 job.cancel()

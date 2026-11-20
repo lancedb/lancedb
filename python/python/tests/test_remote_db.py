@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import copy
@@ -6857,11 +6858,13 @@ def test_remote_connection_jobs_surface():
         assert finished.progress()["paused"] is False
 
 
-@pytest.mark.parametrize(
-    "status_method,events_method",
-    [("status", "events"), ("fetch_status", "fetch_events")],
-)
-def test_remote_job_handle_reports_its_own_detail(status_method, events_method):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("refresh_method", ["checkout_latest", "refresh"])
+@pytest.mark.parametrize("terminal_state", ["DONE", "FAILED"])
+async def test_remote_job_handle_reports_its_own_detail(
+    is_async, refresh_method, terminal_state
+):
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["claim_complete"])], schema=schema)
     sink = pa.BufferOutputStream()
@@ -6870,6 +6873,13 @@ def test_remote_job_handle_reports_its_own_detail(status_method, events_method):
     events_body = sink.getvalue().to_pybytes()
     event_payloads = []
     descriptions = []
+    description = dict(
+        job_id="job-1",
+        job_type="refresh_column",
+        job_state="IN_PROGRESS",
+        creation_ms=2000,
+        spec=dict(column="vec"),
+    )
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
@@ -6880,18 +6890,7 @@ def test_remote_job_handle_reports_its_own_detail(status_method, events_method):
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            request.wfile.write(
-                json.dumps(
-                    dict(
-                        job_id="job-1",
-                        job_type="refresh_column",
-                        job_state="DONE",
-                        creation_ms=2000,
-                        spec=dict(column="vec"),
-                        result=dict(rows_assigned=1000000),
-                    )
-                ).encode()
-            )
+            request.wfile.write(json.dumps(description).encode())
         elif request.path == "/v1/jobs/query_events":
             event_payloads.append(payload)
             request.send_response(200)
@@ -6902,52 +6901,88 @@ def test_remote_job_handle_reports_its_own_detail(status_method, events_method):
             request.send_response(404)
             request.end_headers()
 
-    with mock_lancedb_connection(handler) as db:
-        job = db.open_job("job-1")
+    async def check_job(db):
+        job = (
+            await db.open_job("job-1")
+            if is_async
+            else await asyncio.to_thread(db.open_job, "job-1")
+        )
 
         # Opening populates the handle in the same round trip.
-        assert job.state == "finished"
-        job.refresh()
+        assert job.state == "running"
+        assert job.result is None
+        assert job.failure is None
+        description["job_state"] = terminal_state
+        expected_result = (
+            {"rows_assigned": 1000000} if terminal_state == "DONE" else None
+        )
+        description["result"] = expected_result
+        if terminal_state == "FAILED":
+            description["failure"] = {"phase": "execute", "message": "worker failed"}
+        assert job.state == "running"
+        assert job.result is None
+        assert job.failure is None
+        assert len(descriptions) == 1
+
+        refresh = getattr(job, refresh_method)
+        if is_async:
+            assert await refresh() is None
+        else:
+            assert await asyncio.to_thread(refresh) is None
+        expected_state = "finished" if terminal_state == "DONE" else "failed"
+        assert job.state == expected_state
         assert job.job_type == "refresh_column"
         assert job.creation_ms == 2000
         assert job.spec == {"column": "vec"}
-        assert job.result == {"rows_assigned": 1000000}
-        assert job.failure is None
+        assert job.result == expected_result
+        if terminal_state == "FAILED":
+            assert job.failure.phase == "execute"
+            assert job.failure.message == "worker failed"
+        else:
+            assert job.failure is None
         # The JSON payloads stay reachable, but as internal APIs.
         assert json.loads(job._spec_json) == {"column": "vec"}
-        assert json.loads(job._result_json) == {"rows_assigned": 1000000}
+        if expected_result is not None:
+            assert json.loads(job._result_json) == expected_result
+            assert repr(job) == "\n".join(
+                [
+                    f"{type(job).__name__}(",
+                    "    id='job-1',",
+                    "    state='finished',",
+                    "    job_type='refresh_column',",
+                    "    creation_ms=2000,",
+                    "    spec={'column': 'vec'},",
+                    "    result={'rows_assigned': 1000000},",
+                    ")",
+                ]
+            )
+            assert "failure" not in repr(job)
 
-        assert repr(job) == "\n".join(
-            [
-                "Job(",
-                "    id='job-1',",
-                "    state='finished',",
-                "    job_type='refresh_column',",
-                "    creation_ms=2000,",
-                "    spec={'column': 'vec'},",
-                "    result={'rows_assigned': 1000000},",
-                ")",
-            ]
-        )
-        # Nothing it does not know shows up.
-        assert "failure" not in repr(job)
-
-        assert len(descriptions) == 2
-        assert getattr(job, status_method)() == "finished"
-        assert len(descriptions) == 3
-        assert job.result == {"rows_assigned": 1000000}
-        events = getattr(job, events_method)(
-            filter="state = 'claim_complete'", limit=500
+        events = (
+            await job.events(filter="state = 'claim_complete'", limit=500)
+            if is_async
+            else await asyncio.to_thread(
+                job.events, filter="state = 'claim_complete'", limit=500
+            )
         )
         assert isinstance(events, pa.Table)
         assert events.column("state").to_pylist() == ["claim_complete"]
-        assert len(descriptions) == 3
+        assert len(descriptions) == 2
+        assert job.state == expected_state
+        assert job.result == expected_result
         # The handle supplies job_id; the caller only narrows the query.
         assert event_payloads[-1] == {
             "job_id": "job-1",
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            await check_job(db)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            await check_job(db)
 
 
 @pytest.mark.parametrize("is_async", [False, True])

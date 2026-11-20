@@ -8,7 +8,6 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import pyarrow as pa
 import pytest
 
 from lancedb.exceptions import JobCancelledError, JobFailedError
@@ -18,17 +17,16 @@ from lancedb.remote.errors import HttpError, RetryError
 
 
 @pytest.fixture(params=[False, True], ids=["async", "sync"])
-def job_accessors(request):
+def job_snapshot(request):
     def create(inner):
         job = AsyncJob(inner)
         if request.param:
             job = Job(job)
 
-        async def call(method, **kwargs):
-            accessor = getattr(job, method)
+        async def call(method="checkout_latest"):
             if request.param:
-                return await asyncio.to_thread(accessor, **kwargs)
-            return await accessor(**kwargs)
+                return await asyncio.to_thread(getattr(job, method))
+            return await getattr(job, method)()
 
         return job, call
 
@@ -36,133 +34,98 @@ def job_accessors(request):
 
 
 @pytest.mark.asyncio
-async def test_job_live_status_updates_cached_properties(job_accessors):
+@pytest.mark.parametrize("method", ["checkout_latest", "refresh"])
+@pytest.mark.parametrize("state", ["finished", "failed", "cancelled", "future_state"])
+async def test_job_checkout_latest_refreshes_the_complete_snapshot(
+    job_snapshot, method, state
+):
     spec = {"column": "vector", "initialization": list(range(1000))}
-    result = {"rows_assigned": 1000}
-    failure = SimpleNamespace(message="worker failed")
-    inner = SimpleNamespace(_state=None, _description=None)
+    result = {"rows_assigned": 1000} if state == "finished" else None
+    failure = SimpleNamespace(message="worker failed") if state == "failed" else None
+    description = SimpleNamespace(
+        creation_ms=2000, spec=spec, result=result, failure=failure
+    )
+    inner = SimpleNamespace(
+        _state=None, _description=None, job_type=None, status=AsyncMock()
+    )
 
     async def observe():
-        state = ["running", "finished", "failed", "cancelled", "future_state"][
-            inner.status.await_count - 1
-        ]
         inner._state = state
-        inner._description = SimpleNamespace(
-            spec=spec,
-            result=result if state == "finished" else None,
-            failure=failure if state == "failed" else None,
-            creation_ms=2000,
-        )
-        return state
+        inner.job_type = "refresh_column"
+        inner._description = description
 
-    inner.status = AsyncMock(side_effect=observe)
-    job, call = job_accessors(inner)
+    inner.refresh = AsyncMock(side_effect=observe)
+    job, call = job_snapshot(inner)
     assert job.state is None
-    assert job.result is None
-    assert job.failure is None
-    assert job.spec is None
+    assert job.job_type is None
     assert job.creation_ms is None
-    inner.status.assert_not_called()
-
-    for method, state in zip(
-        ["fetch_status", "status", "fetch_status", "status", "fetch_status"],
-        ["running", "finished", "failed", "cancelled", "future_state"],
-    ):
-        assert await call(method) == state
-        assert job.state == state
-        assert job.spec is spec
-        assert job.result is (result if state == "finished" else None)
-        assert job.failure is (failure if state == "failed" else None)
-        assert job.creation_ms == 2000
-    assert inner.status.await_count == 5
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["fetch_events", "events"])
-@pytest.mark.parametrize("kwargs", [{}, {"limit": 25, "filter": "state = 'failed'"}])
-async def test_job_live_events_leave_cached_properties_unchanged(
-    job_accessors, method, kwargs
-):
-    events = pa.table({"state": ["failed"]})
-    spec = {"column": "vector"}
-    inner = SimpleNamespace(
-        _state="running",
-        _description=SimpleNamespace(spec=spec, result=None, failure=None),
-        events=AsyncMock(return_value=events),
-        status=AsyncMock(),
-        refresh=AsyncMock(),
-    )
-    job, call = job_accessors(inner)
-
-    assert await call(method, **kwargs) is events
-    assert job.state == "running"
-    assert job.spec is spec
+    assert job.spec is None
     assert job.result is None
     assert job.failure is None
-    inner.events.assert_awaited_once_with(
-        limit=kwargs.get("limit"), filter=kwargs.get("filter")
-    )
-    inner.status.assert_not_called()
     inner.refresh.assert_not_called()
 
+    assert await call(method) is None
+    assert job.state == state
+    assert job.job_type == "refresh_column"
+    assert job.creation_ms == 2000
+    assert job.spec is spec
+    assert job.result is result
+    assert job.failure is failure
+    inner.refresh.assert_awaited_once_with()
+    inner.status.assert_not_called()
+
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["fetch_status", "status", "fetch_events", "events"])
-async def test_job_live_accessors_propagate_request_errors(job_accessors, method):
+async def test_job_checkout_latest_keeps_cached_details_on_request_error(job_snapshot):
     error = HttpError("not found", "req-job", 404)
+    description = SimpleNamespace(
+        creation_ms=2000, spec={"column": "vector"}, result=None, failure=None
+    )
     inner = SimpleNamespace(
         _state="running",
-        status=AsyncMock(side_effect=error),
-        events=AsyncMock(side_effect=error),
+        _description=description,
+        job_type="refresh_column",
+        refresh=AsyncMock(side_effect=error),
     )
-    job, call = job_accessors(inner)
+    job, call = job_snapshot(inner)
+
     with pytest.raises(HttpError) as exc:
-        await call(method)
+        await call()
     assert exc.value is error
     assert job.state == "running"
+    assert job.spec is description.spec
+    assert job.result is None
+    assert job.failure is None
+    inner.refresh.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync", [False, True])
-@pytest.mark.parametrize("method", ["fetch_status", "fetch_events"])
-async def test_job_fetch_accessors_preserve_existing_overrides(
-    sync, method, monkeypatch
-):
+async def test_job_checkout_latest_preserves_refresh_overrides(sync, monkeypatch):
     job = AsyncJob(None)
     if sync:
         job = Job(job)
-    original = "status" if method == "fetch_status" else "events"
-    value = "running" if original == "status" else pa.table({"state": ["running"]})
-    override = MagicMock(return_value=value) if sync else AsyncMock(return_value=value)
-    monkeypatch.setattr(job, original, override)
-    kwargs = (
-        {} if original == "status" else {"limit": 10, "filter": "state = 'running'"}
-    )
+    refresh = MagicMock() if sync else AsyncMock()
+    monkeypatch.setattr(job, "refresh", refresh)
 
     if sync:
-        actual = await asyncio.to_thread(getattr(job, method), **kwargs)
+        assert await asyncio.to_thread(job.checkout_latest) is None
     else:
-        actual = await getattr(job, method)(**kwargs)
-    assert actual is value
-    override.assert_called_once_with(**kwargs)
-    if not sync:
-        override.assert_awaited_once_with(**kwargs)
+        assert await job.checkout_latest() is None
+        refresh.assert_awaited_once_with()
+    refresh.assert_called_once_with()
 
 
 @pytest.mark.asyncio
-async def test_job_live_accessors_for_completed_local_jobs(job_accessors):
-    job, call = job_accessors(None)
+async def test_job_checkout_latest_for_completed_local_jobs(job_snapshot):
+    job, call = job_snapshot(None)
+    assert await call() is None
     assert job.state == "finished"
-    assert await call("fetch_status") == "finished"
-    assert await call("status") == "finished"
-    for method in ("fetch_events", "events"):
-        with pytest.raises(NotImplementedError, match="server-side jobs"):
-            await call(method)
-    assert job.result is None
+    assert job.job_type is None
     assert job.spec is None
-    assert Job(None).fetch_status() == "finished"
-    with pytest.raises(NotImplementedError, match="server-side jobs"):
-        Job(None).fetch_events()
+    assert job.result is None
+    assert job.failure is None
+    assert Job(None).checkout_latest() is None
 
 
 @pytest.mark.parametrize("sync", [False, True])
