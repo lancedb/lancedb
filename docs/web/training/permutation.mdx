@@ -65,9 +65,9 @@ the batch size, `C` is the number of columns, and `*S` is the shape of one sampl
 
 `torch_dict` is usually the best choice for training because it keeps column names, handles columns with different
 sample shapes, and shares Arrow storage where the layout allows. `torch_col` and `torch_row` require every column to
-have the same sample shape; `torch_row` combines numeric dtypes with `torch.promote_types`, while `torch_col` requires
-a common dtype because it stacks columns. If they see mixed scalar and vector columns, they name the mismatched fields
-and shapes and point you to `torch_dict`.
+have the same sample shape. `torch_row` combines numeric dtypes with `torch.promote_types`, and `torch_col` promotes
+supported mixed numeric dtypes through `torch.stack`. If they see mixed scalar and vector columns, they name the
+mismatched fields and shapes and point you to `torch_dict`.
 
 The torch formats reject null values. Use the `"python"` or `"arrow"` format for nullable columns, or drop/fill the
 nulls first. `lance.bfloat16` values are supported when the leaf field is `fixed_size_binary[2]` with the
