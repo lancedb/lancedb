@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
-use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
+use lance_io::object_store::ObjectStoreParams;
 use lance_namespace::{
     LanceNamespace,
     error::{ErrorCode, NamespaceError},
@@ -25,7 +25,7 @@ use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
 use crate::blob::ensure_blob_storage_version;
-use crate::connection::NamespaceClientPushdownOperation;
+use crate::connection::{NamespaceClientPushdownOperation, merge_storage_options};
 use crate::database::ReadConsistency;
 use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
 use crate::database::read_freshness::{
@@ -465,14 +465,15 @@ impl Database for LanceNamespaceDatabase {
             params.mode = WriteMode::Overwrite;
         }
 
-        // Set up storage options if provided
+        // Set up storage options if provided. Namespace options take
+        // precedence for overlapping keys, but must not discard caller-only
+        // options supplied with the create request, including the
+        // `base_<id>.<key>` settings of registered blob bases.
         if let Some(storage_opts) = initial_storage_options {
             let store_params = params
                 .store_params
                 .get_or_insert_with(ObjectStoreParams::default);
-            store_params.storage_options_accessor = Some(Arc::new(
-                StorageOptionsAccessor::with_static_options(storage_opts),
-            ));
+            merge_storage_options(store_params, storage_opts);
         }
 
         // Set up commit handler when managed_versioning is enabled
@@ -618,6 +619,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
+    use lance_io::object_store::StorageOptionsAccessor;
     use tempfile::tempdir;
 
     #[derive(Debug)]

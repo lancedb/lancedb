@@ -49,7 +49,8 @@ class BasePath:
     ----------
     path:
         Full URI of the base (for example ``s3://bucket/prefix`` or a
-        ``file://`` URI). Relative blob URIs are resolved against it.
+        ``file://`` URI). A blob URI under this prefix is stored relative to
+        it.
     name:
         Optional human-readable name for the base.
     is_dataset_root:
@@ -434,16 +435,19 @@ def blob_uri_array(
 
     A row without ``position`` and ``size`` references the whole object; a
     row with both reads exactly that byte range. Register the object prefix
-    with [BasePath][lancedb.schema.BasePath] at table creation to store the
-    URI relative to a base, or set ``allow_external_blob_outside_bases=True``
-    on create to keep the absolute URI.
+    with [BasePath][lancedb.schema.BasePath] at table creation to store a
+    matched URI relative to a base, or set
+    ``allow_external_blob_outside_bases=True`` on create to keep the
+    absolute URI when no base matches.
 
     Parameters
     ----------
     uris:
-        An iterable of URI strings or ``None`` for a null blob. Relative
-        paths are resolved against a registered base and are stored as-is
-        when no base matches.
+        An iterable of absolute URI strings or ``None`` for a null blob. A
+        URI under a registered base is matched and stored in the descriptor
+        relative to that base. An unmatched URI is rejected unless the table
+        was created with ``allow_external_blob_outside_bases=True``; even then it
+        must be a valid absolute URI.
     positions:
         Optional byte offsets, one per URI. Provide together with ``sizes``;
         each entry is an ``int`` or ``None``. A range requires both fields.

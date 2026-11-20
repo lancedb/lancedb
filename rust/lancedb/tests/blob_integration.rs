@@ -2367,3 +2367,95 @@ async fn scoped_storage_options_do_not_leak_between_bases_on_reopen() -> Result<
     assert_eq!(bytes.value(0), payload_b);
     Ok(())
 }
+
+fn namespace_properties(root: &std::path::Path) -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::from([("root".to_string(), root.to_str().unwrap().to_string())])
+}
+
+/// Connection-level storage options must be merged under the request's
+/// storage options on the namespace create path. Replacing the request
+/// accessor drops `base_<id>.<key>` settings and silently accepts options the
+/// selected base cannot use.
+#[tokio::test]
+async fn namespace_create_keeps_caller_scoped_storage_options() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let (uri, base_uri) = write_local_payload(tmp.path(), "clip.mp4", b"namespace-scoped");
+    let db = connect_namespace("dir", namespace_properties(&tmp.path().join("ns")))
+        .storage_options([("timeout", "7s")])
+        .execute()
+        .await?;
+
+    let err = db
+        .create_table(
+            "videos",
+            range_uri_batch(&[1], &[uri.as_str()], &[None], &[None]),
+        )
+        .initial_bases(vec![local_base(1, base_uri)])
+        .storage_option("base_1.scheduler_error_mode", "invalid")
+        .execute()
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("scheduler_error_mode"),
+        "request-scoped option was dropped, got: {err}"
+    );
+    Ok(())
+}
+
+/// A namespace reopen keeps scoped options attached to their own base: base
+/// 1's invalid option fails its read while base 2 still returns exact bytes.
+#[tokio::test]
+async fn namespace_reopen_applies_scoped_options_to_their_own_base() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload_a = b"namespace-base-a";
+    let payload_b = b"namespace-base-b";
+    let dir_a = tmp.path().join("base-a");
+    let dir_b = tmp.path().join("base-b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let (uri_a, base_a) = write_local_payload(&dir_a, "clip.mp4", payload_a);
+    let (uri_b, base_b) = write_local_payload(&dir_b, "clip.mp4", payload_b);
+    let db = connect_namespace("dir", namespace_properties(&tmp.path().join("ns")))
+        .storage_options([("timeout", "7s")])
+        .execute()
+        .await?;
+
+    db.create_table(
+        "videos",
+        range_uri_batch(
+            &[1, 2],
+            &[uri_a.as_str(), uri_b.as_str()],
+            &[None, None],
+            &[None, None],
+        ),
+    )
+    .initial_bases(vec![local_base(1, base_a), local_base(2, base_b)])
+    .execute()
+    .await?;
+
+    let reopened = db
+        .open_table("videos")
+        .storage_options([("base_1.scheduler_error_mode", "invalid")])
+        .execute()
+        .await?;
+    let pairs = sorted_id_rowid(&reopened).await?;
+    let row_for = |id: i64| {
+        pairs
+            .iter()
+            .find(|(row_id, _)| *row_id == id)
+            .map(|(_, row_id)| *row_id)
+            .expect("row present")
+    };
+
+    let err = reopened
+        .fetch_blobs("image", &[row_for(1)])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("scheduler_error_mode"),
+        "base 1 should carry its scoped option, got: {err}"
+    );
+    let bytes = reopened.fetch_blobs("image", &[row_for(2)]).await?;
+    assert_eq!(bytes.value(0), payload_b);
+    Ok(())
+}

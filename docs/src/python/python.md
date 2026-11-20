@@ -942,10 +942,11 @@ ranges without requiring pylance. Inline `data` and external `uri` representatio
 are mutually exclusive.
 
 Register the object prefix with [BasePath][lancedb.BasePath] on
-`create_table(..., initial_bases=[...])` to store blob URIs relative to a base
-and to scope credentials with `base_<id>.<option>` storage options. A create
-with data stays a single atomic request; without a matching base, pass
-`allow_external_blob_outside_bases=True` to keep the absolute URI instead.
+`create_table(..., initial_bases=[...])` to store a matched absolute blob URI
+relative to a base and to scope credentials with `base_<id>.<option>` storage
+options. A create with data stays a single atomic request; without a matching
+base, pass `allow_external_blob_outside_bases=True` to keep the absolute URI
+instead. That opt-in still expects a valid absolute URI.
 
 ```python
 from lancedb import BasePath, blob, blob_uri_array

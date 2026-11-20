@@ -3465,6 +3465,20 @@ class AsyncConnection(object):
         """
         if namespace_path is None:
             namespace_path = []
+        if get_uri_scheme(self.uri) == "db":
+            # The Enterprise create endpoint has no way to express either
+            # option. Reject before sanitizing or reading `data`, and do not
+            # point at a local-only or remote `add` path.
+            if initial_bases:
+                raise NotImplementedError(
+                    "initial_bases is not supported for table creation in "
+                    "LanceDB Enterprise"
+                )
+            if allow_external_blob_outside_bases:
+                raise NotImplementedError(
+                    "allow_external_blob_outside_bases is not supported for table "
+                    "creation in LanceDB Enterprise"
+                )
         if data is None and allow_external_blob_outside_bases:
             raise ValueError(
                 "allow_external_blob_outside_bases requires initial data; "

@@ -3378,23 +3378,92 @@ def test_create_table_initial_bases_through_namespace(tmp_path):
         [pa.array([1], pa.int64()), videos], schema=schema
     )
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "ns")})
-    storage_options = {"base_1.region": "namespace-base"}
 
     table = db.create_table(
         "videos",
         data=rows,
         schema=schema,
         initial_bases=[lancedb.BasePath(path=base_dir.as_uri(), name="source", id=1)],
-        storage_options=storage_options,
     )
     assert table.version == 1
-    reopened = db.open_table("videos", storage_options=storage_options)
+    reopened = db.open_table("videos")
     hits = reopened.search().with_row_id(True).to_arrow()
     row_id = hits["_rowid"][0].as_py()
     assert reopened.fetch_blobs("video", hits).to_pylist() == [payload[:6]]
     assert reopened.fetch_blob_ranges("video", [(row_id, 1, 3)]).to_pylist() == [
         payload[1:4]
     ]
+
+
+def test_namespace_create_keeps_scoped_options_over_connection_defaults(tmp_path):
+    pytest.importorskip("lance")
+    base_dir, clip, _ = _initial_base_payloads(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect_namespace(
+        "dir",
+        {"root": str(tmp_path / "ns")},
+        storage_options={"timeout": "7s"},
+    )
+
+    # The invalid scoped option belongs to base 1. It must survive the merge
+    # with connection defaults instead of being replaced by them.
+    with pytest.raises(ValueError, match="scheduler_error_mode"):
+        db.create_table(
+            "videos",
+            data=rows,
+            schema=schema,
+            initial_bases=[
+                lancedb.BasePath(path=base_dir.as_uri(), name="source", id=1)
+            ],
+            storage_options={"base_1.scheduler_error_mode": "invalid"},
+        )
+
+
+def test_namespace_reopen_applies_scoped_options_per_base(tmp_path):
+    pytest.importorskip("lance")
+    payload_a = b"namespace-base-a"
+    payload_b = b"namespace-base-b"
+    dir_a = tmp_path / "base-a"
+    dir_b = tmp_path / "base-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    clip_a = dir_a / "clip.mp4"
+    clip_b = dir_b / "clip.mp4"
+    clip_a.write_bytes(payload_a)
+    clip_b.write_bytes(payload_b)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip_a.as_uri(), clip_b.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1, 2], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect_namespace(
+        "dir",
+        {"root": str(tmp_path / "ns")},
+        storage_options={"timeout": "7s"},
+    )
+
+    table = db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[
+            lancedb.BasePath(path=dir_a.as_uri(), name="a", id=1),
+            lancedb.BasePath(path=dir_b.as_uri(), name="b", id=2),
+        ],
+    )
+    assert table.version == 1
+
+    reopened = db.open_table(
+        "videos", storage_options={"base_1.scheduler_error_mode": "invalid"}
+    )
+    by_id = _row_ids_by_id(reopened)
+    with pytest.raises(ValueError, match="scheduler_error_mode"):
+        reopened.fetch_blobs("video", [by_id[1]])
+    assert reopened.fetch_blobs("video", [by_id[2]]).to_pylist() == [payload_b]
 
 
 @pytest.mark.asyncio
