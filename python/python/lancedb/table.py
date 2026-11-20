@@ -4231,10 +4231,7 @@ class LanceTable(Table):
         connection = self._conn
         namespace_client = getattr(connection, "_namespace_client", None)
         namespace_impl = getattr(connection, "_namespace_client_impl", None)
-        namespace_properties = getattr(connection, "_namespace_client_properties", None)
-        if namespace_client is not None and (
-            namespace_impl is None or namespace_properties is None
-        ):
+        if namespace_client is not None and namespace_impl is None:
             raise TypeError(
                 f"Cannot pickle LanceTable {self.name!r} backed by a namespace "
                 "connection whose custom namespace_client cannot be "

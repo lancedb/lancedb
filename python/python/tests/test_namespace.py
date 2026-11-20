@@ -36,6 +36,21 @@ PUSHDOWN_DATA = pa.table(
 )
 
 
+class _DeclaredNamespaceWithoutProperties(LanceNamespace):
+    root = None
+
+    def __init__(self):
+        from lance.namespace import DirectoryNamespace
+
+        self.client = DirectoryNamespace(root=self.root)
+
+    def namespace_id(self):
+        return self.client.namespace_id()
+
+    def describe_table(self, request):
+        return self.client.describe_table(request)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("table_id", [["events"], ["analytics", "events"], ["missing"]])
 async def test_custom_namespace_table_exists_uses_namespace_api(table_id):
@@ -83,6 +98,27 @@ def test_table_pickle_rejects_custom_namespace_connection(tmp_path):
 
     with pytest.raises(TypeError, match="namespace"):
         pickle.dumps(table)
+
+
+def test_table_pickle_allows_declared_namespace_without_properties(tmp_path):
+    pytest.importorskip("lance")
+
+    lancedb.connect_namespace("dir", {"root": str(tmp_path)}).create_table(
+        "t", [{"id": 1}]
+    )
+    _DeclaredNamespaceWithoutProperties.root = str(tmp_path)
+    try:
+        impl = f"{__name__}._DeclaredNamespaceWithoutProperties"
+        db = LanceNamespaceDBConnection(
+            _DeclaredNamespaceWithoutProperties(), namespace_client_impl=impl
+        )
+        table = db.open_table("t")
+
+        restored = pickle.loads(pickle.dumps(table))
+
+        assert restored.to_arrow()["id"].to_pylist() == [1]
+    finally:
+        _DeclaredNamespaceWithoutProperties.root = None
 
 
 class TestNamespaceCreateTableOptions:
@@ -397,6 +433,77 @@ def test_rest_namespace_table_pickle_keeps_live_storage_options(tmp_path):
             }
             assert table.latest_storage_options()["block_size"] == "8192"
             assert restored.latest_storage_options()["block_size"] == "8192"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.mark.parametrize("entrypoint", ["create", "open"])
+def test_rest_namespace_pickle_layers_caller_storage_options(tmp_path, entrypoint):
+    from time import time
+
+    location = str(tmp_path / "t.lance")
+    caller_options = {"caller_option": "kept", "conflict": "caller"}
+    vended_options = {
+        "vended_1": "old",
+        "conflict": "vended",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if path.endswith("/declare") or path.endswith("/describe"):
+                body = json.dumps(
+                    {"location": location, "storage_options": vended_options}
+                ).encode()
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest",
+                {"uri": f"http://127.0.0.1:{server.server_port}"},
+            )
+            if entrypoint == "create":
+                table = db.create_table(
+                    "t", [{"id": 1}], storage_options=caller_options
+                )
+            else:
+                db.create_table("t", [{"id": 1}])
+                table = db.open_table("t", storage_options=caller_options)
+            restored = pickle.loads(pickle.dumps(table))
+
+            for current in (table, restored):
+                options = current.latest_storage_options()
+                assert options["caller_option"] == "kept"
+                assert options["conflict"] == "vended"
+
+            vended_options.update(
+                {
+                    "vended_2": "new",
+                    "conflict": "vended-new",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                }
+            )
+
+            for current in (table, restored):
+                options = current.latest_storage_options()
+                assert options["caller_option"] == "kept"
+                assert options["vended_2"] == "new"
+                assert options["conflict"] == "vended-new"
         finally:
             server.shutdown()
             thread.join()
