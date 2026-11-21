@@ -59,7 +59,7 @@ to let LanceDB track which outputs need updating.
 | `batch_size` | maximum rows passed to one Function call; actual calls can be smaller. Function columns only |
 | `max_executor_processes_per_worker` | cap on executor processes per worker. Function columns only |
 | `row_timeout_seconds` | deadline for one Function call. Function columns only |
-| `error_policy` | `'fail'` (default) stops on a row error; `'skip'` writes null outputs and records row errors, subject to failure limits. Function columns only |
+| `error_policy` | `'skip'` (default, with a 5% failed-row ceiling) retains a failing row's existing output, leaves unassigned outputs unassigned and records row errors, subject to failure limits; `'fail'` stops on a row error. Function columns only |
 | `max_failed_fraction` | fail the job once more than this share of rows has failed. Function columns only |
 | `max_failed_rows` | fail the job once more than this many rows has failed. Function columns only |
 

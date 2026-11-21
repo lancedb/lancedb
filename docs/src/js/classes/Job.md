@@ -26,6 +26,20 @@ extra round trip on every call:
 
 ## Accessors
 
+### attempt
+
+```ts
+get attempt(): null | number
+```
+
+One-based attempt ordinal. Worker replacement does not increment it.
+
+#### Returns
+
+`null` \| `number`
+
+***
+
 ### creationMs
 
 ```ts
@@ -33,6 +47,20 @@ get creationMs(): null | number
 ```
 
 When the job was created, in milliseconds since the epoch.
+
+#### Returns
+
+`null` \| `number`
+
+***
+
+### executionEpoch
+
+```ts
+get executionEpoch(): null | number
+```
+
+Most recent execution's fencing token, when reported.
 
 #### Returns
 
@@ -73,6 +101,23 @@ durable resume tokens.
 
 ***
 
+### jobId
+
+```ts
+get jobId(): null | string
+```
+
+Identity of the selected attempt last observed by this handle.
+For operation handles, `refresh()` or `status()` can select a different
+attempt while `id` stays unchanged. Save this value after refreshing and
+use it throughout paged diagnostics. Local IDs cannot be reopened on a server.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
 ### jobType
 
 ```ts
@@ -81,6 +126,34 @@ get jobType(): null | string
 
 "query" immediately for SQL-backed handles; otherwise the cached
 server-reported job type. Null for in-process handles.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
+### lifecycleState
+
+```ts
+get lifecycleState(): null | JobState
+```
+
+Detailed state last observed; unknown values never establish success.
+
+#### Returns
+
+`null` \| [`JobState`](../type-aliases/JobState.md)
+
+***
+
+### operationId
+
+```ts
+get operationId(): null | string
+```
+
+Root of the explicit retry lineage, when reported.
 
 #### Returns
 
@@ -101,6 +174,34 @@ instead.
 #### Returns
 
 `any`
+
+***
+
+### retryOf
+
+```ts
+get retryOf(): null | string
+```
+
+Immediate predecessor attempt, when reported.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
+### sourceTableVersion
+
+```ts
+get sourceTableVersion(): null | number
+```
+
+Source snapshot pinned for this attempt, when reported.
+
+#### Returns
+
+`null` \| `number`
 
 ***
 
@@ -146,6 +247,43 @@ Request cancellation. Cancelling a finished operation is a no-op.
 
 ***
 
+### captureProfile()
+
+```ts
+captureProfile(workerId, options): Promise<FunctionProfile>
+```
+
+Request a profile of a running Enterprise Function worker session.
+Returns the accepted identity without waiting for recording to finish.
+Requires System Operate permission and server profiling support. The server
+pins the worker, Python session and execution epoch. One capture per job
+can be active. Captures add workload-dependent overhead.
+
+GPU tracing requires initialized PyTorch CUDA/CUPTI. CPU sampling requires
+readable per-thread procfs and is unavailable in dedicated sandboxes.
+
+#### Parameters
+
+* **workerId**: `string`
+
+* **options**: [`FunctionProfileOptions`](../interfaces/FunctionProfileOptions.md) = `{}`
+
+#### Returns
+
+`Promise`&lt;[`FunctionProfile`](../interfaces/FunctionProfile.md)&gt;
+
+#### Example
+
+```ts
+const profile = await job.captureProfile("worker-id", {
+  kind: "gpu", durationSeconds: 2,
+});
+await job.waitForProfile(profile.profileId, { timeoutMs: 60_000 });
+await job.exportProfile(profile.profileId, "gpu.trace.json");
+```
+
+***
+
 ### events()
 
 ```ts
@@ -172,6 +310,89 @@ per fragment. `filter` is a SQL-like expression over the `state`,
 #### Returns
 
 `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+***
+
+### exportProfile()
+
+```ts
+exportProfile(profileId, path): Promise<void>
+```
+
+Write a completed capture's JSON after successful retrieval. Open CPU
+exports in speedscope and GPU exports in Perfetto. GPU activity durations
+can overlap and are not utilization; Python operator attribution and GPU
+allocation stacks are excluded. Filesystem errors propagate to the caller.
+
+#### Parameters
+
+* **profileId**: `string`
+
+* **path**: `string`
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### history()
+
+```ts
+history(options?): AsyncGenerator<Table<any>, any, unknown>
+```
+
+Walk retained history one page at a time using the server's continuation.
+
+#### Parameters
+
+* **options?**: [`JobEventsOptions`](../interfaces/JobEventsOptions.md)
+
+#### Returns
+
+`AsyncGenerator`&lt;`Table`&lt;`any`&gt;, `any`, `unknown`&gt;
+
+***
+
+### profileArtifact()
+
+```ts
+profileArtifact(profileId): Promise<Record<string, unknown>>
+```
+
+Retrieve a completed capture's actual JSON: speedscope for CPU,
+tracemalloc for Python allocations, or Chrome Trace Event JSON for GPU.
+Truncation flags are preserved. Retention is at most one hour and eight
+captures per job, until earlier scratch reclamation or archival.
+Permission, expired-artifact and unsupported-server errors propagate.
+
+#### Parameters
+
+* **profileId**: `string`
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+***
+
+### profileStatus()
+
+```ts
+profileStatus(profileId): Promise<FunctionProfile>
+```
+
+Fetch capture identity and status, including retained lookup after refresh.
+Failed captures return status "failed" with the server's error reason.
+This never changes the parent job's cached state.
+
+#### Parameters
+
+* **profileId**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionProfile`](../interfaces/FunctionProfile.md)&gt;
 
 ***
 
@@ -208,6 +429,20 @@ its full record, then cache it for the getters above.
 
 ***
 
+### retry()
+
+```ts
+retry(): Promise<Job<T>>
+```
+
+Select this exact attempt's pinned successor. Requires backend support.
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;`T`&gt;&gt;
+
+***
+
 ### status()
 
 ```ts
@@ -223,6 +458,20 @@ terminal failure state. Also refreshes the getters above.
 #### Returns
 
 `Promise`&lt;`string`&gt;
+
+***
+
+### statusTyped()
+
+```ts
+statusTyped(): Promise<JobState>
+```
+
+Refresh and return the detailed lifecycle state.
+
+#### Returns
+
+`Promise`&lt;[`JobState`](../type-aliases/JobState.md)&gt;
 
 ***
 
@@ -275,3 +524,26 @@ can also be reopened with `Connection.openJob`; query IDs cannot.
 ```ts
 const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
 ```
+
+***
+
+### waitForProfile()
+
+```ts
+waitForProfile(profileId, options): Promise<FunctionProfile>
+```
+
+Wait for a capture with a configurable timeout and polling cadence.
+Defaults to 60 seconds with two seconds between requests. A timeout stops
+only this wait; the capture and Function refresh continue. A failed capture
+rejects with its server-reported reason. Keep its ID to wait again.
+
+#### Parameters
+
+* **profileId**: `string`
+
+* **options**: [`FunctionProfileWaitOptions`](../interfaces/FunctionProfileWaitOptions.md) = `{}`
+
+#### Returns
+
+`Promise`&lt;[`FunctionProfile`](../interfaces/FunctionProfile.md)&gt;

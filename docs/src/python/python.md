@@ -428,6 +428,8 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.table.Branches
 
+::: lancedb.table.TableDelta
+
 ::: lancedb.RTEWriteSpec
 
 ## Functions and Jobs
@@ -450,6 +452,53 @@ identifiers. `fn.image` has a concise representation; `describe()` exposes Pytho
 and CUDA requirements without inspecting Pydantic internals. Platforms, base image
 and size are `None` until the service reports them. The full image descriptor and
 canonical JSON remain available.
+Jobs retain an attempt identity through `job_id()`, and explicit server retries
+report `operation_id()`, `attempt()`, and `retry_of()` when the server supports
+them.
+`lifecycle_state()` and `status_typed()` expose detailed `JobState` values while
+the existing string `status()` remains available. Unknown future states retain
+their value and never imply success. `source_table_version()` identifies the
+attempt's pinned input snapshot when reported.
+
+```python
+from datetime import timedelta
+from lancedb import JobState
+
+job = db.open_job(job_id)
+state = job.status_typed()
+if state is JobState.SUCCEEDED:
+    print(job.operation_id(), job.attempt(), job.source_table_version())
+job.wait(timeout=timedelta(seconds=5))
+for page in job.history(limit=1000):
+    print(page)
+```
+
+A wait timeout leaves execution running and the handle reusable. Cancellation
+can be refused when publication has already acquired its commit claim; inspect
+the job again to learn that attempt's outcome. LanceDB Embedded handles have a
+stable identity for their lifetime and share typed lifecycle and wait semantics;
+their IDs cannot be reopened after a process restart. Event history, durable
+retries, and per-row Function errors require a backend that records them.
+
+Explicit retries name the exact failed attempt and preserve its resolved
+Function version and source snapshot. Repeating `job.retry()` selects the same
+successor; call `retry()` on that successor to request another attempt. Safely
+retryable states and publication outcomes are validated by the backend.
+
+```python
+retry = failed_job.retry()
+retry.refresh()
+attempt_job_id = retry.job_id()
+token = ""
+while token is not None:
+    errors = table.function_errors(job_id=attempt_job_id, limit=1000, page_token=token)
+    print(errors.records, errors.fragments)
+    token = errors.page_token
+```
+
+An empty error page can still carry a continuation. Keep the table, branch,
+job, and column filters unchanged while paging. Diagnose a terminal attempt for
+its complete retained row errors; an executing attempt is a partial observation.
 
 A `@function` definition is also a local callable. Call a decorated function
 directly with row inputs, or call a decorated class with its initialization fields
@@ -696,6 +745,8 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.job.Job
 
+::: lancedb.job.JobState
+
 ::: lancedb.job.AsyncJob
 
 ::: lancedb.job.JobInfo
@@ -703,6 +754,12 @@ with BlobReader(read_range, len(payload)) as reader:
 ::: lancedb.job.JobDescription
 
 ::: lancedb.job.JobFailureInfo
+
+::: lancedb.profiling.FunctionProfile
+
+::: lancedb.profiling.FunctionProfileKind
+
+::: lancedb.profiling.FunctionProfileStatus
 
 ::: lancedb.sql.Query
 
@@ -1350,6 +1407,8 @@ Table hold your actual data as a collection of records / rows.
 
 ::: lancedb.prewarm_run.AsyncPrewarmRunReader
 
+::: lancedb.table.AsyncTableDelta
+
 ## Materialized Views (Asynchronous)
 
 ::: lancedb.materialized_view.AsyncMaterializedView
@@ -1612,6 +1671,10 @@ Caches, hidden paths, symlinks and unsafe paths are excluded. Use `pip=` or
 `conda=` for platform-specific dependencies and `models=` for large model snapshots.
 
 ::: lancedb.compaction.CompactionResult
+
+::: lancedb.cleanup.CleanupPlan
+
+::: lancedb.cleanup.CleanupResult
 
 ::: lancedb.prewarm.PrewarmDataResult
 

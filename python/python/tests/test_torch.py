@@ -8,19 +8,58 @@ import json
 import multiprocessing as mp
 import pickle
 import re
+import struct
 import sys
 
 import lancedb
+import numpy as np
 import pyarrow as pa
 import pytest
 from lancedb.permutation import Permutation, Permutations, permutation_builder
-from lancedb.util import tbl_to_tensor
+from lancedb.util import batch_to_tensor, batch_to_tensor_columns, tbl_to_tensor
 from utils import start_server_thread
 
 torch = pytest.importorskip("torch")
 
 
 REMOTE_ROWS = list(range(100))
+
+
+def _identity_collate(batch):
+    return batch
+
+
+class _LanceBFloat16Type(pa.ExtensionType):
+    def __init__(self):
+        pa.ExtensionType.__init__(self, pa.binary(2), "lance.bfloat16")
+
+    def __arrow_ext_serialize__(self):
+        return b""
+
+    @classmethod
+    def __arrow_ext_deserialize__(cls, storage_type, serialized):
+        return cls()
+
+
+def _bf16_storage(values):
+    bits = torch.tensor(values, dtype=torch.bfloat16).view(torch.int16).tolist()
+    return [struct.pack("<H", bit & 0xFFFF) for bit in bits]
+
+
+def _bf16_array(values):
+    storage = pa.array(_bf16_storage(values), type=pa.binary(2))
+    return pa.ExtensionArray.from_storage(_LanceBFloat16Type(), storage)
+
+
+def _fixed_shape_tensor_array(physical_values, shape, permutation=None):
+    tensor_type = pa.fixed_shape_tensor(
+        pa.float32(), shape, permutation=permutation or []
+    )
+    flat_values = np.asarray(physical_values, dtype=np.float32).reshape(-1)
+    storage = pa.FixedSizeListArray.from_arrays(
+        pa.array(flat_values), int(np.prod(shape))
+    )
+    return pa.ExtensionArray.from_storage(tensor_type, storage)
 
 
 def _make_mock_http_handler(handler):
@@ -496,3 +535,472 @@ def test_remote_permutation_dataloader_fork_workers():
         finally:
             server.shutdown()
             handle.join()
+
+
+def test_permutation_torch_dict_mixed_columns(mem_db):
+    vectors = [[float(i), float(i) + 0.5, float(i) + 1.0] for i in range(5)]
+    grids = [
+        [[float(row), float(row) + 1.0], [float(row) + 2.0, float(row) + 3.0]]
+        for row in range(5)
+    ]
+    table = mem_db.create_table(
+        "mixed",
+        pa.table(
+            {
+                "id": pa.array(range(5), type=pa.int32()),
+                "score": pa.array([i / 2 for i in range(5)], type=pa.float32()),
+                "vector": pa.array(vectors, type=pa.list_(pa.float32(), 3)),
+                "grid": pa.array(grids, type=pa.list_(pa.list_(pa.float32(), 2), 2)),
+            }
+        ),
+    )
+    permutation = Permutation.identity(table).with_format("torch_dict")
+
+    batch = next(permutation.iter(5, skip_last_batch=False))
+    assert set(batch) == {"id", "score", "vector", "grid"}
+    assert batch["id"].shape == (5,)
+    assert batch["id"].dtype == torch.int32
+    assert batch["score"].dtype == torch.float32
+    assert batch["vector"].shape == (5, 3)
+    assert batch["grid"].shape == (5, 2, 2)
+    assert torch.equal(batch["vector"], torch.tensor(vectors))
+    assert torch.equal(batch["grid"], torch.tensor(grids))
+
+    items = permutation.__getitems__([0, 2, 4])
+    assert items["id"].shape == (3,)
+    assert items["score"].shape == (3,)
+    assert items["vector"].shape == (3, 3)
+    assert items["grid"].shape == (3, 2, 2)
+
+    dataloader = torch.utils.data.DataLoader(
+        permutation,
+        batch_size=2,
+        shuffle=False,
+        collate_fn=_identity_collate,
+    )
+    batches = list(dataloader)
+    assert [batch["id"].shape[0] for batch in batches] == [2, 2, 1]
+    assert batches[0]["vector"].shape == (2, 3)
+    assert batches[-1]["grid"].shape == (1, 2, 2)
+
+    empty = permutation.take_offsets([])
+    assert empty["id"].shape == (0,)
+    assert empty["vector"].shape == (0, 3)
+    assert empty["grid"].shape == (0, 2, 2)
+
+    torch_permutation = Permutation.identity(table).with_format("torch")
+    per_row = next(torch_permutation.iter(2, skip_last_batch=False))
+    assert isinstance(per_row, list)
+    assert per_row[0]["vector"].shape == (3,)
+    assert per_row[0]["grid"].shape == (2, 2)
+    torch_loader = torch.utils.data.DataLoader(
+        torch_permutation, batch_size=2, shuffle=False
+    )
+    collated = next(iter(torch_loader))
+    assert collated["vector"].shape == (2, 3)
+    assert collated["grid"].shape == (2, 2, 2)
+
+
+def test_permutation_torch_dict_dataloader_spawn(tmp_db):
+    vectors = [[float(i), float(i) + 0.5] for i in range(11)]
+    table = tmp_db.create_table(
+        "spawn",
+        pa.table(
+            {
+                "id": range(11),
+                "vector": pa.array(vectors, type=pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    permutation = Permutation.identity(table).with_format("torch_dict")
+
+    dataloader = torch.utils.data.DataLoader(
+        permutation,
+        batch_size=4,
+        shuffle=False,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        collate_fn=_identity_collate,
+    )
+    seen = []
+    for batch in dataloader:
+        assert isinstance(batch, dict)
+        assert batch["id"].shape == (batch["id"].shape[0],)
+        assert batch["vector"].shape == (batch["id"].shape[0], 2)
+        seen.extend(batch["id"].tolist())
+    assert sorted(seen) == list(range(11))
+
+
+def test_batch_to_tensor_columns_zero_copy_and_slice_offsets():
+    vectors = [[float(i), float(i) + 0.5, float(i) + 1.0] for i in range(5)]
+    nested_values = np.arange(5 * 3 * 2, dtype=np.float32).reshape(5, 3, 2)
+    batch = pa.record_batch(
+        [
+            pa.array(range(5), type=pa.int64()),
+            pa.array(vectors, type=pa.list_(pa.float32(), 3)),
+            pa.array(
+                nested_values.tolist(),
+                type=pa.list_(pa.list_(pa.float32(), 2), 3),
+            ),
+            pa.array([True, False, True, False, True]),
+        ],
+        names=["id", "vector", "nested", "active"],
+    ).slice(2, 2)
+
+    tensors = batch_to_tensor_columns(batch)
+    assert tensors["id"].tolist() == [2, 3]
+    assert torch.equal(tensors["vector"], torch.tensor(vectors[2:4]))
+    assert torch.equal(tensors["nested"], torch.from_numpy(nested_values[2:4].copy()))
+    assert tensors["active"].dtype == torch.bool
+    assert tensors["active"].tolist() == [True, False]
+
+    id_array = batch.column("id")
+    assert tensors["id"].data_ptr() == (
+        id_array.buffers()[1].address + id_array.offset * 8
+    )
+    vector_array = batch.column("vector")
+    vector_values = vector_array.values
+    expected_vector_offset = (vector_array.offset * 3 + vector_values.offset) * 4
+    assert tensors["vector"].data_ptr() == (
+        vector_values.buffers()[1].address + expected_vector_offset
+    )
+
+    single_column = pa.record_batch([batch.column("vector")], names=["vector"])
+    column_tensor = batch_to_tensor(single_column)
+    assert column_tensor.shape == (1, 2, 3)
+    assert column_tensor.data_ptr() == tensors["vector"].data_ptr()
+
+
+def test_permutation_torch_col_and_row_vector_layouts(mem_db):
+    left = [[float(i), float(i) + 0.5] for i in range(4)]
+    right = [[float(i) + 1.0, float(i) + 1.5] for i in range(4)]
+    table = mem_db.create_table(
+        "uniform",
+        pa.table(
+            {
+                "left": pa.array(left, type=pa.list_(pa.float32(), 2)),
+                "right": pa.array(right, type=pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    permutation = Permutation.identity(table)
+
+    column_batch = next(
+        permutation.with_format("torch_col").iter(4, skip_last_batch=False)
+    )
+    assert column_batch.shape == (2, 4, 2)
+    assert column_batch.dtype == torch.float32
+    assert torch.equal(column_batch[0], torch.tensor(left))
+
+    row_batch = next(
+        permutation.with_format("torch_row").iter(4, skip_last_batch=False)
+    )
+    assert len(row_batch) == 4
+    assert row_batch[0].shape == (2, 2)
+    assert torch.equal(
+        row_batch[0], torch.stack([torch.tensor(left[0]), torch.tensor(right[0])])
+    )
+
+    dataloader = torch.utils.data.DataLoader(
+        permutation.with_format("torch_row"), batch_size=4, shuffle=False
+    )
+    stacked = next(iter(dataloader))
+    assert stacked.shape == (4, 2, 2)
+
+    scalar_table = mem_db.create_table(
+        "single_scalar", pa.table({"x": pa.array(range(4), type=pa.int64())})
+    )
+    scalar_rows = next(
+        Permutation.identity(scalar_table)
+        .with_format("torch_row")
+        .iter(4, skip_last_batch=False)
+    )
+    assert scalar_rows[0].shape == (1,)
+    assert scalar_rows[0].dtype == torch.int64
+
+    vector_table = mem_db.create_table(
+        "single_vector",
+        pa.table({"v": pa.array(left, type=pa.list_(pa.float32(), 2))}),
+    )
+    vector_rows = next(
+        Permutation.identity(vector_table)
+        .with_format("torch_row")
+        .iter(4, skip_last_batch=False)
+    )
+    assert vector_rows[0].shape == (1, 2)
+    vector_column = next(
+        Permutation.identity(vector_table)
+        .with_format("torch_col")
+        .iter(4, skip_last_batch=False)
+    )
+    assert vector_column.shape == (1, 4, 2)
+
+
+def test_torch_col_and_row_reject_heterogeneous_shapes(mem_db):
+    table = mem_db.create_table(
+        "heterogeneous",
+        pa.table(
+            {
+                "id": pa.array(range(4), type=pa.int64()),
+                "vector": pa.array(
+                    [[float(i), float(i) + 1.0, float(i) + 2.0] for i in range(4)],
+                    type=pa.list_(pa.float32(), 3),
+                ),
+            }
+        ),
+    )
+    permutation = Permutation.identity(table)
+    for format_name in ("torch_col", "torch_row"):
+        with pytest.raises(ValueError, match="torch_dict") as exc_info:
+            next(permutation.with_format(format_name).iter(2, skip_last_batch=False))
+        message = str(exc_info.value)
+        assert "`vector`" in message
+        assert "(3,)" in message
+        assert "`id`" in message
+        assert "()" in message
+
+    different_dims = mem_db.create_table(
+        "different_dims",
+        pa.table(
+            {
+                "left": pa.array(
+                    [[1.0, 2.0] for _ in range(4)],
+                    type=pa.list_(pa.float32(), 2),
+                ),
+                "right": pa.array(
+                    [[1.0, 2.0, 3.0] for _ in range(4)],
+                    type=pa.list_(pa.float32(), 3),
+                ),
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="torch_dict") as exc_info:
+        next(
+            Permutation.identity(different_dims)
+            .with_format("torch_row")
+            .iter(2, skip_last_batch=False)
+        )
+    message = str(exc_info.value)
+    assert "`right`" in message and "(3,)" in message
+    assert "`left`" in message and "(2,)" in message
+
+
+def test_torch_row_uses_pytorch_numeric_promotion(mem_db):
+    table = mem_db.create_table(
+        "promotion",
+        pa.table(
+            {
+                "id": pa.array(range(4), type=pa.int64()),
+                "score": pa.array([i / 2 for i in range(4)], type=pa.float32()),
+                "count": pa.array(range(4), type=pa.int32()),
+            }
+        ),
+    )
+    rows = next(
+        Permutation.identity(table)
+        .with_format("torch_row")
+        .iter(4, skip_last_batch=False)
+    )
+    assert rows[0].shape == (3,)
+    assert rows[0].dtype == torch.float32
+    assert rows[0].tolist() == [0.0, 0.0, 0.0]
+    assert rows[2].tolist() == [2.0, 1.0, 2.0]
+
+
+def test_torch_row_preserves_nullable_numeric_scalar_nan(mem_db):
+    nullable_int = mem_db.create_table(
+        "nullable_int",
+        pa.table({"value": pa.array([1, None, 3], type=pa.int64())}),
+    )
+    rows = next(
+        Permutation.identity(nullable_int)
+        .with_format("torch_row")
+        .iter(3, skip_last_batch=False)
+    )
+    assert rows[0].shape == (1,)
+    assert rows[0].dtype == torch.float64
+    assert rows[0].tolist() == [1.0]
+    assert torch.isnan(rows[1]).all()
+    assert rows[2].tolist() == [3.0]
+
+    nullable_float = mem_db.create_table(
+        "nullable_float",
+        pa.table({"value": pa.array([0.5, None, 2.5], type=pa.float32())}),
+    )
+    rows = next(
+        Permutation.identity(nullable_float)
+        .with_format("torch_row")
+        .iter(3, skip_last_batch=False)
+    )
+    assert rows[0].dtype == torch.float32
+    assert rows[0].tolist() == [0.5]
+    assert torch.isnan(rows[1]).all()
+    assert rows[2].tolist() == [2.5]
+
+    nullable_mixed = mem_db.create_table(
+        "nullable_mixed",
+        pa.table(
+            {
+                "id": pa.array([1, None, 3], type=pa.int64()),
+                "score": pa.array([0.5, 1.5, 2.5], type=pa.float32()),
+            }
+        ),
+    )
+    rows = next(
+        Permutation.identity(nullable_mixed)
+        .with_format("torch_row")
+        .iter(3, skip_last_batch=False)
+    )
+    assert rows[0].dtype == torch.float64
+    assert rows[0].tolist() == [1.0, 0.5]
+    assert torch.isnan(rows[1][0])
+    assert rows[1][1].item() == 1.5
+    assert rows[2].tolist() == [3.0, 2.5]
+
+
+def test_permutation_torch_formats_fixed_shape_tensor_permutation(mem_db):
+    physical_values = np.arange(2 * 2 * 3 * 4, dtype=np.float32).reshape(2, 2, 3, 4)
+    tensor_array = _fixed_shape_tensor_array(
+        physical_values, shape=(2, 3, 4), permutation=[0, 2, 1]
+    )
+    table = mem_db.create_table(
+        "tensor_permutation",
+        pa.table({"id": range(2), "tensor": tensor_array}),
+    )
+    permutation = Permutation.identity(table)
+    expected = np.transpose(physical_values, (0, 1, 3, 2))
+
+    batch = next(permutation.with_format("torch_dict").iter(2, skip_last_batch=False))
+    assert batch["tensor"].shape == (2, 2, 4, 3)
+    assert torch.equal(batch["tensor"], torch.from_numpy(expected.copy()))
+
+    tensor_only = permutation.select_columns(["tensor"])
+    rows = next(tensor_only.with_format("torch_row").iter(2, skip_last_batch=False))
+    assert rows[0].shape == (1, 2, 4, 3)
+    assert torch.equal(rows[0][0], torch.from_numpy(expected[0].copy()))
+
+    dataloader = torch.utils.data.DataLoader(
+        tensor_only.with_format("torch"), batch_size=2, shuffle=False
+    )
+    default_collated = next(iter(dataloader))
+    assert default_collated["tensor"].shape == (2, 2, 4, 3)
+
+
+def test_permutation_torch_formats_bfloat16(mem_db):
+    values = [1.0, -1.5, 2.5, 0.0]
+    scalar_values = _bf16_array(values)
+    vector_values = pa.FixedSizeListArray.from_arrays(
+        _bf16_array([value for value in values for _ in range(2)]), 2
+    )
+    table = mem_db.create_table(
+        "bfloat16",
+        pa.table(
+            {
+                "id": range(4),
+                "scalar": scalar_values,
+                "vector": vector_values,
+            }
+        ),
+    )
+    permutation = Permutation.identity(table)
+
+    batch = next(permutation.with_format("torch_dict").iter(2, skip_last_batch=False))
+    assert batch["scalar"].dtype == torch.bfloat16
+    assert batch["vector"].dtype == torch.bfloat16
+    assert torch.equal(batch["scalar"], torch.tensor(values[:2], dtype=torch.bfloat16))
+    assert torch.equal(
+        batch["vector"],
+        torch.tensor([[value, value] for value in values[:2]], dtype=torch.bfloat16),
+    )
+
+    arrow_batch = next(permutation.with_format("arrow").iter(2, skip_last_batch=False))
+    arrow_tensors = batch_to_tensor_columns(arrow_batch)
+    scalar_array = arrow_batch.column("scalar")
+    assert arrow_tensors["scalar"].data_ptr() == (
+        scalar_array.buffers()[1].address + scalar_array.offset * 2
+    )
+
+    sliced = arrow_batch.slice(1, 1)
+    sliced_tensors = batch_to_tensor_columns(sliced)
+    assert torch.equal(
+        sliced_tensors["scalar"],
+        torch.tensor([values[1]], dtype=torch.bfloat16),
+    )
+    assert torch.equal(
+        sliced_tensors["vector"],
+        torch.tensor([[values[1], values[1]]], dtype=torch.bfloat16),
+    )
+
+    skipped = next(
+        permutation.with_skip(1)
+        .with_format("torch_dict")
+        .iter(2, skip_last_batch=False)
+    )
+    assert torch.equal(
+        skipped["scalar"], torch.tensor(values[1:3], dtype=torch.bfloat16)
+    )
+
+    empty = permutation.with_format("torch_dict").take_offsets([])
+    assert empty["scalar"].shape == (0,)
+    assert empty["scalar"].dtype == torch.bfloat16
+    assert empty["vector"].shape == (0, 2)
+    assert empty["vector"].dtype == torch.bfloat16
+
+    unmarked = mem_db.create_table(
+        "unmarked_bfloat16",
+        pa.table(
+            {
+                "vector": pa.FixedSizeListArray.from_arrays(
+                    pa.array(_bf16_storage(values), type=pa.binary(2)), 2
+                )
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="not marked.*lance.bfloat16"):
+        next(
+            Permutation.identity(unmarked)
+            .with_format("torch_dict")
+            .iter(2, skip_last_batch=False)
+        )
+
+
+def test_torch_formats_reject_nulls(mem_db):
+    parent_nulls = mem_db.create_table(
+        "parent_nulls",
+        pa.table(
+            {
+                "id": range(3),
+                "values": pa.array(
+                    [[1.0, 2.0], None, [5.0, 6.0]],
+                    type=pa.list_(pa.float32(), 2),
+                ),
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="contains 1 null"):
+        next(
+            Permutation.identity(parent_nulls)
+            .with_format("torch_dict")
+            .iter(2, skip_last_batch=False)
+        )
+
+    leaf_nulls = mem_db.create_table(
+        "leaf_nulls",
+        pa.table(
+            {
+                "id": range(2),
+                "values": pa.FixedSizeListArray.from_arrays(
+                    pa.array([1.0, None, 5.0, 6.0], type=pa.float32()), 2
+                ),
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="contains 1 null"):
+        next(
+            Permutation.identity(leaf_nulls)
+            .with_format("torch_dict")
+            .iter(2, skip_last_batch=False)
+        )
+    leaf_only = Permutation.identity(leaf_nulls).select_columns(["values"])
+    with pytest.raises(ValueError, match="contains 1 null"):
+        next(leaf_only.with_format("torch_row").iter(2, skip_last_batch=False))

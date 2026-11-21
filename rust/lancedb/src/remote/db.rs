@@ -742,6 +742,18 @@ struct RemoteListJobRow {
     #[serde(default)]
     created_at_millis: i64,
     #[serde(default)]
+    completed_at_millis: Option<i64>,
+    #[serde(default)]
+    duration_millis: Option<i64>,
+    #[serde(default)]
+    columns: Vec<String>,
+    #[serde(default)]
+    function_name: Option<String>,
+    #[serde(default)]
+    function_version: Option<String>,
+    #[serde(default)]
+    failure: Option<crate::error::JobFailure>,
+    #[serde(default)]
     progress: Option<serde_json::Value>,
     #[serde(default)]
     phase: Option<String>,
@@ -1371,6 +1383,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 job_type: row.job_type,
                 state: job_state_to_client(&row.state),
                 created_at_millis: row.created_at_millis,
+                completed_at_millis: row.completed_at_millis,
+                duration_millis: row.duration_millis,
+                columns: row.columns,
+                function_name: row.function_name,
+                function_version: row.function_version,
+                failure: row.failure,
                 progress: row.progress,
                 phase: row.phase,
                 paused: row.paused,
@@ -4628,7 +4646,7 @@ mod tests {
                     http::Response::builder()
                         .status(200)
                         .body(
-                            r#"{"jobs": [{"job_id": "job-2", "table": "t2", "job_type": "create_index", "state": "succeeded", "created_at_millis": 2000}, {"job_id": "job-3", "table": "t3", "job_type": "create_index", "state": "timed_out", "created_at_millis": 3000}]}"#,
+                            r#"{"jobs": [{"job_id": "job-2", "table": "t2", "job_type": "create_index", "state": "succeeded", "created_at_millis": 2000}, {"job_id": "job-3", "table": "t3", "job_type": "create_index", "state": "timed_out", "created_at_millis": 3000, "completed_at_millis": 3000, "duration_millis": 0, "columns": ["embedding"], "function_name": "features$embed", "function_version": "7", "failure": {"phase": "execute", "message": "worker failed", "retryable": false}}]}"#,
                         )
                         .unwrap()
                 }
@@ -4646,11 +4664,26 @@ mod tests {
         assert_eq!(jobs[0].progress.as_ref().unwrap()["rows_computed"], 4);
         assert_eq!(jobs[0].phase.as_deref(), Some("running"));
         assert!(jobs[0].paused);
+        assert_eq!(jobs[0].completed_at_millis, None);
+        assert_eq!(jobs[0].duration_millis, None);
+        assert!(jobs[0].columns.is_empty());
+        assert_eq!(jobs[0].function_name, None);
+        assert_eq!(jobs[0].function_version, None);
+        assert_eq!(jobs[0].failure, None);
         assert_eq!(jobs[1].job_id, "job-2");
         assert_eq!(jobs[1].state, "finished");
         assert_eq!(jobs[1].created_at_millis, 2000);
         assert_eq!(jobs[2].job_id, "job-3");
         assert_eq!(jobs[2].state, "failed");
+        assert_eq!(jobs[2].completed_at_millis, Some(3000));
+        assert_eq!(jobs[2].duration_millis, Some(0));
+        assert_eq!(jobs[2].columns, ["embedding"]);
+        assert_eq!(jobs[2].function_name.as_deref(), Some("features$embed"));
+        assert_eq!(jobs[2].function_version.as_deref(), Some("7"));
+        let failure = jobs[2].failure.as_ref().unwrap();
+        assert_eq!(failure.message.as_deref(), Some("worker failed"));
+        assert_eq!(failure.retryable, Some(false));
+        assert_eq!(failure.traceback, None);
     }
 
     #[tokio::test]

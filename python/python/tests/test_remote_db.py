@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import copy
@@ -1404,6 +1405,12 @@ def test_remote_permutation_is_picklable():
             {"a": 2},
             {"a": 4},
         ]
+        assert table.take_offsets([0, 2, 0, 4], preserve_order=True).to_list() == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
         permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
@@ -2325,7 +2332,7 @@ def test_remote_create_index_async_returns_job():
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
-        assert job.id == "job-1"
+        assert job.id() == "job-1"
         observed = []
         assert job.wait(timeout=timedelta(seconds=30), progress=observed.append) is None
         assert len(describe_calls) == 2
@@ -2493,13 +2500,13 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
         async with mock_lancedb_connection_async(handler) as db:
             table = await db.create_table("test", [{"id": 1}])
             job = await table.refresh_column_async("derived", **refresh_kwargs)
-            assert job.id == "refresh-1"
+            assert job.id() == "refresh-1"
             result = await job.wait(timeout=timedelta(seconds=30))
     else:
         with mock_lancedb_connection(handler) as db:
             table = db.create_table("test", [{"id": 1}])
             job = table.refresh_column_async("derived", **refresh_kwargs)
-            assert job.id == "refresh-1"
+            assert job.id() == "refresh-1"
             result = job.wait(timeout=timedelta(seconds=30))
 
     assert isinstance(result, lancedb.RefreshColumnResult)
@@ -3026,12 +3033,12 @@ async def test_remote_job_wait_recovers_from_disconnection(sync, failure):
         with mock_lancedb_connection(handler, **config) as db:
             job = db.open_job("job-1")
             assert job.wait(timeout=timedelta(seconds=5)) is None
-            assert job.state == "finished"
+            assert job.state() == "finished"
     else:
         async with mock_lancedb_connection_async(handler, **config) as db:
             job = await db.open_job("job-1")
             assert await job.wait(timeout=timedelta(seconds=5)) is None
-            assert job.state == "finished"
+            assert job.state() == "finished"
     assert polls == 5
 
 
@@ -3165,23 +3172,23 @@ async def test_reopened_refresh_job_wait_returns_typed_result(
     if sync:
         with mock_lancedb_connection(handler) as db:
             job = db.open_job("refresh-1")
-            assert job.id == "refresh-1"
-            assert job.spec == {"column": "derived"}
+            assert job.id() == "refresh-1"
+            assert job.spec() == {"column": "derived"}
             result = job.wait(timeout=timedelta(seconds=5), progress=observed.append)
             assert job.wait() == result
             job.refresh()
-            assert job.result == terminal_result
+            assert job.result() == terminal_result
     else:
         async with mock_lancedb_connection_async(handler) as db:
             job = await db.open_job("refresh-1")
-            assert job.id == "refresh-1"
-            assert job.spec == {"column": "derived"}
+            assert job.id() == "refresh-1"
+            assert job.spec() == {"column": "derived"}
             result = await job.wait(
                 timeout=timedelta(seconds=5), progress=observed.append
             )
             assert await job.wait() == result
             await job.refresh()
-            assert job.result == terminal_result
+            assert job.result() == terminal_result
 
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result == lancedb.RefreshColumnResult.model_validate(terminal_result)
@@ -3250,12 +3257,12 @@ async def test_reopened_unit_job_ignores_additive_result_payload(sync):
         with mock_lancedb_connection(handler) as db:
             job = db.open_job("index-1")
             assert job.wait() is None
-            assert job.result == terminal_result
+            assert job.result() == terminal_result
     else:
         async with mock_lancedb_connection_async(handler) as db:
             job = await db.open_job("index-1")
             assert await job.wait() is None
-            assert job.result == terminal_result
+            assert job.result() == terminal_result
 
 
 @pytest.mark.parametrize("payload", [b"{", b"{}"])
@@ -3393,9 +3400,9 @@ async def test_remote_job_wait_preserves_terminal_build(sync, with_terminal_serv
     expected += " (in function_refresh_attempt_failed)"
     assert str(caught.value) == expected
     assert caught.value.job_id == "job-provenance"
-    assert job.failure.message == message
-    assert job.failure.traceback == "Traceback: original user code"
-    assert job.result == result
+    assert job.failure().message == message
+    assert job.failure().traceback == "Traceback: original user code"
+    assert job.result() == result
 
 
 @pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
@@ -3731,13 +3738,16 @@ def test_remote_python_only_messages():
                 f"{method}() is not supported in LanceDB Enterprise. "
                 f"Use table.search().{method}() instead."
             )
-        for method in ["compact_files", "cleanup_old_versions"]:
+        for method, expected in {
+            "compact_files": "compact_files() is a no-op in LanceDB Enterprise.",
+            "cleanup_old_versions": (
+                "cleanup_old_versions() is a no-op in LanceDB Enterprise. "
+                "Use cleanup_async() to submit durable cleanup explicitly."
+            ),
+        }.items():
             with pytest.warns(UserWarning) as warning:
-                getattr(table, method)()
-            assert (
-                str(warning[0].message)
-                == f"{method}() is a no-op in LanceDB Enterprise."
-            )
+                assert getattr(table, method)() is None
+            assert str(warning[0].message) == expected
 
 
 def test_remote_embedding_config_does_not_warn_or_drop_metadata(caplog):
@@ -6083,14 +6093,26 @@ def blob_remote_table(
             if requests is not None:
                 requests.append(("query", body))
             columns = body.get("columns")
-            assert columns in (
+            take_offsets_query = isinstance(columns, list) and "_rowoffset" in columns
+            assert take_offsets_query or columns in (
                 None,
                 ["id", "image"],
                 ["id"],
                 ["image"],
                 {"payload": "image"},
             )
-            if isinstance(columns, dict):
+            if take_offsets_query:
+                response_table = blob_query_response_table().append_column(
+                    "_rowoffset", pa.array(range(3), type=pa.uint64())
+                )
+                response_table = response_table.select(
+                    [name for name in columns if name != "_rowid"]
+                )
+                if body.get("with_row_id", False):
+                    response_table = response_table.append_column(
+                        "_rowid", blob_query_response_table()["_rowid"]
+                    )
+            elif isinstance(columns, dict):
                 response_table = blob_query_response_table().select(["image", "_rowid"])
                 response_table = response_table.rename_columns(["payload", "_rowid"])
                 if not body.get("with_row_id", False):
@@ -6725,6 +6747,18 @@ def test_remote_blob_fetch_accepts_metadata_free_query_table(api):
                         handle.close()
 
 
+def test_remote_take_offsets_preserve_order_with_blob_bytes():
+    with blob_remote_table() as table:
+        hits = (
+            table.take_offsets([2, 0, 2], preserve_order=True)
+            .select(["id", "image"])
+            .to_arrow(blob_mode="bytes")
+        )
+
+    assert hits["id"].to_pylist() == [3, 1, 3]
+    assert hits["image"].to_pylist() == [b"gamma", b"alpha", b"gamma"]
+
+
 @pytest.mark.parametrize("api", ["fetch_blobs", "fetch_blob_files"])
 def test_remote_blob_fetch_from_query_result_keeps_query_snapshot(api):
     requests = []
@@ -6950,10 +6984,29 @@ def test_remote_connection_jobs_surface():
                         dict(
                             job_id="job-2",
                             table="t2",
-                            job_type="create_index",
+                            job_type="function_refresh",
                             state="succeeded",
                             created_at_millis=2000,
-                        )
+                            completed_at_millis=2000,
+                            duration_millis=0,
+                            columns=["embedding"],
+                            function_name="features$embed",
+                            function_version="7",
+                        ),
+                        dict(
+                            job_id="job-3",
+                            table="t2",
+                            job_type="function_refresh",
+                            state="failed",
+                            created_at_millis=3000,
+                            completed_at_millis=3200,
+                            duration_millis=200,
+                            failure=dict(
+                                phase="execute",
+                                message="worker failed",
+                                retryable=False,
+                            ),
+                        ),
                     ]
                 )
             request.send_response(200)
@@ -7051,7 +7104,7 @@ def test_remote_connection_jobs_surface():
 
     with mock_lancedb_connection(handler) as db:
         jobs = list(db.list_jobs())
-        assert [job.job_id for job in jobs] == ["job-1", "job-2"]
+        assert [job.job_id for job in jobs] == ["job-1", "job-2", "job-3"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
         assert jobs[0].progress == {
@@ -7065,6 +7118,24 @@ def test_remote_connection_jobs_surface():
         }
         assert jobs[0].paused is True
         assert jobs[1].state == "finished"
+        assert jobs[0].completed_at_millis is None
+        assert jobs[0].duration_millis is None
+        assert jobs[0].columns == []
+        assert jobs[0].function_name is None
+        assert jobs[0].function_version is None
+        assert jobs[0].failure is None
+        assert jobs[1].completed_at_millis == 2000
+        assert jobs[1].duration_millis == 0
+        assert jobs[1].columns == ["embedding"]
+        assert jobs[1].function_name == "features$embed"
+        assert jobs[1].function_version == "7"
+        assert jobs[1].failure is None
+        assert jobs[2].state == "failed"
+        assert jobs[2].duration_millis == 200
+        assert jobs[2].failure.phase == "execute"
+        assert jobs[2].failure.message == "worker failed"
+        assert jobs[2].failure.retryable is False
+        assert jobs[2].failure.traceback is None
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
@@ -7076,14 +7147,14 @@ def test_remote_connection_jobs_surface():
         with pytest.raises(JobNotFoundError, match="missing"):
             db.open_job("missing")
         finished = db.open_job("job-2")
-        assert finished.state == "finished"
-        assert finished.result == {"rows_assigned": 1000000, "rows_failed": 0}
+        assert finished.state() == "finished"
+        assert finished.result() == {"rows_assigned": 1000000, "rows_failed": 0}
 
         job = db.open_job("job-1")
-        assert job.id == "job-1"
+        assert job.id() == "job-1"
         # Opening already populated the handle.
-        assert job.state == "failed"
-        assert job.spec == {"column": "vec"}
+        assert job.state() == "failed"
+        assert job.spec() == {"column": "vec"}
         progress = job.progress()
         assert progress["state"] == "failed"
         assert progress["rows_computed"] == 4
@@ -7092,12 +7163,12 @@ def test_remote_connection_jobs_surface():
         assert progress["queue_reason"] == "waiting for capacity"
         assert progress["waiting_for_job_id"] == "job-maintenance"
         assert progress["paused_at_millis"] == 1200
-        assert job.failure.message == "worker died"
-        assert job.failure.traceback == (
+        assert job.failure().message == "worker died"
+        assert job.failure().traceback == (
             "Traceback (most recent call last):\nRuntimeError: worker died"
         )
-        assert job.failure.sql_job_id == "sql-job-1"
-        assert repr(job.failure) == (
+        assert job.failure().sql_job_id == "sql-job-1"
+        assert repr(job.failure()) == (
             'JobFailureInfo(phase="execute", message="worker died", retryable=True, '
             'sql_job_id="sql-job-1")'
         )
@@ -7112,7 +7183,13 @@ def test_remote_connection_jobs_surface():
         assert finished.progress()["paused"] is False
 
 
-def test_remote_job_handle_reports_its_own_detail():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("refresh_method", ["checkout_latest", "refresh"])
+@pytest.mark.parametrize("terminal_state", ["DONE", "FAILED"])
+async def test_remote_job_handle_reports_its_own_detail(
+    is_async, refresh_method, terminal_state
+):
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["claim_complete"])], schema=schema)
     sink = pa.BufferOutputStream()
@@ -7120,27 +7197,25 @@ def test_remote_job_handle_reports_its_own_detail():
         writer.write_batch(batch)
     events_body = sink.getvalue().to_pybytes()
     event_payloads = []
+    descriptions = []
+    description = dict(
+        job_id="job-1",
+        job_type="refresh_column",
+        job_state="IN_PROGRESS",
+        creation_ms=2000,
+        spec=dict(column="vec"),
+    )
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
         body = request.rfile.read(content_len) if content_len > 0 else b""
         payload = json.loads(body) if body else {}
         if request.path == "/v1/jobs/describe":
+            descriptions.append(payload)
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            request.wfile.write(
-                json.dumps(
-                    dict(
-                        job_id="job-1",
-                        job_type="refresh_column",
-                        job_state="DONE",
-                        creation_ms=2000,
-                        spec=dict(column="vec"),
-                        result=dict(rows_assigned=1000000),
-                    )
-                ).encode()
-            )
+            request.wfile.write(json.dumps(description).encode())
         elif request.path == "/v1/jobs/query_events":
             event_payloads.append(payload)
             request.send_response(200)
@@ -7151,45 +7226,88 @@ def test_remote_job_handle_reports_its_own_detail():
             request.send_response(404)
             request.end_headers()
 
-    with mock_lancedb_connection(handler) as db:
-        job = db.open_job("job-1")
+    async def check_job(db):
+        job = (
+            await db.open_job("job-1")
+            if is_async
+            else await asyncio.to_thread(db.open_job, "job-1")
+        )
 
         # Opening populates the handle in the same round trip.
-        assert job.state == "finished"
-        job.refresh()
-        assert job.job_type == "refresh_column"
-        assert job.creation_ms == 2000
-        assert job.spec == {"column": "vec"}
-        assert job.result == {"rows_assigned": 1000000}
-        assert job.failure is None
+        assert job.state() == "running"
+        assert job.result() is None
+        assert job.failure() is None
+        description["job_state"] = terminal_state
+        expected_result = (
+            {"rows_assigned": 1000000} if terminal_state == "DONE" else None
+        )
+        description["result"] = expected_result
+        if terminal_state == "FAILED":
+            description["failure"] = {"phase": "execute", "message": "worker failed"}
+        assert job.state() == "running"
+        assert job.result() is None
+        assert job.failure() is None
+        assert len(descriptions) == 1
+
+        refresh = getattr(job, refresh_method)
+        if is_async:
+            assert await refresh() is None
+        else:
+            assert await asyncio.to_thread(refresh) is None
+        expected_state = "finished" if terminal_state == "DONE" else "failed"
+        assert job.state() == expected_state
+        assert job.job_type() == "refresh_column"
+        assert job.creation_ms() == 2000
+        assert job.spec() == {"column": "vec"}
+        assert job.result() == expected_result
+        if terminal_state == "FAILED":
+            assert job.failure().phase == "execute"
+            assert job.failure().message == "worker failed"
+        else:
+            assert job.failure() is None
         # The JSON payloads stay reachable, but as internal APIs.
         assert json.loads(job._spec_json) == {"column": "vec"}
-        assert json.loads(job._result_json) == {"rows_assigned": 1000000}
+        if expected_result is not None:
+            assert json.loads(job._result_json) == expected_result
+            assert repr(job) == "\n".join(
+                [
+                    f"{type(job).__name__}(",
+                    "    id='job-1',",
+                    "    state='finished',",
+                    "    job_type='refresh_column',",
+                    "    creation_ms=2000,",
+                    "    spec={'column': 'vec'},",
+                    "    result={'rows_assigned': 1000000},",
+                    ")",
+                ]
+            )
+            assert "failure" not in repr(job)
 
-        assert repr(job) == "\n".join(
-            [
-                "Job(",
-                "    id='job-1',",
-                "    state='finished',",
-                "    job_type='refresh_column',",
-                "    creation_ms=2000,",
-                "    spec={'column': 'vec'},",
-                "    result={'rows_assigned': 1000000},",
-                ")",
-            ]
+        events = (
+            await job.events(filter="state = 'claim_complete'", limit=500)
+            if is_async
+            else await asyncio.to_thread(
+                job.events, filter="state = 'claim_complete'", limit=500
+            )
         )
-        # Nothing it does not know shows up.
-        assert "failure" not in repr(job)
-
-        events = job.events(filter="state = 'claim_complete'", limit=500)
         assert isinstance(events, pa.Table)
         assert events.column("state").to_pylist() == ["claim_complete"]
+        assert len(descriptions) == 2
+        assert job.state() == expected_state
+        assert job.result() == expected_result
         # The handle supplies job_id; the caller only narrows the query.
         assert event_payloads[-1] == {
             "job_id": "job-1",
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+    if is_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            await check_job(db)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            await check_job(db)
 
 
 @pytest.mark.parametrize("is_async", [False, True])
@@ -8456,12 +8574,12 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, mod
                 job = await table.prewarm_data_async(
                     ["attrs.score"], filter="id >= 8", concurrency=4
                 )
-                assert job.id == "warming-job"
+                assert job.id() == "warming-job"
                 assert not polls
                 assert (await job.wait()).table_version == 42
                 await job.refresh()
-                assert job.spec["table_version"] == 42
-                reopened = await db.open_job(job.id)
+                assert job.spec()["table_version"] == 42
+                reopened = await db.open_job(job.id())
                 assert (await reopened.wait()).executors_completed == 2
                 assert (await job.progress())["executors_completed"] == 2
                 assert (await job.wait()).bytes_read is None
@@ -8483,12 +8601,12 @@ async def test_remote_data_prewarm_sql_receipt_and_durable_job(asynchronous, mod
                 job = table.prewarm_data_async(
                     ["attrs.score"], filter="id >= 8", concurrency=4
                 )
-                assert job.id == "warming-job"
+                assert job.id() == "warming-job"
                 assert not polls
                 assert job.wait().table_version == 42
                 job.refresh()
-                assert job.spec["table_version"] == 42
-                assert db.open_job(job.id).wait().executors_completed == 2
+                assert job.spec()["table_version"] == 42
+                assert db.open_job(job.id()).wait().executors_completed == 2
                 assert job.progress()["executors_completed"] == 2
                 assert job.wait().bytes_read is None
     assert len(server.tickets) == 1
@@ -8614,7 +8732,7 @@ async def test_prewarm_bound_parameters_reach_flight(asynchronous, method, named
             assert result.table_version == 42
             assert result.pruning.selected_fragments == 1
         else:
-            assert result.id == "bound-job"
+            assert result.id() == "bound-job"
     ((command, received),) = server.calls
     assert b"PREWARM" in command and predicate.encode() in command
     if method == "explain_prewarm_data":
@@ -8729,7 +8847,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
             job = await table.compact_async(
                 compaction_options={"target_rows_per_fragment": 100}
             )
-            assert job.id == "compacting-job" and not polls
+            assert job.id() == "compacting-job" and not polls
             if outcome in ("missing", "FAILED", "CANCELLED"):
                 with pytest.raises(
                     Exception,
@@ -8742,7 +8860,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
                     await job.wait()
             else:
                 stats = await job.wait()
-                reopened = await db.open_job(job.id)
+                reopened = await db.open_job(job.id())
                 assert await reopened.wait() == stats
         else:
             db = lancedb.connect(**kwargs)
@@ -8750,7 +8868,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
             job = table.compact_async(
                 compaction_options={"target_rows_per_fragment": 100}
             )
-            assert job.id == "compacting-job" and not polls
+            assert job.id() == "compacting-job" and not polls
             if outcome in ("missing", "FAILED", "CANCELLED"):
                 with pytest.raises(
                     Exception,
@@ -8763,7 +8881,7 @@ async def test_remote_compaction_job_result_and_reopen(asynchronous, outcome):
                     job.wait()
             else:
                 stats = job.wait()
-                assert db.open_job(job.id).wait() == stats
+                assert db.open_job(job.id()).wait() == stats
         if outcome in ("counts", "legacy", "partial", "bounded", "no_op"):
             from lancedb.compaction import CompactionResult
 
@@ -8953,3 +9071,186 @@ def test_remote_prewarm_preview_reports_old_server_format_support():
         ):
             table.explain_prewarm_data()
     assert len(server.tickets) == 1
+
+
+@pytest.mark.parametrize("async_table", [False, True])
+@pytest.mark.asyncio
+async def test_paged_function_errors_retain_history_and_expose_continuation(
+    async_table,
+):
+    received = []
+
+    def handler(request):
+        length = int(request.headers.get("content-length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 8, "schema": {"fields": []}}
+        else:
+            assert request.path == "/v1/table/test/errors"
+            received.append(body)
+            response = {
+                "records": [],
+                "fragments": [],
+                "truncated": False,
+                "workflow_version": 1,
+                "page_token": "next",
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            errors = await table.function_errors(job_id="attempt-1", page_token="")
+            assert errors.page_token == "next"
+            with pytest.raises(ValueError, match="current failures"):
+                await errors.rows()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            errors = table.function_errors(job_id="attempt-1", page_token="")
+            assert errors.page_token == "next"
+            with pytest.raises(ValueError, match="current failures"):
+                errors.rows()
+    assert received == [{"job_id": "attempt-1", "page_token": "", "history": True}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.parametrize("kind", ["cpu", "memory", "gpu"])
+@pytest.mark.parametrize("submitted_job", [False, True])
+async def test_function_profile_capture_wait_and_retained_export(
+    sync_api, kind, submitted_job, tmp_path
+):
+    state = {"polls": 0, "finished": False}
+    paths = []
+    profile = {
+        "profile_id": "profile-1",
+        "job_id": "job-1",
+        "worker_id": "worker-1",
+        "execution_epoch": 3,
+        "session_slot": 2,
+        "kind": kind,
+        "duration_seconds": 2,
+        "status": "pending",
+        "requested_at_millis": 1000,
+        "deadline_at_millis": 46000,
+        "expires_at_millis": 3601000,
+        "completed_at_millis": None,
+        "error": None,
+        "artifact_id": None,
+    }
+    artifacts = {
+        "cpu": {
+            "$schema": "https://www.speedscope.app/file-format-schema.json",
+            "shared": {"frames": [{"name": "work"}]},
+            "profiles": [],
+        },
+        "memory": {
+            "format": "lancedb.tracemalloc.v1",
+            "allocations": [{"size_bytes": 4096}],
+            "truncated": False,
+        },
+        "gpu": {
+            "format": "lancedb.cuda.v1",
+            "traceEvents": [{"name": "compute", "ph": "X", "ts": 10, "dur": 2}],
+            "truncated": True,
+        },
+    }
+
+    def handler(request):
+        paths.append(request.path)
+        assert request.headers["x-api-key"] == "fake"
+        assert request.headers["x-lancedb-database"] == "dev"
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            result = {"version": 1, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/backfill_column":
+            assert body["column"] == "result"
+            result = {"job_id": "job-1"}
+        elif request.path == "/v1/jobs/describe":
+            result = {
+                "job_id": "job-1",
+                "job_type": "function_refresh",
+                "job_state": "DONE" if state["finished"] else "IN_PROGRESS",
+            }
+        elif request.path == "/v1/jobs/profile/capture":
+            assert body == {
+                "job_id": "job-1",
+                "worker_id": "worker-1",
+                "session_slot": 2,
+                "kind": kind,
+                "duration_seconds": 2.0,
+            }
+            result = profile
+        elif request.path == "/v1/jobs/profile/status":
+            assert body == {"job_id": "job-1", "profile_id": "profile-1"}
+            state["polls"] += 1
+            result = dict(
+                profile,
+                status="complete" if state["polls"] > 1 else "capturing",
+                artifact_id="profile-1" if state["polls"] > 1 else None,
+            )
+        elif request.path == "/v1/jobs/profile/artifact":
+            assert body == {"job_id": "job-1", "profile_id": "profile-1"}
+            result = artifacts[kind]
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+        request.send_response(
+            200 if request.path != "/v1/jobs/profile/capture" else 202
+        )
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(result).encode())
+
+    async def exercise(db):
+        async def invoke(function, *args, **kwargs):
+            if sync_api:
+                return await asyncio.to_thread(function, *args, **kwargs)
+            return await function(*args, **kwargs)
+
+        if submitted_job:
+            table = await invoke(db.open_table, "test")
+            job = await invoke(table.refresh_column_async, "result")
+            await invoke(job.refresh)
+        else:
+            job = await invoke(db.open_job, "job-1")
+        capture = await invoke(
+            job.capture_profile,
+            "worker-1",
+            kind=kind,
+            duration=timedelta(seconds=2),
+            session_slot=2,
+        )
+        assert capture.profile_id == "profile-1"
+        assert capture.worker_id == "worker-1"
+        assert capture.session_slot == 2
+        assert capture.execution_epoch == 3
+        assert capture.status == "pending"
+        completed = await invoke(
+            job.wait_for_profile,
+            capture.profile_id,
+            timeout=timedelta(seconds=2),
+            poll_interval=timedelta(milliseconds=10),
+        )
+        assert completed.status == "complete"
+        assert job.state() == "running"
+        state["finished"] = True
+        await invoke(job.refresh)
+        assert job.state() == "finished"
+        assert await invoke(job.profile_artifact, capture.profile_id) == artifacts[kind]
+        path = tmp_path / "profile.json"
+        await invoke(job.export_profile, capture.profile_id, path)
+        assert json.loads(path.read_text()) == artifacts[kind]
+        assert paths.count("/v1/jobs/describe") == 2
+        assert not any(path.endswith("/cancel") for path in paths)
+
+    if sync_api:
+        with mock_lancedb_connection(handler) as db:
+            await exercise(db)
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            await exercise(db)

@@ -209,6 +209,7 @@ gpu_class = next(
 @function(
     gpu=True,
     gpu_class=gpu_class,
+    row_timeout_seconds=600,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
     input_schema=pa.schema([pa.field("text", pa.string(), nullable=True)]),
     output_schema=pa.list_(pa.float32(), 384),
@@ -230,6 +231,15 @@ version = db.create_function_async(embed_text).wait()
 table.add_columns({"embedding": version(text=col("caption"))})
 ```
 </CodeGroup>
+
+`row_timeout_seconds` sets the per-call deadline, not the `__init__` budget.
+Current Enterprise builds default to 300 seconds for both CPU and GPU
+Functions. Enterprise 1.13.0 through 1.14.1, and 1.15.0 builds before the
+shared default was restored, reject a GPU refresh unless the Function
+definition or the refresh request sets a positive value; registration still
+succeeds. A refresh value overrides the definition. Size the deadline from the
+longest observed call. The 600 seconds above is one working GPU example, not a
+universal recommendation.
 
 Older servers that do not implement `GET /v1/gpu/classes` raise
 `NotImplementedError`. Without `gpu_class`, the deployment's default GPU

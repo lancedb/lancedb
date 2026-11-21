@@ -572,6 +572,11 @@ impl Connection {
                 job.into_typed::<lancedb::table::PrewarmDataResult>()
                     .default_error()?,
             ))
+        } else if job.job_type().as_deref() == Some("cleanup") {
+            Ok(crate::job::Job::new_typed(
+                job.into_typed::<lancedb::table::CleanupResult>()
+                    .default_error()?,
+            ))
         } else if job.job_type().as_deref() == Some("compact") {
             Ok(crate::job::Job::new_typed(
                 job.into_typed::<lancedb::table::CompactionResult>()

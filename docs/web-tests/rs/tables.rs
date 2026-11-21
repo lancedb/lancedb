@@ -1379,16 +1379,26 @@ async fn main() {
         .await
         .unwrap();
 
+    // --8<-- [start:branch_create]
     use lancedb::table::Ref;
 
-    // --8<-- [start:branch_create]
     // Fork an isolated, writable branch from main's latest version.
     // `create_branch` returns a table handle scoped to the new branch.
     let branch = branches_table
         .create_branch("exp", Ref::Version(None, None))
         .await
         .unwrap();
+
+    // Fork from a tag. A tag keeps its branch and version.
+    let mut tags = branches_table.tags().await.unwrap();
+    tags.create("baseline", 1).await.unwrap();
+    let tag_branch = branches_table
+        .create_branch("exp-from-tag", Ref::Tag("baseline".to_string()))
+        .await
+        .unwrap();
     // --8<-- [end:branch_create]
+
+    assert_eq!(tag_branch.count_rows(None).await.unwrap(), 3);
 
     // --8<-- [start:branch_write]
     // Writes land on the branch handle only; main is left untouched.
@@ -1428,6 +1438,14 @@ async fn main() {
 
     assert_eq!(branches_table.count_rows(None).await.unwrap(), 3);
     assert!(!branches_table.list_branches().await.unwrap().contains_key("exp"));
+    assert!(
+        branches_table
+            .list_branches()
+            .await
+            .unwrap()
+            .contains_key("exp-from-tag")
+    );
+    branches_table.delete_branch("exp-from-tag").await.unwrap();
 
     // Setup: a branch with row results that we want to apply to main.
     let candidate = branches_table

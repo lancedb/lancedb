@@ -34,6 +34,23 @@ values remain NULL. Children are read-only diagnostic identities.
 following backend continuation pages up to that limit. Child history can be
 `available`, `not_yet_recorded`, or `unavailable` after archival.
 
+{/* Draft for the Enterprise release that provides extended job listing metadata.
+
+```sql
+SHOW JOBS EXTENDED;
+SHOW JOBS EXTENDED FOR TABLE documents;
+```
+
+`EXTENDED` adds `completed_at_millis`, `duration_millis`, `columns`,
+`function_name`, `function_version`, and `failure` to database and table
+listings. Plain `SHOW JOBS` keeps its existing result columns. `columns` is a
+list, Function identity is pinned to the computed column refresh, and
+`failure` is nullable JSON text with phase, message, and retryability. Duration
+is creation-to-completion wall time, including queueing and pauses; it is
+NULL when unfinished or unavailable. `EXTENDED` does not apply to `FOR JOB`.
+
+*/}
+
 <Note>
 A job you completed weeks ago eventually stops appearing here -- it was
 archived, not deleted. Two deployment-scheduled jobs sweep the registry on a

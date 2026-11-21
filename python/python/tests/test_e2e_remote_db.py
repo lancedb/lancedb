@@ -106,7 +106,7 @@ async def test_maintenance_job_result_and_reopen_against_server(
                 filter="id >= 8",
                 concurrency=2,
             )
-        assert job.id
+        assert job.id()
         progress = []
         result = await call(job.wait, timeout=timeout, progress=progress.append)
         assert any(snapshot["state"] == "finished" for snapshot in progress)
@@ -114,22 +114,22 @@ async def test_maintenance_job_result_and_reopen_against_server(
         assert await call(job.status) == "finished"
         if operation == "compact":
             assert isinstance(result, CompactionResult)
-            assert job.job_type == "compact"
+            assert job.job_type() == "compact"
             assert not result.partial_commit and result.rows_failed == 0
             assert result.completion_percentage == 100
             assert 0 <= result.rows_succeeded <= len(expected)
             assert result.files_added is not None and result.files_removed is not None
         else:
             assert isinstance(result, PrewarmDataResult)
-            assert job.job_type == "prewarm_page_cache"
-            assert result.table_version == version == job.spec["table_version"]
-            assert job.spec["columns"] == ["payload"]
-            assert job.spec["concurrency"] == 2
+            assert job.job_type() == "prewarm_page_cache"
+            assert result.table_version == version == job.spec()["table_version"]
+            assert job.spec()["columns"] == ["payload"]
+            assert job.spec()["concurrency"] == 2
             assert result.fragments_selected > 0
             assert result.executors_completed == result.executors_targeted
             assert result.executors_partial == 0
             assert result.bytes_read is None and result.ranges_completed is None
-        reopened = await call(connection.open_job, job.id)
+        reopened = await call(connection.open_job, job.id())
         assert await call(reopened.wait, timeout=timeout) == result
         query = table.query() if asynchronous else table.search()
         actual = await call(

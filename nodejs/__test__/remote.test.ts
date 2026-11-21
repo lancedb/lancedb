@@ -309,6 +309,9 @@ describe("remote connection", () => {
       },
       async (db) => {
         const table = (await db.openTable("test")) as LocalTable;
+        await expect(table.delta(1)).rejects.toThrow(
+          "table.delta is only supported on LanceDB Embedded tables",
+        );
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
@@ -1382,6 +1385,111 @@ describe("remote connection", () => {
     );
   });
 
+  it("forks Enterprise branches from tags and defaults tag versions", async () => {
+    const requests: { path: string; body: Record<string, unknown> }[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/branches/list/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            }),
+          );
+          return;
+        }
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 2,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw ? JSON.parse(raw) : {};
+          requests.push({ path, body });
+          if (path.endsWith("/tags/version/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: 3, branch: "base" }));
+            return;
+          }
+          if (path.endsWith("/tags/create/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          if (path.endsWith("/branches/create/")) {
+            if (body["name"] === "missing") {
+              res
+                .writeHead(404, { "Content-Type": "application/json" })
+                .end(JSON.stringify({ message: "not found" }));
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          res.writeHead(404).end();
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("t", undefined, { branch: "exp" });
+        await (await table.tags()).create("baseline");
+
+        const branches = await table.branches();
+        const fromTag = await branches.create("from-tag", {
+          fromTag: "baseline",
+        });
+        expect(fromTag.currentBranch()).toBe("from-tag");
+
+        // An Enterprise 404 is an ambiguous table-or-source failure, so the
+        // Embedded branch hint must not be appended based on its message.
+        const missing = await branches
+          .create("missing", { fromTag: "baseline" })
+          .then(
+            () => undefined,
+            (error: Error) => error,
+          );
+        expect(missing).toBeDefined();
+        expect(missing?.message).not.toContain("fromTag");
+      },
+    );
+
+    // Omitting the tag version resolves the handle's visible branch version.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/create/",
+      body: {
+        tag: "baseline",
+        version: 2,
+        branch: "exp",
+      },
+    });
+    // A tag source uses the existing coordinate lookup and the normal
+    // branches/create body; there is no from_tag field on the wire.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/version/",
+      body: { tag: "baseline" },
+    });
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/branches/create/",
+      // biome-ignore lint/style/useNamingConvention: snake_case is the server wire format
+      body: { name: "from-tag", from_branch: "base", from_version: 3 },
+    });
+  });
+
   it("sends FTS options to remote tables", async () => {
     let createIndexBody: Record<string, unknown> | undefined;
 
@@ -2179,7 +2287,13 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-2", "table": "t2", ' +
                     '"job_type": "create_index", "state": "succeeded", ' +
-                    '"created_at_millis": 2000}]}',
+                    '"created_at_millis": 2000, "completed_at_millis": 2000, ' +
+                    '"duration_millis": 0, "columns": ["embedding"], ' +
+                    '"function_name": "features$embed", "function_version": "7"}, ' +
+                    '{"job_id": "job-3", "table": "t2", "job_type": "function_refresh", ' +
+                    '"state": "failed", "created_at_millis": 3000, "duration_millis": 200, ' +
+                    '"completed_at_millis": 3200, "failure": {"phase": "execute", ' +
+                    '"message": "worker failed", "retryable": false}}]}',
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
@@ -2248,9 +2362,31 @@ describe("remote connection jobs surface", () => {
       },
       async (db) => {
         const jobs = await collect(db.listJobs());
-        expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
+        expect(jobs.map((job) => job.jobId)).toEqual([
+          "job-1",
+          "job-2",
+          "job-3",
+        ]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].completedAtMillis).toBeUndefined();
+        expect(jobs[0].durationMillis).toBeUndefined();
+        expect(jobs[0].columns).toEqual([]);
+        expect(jobs[0].functionName).toBeUndefined();
+        expect(jobs[0].functionVersion).toBeUndefined();
+        expect(jobs[0].failure).toBeUndefined();
+        expect(jobs[1].completedAtMillis).toBe(2000);
+        expect(jobs[1].durationMillis).toBe(0);
+        expect(jobs[1].columns).toEqual(["embedding"]);
+        expect(jobs[1].functionName).toBe("features$embed");
+        expect(jobs[1].functionVersion).toBe("7");
+        expect(jobs[1].failure).toBeUndefined();
+        expect(jobs[2].state).toBe("failed");
+        expect(jobs[2].durationMillis).toBe(200);
+        expect(jobs[2].failure?.phase).toBe("execute");
+        expect(jobs[2].failure?.message).toBe("worker failed");
+        expect(jobs[2].failure?.retryable).toBe(false);
+        expect(jobs[2].failure?.traceback).toBeUndefined();
         expect(jobs[0].progress).toEqual({
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
@@ -2293,6 +2429,8 @@ describe("remote connection jobs surface", () => {
         expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
         expect(await job.progress()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_id: "job-1",
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
           state: "failed",
@@ -3222,4 +3360,60 @@ describe("table overrides", () => {
     );
     expect(requests).toEqual([]);
   });
+});
+
+describe("cleanup typed results", () => {
+  test.each(["counts", "no_op", "unknown", "missing", "FAILED", "CANCELLED"])(
+    "reopens and waits for cleanup (%s)",
+    async (outcome) => {
+      const known = outcome !== "unknown";
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "cleanup-job",
+              ["job_type"]: "cleanup",
+              ["job_state"]: ["FAILED", "CANCELLED"].includes(outcome)
+                ? outcome
+                : "DONE",
+              result:
+                outcome === "missing"
+                  ? null
+                  : {
+                      ["format_version"]: 1,
+                      ["min_age_seconds"]: 0,
+                      ["statistics_complete"]: known,
+                      ["old_versions"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 2
+                        : null,
+                      ["bytes_removed"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 123
+                        : null,
+                    },
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CleanupResult>("cleanup-job");
+          if (["missing", "FAILED", "CANCELLED"].includes(outcome)) {
+            await expect(job.wait()).rejects.toThrow();
+          } else {
+            const result = await job.wait();
+            expect(result.statisticsComplete).toBe(known);
+            expect(result.oldVersions).toBe(
+              known ? (outcome === "no_op" ? 0 : 2) : null,
+            );
+            expect(result.minAgeSeconds).toBe(0);
+          }
+        },
+      );
+    },
+  );
 });
