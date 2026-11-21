@@ -460,7 +460,7 @@ class PythonRuntimeSpec(_RemoteValue):
     their unknown payload fields are intentionally not retained by the client.
     ``kind="python_v2"`` requires ``gpu=True``. Its ``gpu_class`` records the
     requested operator-defined class or ``"any"`` for any eligible class;
-    omitting it requests the deployment default. It does not identify the
+    omitting it also accepts any eligible class. It does not identify the
     hardware selected for execution.
     """
 
@@ -3772,8 +3772,9 @@ def function(
         Enable GPU execution. Defaults to CPU execution.
     gpu_class : str, optional
         Select an operator-configured GPU pool, such as ``"h100"``.
-        Requires ``gpu=True``. Omit to use the deployment default, or use
-        ``"any"`` to accept an eligible configured GPU class.
+        Requires ``gpu=True``. Omitting it is equivalent to ``"any"`` and accepts
+        any eligible configured GPU class. Use ``"default"`` to select the
+        deployment's default pool explicitly.
     gpu_count : int, optional
         Default GPUs allocated together to each Function worker. Requires ``gpu=True``
         and defaults to one. Column/MV creation and refresh can override it.

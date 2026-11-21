@@ -642,8 +642,8 @@ worker. The total budget must fit at least one worker. Omitted CPU and memory
 values inherit column settings, then Function settings, then deployment defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
 are lowercase DNS labels; `"any"` accepts any eligible configured class. Each
-omitted setting inherits the column's setting, then the Function's setting,
-then the deployment default. `list_gpu_classes()` requires System
+omitted setting inherits the column's setting, then the Function's setting.
+If no layer specifies a GPU class, omission is equivalent to `"any"`. `list_gpu_classes()` requires System
 Usage permission, and raises `NotImplementedError` when the server predates
 GPU class discovery.
 

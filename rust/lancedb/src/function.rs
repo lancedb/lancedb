@@ -313,7 +313,7 @@ pub enum PythonRuntimeSpec {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
-        /// Operator-defined GPU class; absent uses the deployment default.
+        /// Operator-defined GPU class; absent accepts any eligible configured class.
         gpu_class: Option<String>,
         /// GPUs allocated together to each worker.
         gpus_per_worker: Option<std::num::NonZeroU32>,
@@ -368,8 +368,8 @@ impl PythonRuntimeSpec {
         matches!(self, Self::PythonV2 { .. })
     }
 
-    /// Requested GPU class, `"any"` for any eligible class, or `None` for the
-    /// deployment default. This does not identify the hardware selected for execution.
+    /// Requested GPU class; `None` and `"any"` both accept any eligible class.
+    /// This does not identify the hardware selected for execution.
     pub fn gpu_class(&self) -> Option<&str> {
         match self {
             Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
