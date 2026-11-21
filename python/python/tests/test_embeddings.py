@@ -1242,3 +1242,49 @@ def test_cohere_default_model_is_not_a_retired_v2_model():
     assert cohere.name == "embed-multilingual-v3.0"
     assert "v2.0" not in cohere.name
     assert cohere.ndims() == 1024
+
+
+def _generate_with_mock_client(func):
+    client = MagicMock()
+    client.embeddings.create.return_value.data = [MagicMock(embedding=[0.0])]
+    with patch("lancedb.embeddings.openai.attempt_import_or_raise"):
+        with patch.object(type(func), "_openai_client", client, create=True):
+            func.generate_embeddings(["hello"])
+    return client.embeddings.create.call_args.kwargs
+
+
+def test_openai_omits_dimensions_when_unset():
+    func = get_registry().get("openai").create(name="text-embedding-3-small")
+    assert "dimensions" not in _generate_with_mock_client(func)
+
+
+def test_openai_sends_dimensions_when_set():
+    func = get_registry().get("openai").create(name="text-embedding-3-small", dim=512)
+    assert _generate_with_mock_client(func)["dimensions"] == 512
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected_key"),
+    [
+        ("https://res.openai.azure.com", "azure_endpoint"),
+        ("https://res.openai.azure.com/", "azure_endpoint"),
+        ("https://res.openai.azure.com/openai", "base_url"),
+    ],
+)
+def test_openai_azure_client_args(base_url, expected_key):
+    func = (
+        get_registry()
+        .get("openai")
+        .create(
+            name="text-embedding-3-small",
+            use_azure=True,
+            base_url=base_url,
+            api_version="2024-02-01",
+        )
+    )
+    with patch("lancedb.embeddings.openai.attempt_import_or_raise") as import_openai:
+        func._openai_client
+    kwargs = import_openai.return_value.AzureOpenAI.call_args.kwargs
+    assert kwargs[expected_key] == base_url
+    assert ("base_url" in kwargs) != ("azure_endpoint" in kwargs)
+    assert kwargs["api_version"] == "2024-02-01"
