@@ -740,8 +740,8 @@ The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
 timeout that is not a positive number and a zero worker or process count
 before sending the request; the server validates everything else. A LanceDB
 Embedded refresh rejects every option other than `batch_size`, `gpu_class`
-and `total_gpu_count`; in particular, it rejects `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count` rather than
-silently ignoring it.
+and `total_gpu_count`; in particular, it rejects `total_cpu_millis` and
+`total_memory_bytes` rather than silently ignoring them.
 
 ## When a refresh fails {#failures}
 
