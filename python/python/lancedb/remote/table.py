@@ -1200,9 +1200,9 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        default_total_cpu_millis: Optional[int] = None,
-        default_total_memory_bytes: Optional[int] = None,
-        default_total_gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1210,9 +1210,9 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                default_total_cpu_millis=default_total_cpu_millis,
-                default_total_memory_bytes=default_total_memory_bytes,
-                default_total_gpu_count=default_total_gpu_count,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
             )
         )
 

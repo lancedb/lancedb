@@ -301,6 +301,9 @@ pub struct RefreshColumnOptions {
     /// when the Function does not declare one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_class: Option<String>,
+    /// Positive number of GPUs allocated to each Function worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_count: Option<u32>,
     /// Nonnegative total GPU budget for Function workers in LanceDB Enterprise.
     /// Omitted values inherit column defaults, then Function defaults, then
     /// deployment defaults.
@@ -446,6 +449,12 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Set the number of GPUs allocated to each Function worker.
+    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
+        self.gpu_count = Some(gpu_count);
+        self
+    }
+
     /// Request an aggregate GPU budget of `total_gpu_count`.
     pub fn total_gpu_count(mut self, total_gpu_count: u32) -> Self {
         self.total_gpu_count = Some(total_gpu_count);
@@ -478,6 +487,7 @@ impl RefreshColumnOptions {
                 "publication_interval_rows",
                 self.publication_interval_rows.is_some(),
             ),
+            ("gpu_count", self.gpu_count.is_some()),
             ("total_cpu_millis", self.total_cpu_millis.is_some()),
             ("total_memory_bytes", self.total_memory_bytes.is_some()),
             ("supervisor_resources", self.supervisor_resources.is_some()),
@@ -583,6 +593,20 @@ impl RefreshColumnOptions {
         }
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;
+        }
+        if self.gpu_count == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "gpu_count must be positive".into(),
+            });
+        }
+        if self
+            .gpu_count
+            .zip(self.total_gpu_count)
+            .is_some_and(|(per_worker, total)| per_worker > total)
+        {
+            return Err(Error::InvalidInput {
+                message: "total_gpu_count cannot fit one Function worker".into(),
+            });
         }
 
         Ok(())

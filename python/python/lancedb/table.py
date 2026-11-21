@@ -3457,9 +3457,11 @@ class Table(ABC):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        default_total_cpu_millis: Optional[int] = None,
-        default_total_memory_bytes: Optional[int] = None,
-        default_total_gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ):
         """
         Add new columns with defined values.
@@ -3528,11 +3530,11 @@ class Table(ABC):
             When omitted, the server determines when to refresh. Applies to every
             computed output in this call.
             Scheduling options require computed or Function columns.
-        default_total_cpu_millis: int, optional
+        total_cpu_millis: int, optional
             Default total CPU budget for manual and automatic Function refreshes.
-        default_total_memory_bytes: int, optional
+        total_memory_bytes: int, optional
             Default total memory budget for these refreshes, in bytes.
-        default_total_gpu_count: int, optional
+        total_gpu_count: int, optional
             Default total GPU budget across the Function workers.
         Returns
         -------
@@ -3559,10 +3561,11 @@ class Table(ABC):
         [0.25, 0.75]
         """
         _resource_options(
-            default_total_cpu_millis,
-            default_total_memory_bytes,
-            default_total_gpu_count,
-            prefix="default_",
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
 
     @abstractmethod
@@ -3579,6 +3582,7 @@ class Table(ABC):
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
@@ -3724,6 +3728,7 @@ class Table(ABC):
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
@@ -6487,15 +6492,18 @@ class LanceTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        default_total_cpu_millis: Optional[int] = None,
-        default_total_memory_bytes: Optional[int] = None,
-        default_total_gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         _resource_options(
-            default_total_cpu_millis,
-            default_total_memory_bytes,
-            default_total_gpu_count,
-            prefix="default_",
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return LOOP.run(
             self._table.add_columns(
@@ -6503,9 +6511,11 @@ class LanceTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                default_total_cpu_millis=default_total_cpu_millis,
-                default_total_memory_bytes=default_total_memory_bytes,
-                default_total_gpu_count=default_total_gpu_count,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
 
@@ -6522,6 +6532,7 @@ class LanceTable(Table):
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
@@ -6568,6 +6579,7 @@ class LanceTable(Table):
                 include_quarantined=include_quarantined,
                 function_version=function_version,
                 recompute=recompute,
+                gpu_count=gpu_count,
             )
         )
 
@@ -6584,6 +6596,7 @@ class LanceTable(Table):
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
@@ -6632,6 +6645,7 @@ class LanceTable(Table):
                     include_quarantined=include_quarantined,
                     function_version=function_version,
                     recompute=recompute,
+                    gpu_count=gpu_count,
                 )
             )
         )
@@ -9049,9 +9063,11 @@ class AsyncTable:
         computed: dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        default_total_cpu_millis: Optional[int] = None,
-        default_total_memory_bytes: Optional[int] = None,
-        default_total_gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -9118,11 +9134,11 @@ class AsyncTable:
             not force recomputation. Applies to every declared computed output.
             These options cannot be used with one-time transforms or ordinary
             all-null columns.
-        default_total_cpu_millis: int, optional
+        total_cpu_millis: int, optional
             Default total CPU budget for manual and automatic Function refreshes.
-        default_total_memory_bytes: int, optional
+        total_memory_bytes: int, optional
             Default total memory budget for these refreshes, in bytes.
-        default_total_gpu_count: int, optional
+        total_gpu_count: int, optional
             Default total GPU budget across the Function workers.
         Examples
         --------
@@ -9139,10 +9155,11 @@ class AsyncTable:
 
         """
         _resource_options(
-            default_total_cpu_millis,
-            default_total_memory_bytes,
-            default_total_gpu_count,
-            prefix="default_",
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         if auto_refresh_enabled is not None and type(auto_refresh_enabled) is not bool:
             raise ValueError("auto_refresh_enabled must be a boolean")
@@ -9157,9 +9174,11 @@ class AsyncTable:
         options_supplied = (
             auto_refresh_enabled is not None
             or auto_refresh_interval_seconds is not None
-            or default_total_cpu_millis is not None
-            or default_total_memory_bytes is not None
-            or default_total_gpu_count is not None
+            or total_cpu_millis is not None
+            or total_memory_bytes is not None
+            or total_gpu_count is not None
+            or gpu_class is not None
+            or gpu_count is not None
         )
         function_application = None
         function_output_name = None
@@ -9188,9 +9207,11 @@ class AsyncTable:
                 function_output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
-                default_total_cpu_millis,
-                default_total_memory_bytes,
-                default_total_gpu_count,
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
+                gpu_class,
+                gpu_count,
             )
 
         if isinstance(transforms, pa.Field):
@@ -9211,9 +9232,11 @@ class AsyncTable:
                 list(computed.items()),
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
-                default_total_cpu_millis,
-                default_total_memory_bytes,
-                default_total_gpu_count,
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
+                gpu_class,
+                gpu_count,
             )
         if options_supplied:
             raise ValueError(
@@ -9242,6 +9265,7 @@ class AsyncTable:
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
@@ -9371,7 +9395,13 @@ class AsyncTable:
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
-        _resource_options(total_cpu_millis, total_memory_bytes, total_gpu_count)
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         return await self._inner.refresh_column(
             column,
             where=where,
@@ -9400,6 +9430,7 @@ class AsyncTable:
             include_quarantined=include_quarantined,
             function_version=function_version,
             recompute=recompute,
+            gpu_count=gpu_count,
         )
 
     async def retry_failed(
@@ -9612,6 +9643,7 @@ class AsyncTable:
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
@@ -9756,7 +9788,13 @@ class AsyncTable:
         >>> asyncio.run(refresh_in_background())  # doctest: +SKIP
         'finished'
         """
-        _resource_options(total_cpu_millis, total_memory_bytes, total_gpu_count)
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         return _typed_job(
             await self._inner.refresh_column_async(
                 column,
@@ -9786,6 +9824,7 @@ class AsyncTable:
                 include_quarantined=include_quarantined,
                 function_version=function_version,
                 recompute=recompute,
+                gpu_count=gpu_count,
             ),
             RefreshColumnJobResult.from_json,
         )

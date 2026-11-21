@@ -180,11 +180,13 @@ impl AddColumnsBuilder {
     /// # async fn declare(table: &Table) -> lancedb::Result<()> {
     /// table.add_columns().computed("doubled", "x * 2")
     ///     .computed_options(ComputedColumnOptions {
+    ///     gpu_class: Default::default(),
+    ///     gpu_count: Default::default(),
     ///         auto_refresh_enabled: true,
     ///         auto_refresh_interval_seconds: Some(300),
-    ///         default_total_cpu_millis: None,
-    ///         default_total_memory_bytes: None,
-    ///         default_total_gpu_count: None,
+    ///         total_cpu_millis: None,
+    ///         total_memory_bytes: None,
+    ///         total_gpu_count: None,
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -204,7 +206,7 @@ impl AddColumnsBuilder {
             read_columns,
             options,
         } = self;
-        if let Some(options) = options {
+        if let Some(options) = &options {
             options.validate()?;
             if computed.is_empty() && function.is_none() {
                 return Err(Error::InvalidInput {
@@ -214,8 +216,7 @@ impl AddColumnsBuilder {
             }
             if options.has_resource_defaults() && function.is_none() {
                 return Err(Error::InvalidInput {
-                    message: "default_total_* resources require a registered Function declaration"
-                        .into(),
+                    message: "total_* resources require a registered Function declaration".into(),
                 });
             }
         }
@@ -298,16 +299,18 @@ mod tests {
         let table = table_with_two_columns("options").await;
         let version = table.version().await.unwrap();
         let options = ComputedColumnOptions {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
             auto_refresh_enabled: false,
             auto_refresh_interval_seconds: Some(300),
-            default_total_cpu_millis: None,
-            default_total_memory_bytes: None,
-            default_total_gpu_count: None,
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
         };
         let result = table
             .add_columns()
             .computed("doubled", "x * 2")
-            .computed_options(options)
+            .computed_options(options.clone())
             .execute()
             .await
             .unwrap();
@@ -323,7 +326,7 @@ mod tests {
         for interval in [0, u64::MAX] {
             let invalid = ComputedColumnOptions {
                 auto_refresh_interval_seconds: Some(interval),
-                ..options
+                ..options.clone()
             };
             assert!(
                 table
@@ -342,7 +345,7 @@ mod tests {
                     "once".into(),
                     "x".into()
                 )]))
-                .computed_options(options)
+                .computed_options(options.clone())
                 .execute()
                 .await
                 .is_err()
@@ -394,11 +397,13 @@ mod tests {
             .add_columns()
             .computed("doubled", "x * 2")
             .computed_options(ComputedColumnOptions {
+                gpu_class: Default::default(),
+                gpu_count: Default::default(),
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                default_total_cpu_millis: Some(1000),
-                default_total_memory_bytes: Some(1024),
-                default_total_gpu_count: Some(0),
+                total_cpu_millis: Some(1000),
+                total_memory_bytes: Some(1024),
+                total_gpu_count: Some(0),
             })
             .execute()
             .await

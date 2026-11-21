@@ -71,17 +71,20 @@ Both a Function application and a SQL expression accept
 `auto_refresh_enabled` and `auto_refresh_interval_seconds`, and both refresh
 and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
 
-Function declarations can set `default_total_cpu_millis`,
-`default_total_memory_bytes`, and `default_total_gpu_count`. Each optional
-value supplies a default for both manual and automatic refreshes.
+Function declarations can set `total_cpu_millis`,
+`total_memory_bytes`, and `total_gpu_count`. Each optional
+value supplies a default for both manual and automatic refreshes. `gpu_class`
+and `gpu_count` similarly override the Function's per-worker GPU defaults.
 
 <CodeGroup>
 ```python Python icon="python"
 table.add_columns(
     {"caption": version(jpeg=col("jpeg"))},
-    default_total_cpu_millis=8000,
-    default_total_memory_bytes=16 * 1024**3,
-    default_total_gpu_count=2,
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=4,
+    gpu_class="any",
+    gpu_count=2,
 )
 ```
 
@@ -92,9 +95,11 @@ table
     .add_columns()
     .function(function_application)
     .computed_options(ComputedColumnOptions {
-        default_total_cpu_millis: Some(8000),
-        default_total_memory_bytes: Some(16 * 1024_u64.pow(3)),
-        default_total_gpu_count: Some(2),
+        total_cpu_millis: Some(8000),
+        total_memory_bytes: Some(16 * 1024_u64.pow(3)),
+        total_gpu_count: Some(4),
+        gpu_class: Some("any".into()),
+        gpu_count: Some(2),
         ..Default::default()
     })
     .execute()
@@ -102,8 +107,8 @@ table
 ```
 </CodeGroup>
 
-Refresh `total_*` values override these column defaults. Unspecified column
-values inherit the pinned Function's `default_total_*` settings, then the
+Refresh values with the same names override these column defaults. Unspecified column
+values inherit the pinned Function's `total_*` settings, then the
 deployment defaults. The GPU budget must fit one Function worker. These
 settings apply to registered Function columns in LanceDB Enterprise.
 

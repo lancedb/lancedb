@@ -286,9 +286,11 @@ export abstract class Connection {
       where?: string;
       limit?: number;
       withNoData?: boolean;
-      defaultTotalCpuMillis?: number;
-      defaultTotalMemoryBytes?: number;
-      defaultTotalGpuCount?: number;
+      totalCpuMillis?: number;
+      totalMemoryBytes?: number;
+      totalGpuCount?: number;
+      gpuClass?: string;
+      gpuCount?: number;
     },
   ): Promise<MaterializedView>;
 
@@ -677,27 +679,33 @@ export class LocalConnection extends Connection {
       where?: string;
       limit?: number;
       withNoData?: boolean;
-      defaultTotalCpuMillis?: number;
-      defaultTotalMemoryBytes?: number;
-      defaultTotalGpuCount?: number;
+      totalCpuMillis?: number;
+      totalMemoryBytes?: number;
+      totalGpuCount?: number;
+      gpuClass?: string;
+      gpuCount?: number;
     },
   ): Promise<MaterializedView> {
     validateNonNegativeInteger(options?.limit, "limit");
     for (const [name, value] of [
-      ["defaultTotalCpuMillis", options?.defaultTotalCpuMillis],
-      ["defaultTotalMemoryBytes", options?.defaultTotalMemoryBytes],
-      ["defaultTotalGpuCount", options?.defaultTotalGpuCount],
+      ["totalCpuMillis", options?.totalCpuMillis],
+      ["totalMemoryBytes", options?.totalMemoryBytes],
+      ["totalGpuCount", options?.totalGpuCount],
+      ["gpuCount", options?.gpuCount],
     ] as const) {
       validateNonNegativeInteger(value, name);
-      if (value === 0 && name !== "defaultTotalGpuCount") {
+      if (value === 0 && name !== "totalGpuCount") {
         throw new Error(`${name} must be positive`);
       }
     }
     if (
-      options?.defaultTotalGpuCount !== undefined &&
-      options.defaultTotalGpuCount > 4294967295
+      options?.totalGpuCount !== undefined &&
+      options.totalGpuCount > 4294967295
     ) {
-      throw new Error("defaultTotalGpuCount exceeds 4294967295");
+      throw new Error("totalGpuCount exceeds 4294967295");
+    }
+    if (options?.gpuCount !== undefined && options.gpuCount > 4294967295) {
+      throw new Error("gpuCount exceeds 4294967295");
     }
     const innerTable = await this.inner.createMaterializedView(
       name,
@@ -706,9 +714,11 @@ export class LocalConnection extends Connection {
       options?.where,
       options?.limit,
       options?.withNoData ?? false,
-      options?.defaultTotalCpuMillis,
-      options?.defaultTotalMemoryBytes,
-      options?.defaultTotalGpuCount,
+      options?.totalCpuMillis,
+      options?.totalMemoryBytes,
+      options?.totalGpuCount,
+      options?.gpuClass,
+      options?.gpuCount,
     );
     return new MaterializedView(new LocalTable(innerTable));
   }

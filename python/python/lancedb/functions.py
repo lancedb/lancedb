@@ -65,29 +65,19 @@ from .schema import is_blob_v2_field as _is_blob_v2_field
 from ._blob_reader import BlobReader
 from ._lancedb import _validate_conda_requirement
 from .secrets import EnvVarSecret
+from .resources import _validate_gpu_class_name
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _PositiveUInt32 = conint(strict=True, ge=1, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
 _PositiveUInt64 = conint(strict=True, ge=1, le=2**64 - 1)
-_GPU_CLASS_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_GPU_CLASS_ERROR = (
-    "gpu_class must be a lowercase name of at most 63 letters, digits, or "
-    "hyphens, and cannot start or end with a hyphen"
-)
 
 
 def _validate_gpu_wire_marker(value: Any) -> bool:
     if value is not True:
         raise ValueError("runtime.gpu must be true")
     return True
-
-
-def _validate_gpu_class_name(value: Any) -> str:
-    if not isinstance(value, str) or not _GPU_CLASS_NAME.fullmatch(value):
-        raise ValueError(_GPU_CLASS_ERROR)
-    return value
 
 
 def _normalize_gpu_request(
@@ -735,8 +725,9 @@ class FunctionVersion(_RemoteValue):
     version also requires matching the source and all other registration inputs,
     including signature, Secret bindings, models, and execution controls.
 
-    ``gpu_class`` is the operator-defined GPU pool fixed into this Function
-    version, or ``None`` when registration used the deployment default.
+    ``gpu_class`` records the default GPU pool for this Function version.
+    Column/MV creation and refresh can override it independently of the
+    per-worker ``gpu_count`` in the requested runtime.
 
     ``batch_size``, ``max_concurrency``, ``row_timeout_seconds``, and
     ``result_stability`` retain the execution controls reported by the
@@ -771,9 +762,9 @@ class FunctionVersion(_RemoteValue):
     gpu_class: Optional[str] = None
     batch_size: Optional[int] = None
     max_concurrency: Optional[int] = None
-    default_total_cpu_millis: Optional[_PositiveUInt64] = None
-    default_total_memory_bytes: Optional[_PositiveUInt64] = None
-    default_total_gpu_count: Optional[_UInt32] = None
+    total_cpu_millis: Optional[_PositiveUInt64] = None
+    total_memory_bytes: Optional[_PositiveUInt64] = None
+    total_gpu_count: Optional[_UInt32] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
     runtime: Optional[PythonRuntimeSpec] = None
@@ -966,9 +957,9 @@ class FunctionRegistrationRequest(_RemoteValue):
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
     max_concurrency: Optional[int] = None
-    default_total_cpu_millis: Optional[_PositiveUInt64] = None
-    default_total_memory_bytes: Optional[_PositiveUInt64] = None
-    default_total_gpu_count: Optional[_UInt32] = None
+    total_cpu_millis: Optional[_PositiveUInt64] = None
+    total_memory_bytes: Optional[_PositiveUInt64] = None
+    total_gpu_count: Optional[_UInt32] = None
     row_timeout_seconds: Optional[float] = None
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
@@ -3244,9 +3235,9 @@ class FunctionDefinition:
         gpu: Optional[bool] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
-        default_total_cpu_millis: Optional[int] = None,
-        default_total_memory_bytes: Optional[int] = None,
-        default_total_gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
         apt: tuple[str, ...] = (),
@@ -3409,9 +3400,9 @@ class FunctionDefinition:
             runtime=runtime,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
-            default_total_cpu_millis=default_total_cpu_millis,
-            default_total_memory_bytes=default_total_memory_bytes,
-            default_total_gpu_count=default_total_gpu_count,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             models=models,
@@ -3526,9 +3517,9 @@ def function(
     gpu: Optional[bool] = None,
     gpu_class: Optional[str] = None,
     gpu_count: Optional[int] = None,
-    default_total_cpu_millis: Optional[int] = None,
-    default_total_memory_bytes: Optional[int] = None,
-    default_total_gpu_count: Optional[int] = None,
+    total_cpu_millis: Optional[int] = None,
+    total_memory_bytes: Optional[int] = None,
+    total_gpu_count: Optional[int] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
@@ -3554,9 +3545,9 @@ def function(
     gpu: Optional[bool] = None,
     gpu_class: Optional[str] = None,
     gpu_count: Optional[int] = None,
-    default_total_cpu_millis: Optional[int] = None,
-    default_total_memory_bytes: Optional[int] = None,
-    default_total_gpu_count: Optional[int] = None,
+    total_cpu_millis: Optional[int] = None,
+    total_memory_bytes: Optional[int] = None,
+    total_gpu_count: Optional[int] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
@@ -3784,15 +3775,16 @@ def function(
         Requires ``gpu=True``. Omit to use the deployment default, or use
         ``"any"`` to accept an eligible configured GPU class.
     gpu_count : int, optional
-        GPUs allocated together to each Function worker. Requires ``gpu=True``
-        and defaults to one. Must be a positive integer. Refresh
+        Default GPUs allocated together to each Function worker. Requires ``gpu=True``
+        and defaults to one. Column/MV creation and refresh can override it.
+        Must be a positive integer. Refresh
         ``total_gpu_count`` limits the total GPUs across the worker fleet.
-    default_total_cpu_millis : int, optional
+    total_cpu_millis : int, optional
         Default total CPU budget for an execution, in millicores (1000 = one
         core). A column/MV declaration or refresh may override this value.
-    default_total_memory_bytes : int, optional
+    total_memory_bytes : int, optional
         Default total memory budget for an execution, in bytes.
-    default_total_gpu_count : int, optional
+    total_gpu_count : int, optional
         Default total GPU budget across an execution's workers. This is
         separate from ``gpu_count``, which allocates GPUs to each worker.
         MVs add the defaults of their distinct pinned Function versions.
@@ -3923,9 +3915,9 @@ def function(
             gpu=gpu,
             gpu_class=gpu_class,
             gpu_count=gpu_count,
-            default_total_cpu_millis=default_total_cpu_millis,
-            default_total_memory_bytes=default_total_memory_bytes,
-            default_total_gpu_count=default_total_gpu_count,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
             apt=tuple(apt),

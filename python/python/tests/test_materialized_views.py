@@ -203,9 +203,9 @@ def test_sync_remote_create_uses_public_async_connection(query):
             exist_ok=False,
             auto_refresh_enabled=None,
             auto_refresh_interval_seconds=None,
-            default_total_cpu_millis=None,
-            default_total_memory_bytes=None,
-            default_total_gpu_count=None,
+            total_cpu_millis=None,
+            total_memory_bytes=None,
+            total_gpu_count=None,
         ):
             calls.append(
                 (
@@ -715,8 +715,8 @@ class CapturingCreateConnection:
         {},
         {"auto_refresh_enabled": True},
         {"auto_refresh_enabled": False, "auto_refresh_interval_seconds": 0.5},
-        {"default_total_cpu_millis": 8000, "default_total_gpu_count": 0},
-        {"default_total_memory_bytes": 16 * 1024**3},
+        {"total_cpu_millis": 8000, "total_gpu_count": 0},
+        {"total_memory_bytes": 16 * 1024**3},
     ],
 )
 def test_remote_create_forwards_refresh_options_without_interval_default(options):
@@ -739,9 +739,9 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
                 "limit": None,
                 "with_no_data": False,
                 "exist_ok": False,
-                "default_total_cpu_millis": options.get("default_total_cpu_millis"),
-                "default_total_memory_bytes": options.get("default_total_memory_bytes"),
-                "default_total_gpu_count": options.get("default_total_gpu_count"),
+                "total_cpu_millis": options.get("total_cpu_millis"),
+                "total_memory_bytes": options.get("total_memory_bytes"),
+                "total_gpu_count": options.get("total_gpu_count"),
                 "auto_refresh_enabled": options.get("auto_refresh_enabled"),
                 "auto_refresh_interval_seconds": options.get(
                     "auto_refresh_interval_seconds"
@@ -798,8 +798,8 @@ def test_remote_create_rejects_invalid_interval_without_request(seconds):
     "options",
     [
         {"auto_refresh_enabled": True},
-        {"default_total_cpu_millis": 8000, "default_total_gpu_count": 0},
-        {"default_total_memory_bytes": 1024},
+        {"total_cpu_millis": 8000, "total_gpu_count": 0},
+        {"total_memory_bytes": 1024},
     ],
 )
 def test_namespace_forwards_automatic_refresh_request(tmp_path, options):
@@ -814,8 +814,8 @@ def test_namespace_forwards_automatic_refresh_request(tmp_path, options):
     "options",
     [
         {"auto_refresh_enabled": True},
-        {"default_total_cpu_millis": 8000, "default_total_gpu_count": 0},
-        {"default_total_memory_bytes": 1024},
+        {"total_cpu_millis": 8000, "total_gpu_count": 0},
+        {"total_memory_bytes": 1024},
     ],
 )
 async def test_async_namespace_forwards_automatic_refresh_request(tmp_path, options):

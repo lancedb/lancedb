@@ -4454,19 +4454,19 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
         }
         for (key, value) in [
-            ("default_total_cpu_millis", options.default_total_cpu_millis),
-            (
-                "default_total_memory_bytes",
-                options.default_total_memory_bytes,
-            ),
-            (
-                "default_total_gpu_count",
-                options.default_total_gpu_count.map(u64::from),
-            ),
+            ("total_cpu_millis", options.total_cpu_millis),
+            ("total_memory_bytes", options.total_memory_bytes),
+            ("total_gpu_count", options.total_gpu_count.map(u64::from)),
         ] {
             if let Some(value) = value {
                 body[key] = serde_json::json!(value);
             }
+        }
+        if let Some(class) = &options.gpu_class {
+            body["gpu_class"] = serde_json::json!(class);
+        }
+        if let Some(count) = options.gpu_count {
+            body["gpu_count"] = serde_json::json!(count);
         }
         self.apply_branch_body(&mut body);
         let request = self
@@ -11283,11 +11283,13 @@ mod tests {
                 .add_columns()
                 .computed("doubled", "x * 2")
                 .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                    gpu_class: Default::default(),
+                    gpu_count: Default::default(),
                     auto_refresh_enabled: false,
                     auto_refresh_interval_seconds: interval,
-                    default_total_cpu_millis: None,
-                    default_total_memory_bytes: None,
-                    default_total_gpu_count: None,
+                    total_cpu_millis: None,
+                    total_memory_bytes: None,
+                    total_gpu_count: None,
                 })
                 .execute()
                 .await
@@ -11874,9 +11876,11 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
-                expected["default_total_cpu_millis"] = serde_json::json!(8000);
-                expected["default_total_memory_bytes"] = serde_json::json!(17179869184_u64);
-                expected["default_total_gpu_count"] = serde_json::json!(2);
+                expected["total_cpu_millis"] = serde_json::json!(8000);
+                expected["total_memory_bytes"] = serde_json::json!(17179869184_u64);
+                expected["total_gpu_count"] = serde_json::json!(2);
+                expected["gpu_class"] = serde_json::json!("any");
+                expected["gpu_count"] = serde_json::json!(2);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -11905,11 +11909,13 @@ mod tests {
             .add_columns()
             .function(application)
             .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                gpu_class: Some("any".into()),
+                gpu_count: Some(2),
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                default_total_cpu_millis: Some(8000),
-                default_total_memory_bytes: Some(17179869184),
-                default_total_gpu_count: Some(2),
+                total_cpu_millis: Some(8000),
+                total_memory_bytes: Some(17179869184),
+                total_gpu_count: Some(2),
             })
             .execute()
             .await
