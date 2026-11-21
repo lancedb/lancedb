@@ -115,7 +115,6 @@
 - [FunctionRefreshPlanningConfig](interfaces/FunctionRefreshPlanningConfig.md)
 - [FunctionRefreshPodResources](interfaces/FunctionRefreshPodResources.md)
 - [FunctionRetryPolicy](interfaces/FunctionRetryPolicy.md)
-- [FunctionWorkerResourceBudget](interfaces/FunctionWorkerResourceBudget.md)
 - [HnswPqOptions](interfaces/HnswPqOptions.md)
 - [HnswSqOptions](interfaces/HnswSqOptions.md)
 - [IndexConfig](interfaces/IndexConfig.md)

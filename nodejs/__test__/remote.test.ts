@@ -1178,7 +1178,7 @@ describe("remote connection", () => {
         '{"column": "embedding", "publication_interval_rows": 9007199254740991}',
       ),
       JSON.parse(
-        '{"column":"embedding","total_cpu_millis":8000,"total_memory_bytes":17179869184,"total_gpu_count":0}',
+        '{"column":"embedding","total_cpu_millis":8000,"total_memory_bytes":17179869184}',
       ),
     ]);
   });
