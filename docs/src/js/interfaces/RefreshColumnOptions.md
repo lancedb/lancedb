@@ -8,8 +8,7 @@
 
 Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-`batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
-`resourceBudget`.
+`batchSize`, `gpuClass` and `totalGpuCount` and rejects the rest.
 
 ## Properties
 
@@ -41,16 +40,6 @@ optional gpuClass: string;
 ```
 
 GPU class for Function workers.
-
-***
-
-### gpuCount?
-
-```ts
-optional gpuCount: number;
-```
-
-Positive aggregate GPU budget for Function workers.
 
 ***
 
@@ -140,17 +129,6 @@ Requires LanceDB Enterprise with non-Blob Function outputs.
 
 ***
 
-### resourceBudget?
-
-```ts
-optional resourceBudget: FunctionWorkerResourceBudget;
-```
-
-Complete aggregate CPU and memory budget for a registered Function
-refresh. `gpuCount` inside the budget defaults to zero.
-
-***
-
 ### retryPolicy?
 
 ```ts
@@ -178,6 +156,36 @@ optional supervisorResources: FunctionRefreshPodResources;
 ```
 
 CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+
+***
+
+### totalCpuMillis?
+
+```ts
+optional totalCpuMillis: number;
+```
+
+Override the total CPU budget in millicores for this refresh.
+
+***
+
+### totalGpuCount?
+
+```ts
+optional totalGpuCount: number;
+```
+
+Nonnegative total GPU budget for Function workers.
+
+***
+
+### totalMemoryBytes?
+
+```ts
+optional totalMemoryBytes: number;
+```
+
+Override the total memory budget in bytes for this refresh.
 
 ***
 

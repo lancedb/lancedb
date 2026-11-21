@@ -196,6 +196,12 @@ it can be queried, indexed and searched, and it appears in `tableNames`.
 
 * **options?**
 
+* **options.defaultTotalCpuMillis?**: `number`
+
+* **options.defaultTotalGpuCount?**: `number`
+
+* **options.defaultTotalMemoryBytes?**: `number`
+
 * **options.limit?**: `number`
 
 * **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
