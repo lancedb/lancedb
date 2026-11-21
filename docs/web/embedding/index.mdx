@@ -40,7 +40,7 @@ embedding generation, allowing you to focus on your application logic.
 
 ## Embedding Registry {#embedding-registry}
 
-You can get a supported embedding function from the registry, and then use it in your table schema. 
+You can get a supported embedding function from the registry, and then use it in your table schema.
 Once configured, the embedding function will automatically generate embeddings when you insert data
 into the table. Query-time behavior depends on SDK: Python/TypeScript can query with text directly,
 while Rust examples typically compute query embeddings explicitly before vector search.
@@ -105,6 +105,7 @@ This is useful for provider secrets and environment-specific settings in Python 
 - TypeScript uses `registry.setVar(...)`.
 - You can provide a fallback with `$var:name:default`.
 - Sensitive values such as API keys should be passed through registry variables instead of hardcoding them in config.
+- In Python, variables are secret by default, so they can only be used in sensitive fields such as API keys. Pass `secret=False` to `set_var` for other settings, such as the device.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="python" icon="python">
@@ -138,6 +139,10 @@ when this process has approved them:
 
 - `trust_remote_code=True`, which runs code from the model's HuggingFace repository.
 - Custom endpoints such as OpenAI `base_url`, Ollama `host`, or watsonx `url`, which receive your data and API keys.
+- A non-default model for `open-clip`, `instructor`, `colpali`, `siglip`, or `gte-text`, whose loaders can run code
+  from the model repository. Approve it with `allow_remote_code`.
+- Any settings for `bedrock-text` or `oci-genai`, whose settings choose where requests go. Approve them with
+  `allow_function`.
 
 Embedding functions you create in the current process are approved automatically. When you open a table in a new
 process, approve these settings explicitly before computing embeddings:
@@ -273,3 +278,8 @@ You can always implement your own embedding function:
     {RsEmbeddingFunction}
     </CodeBlock>
 </CodeGroup>
+
+In Python, anyone who can write a table controls the embedding settings stored in it.
+When a table is opened in a new process, a custom embedding function only computes embeddings once you trust its settings, with `get_registry().allow_function("my-embedder")`.
+If the function's settings can't make it load an arbitrary model or send data to an arbitrary URL, register it with `@register("my-embedder", safe_to_restore=True)` instead.
+A function that can should report those models from `loaded_models()` or `remote_code_model()`, and those URLs from `endpoints()`, so each one needs approval.

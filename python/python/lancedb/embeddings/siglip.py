@@ -4,7 +4,7 @@
 import concurrent.futures
 import io
 import os
-from typing import TYPE_CHECKING, List, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 import urllib.parse as urlparse
 import warnings
 
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import torch
 
 
-@register("siglip")
+@register("siglip", safe_to_restore=True)
 class SigLipEmbeddings(EmbeddingFunction):
     # Deprecated: prefer CLIP embeddings via `open-clip`.
     model_name: str = "google/siglip-base-patch16-224"
@@ -52,6 +52,9 @@ class SigLipEmbeddings(EmbeddingFunction):
         self._model.to(self.device)
         self._model.eval()
         self._ndims = None
+
+    def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
+        return [] if self._uses_default("model_name") else [(self.model_name, None)]
 
     def ndims(self):
         if self._ndims is None:

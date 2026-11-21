@@ -39,6 +39,11 @@ RERANKERS = {
 class OfflineEmbedding(TextEmbeddingFunction):
     """Deterministic four-dimensional vectors, computed locally."""
 
+    @staticmethod
+    def sensitive_keys():
+        # Like the providers it stands in for, so their API key variables resolve.
+        return ["api_key"]
+
     def ndims(self):
         return 4
 

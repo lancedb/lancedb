@@ -13,7 +13,7 @@ from .registry import register
 from .utils import api_key_not_found_help, TEXT
 
 
-@register("cohere")
+@register("cohere", safe_to_restore=True)
 class CohereEmbeddingFunction(TextEmbeddingFunction):
     """
     An embedding function that uses the Cohere API

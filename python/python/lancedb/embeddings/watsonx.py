@@ -41,7 +41,7 @@ MODELS_DIMS: dict[str, int] = {
 }
 
 
-@register("watsonx")
+@register("watsonx", safe_to_restore=True)
 class WatsonxEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the IBM watsonx.ai Embeddings API.

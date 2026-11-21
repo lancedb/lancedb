@@ -14,9 +14,13 @@ import pytest
 @pytest.mark.skip(reason="OpenAI is not available in the test environment")
 def test_create_embedding_function():
     # --8<-- [start:create_embedding_function]
-    func = get_registry().get("openai").create(
-        name="text-embedding-3-small",
-        max_retries=7,
+    func = (
+        get_registry()
+        .get("openai")
+        .create(
+            name="text-embedding-3-small",
+            max_retries=7,
+        )
     )
     # --8<-- [end:create_embedding_function]
     assert func is not None
@@ -119,6 +123,7 @@ def test_custom_embedding_function():
         def _model(self) -> MyEmbeddingModel:
             # Initialize your model once
             return MyEmbeddingModel(self.model_name)
+
     # --8<-- [end:embedding_function]
 
 
@@ -140,7 +145,7 @@ def test_embeddings_secret():
 
     registry = get_registry()
     if torch.cuda.is_available():
-        registry.set_var("device", "cuda")
+        registry.set_var("device", "cuda", secret=False)
 
     func = registry.get("huggingface").create(device="$var:device:cpu")
     # --8<-- [end:register_device]
