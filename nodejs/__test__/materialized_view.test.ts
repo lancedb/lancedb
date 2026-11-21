@@ -121,7 +121,34 @@ describe("materialized views", () => {
       .spyOn(view.table(), "refreshMaterializedView")
       .mockResolvedValue(remoteResult);
     expect(await view.refresh({ full: true })).toEqual(remoteResult);
-    expect(refresh).toHaveBeenCalledWith(undefined, true);
+    expect(refresh).toHaveBeenCalledWith(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(
+      await view.refresh({
+        full: true,
+        totalCpuMillis: 4000,
+        totalMemoryBytes: 8_000_000_000,
+        totalGpuCount: 4,
+        gpuClass: "any",
+        gpuCount: 2,
+      }),
+    ).toEqual(remoteResult);
+    expect(refresh).toHaveBeenLastCalledWith(
+      undefined,
+      true,
+      4000,
+      8_000_000_000,
+      4,
+      "any",
+      2,
+    );
   });
 
   experimentalTest("lists views and rejects non-views", async () => {
