@@ -247,8 +247,13 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         return pa.binary()
     elif py_type is date:
         return pa.date32()
-    elif py_type is datetime:
+    elif py_type is datetime or py_type is pydantic.NaiveDatetime:
         tz = get_extras(field, "tz")
+        return pa.timestamp("us", tz=tz)
+    elif py_type is pydantic.AwareDatetime:
+        # Values always carry a timezone, so store them as UTC unless the
+        # field asks for another zone.
+        tz = get_extras(field, "tz") or "UTC"
         return pa.timestamp("us", tz=tz)
     elif py_type is time:
         return pa.time64("us")
