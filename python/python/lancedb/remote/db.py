@@ -62,6 +62,7 @@ from lance_namespace import (
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
+from ..resources import _resource_options
 
 
 def _duration_seconds(value: Optional[timedelta]) -> Optional[float]:
@@ -822,7 +823,16 @@ class RemoteDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
     ) -> MaterializedView:
+        _resource_options(
+            default_total_cpu_millis,
+            default_total_memory_bytes,
+            default_total_gpu_count,
+            prefix="default_",
+        )
         from .table import RemoteTable
 
         view = LOOP.run(
@@ -837,6 +847,9 @@ class RemoteDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                default_total_cpu_millis=default_total_cpu_millis,
+                default_total_memory_bytes=default_total_memory_bytes,
+                default_total_gpu_count=default_total_gpu_count,
             )
         )
         return MaterializedView(
@@ -862,7 +875,16 @@ class RemoteDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
     ) -> Job[None]:
+        _resource_options(
+            default_total_cpu_millis,
+            default_total_memory_bytes,
+            default_total_gpu_count,
+            prefix="default_",
+        )
         job = LOOP.run(
             self._conn.create_materialized_view_async(
                 name,
@@ -875,6 +897,9 @@ class RemoteDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                default_total_cpu_millis=default_total_cpu_millis,
+                default_total_memory_bytes=default_total_memory_bytes,
+                default_total_gpu_count=default_total_gpu_count,
             )
         )
         return Job(job)

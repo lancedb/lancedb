@@ -498,3 +498,51 @@ as `bytes`; this feature does not add streamed outputs.
     Filling the column a Function is bound to, and re-filling it as inputs change.
   </Card>
 </CardGroup>
+
+
+## Default execution budgets
+
+`default_total_cpu_millis`, `default_total_memory_bytes`, and
+`default_total_gpu_count` supply execution-wide defaults. CPU is in millicores
+(1000 = one core), memory is in bytes, and GPU count is a total across workers.
+Each resource resolves independently in this order:
+
+1. The refresh's `total_*` value.
+2. The column or materialized view's `default_total_*` value.
+3. The registered Function's `default_total_*` value.
+4. The deployment default.
+
+For a materialized view using multiple Functions, the third layer adds each
+resource across distinct pinned Function versions. Calling the same version
+more than once counts it once. Column and view defaults also apply when the
+service schedules a refresh automatically. Integer overflow or a budget that
+cannot fit a required worker is rejected.
+
+```python
+@function(
+    gpu=True,
+    gpu_class="h100",
+    gpu_count=2,
+    default_total_cpu_millis=8000,
+    default_total_memory_bytes=16 * 1024**3,
+    default_total_gpu_count=4,
+)
+def embed(text: str) -> list[float]: ...
+
+version = db.create_function(embed)
+table.add_columns(
+    {"embedding": version(text=col("text"))},
+    default_total_gpu_count=8,
+)
+table.refresh_column("embedding", total_gpu_count=4)
+
+db.create_materialized_view(
+    "embeddings", query="SELECT embed(text) AS embedding FROM documents",
+    default_total_cpu_millis=16000,
+    default_total_gpu_count=8,
+)
+```
+
+`gpu_count=2` still allocates two devices together to every Function worker.
+The `total_*` and `default_total_*` values are ceilings for the whole worker
+fleet. CPU and memory can limit the fleet before it reaches its GPU ceiling.

@@ -42,7 +42,6 @@ use serde_json::Value;
 
 use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionApplication, FunctionBinding, OutputMapping};
 use crate::materialized_view::without_declarations;
-use crate::table::FunctionWorkerResourceBudget;
 use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
 
@@ -62,35 +61,6 @@ pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_enabled";
 /// Minimum interval between successful automatic refreshes, in seconds.
 pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
-/// Aggregate worker-resource budget for automatic Function refreshes.
-pub const AUTO_REFRESH_RESOURCE_BUDGET_META_KEY: &str =
-    "computed_column.auto_refresh_resource_budget";
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredFunctionWorkerResourceBudget {
-    cpu_millis: u64,
-    memory_bytes: u64,
-    #[serde(default)]
-    gpu_count: u32,
-}
-
-impl From<FunctionWorkerResourceBudget> for StoredFunctionWorkerResourceBudget {
-    fn from(budget: FunctionWorkerResourceBudget) -> Self {
-        Self {
-            cpu_millis: budget.total_cpu_millis,
-            memory_bytes: budget.total_memory_bytes,
-            gpu_count: budget.total_gpu_count,
-        }
-    }
-}
-
-impl From<StoredFunctionWorkerResourceBudget> for FunctionWorkerResourceBudget {
-    fn from(budget: StoredFunctionWorkerResourceBudget) -> Self {
-        Self::new(budget.cpu_millis, budget.memory_bytes).with_total_gpu_count(budget.gpu_count)
-    }
-}
-
 /// Scheduling settings persisted on each computed output. LanceDB Embedded
 /// stores these settings; automatic scheduling requires LanceDB Enterprise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -102,10 +72,16 @@ pub struct ComputedColumnOptions {
     /// When omitted, the server determines when to refresh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_refresh_interval_seconds: Option<u64>,
-    /// Aggregate worker-resource budget for automatic Function refreshes.
-    /// This option requires a registered Function output.
+    /// Default total CPU budget in millicores for manual and automatic refreshes.
+    /// Requires a registered Function output.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_refresh_resource_budget: Option<FunctionWorkerResourceBudget>,
+    pub default_total_cpu_millis: Option<u64>,
+    /// Default total memory budget in bytes for manual and automatic refreshes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_total_memory_bytes: Option<u64>,
+    /// Default total GPU budget for manual and automatic refreshes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_total_gpu_count: Option<u32>,
 }
 
 impl Default for ComputedColumnOptions {
@@ -113,12 +89,20 @@ impl Default for ComputedColumnOptions {
         Self {
             auto_refresh_enabled: true,
             auto_refresh_interval_seconds: None,
-            auto_refresh_resource_budget: None,
+            default_total_cpu_millis: None,
+            default_total_memory_bytes: None,
+            default_total_gpu_count: None,
         }
     }
 }
 
 impl ComputedColumnOptions {
+    pub fn has_resource_defaults(&self) -> bool {
+        self.default_total_cpu_millis.is_some()
+            || self.default_total_memory_bytes.is_some()
+            || self.default_total_gpu_count.is_some()
+    }
+
     /// Reject intervals that cannot be represented by the server scheduler.
     pub fn validate(&self) -> Result<()> {
         if self
@@ -129,8 +113,8 @@ impl ComputedColumnOptions {
                 message: "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000".into(),
             });
         }
-        if let Some(budget) = &self.auto_refresh_resource_budget {
-            budget.validate()?;
+        if self.default_total_cpu_millis == Some(0) || self.default_total_memory_bytes == Some(0) {
+            return Err(Error::InvalidInput { message: "default_total_cpu_millis and default_total_memory_bytes must be positive integers".into() });
         }
         Ok(())
     }
@@ -149,16 +133,23 @@ impl ComputedColumnOptions {
                     message: "auto_refresh_interval_seconds must be a positive integer".into(),
                 })?);
         }
-        if let Some(value) = metadata.get(AUTO_REFRESH_RESOURCE_BUDGET_META_KEY) {
-            options.auto_refresh_resource_budget = Some(
-                serde_json::from_str::<StoredFunctionWorkerResourceBudget>(value)
-                    .map_err(|error| Error::InvalidInput {
-                        message: format!(
-                            "auto_refresh_resource_budget must be a valid resource budget: {error}"
-                        ),
-                    })?
-                    .into(),
-            );
+        if let Some(value) = metadata.get("computed_column.default_total_cpu_millis") {
+            options.default_total_cpu_millis =
+                Some(value.parse().map_err(|_| Error::InvalidInput {
+                    message: "invalid default_total_cpu_millis".into(),
+                })?);
+        }
+        if let Some(value) = metadata.get("computed_column.default_total_memory_bytes") {
+            options.default_total_memory_bytes =
+                Some(value.parse().map_err(|_| Error::InvalidInput {
+                    message: "invalid default_total_memory_bytes".into(),
+                })?);
+        }
+        if let Some(value) = metadata.get("computed_column.default_total_gpu_count") {
+            options.default_total_gpu_count =
+                Some(value.parse().map_err(|_| Error::InvalidInput {
+                    message: "invalid default_total_gpu_count".into(),
+                })?);
         }
         options.validate()?;
         Ok(options)
@@ -202,15 +193,20 @@ impl ComputedColumnOptions {
         if let Some(interval) = self.auto_refresh_interval_seconds {
             metadata.insert(AUTO_REFRESH_INTERVAL_META_KEY.into(), interval.to_string());
         }
-        if let Some(budget) = &self.auto_refresh_resource_budget {
-            metadata.insert(
-                AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-                serde_json::to_string(&StoredFunctionWorkerResourceBudget::from(*budget)).map_err(
-                    |error| Error::InvalidInput {
-                        message: format!("failed to encode auto_refresh_resource_budget: {error}"),
-                    },
-                )?,
-            );
+        for (key, value) in [
+            ("default_total_cpu_millis", self.default_total_cpu_millis),
+            (
+                "default_total_memory_bytes",
+                self.default_total_memory_bytes,
+            ),
+            (
+                "default_total_gpu_count",
+                self.default_total_gpu_count.map(u64::from),
+            ),
+        ] {
+            if let Some(value) = value {
+                metadata.insert(format!("computed_column.{key}"), value.to_string());
+            }
         }
         Ok(metadata)
     }
@@ -2732,73 +2728,27 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn computed_auto_refresh_resource_budget_metadata_round_trips() {
-        let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-            .with_total_gpu_count(2);
+    fn computed_default_resource_metadata_round_trips_partial_dimensions() {
         let options = super::ComputedColumnOptions {
-            auto_refresh_enabled: true,
-            auto_refresh_interval_seconds: Some(300),
-            auto_refresh_resource_budget: Some(budget),
+            default_total_cpu_millis: Some(8000),
+            default_total_memory_bytes: None,
+            default_total_gpu_count: Some(0),
+            ..Default::default()
         };
-        assert_eq!(
-            super::ComputedColumnOptions::from_metadata(&HashMap::new()).unwrap(),
-            super::ComputedColumnOptions::default()
-        );
         let metadata = options.metadata().unwrap();
-        assert_eq!(
-            metadata
-                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
-                .map(String::as_str),
-            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2}"#)
-        );
+        assert_eq!(metadata["computed_column.default_total_cpu_millis"], "8000");
+        assert_eq!(metadata["computed_column.default_total_gpu_count"], "0");
+        assert!(!metadata.contains_key("computed_column.default_total_memory_bytes"));
         assert_eq!(
             super::ComputedColumnOptions::from_metadata(&metadata).unwrap(),
             options
         );
-
-        let mut omitted_gpu = metadata.clone();
-        omitted_gpu.insert(
-            super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184}"#.into(),
-        );
-        let decoded = super::ComputedColumnOptions::from_metadata(&omitted_gpu).unwrap();
-        assert_eq!(
-            decoded
-                .auto_refresh_resource_budget
-                .unwrap()
-                .total_gpu_count,
-            0
-        );
-        assert_eq!(
-            decoded
-                .metadata()
-                .unwrap()
-                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
-                .map(String::as_str),
-            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":0}"#)
-        );
-
-        for invalid in [
-            r#"{"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":8000,"gpu_count":2}"#,
-            r#"{"cpu_millis":"8000","memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":-1,"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":18446744073709551616,"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":-1}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":4294967296}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2,"unknown":1}"#,
-            r#"{"cpu_millis":0,"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":0,"gpu_count":2}"#,
-        ] {
-            let mut malformed = metadata.clone();
-            malformed.insert(
-                super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
+        for invalid in ["0", "-1", "1.5", "18446744073709551616"] {
+            let malformed = HashMap::from([(
+                "computed_column.default_total_cpu_millis".into(),
                 invalid.into(),
-            );
-            assert!(
-                super::ComputedColumnOptions::from_metadata(&malformed).is_err(),
-                "accepted invalid budget: {invalid}"
-            );
+            )]);
+            assert!(super::ComputedColumnOptions::from_metadata(&malformed).is_err());
         }
     }
 
@@ -2834,7 +2784,9 @@ mod tests {
         let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
             .with_total_gpu_count(2);
         let updated = super::ComputedColumnOptions {
-            auto_refresh_resource_budget: Some(budget),
+            default_total_cpu_millis: Some((budget).total_cpu_millis),
+            default_total_memory_bytes: Some((budget).total_memory_bytes),
+            default_total_gpu_count: Some((budget).total_gpu_count),
             ..Default::default()
         }
         .apply_to_schema(&schema)
@@ -2843,13 +2795,8 @@ mod tests {
         for name in ["first", "second"] {
             let metadata = updated.field_with_name(name).unwrap().metadata();
             assert_eq!(
-                metadata.get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY),
-                Some(
-                    &serde_json::to_string(&super::StoredFunctionWorkerResourceBudget::from(
-                        budget
-                    ))
-                    .unwrap()
-                )
+                metadata.get("computed_column.default_total_cpu_millis"),
+                Some(&"8000".to_string())
             );
             assert_eq!(
                 metadata.get("custom").map(String::as_str),

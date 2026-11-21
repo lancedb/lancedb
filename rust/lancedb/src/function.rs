@@ -704,6 +704,12 @@ pub struct FunctionVersion {
         deserialize_with = "deserialize_max_concurrency"
     )]
     max_concurrency: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_total_cpu_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_total_memory_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_total_gpu_count: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     row_timeout_seconds: Option<RowTimeoutSeconds>,
@@ -800,6 +806,21 @@ impl FunctionVersion {
     /// Operator-defined GPU class declared at registration.
     pub fn gpu_class(&self) -> Option<&str> {
         self.gpu_class.as_deref()
+    }
+
+    /// Default total CPU budget for executions of this pinned Function.
+    pub fn default_total_cpu_millis(&self) -> Option<u64> {
+        self.default_total_cpu_millis
+    }
+
+    /// Default total memory budget for executions of this pinned Function.
+    pub fn default_total_memory_bytes(&self) -> Option<u64> {
+        self.default_total_memory_bytes
+    }
+
+    /// Default aggregate GPU budget, independent of the per-worker device count.
+    pub fn default_total_gpu_count(&self) -> Option<u32> {
+        self.default_total_gpu_count
     }
 
     /// Default maximum rows in one callable batch, when declared.

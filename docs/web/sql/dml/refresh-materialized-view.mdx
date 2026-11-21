@@ -55,7 +55,7 @@ REFRESH MATERIALIZED VIEW curated_training_set WITH (
 refresh. These are aggregate caps across its SQL execution and Function
 processes; they are not multiplied by the number of Functions in the query.
 
-CPU or memory requires all three budget fields. CPU and memory must be positive;
+Each resource may be overridden independently. CPU and memory must be positive;
 `total_gpu_count = 0` is allowed for CPU-only views. A GPU budget alone is also accepted.
 A cap does not reserve all of its GPUs or increase refresh parallelism. Current
 MV refreshes use at most one GPU, shared by their GPU Function calls.

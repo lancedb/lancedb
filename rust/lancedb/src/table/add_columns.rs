@@ -182,7 +182,9 @@ impl AddColumnsBuilder {
     ///     .computed_options(ComputedColumnOptions {
     ///         auto_refresh_enabled: true,
     ///         auto_refresh_interval_seconds: Some(300),
-    ///         auto_refresh_resource_budget: None,
+    ///         default_total_cpu_millis: None,
+    ///         default_total_memory_bytes: None,
+    ///         default_total_gpu_count: None,
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -210,11 +212,10 @@ impl AddColumnsBuilder {
                         .into(),
                 });
             }
-            if options.auto_refresh_resource_budget.is_some() && function.is_none() {
+            if options.has_resource_defaults() && function.is_none() {
                 return Err(Error::InvalidInput {
-                    message:
-                        "auto_refresh_resource_budget requires a registered Function declaration"
-                            .into(),
+                    message: "default_total_* resources require a registered Function declaration"
+                        .into(),
                 });
             }
         }
@@ -299,7 +300,9 @@ mod tests {
         let options = ComputedColumnOptions {
             auto_refresh_enabled: false,
             auto_refresh_interval_seconds: Some(300),
-            auto_refresh_resource_budget: None,
+            default_total_cpu_millis: None,
+            default_total_memory_bytes: None,
+            default_total_gpu_count: None,
         };
         let result = table
             .add_columns()
@@ -393,8 +396,23 @@ mod tests {
             .computed_options(ComputedColumnOptions {
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                auto_refresh_resource_budget: Some(
-                    crate::table::FunctionWorkerResourceBudget::new(1_000, 1_024),
+                default_total_cpu_millis: Some(
+                    (crate::table::FunctionWorkerResourceBudget::new(
+                        1_000, 1_024,
+                    ),)
+                        .total_cpu_millis,
+                ),
+                default_total_memory_bytes: Some(
+                    (crate::table::FunctionWorkerResourceBudget::new(
+                        1_000, 1_024,
+                    ),)
+                        .total_memory_bytes,
+                ),
+                default_total_gpu_count: Some(
+                    (crate::table::FunctionWorkerResourceBudget::new(
+                        1_000, 1_024,
+                    ),)
+                        .total_gpu_count,
                 ),
             })
             .execute()
