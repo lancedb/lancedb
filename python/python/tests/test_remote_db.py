@@ -7632,26 +7632,26 @@ async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget
         table = db.open_table("test")
         table.add_columns(
             {"embedding": application},
-            default_total_cpu_millis=(budget).get("total_cpu_millis"),
-            default_total_memory_bytes=(budget).get("total_memory_bytes"),
-            default_total_gpu_count=(budget).get("total_gpu_count"),
+            total_cpu_millis=(budget).get("total_cpu_millis"),
+            total_memory_bytes=(budget).get("total_memory_bytes"),
+            total_gpu_count=(budget).get("total_gpu_count"),
         )
 
     async with mock_lancedb_connection_async(handler) as db:
         table = await db.open_table("test")
         await table.add_columns(
             {"embedding": application},
-            default_total_cpu_millis=(budget).get("total_cpu_millis"),
-            default_total_memory_bytes=(budget).get("total_memory_bytes"),
-            default_total_gpu_count=(budget).get("total_gpu_count"),
+            total_cpu_millis=(budget).get("total_cpu_millis"),
+            total_memory_bytes=(budget).get("total_memory_bytes"),
+            total_gpu_count=(budget).get("total_gpu_count"),
         )
 
     assert len(bodies) == 2
     for body in bodies:
         assert body["auto_refresh_enabled"] is True
         for key, value in budget.items():
-            assert body["default_" + key] == value
-        assert "default_total_gpu_count" not in body
+            assert body[key] == value
+        assert "total_gpu_count" not in body
         assert body["new_columns"] == [{"name": "embedding", "all_null": True}]
 
 

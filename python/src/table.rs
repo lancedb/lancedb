@@ -63,6 +63,7 @@ struct RefreshColumnArgs {
     supervisor_resources: Option<FunctionRefreshPodResources>,
     planning_workers: Option<FunctionRefreshPlanningConfig>,
     gpu_class: Option<String>,
+    gpu_count: Option<u32>,
     total_gpu_count: Option<i64>,
     retry_policy: Option<String>,
     error_policy: Option<String>,
@@ -222,6 +223,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         supervisor_resources,
         planning_workers,
         gpu_class,
+        gpu_count,
         total_gpu_count,
         retry_policy,
         error_policy,
@@ -281,6 +283,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
     options.supervisor_resources = supervisor_resources;
     options.planning_workers = planning_workers;
     options.gpu_class = gpu_class;
+    options.gpu_count = gpu_count;
     options.total_gpu_count = total_gpu_count
         .map(|count| {
             u32::try_from(count).ok().ok_or_else(|| {
@@ -2664,23 +2667,28 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, default_total_cpu_millis=None, default_total_memory_bytes=None, default_total_gpu_count=None))]
+    #[pyo3(signature = (columns, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn add_computed_columns<'py>(
         self_: PyRef<'py, Self>,
         columns: Vec<(String, String)>,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<u64>,
-        default_total_cpu_millis: Option<u64>,
-        default_total_memory_bytes: Option<u64>,
-        default_total_gpu_count: Option<u32>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
             auto_refresh_interval_seconds,
-            default_total_cpu_millis,
-            default_total_memory_bytes,
-            default_total_gpu_count,
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class,
+            gpu_count,
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
@@ -2697,7 +2705,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, default_total_cpu_millis=None, default_total_memory_bytes=None, default_total_gpu_count=None))]
+    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn add_function_columns<'py>(
         self_: PyRef<'py, Self>,
@@ -2705,9 +2713,11 @@ impl Table {
         output_name: Option<String>,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<u64>,
-        default_total_cpu_millis: Option<u64>,
-        default_total_memory_bytes: Option<u64>,
-        default_total_gpu_count: Option<u32>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let application =
             lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
@@ -2715,9 +2725,11 @@ impl Table {
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
             auto_refresh_interval_seconds,
-            default_total_cpu_millis,
-            default_total_memory_bytes,
-            default_total_gpu_count,
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class,
+            gpu_count,
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
@@ -2734,7 +2746,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column<'py>(
         self_: PyRef<'py, Self>,
@@ -2748,6 +2760,7 @@ impl Table {
         supervisor_resources: Option<Bound<'py, PyDict>>,
         planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
+        gpu_count: Option<u32>,
         total_gpu_count: Option<i64>,
         retry_policy: Option<String>,
         error_policy: Option<String>,
@@ -2780,6 +2793,7 @@ impl Table {
             supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
             planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
+            gpu_count,
             total_gpu_count,
             retry_policy,
             error_policy,
@@ -2800,7 +2814,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async<'py>(
         self_: PyRef<'py, Self>,
@@ -2814,6 +2828,7 @@ impl Table {
         supervisor_resources: Option<Bound<'py, PyDict>>,
         planning_workers: Option<Bound<'py, PyDict>>,
         gpu_class: Option<String>,
+        gpu_count: Option<u32>,
         total_gpu_count: Option<i64>,
         retry_policy: Option<String>,
         error_policy: Option<String>,
@@ -2846,6 +2861,7 @@ impl Table {
             supervisor_resources: parse_supervisor_resources(supervisor_resources.as_ref())?,
             planning_workers: parse_planning_workers(planning_workers.as_ref())?,
             gpu_class,
+            gpu_count,
             total_gpu_count,
             retry_policy,
             error_policy,
@@ -2981,7 +2997,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None))]
+    #[pyo3(signature = (source_version=None, *, full=false, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
@@ -2991,6 +3007,7 @@ impl Table {
         total_memory_bytes: Option<u64>,
         total_gpu_count: Option<u32>,
         gpu_class: Option<String>,
+        gpu_count: Option<u32>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -3009,6 +3026,9 @@ impl Table {
             }
             if let Some(value) = gpu_class {
                 builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
             }
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
@@ -3018,7 +3038,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None, *, full=false, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None))]
+    #[pyo3(signature = (source_version=None, *, full=false, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
@@ -3028,6 +3048,7 @@ impl Table {
         total_memory_bytes: Option<u64>,
         total_gpu_count: Option<u32>,
         gpu_class: Option<String>,
+        gpu_count: Option<u32>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -3046,6 +3067,9 @@ impl Table {
             }
             if let Some(value) = gpu_class {
                 builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
             }
             if let Some(version) = source_version {
                 builder = builder.source_version(version);

@@ -951,21 +951,21 @@ def test_gpu_wire_count_is_a_strict_positive_uint32(count):
 
 def test_function_annotation_carries_independent_total_defaults():
     definition = function(
-        default_total_cpu_millis=8000,
-        default_total_memory_bytes=16 * 1024**3,
-        default_total_gpu_count=0,
+        total_cpu_millis=8000,
+        total_memory_bytes=16 * 1024**3,
+        total_gpu_count=0,
     )(normalize_score.__wrapped__)
     request = json.loads(definition.registration_request.to_canonical_json())
-    assert request["default_total_cpu_millis"] == 8000
-    assert request["default_total_memory_bytes"] == 16 * 1024**3
-    assert request["default_total_gpu_count"] == 0
+    assert request["total_cpu_millis"] == 8000
+    assert request["total_memory_bytes"] == 16 * 1024**3
+    assert request["total_gpu_count"] == 0
     assert "gpu" not in request["runtime"]
     for values in (
-        {"default_total_cpu_millis": 0},
-        {"default_total_memory_bytes": True},
-        {"default_total_memory_bytes": 2**64},
-        {"default_total_gpu_count": -1},
-        {"default_total_gpu_count": 2**32},
+        {"total_cpu_millis": 0},
+        {"total_memory_bytes": True},
+        {"total_memory_bytes": 2**64},
+        {"total_gpu_count": -1},
+        {"total_gpu_count": 2**32},
     ):
         with pytest.raises(ValueError):
             function(**values)(normalize_score.__wrapped__)

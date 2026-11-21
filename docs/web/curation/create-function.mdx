@@ -502,18 +502,21 @@ as `bytes`; this feature does not add streamed outputs.
 
 ## Default execution budgets
 
-`default_total_cpu_millis`, `default_total_memory_bytes`, and
-`default_total_gpu_count` supply execution-wide defaults. CPU is in millicores
+`total_cpu_millis`, `total_memory_bytes`, and
+`total_gpu_count` supply execution-wide defaults. CPU is in millicores
 (1000 = one core), memory is in bytes, and GPU count is a total across workers.
-Each resource resolves independently in this order:
+All five resource settings use the same names at registration, creation, and
+refresh. Each resolves independently in this order:
 
-1. The refresh's `total_*` value.
-2. The column or materialized view's `default_total_*` value.
-3. The registered Function's `default_total_*` value.
+1. The refresh's value.
+2. The column or materialized view's value.
+3. The registered Function's value.
 4. The deployment default.
 
-For a materialized view using multiple Functions, the third layer adds each
-resource across distinct pinned Function versions. Calling the same version
+For a materialized view using multiple Functions, the third layer adds the
+`total_*` budgets across distinct pinned Function versions. Its per-worker GPU
+count uses the largest Function default, and GPU classes must be compatible
+unless the declaration or refresh overrides the class. Calling the same version
 more than once counts it once. Column and view defaults also apply when the
 service schedules a refresh automatically. Integer overflow or a budget that
 cannot fit a required worker is rejected.
@@ -523,26 +526,33 @@ cannot fit a required worker is rejected.
     gpu=True,
     gpu_class="h100",
     gpu_count=2,
-    default_total_cpu_millis=8000,
-    default_total_memory_bytes=16 * 1024**3,
-    default_total_gpu_count=4,
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=4,
 )
 def embed(text: str) -> list[float]: ...
 
 version = db.create_function(embed)
 table.add_columns(
     {"embedding": version(text=col("text"))},
-    default_total_gpu_count=8,
+    gpu_class="any",
+    gpu_count=1,
+    total_gpu_count=8,
 )
-table.refresh_column("embedding", total_gpu_count=4)
+table.refresh_column("embedding", gpu_class="h100", gpu_count=4, total_gpu_count=8)
 
 db.create_materialized_view(
     "embeddings", query="SELECT embed(text) AS embedding FROM documents",
-    default_total_cpu_millis=16000,
-    default_total_gpu_count=8,
+    total_cpu_millis=16000,
+    gpu_class="any",
+    gpu_count=2,
+    total_gpu_count=8,
 )
 ```
 
-`gpu_count=2` still allocates two devices together to every Function worker.
-The `total_*` and `default_total_*` values are ceilings for the whole worker
-fleet. CPU and memory can limit the fleet before it reaches its GPU ceiling.
+`gpu_class` selects the GPU pool and `gpu_count` selects the positive number
+of devices allocated together to each worker. Both can be overridden at
+column/MV creation and refresh. An explicit `gpu_class="any"` replaces a
+registered class with any eligible configured pool. These settings require a
+GPU Function for computed columns. The `total_*` values are ceilings for the
+whole worker fleet. CPU and memory can limit the fleet before it reaches its GPU ceiling.

@@ -1057,6 +1057,11 @@ export abstract class Table {
   abstract refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    totalCpuMillis?: number,
+    totalMemoryBytes?: number,
+    totalGpuCount?: number,
+    gpuClass?: string,
+    gpuCount?: number,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -2038,8 +2043,21 @@ export class LocalTable extends Table {
   async refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    totalCpuMillis?: number,
+    totalMemoryBytes?: number,
+    totalGpuCount?: number,
+    gpuClass?: string,
+    gpuCount?: number,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion, full);
+    return await this.inner.refreshMaterializedView(
+      sourceVersion,
+      full,
+      totalCpuMillis,
+      totalMemoryBytes,
+      totalGpuCount,
+      gpuClass,
+      gpuCount,
+    );
   }
 
   async materializedViewDefinition(): Promise<string> {

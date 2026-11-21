@@ -312,9 +312,11 @@ impl Connection {
         filter: Option<String>,
         limit: Option<i64>,
         with_no_data: bool,
-        default_total_cpu_millis: Option<f64>,
-        default_total_memory_bytes: Option<f64>,
-        default_total_gpu_count: Option<f64>,
+        total_cpu_millis: Option<f64>,
+        total_memory_bytes: Option<f64>,
+        total_gpu_count: Option<f64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<f64>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.create_materialized_view(name, source);
         if let Some(projections) = projections {
@@ -337,24 +339,14 @@ impl Connection {
         }
         const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
         for (name, value, maximum, minimum) in [
+            ("total_cpu_millis", total_cpu_millis, MAX_SAFE_INTEGER, 1.0),
             (
-                "default_total_cpu_millis",
-                default_total_cpu_millis,
+                "total_memory_bytes",
+                total_memory_bytes,
                 MAX_SAFE_INTEGER,
                 1.0,
             ),
-            (
-                "default_total_memory_bytes",
-                default_total_memory_bytes,
-                MAX_SAFE_INTEGER,
-                1.0,
-            ),
-            (
-                "default_total_gpu_count",
-                default_total_gpu_count,
-                u32::MAX as f64,
-                0.0,
-            ),
+            ("total_gpu_count", total_gpu_count, u32::MAX as f64, 0.0),
         ] {
             if let Some(value) = value {
                 if !value.is_finite() || value.fract() != 0.0 || value < minimum || value > maximum
@@ -364,13 +356,25 @@ impl Connection {
                     )));
                 }
                 builder = match name {
-                    "default_total_cpu_millis" => builder.default_total_cpu_millis(value as u64),
-                    "default_total_memory_bytes" => {
-                        builder.default_total_memory_bytes(value as u64)
-                    }
-                    _ => builder.default_total_gpu_count(value as u32),
+                    "total_cpu_millis" => builder.total_cpu_millis(value as u64),
+                    "total_memory_bytes" => builder.total_memory_bytes(value as u64),
+                    _ => builder.total_gpu_count(value as u32),
                 };
             }
+        }
+        if let Some(class) = gpu_class {
+            builder = builder.gpu_class(class);
+        }
+        if let Some(count) = gpu_count {
+            if !count.is_finite()
+                || count.fract() != 0.0
+                || !(1.0..=u32::MAX as f64).contains(&count)
+            {
+                return Err(napi::Error::from_reason(
+                    "gpuCount must be an integer between 1 and 4294967295",
+                ));
+            }
+            builder = builder.gpu_count(count as u32);
         }
         builder = builder.with_no_data(with_no_data);
         let view = builder.execute().await.default_error()?;

@@ -707,21 +707,21 @@ pub struct FunctionVersion {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_default_total_cpu_millis"
+        deserialize_with = "deserialize_total_cpu_millis"
     )]
-    default_total_cpu_millis: Option<u64>,
+    total_cpu_millis: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_default_total_memory_bytes"
+        deserialize_with = "deserialize_total_memory_bytes"
     )]
-    default_total_memory_bytes: Option<u64>,
+    total_memory_bytes: Option<u64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_default_total_gpu_count"
+        deserialize_with = "deserialize_total_gpu_count"
     )]
-    default_total_gpu_count: Option<u32>,
+    total_gpu_count: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     row_timeout_seconds: Option<RowTimeoutSeconds>,
@@ -821,18 +821,18 @@ impl FunctionVersion {
     }
 
     /// Default total CPU budget for executions of this pinned Function.
-    pub fn default_total_cpu_millis(&self) -> Option<u64> {
-        self.default_total_cpu_millis
+    pub fn total_cpu_millis(&self) -> Option<u64> {
+        self.total_cpu_millis
     }
 
     /// Default total memory budget for executions of this pinned Function.
-    pub fn default_total_memory_bytes(&self) -> Option<u64> {
-        self.default_total_memory_bytes
+    pub fn total_memory_bytes(&self) -> Option<u64> {
+        self.total_memory_bytes
     }
 
     /// Default aggregate GPU budget, independent of the per-worker device count.
-    pub fn default_total_gpu_count(&self) -> Option<u32> {
-        self.default_total_gpu_count
+    pub fn total_gpu_count(&self) -> Option<u32> {
+        self.total_gpu_count
     }
 
     /// Default maximum rows in one callable batch, when declared.
@@ -962,46 +962,42 @@ where
     Ok(value)
 }
 
-fn deserialize_default_total_cpu_millis<'de, D>(
+fn deserialize_total_cpu_millis<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = Option::<u64>::deserialize(deserializer)
-        .map_err(|error| de::Error::custom(format!("default_total_cpu_millis: {error}")))?;
+        .map_err(|error| de::Error::custom(format!("total_cpu_millis: {error}")))?;
     if value == Some(0) {
-        return Err(de::Error::custom(
-            "default_total_cpu_millis must be positive",
-        ));
+        return Err(de::Error::custom("total_cpu_millis must be positive"));
     }
     Ok(value)
 }
 
-fn deserialize_default_total_memory_bytes<'de, D>(
+fn deserialize_total_memory_bytes<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = Option::<u64>::deserialize(deserializer)
-        .map_err(|error| de::Error::custom(format!("default_total_memory_bytes: {error}")))?;
+        .map_err(|error| de::Error::custom(format!("total_memory_bytes: {error}")))?;
     if value == Some(0) {
-        return Err(de::Error::custom(
-            "default_total_memory_bytes must be positive",
-        ));
+        return Err(de::Error::custom("total_memory_bytes must be positive"));
     }
     Ok(value)
 }
 
-fn deserialize_default_total_gpu_count<'de, D>(
+fn deserialize_total_gpu_count<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u32>, D::Error>
 where
     D: Deserializer<'de>,
 {
     Option::<u32>::deserialize(deserializer)
-        .map_err(|error| de::Error::custom(format!("default_total_gpu_count: {error}")))
+        .map_err(|error| de::Error::custom(format!("total_gpu_count: {error}")))
 }
 
 fn deserialize_max_concurrency<'de, D>(
@@ -1078,23 +1074,23 @@ pub struct FunctionRegistrationRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_default_total_cpu_millis"
+        deserialize_with = "deserialize_total_cpu_millis"
     )]
-    pub default_total_cpu_millis: Option<u64>,
+    pub total_cpu_millis: Option<u64>,
     /// Default total memory for one execution, in bytes.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_default_total_memory_bytes"
+        deserialize_with = "deserialize_total_memory_bytes"
     )]
-    pub default_total_memory_bytes: Option<u64>,
+    pub total_memory_bytes: Option<u64>,
     /// Default total GPUs across one execution's workers.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_default_total_gpu_count"
+        deserialize_with = "deserialize_total_gpu_count"
     )]
-    pub default_total_gpu_count: Option<u32>,
+    pub total_gpu_count: Option<u32>,
     /// Deadline for each Python call, in seconds: one row for scalar Functions
     /// and one batch for vectorized Functions. It does not govern Function
     /// initialization.
@@ -1135,9 +1131,9 @@ impl FunctionRegistrationRequest {
         let invalid_input = |message: &'static str| Error::InvalidInput {
             message: message.to_string(),
         };
-        if self.default_total_cpu_millis == Some(0) || self.default_total_memory_bytes == Some(0) {
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
             return Err(invalid_input(
-                "default_total_cpu_millis and default_total_memory_bytes must be positive integers",
+                "total_cpu_millis and total_memory_bytes must be positive integers",
             ));
         }
         validate_batch_size_value(self.batch_size).map_err(invalid_input)?;

@@ -301,9 +301,11 @@ pub struct CreateMaterializedViewRequest {
     pub auto_refresh_enabled: Option<bool>,
     /// Refresh interval in seconds. When absent, the server determines when to refresh.
     pub auto_refresh_interval_seconds: Option<f64>,
-    pub default_total_cpu_millis: Option<u64>,
-    pub default_total_memory_bytes: Option<u64>,
-    pub default_total_gpu_count: Option<u32>,
+    pub total_cpu_millis: Option<u64>,
+    pub total_memory_bytes: Option<u64>,
+    pub total_gpu_count: Option<u32>,
+    pub gpu_class: Option<String>,
+    pub gpu_count: Option<u32>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -1594,9 +1596,11 @@ pub struct CreateMaterializedViewBuilder {
     exist_ok: bool,
     auto_refresh_enabled: Option<bool>,
     auto_refresh_interval_seconds: Option<f64>,
-    default_total_cpu_millis: Option<u64>,
-    default_total_memory_bytes: Option<u64>,
-    default_total_gpu_count: Option<u32>,
+    total_cpu_millis: Option<u64>,
+    total_memory_bytes: Option<u64>,
+    total_gpu_count: Option<u32>,
+    gpu_class: Option<String>,
+    gpu_count: Option<u32>,
 }
 
 enum MaterializedViewInput {
@@ -1638,9 +1642,11 @@ impl CreateMaterializedViewBuilder {
             exist_ok: false,
             auto_refresh_enabled: None,
             auto_refresh_interval_seconds: None,
-            default_total_cpu_millis: None,
-            default_total_memory_bytes: None,
-            default_total_gpu_count: None,
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+            gpu_class: None,
+            gpu_count: None,
         }
     }
 
@@ -1793,20 +1799,32 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// Set the default total cpu millis budget for this materialized view.
-    pub fn default_total_cpu_millis(mut self, value: u64) -> Self {
-        self.default_total_cpu_millis = Some(value);
+    pub fn total_cpu_millis(mut self, value: u64) -> Self {
+        self.total_cpu_millis = Some(value);
         self
     }
 
     /// Set the default total memory bytes budget for this materialized view.
-    pub fn default_total_memory_bytes(mut self, value: u64) -> Self {
-        self.default_total_memory_bytes = Some(value);
+    pub fn total_memory_bytes(mut self, value: u64) -> Self {
+        self.total_memory_bytes = Some(value);
         self
     }
 
     /// Set the default total gpu count budget for this materialized view.
-    pub fn default_total_gpu_count(mut self, value: u32) -> Self {
-        self.default_total_gpu_count = Some(value);
+    pub fn total_gpu_count(mut self, value: u32) -> Self {
+        self.total_gpu_count = Some(value);
+        self
+    }
+
+    /// Set the default GPU pool for initial population and later refreshes.
+    pub fn gpu_class(mut self, class: impl Into<String>) -> Self {
+        self.gpu_class = Some(class.into());
+        self
+    }
+
+    /// Set the default positive GPU count for each worker.
+    pub fn gpu_count(mut self, count: u32) -> Self {
+        self.gpu_count = Some(count);
         self
     }
 
@@ -1826,9 +1844,11 @@ impl CreateMaterializedViewBuilder {
                     with_no_data: self.with_no_data,
                     auto_refresh_enabled: self.auto_refresh_enabled,
                     auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
-                    default_total_cpu_millis: self.default_total_cpu_millis,
-                    default_total_memory_bytes: self.default_total_memory_bytes,
-                    default_total_gpu_count: self.default_total_gpu_count,
+                    total_cpu_millis: self.total_cpu_millis,
+                    total_memory_bytes: self.total_memory_bytes,
+                    total_gpu_count: self.total_gpu_count,
+                    gpu_class: self.gpu_class.clone(),
+                    gpu_count: self.gpu_count,
                 })
                 .await;
         }
@@ -1864,9 +1884,11 @@ impl CreateMaterializedViewBuilder {
         }
         if self.auto_refresh_enabled == Some(true)
             || self.auto_refresh_interval_seconds.is_some()
-            || self.default_total_cpu_millis.is_some()
-            || self.default_total_memory_bytes.is_some()
-            || self.default_total_gpu_count.is_some()
+            || self.total_cpu_millis.is_some()
+            || self.total_memory_bytes.is_some()
+            || self.total_gpu_count.is_some()
+            || self.gpu_class.is_some()
+            || self.gpu_count.is_some()
         {
             return Err(Error::NotSupported {
                 message: "automatic materialized-view refresh requires LanceDB Enterprise"
@@ -2006,6 +2028,7 @@ pub struct RefreshMaterializedViewOptions {
     pub total_memory_bytes: Option<u64>,
     pub total_gpu_count: Option<u32>,
     pub gpu_class: Option<String>,
+    pub gpu_count: Option<u32>,
 }
 
 impl RefreshMaterializedViewOptions {
@@ -2014,6 +2037,7 @@ impl RefreshMaterializedViewOptions {
             && self.total_memory_bytes.is_none()
             && self.total_gpu_count.is_none()
             && self.gpu_class.is_none()
+            && self.gpu_count.is_none()
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -2030,6 +2054,16 @@ impl RefreshMaterializedViewOptions {
             if self.total_gpu_count == Some(0) {
                 return Err(invalid("gpu_class requires a positive GPU budget"));
             }
+        }
+        if self.gpu_count == Some(0) {
+            return Err(invalid("gpu_count must be positive"));
+        }
+        if self
+            .gpu_count
+            .zip(self.total_gpu_count)
+            .is_some_and(|(per_worker, total)| per_worker > total)
+        {
+            return Err(invalid("total_gpu_count cannot fit one Function worker"));
         }
         Ok(())
     }
@@ -2051,6 +2085,9 @@ impl RefreshMaterializedViewOptions {
         }
         if let Some(class) = &self.gpu_class {
             values.push(format!("gpu_class = '{class}'"));
+        }
+        if let Some(count) = self.gpu_count {
+            values.push(format!("gpu_count = {count}"));
         }
         Ok(if values.is_empty() {
             String::new()
@@ -2088,6 +2125,12 @@ impl RefreshMaterializedViewBuilder {
     }
 
     /// Select an operator-configured GPU class for this execution only.
+    /// Set the positive number of GPUs allocated to each worker.
+    pub fn gpu_count(mut self, count: u32) -> Self {
+        self.options.gpu_count = Some(count);
+        self
+    }
+
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.options.gpu_class = Some(gpu_class.into());
         self

@@ -773,10 +773,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn refresh_materialized_view(
         &self,
         source_version: Option<i64>,
         full: Option<bool>,
+        total_cpu_millis: Option<f64>,
+        total_memory_bytes: Option<f64>,
+        total_gpu_count: Option<f64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<f64>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
@@ -787,6 +793,30 @@ impl Table {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
             })?;
             builder = builder.source_version(version);
+        }
+        let resources: lancedb::table::RefreshColumnOptions = RefreshColumnOptions {
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class,
+            gpu_count,
+            ..Default::default()
+        }
+        .try_into()?;
+        if let Some(value) = resources.total_cpu_millis {
+            builder = builder.total_cpu_millis(value);
+        }
+        if let Some(value) = resources.total_memory_bytes {
+            builder = builder.total_memory_bytes(value);
+        }
+        if let Some(value) = resources.total_gpu_count {
+            builder = builder.total_gpu_count(value);
+        }
+        if let Some(value) = resources.gpu_class {
+            builder = builder.gpu_class(value);
+        }
+        if let Some(value) = resources.gpu_count {
+            builder = builder.gpu_count(value);
         }
         let result = builder.execute().await.default_error()?;
         Ok(result.into())
@@ -2014,6 +2044,8 @@ pub struct RefreshColumnOptions {
     pub max_concurrency: Option<f64>,
     /// GPU class for Function workers.
     pub gpu_class: Option<String>,
+    /// Positive GPU count allocated to each Function worker.
+    pub gpu_count: Option<f64>,
     /// Override the total CPU budget in millicores for this refresh.
     pub total_cpu_millis: Option<f64>,
     /// Override the total memory budget in bytes for this refresh.
@@ -2058,6 +2090,7 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
             .transpose()?;
         options.max_concurrency = positive_u32(value.max_concurrency, "maxConcurrency")?;
         options.gpu_class = value.gpu_class;
+        options.gpu_count = positive_u32(value.gpu_count, "gpuCount")?;
         options.total_cpu_millis = value
             .total_cpu_millis
             .map(|value| positive_safe_integer(value, "totalCpuMillis"))

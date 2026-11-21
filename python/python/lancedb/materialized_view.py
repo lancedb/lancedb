@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 import json
 from dataclasses import dataclass
 
-from .functions import _validate_gpu_class_name
 from .background_loop import LOOP
 from .job import AsyncJob, Job, _typed_job
 from .resources import _resource_options
@@ -169,13 +168,15 @@ def normalize_select(select: SelectArg) -> Optional[List[Tuple[str, str]]]:
 
 
 def _refresh_execution_options(
-    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
+    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class, gpu_count=None
 ):
-    values = _resource_options(total_cpu_millis, total_memory_bytes, total_gpu_count)
-    if gpu_class is not None:
-        values["gpu_class"] = _validate_gpu_class_name(gpu_class)
-        if total_gpu_count == 0:
-            raise ValueError("gpu_class requires a positive GPU budget")
+    values = _resource_options(
+        total_cpu_millis,
+        total_memory_bytes,
+        total_gpu_count,
+        gpu_class=gpu_class,
+        gpu_count=gpu_count,
+    )
     return {name: value for name, value in values.items() if value is not None}
 
 
@@ -216,6 +217,7 @@ class AsyncMaterializedView:
         total_memory_bytes: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
@@ -243,7 +245,11 @@ class AsyncMaterializedView:
             source_version=source_version,
             full=full,
             **_refresh_execution_options(
-                total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
+                gpu_class,
+                gpu_count=gpu_count,
             ),
         )
 
@@ -256,6 +262,7 @@ class AsyncMaterializedView:
         total_memory_bytes: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
@@ -276,7 +283,11 @@ class AsyncMaterializedView:
                 source_version=source_version,
                 full=full,
                 **_refresh_execution_options(
-                    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
+                    total_cpu_millis,
+                    total_memory_bytes,
+                    total_gpu_count,
+                    gpu_class,
+                    gpu_count=gpu_count,
                 ),
             ),
             RefreshMaterializedViewResult.from_json,
@@ -317,6 +328,7 @@ class MaterializedView:
         total_memory_bytes: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source. See
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
@@ -325,7 +337,11 @@ class MaterializedView:
                 full=full,
                 source_version=source_version,
                 **_refresh_execution_options(
-                    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
+                    total_cpu_millis,
+                    total_memory_bytes,
+                    total_gpu_count,
+                    gpu_class,
+                    gpu_count=gpu_count,
                 ),
             )
         )
@@ -339,6 +355,7 @@ class MaterializedView:
         total_memory_bytes: Optional[int] = None,
         total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
@@ -351,7 +368,11 @@ class MaterializedView:
                     full=full,
                     source_version=source_version,
                     **_refresh_execution_options(
-                        total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
+                        total_cpu_millis,
+                        total_memory_bytes,
+                        total_gpu_count,
+                        gpu_class,
+                        gpu_count=gpu_count,
                     ),
                 )
             )

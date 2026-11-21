@@ -386,7 +386,7 @@ await job.wait();
 </CodeGroup>
 
 Each supplied `total_*` value overrides that resource for this refresh.
-Unspecified values inherit the column's `default_total_*` settings, then the
+Unspecified values inherit the column's `total_*` settings, then the
 pinned Function's defaults, then the deployment defaults. `total_gpu_count=0`
 limits the refresh to CPU workers and cannot run a GPU Function.
 
@@ -485,8 +485,8 @@ The SDK validates the shape and sends these values only with this explicit
 refresh request. A supporting LanceDB Enterprise server is required.
 */}
 
-A Function column may set `default_total_cpu_millis`,
-`default_total_memory_bytes`, and `default_total_gpu_count` on `add_columns`.
+A Function column may set `total_cpu_millis`,
+`total_memory_bytes`, and `total_gpu_count` on `add_columns`.
 These override the Function defaults for both manual and automatic refreshes.
 The settings apply to registered Function columns; SQL-expression columns use
 `num_workers` instead.
@@ -637,11 +637,13 @@ async fn refresh(
 </CodeGroup>
 
 `total_gpu_count` is the aggregate GPU budget for the refresh's Function workers,
-not a request for that many GPUs per worker. It must be positive and preserves
-the deployment's CPU and memory defaults.
+and `gpu_count` is the positive number of devices allocated together to each
+worker. The total budget must fit at least one worker. Omitted CPU and memory
+values inherit column settings, then Function settings, then deployment defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
-are lowercase DNS labels. Omit either option to use the Function's registered
-class or the server's configured budget. `list_gpu_classes()` requires System
+are lowercase DNS labels; `"any"` accepts any eligible configured class. Each
+omitted setting inherits the column's setting, then the Function's setting,
+then the deployment default. `list_gpu_classes()` requires System
 Usage permission, and raises `NotImplementedError` when the server predates
 GPU class discovery.
 

@@ -6864,8 +6864,8 @@ def test_auto_refresh_resource_budget_requires_a_function(tmp_path):
     with pytest.raises(ValueError, match="registered Function"):
         table.add_columns(
             computed={"doubled": "x * 2"},
-            default_total_cpu_millis=1_000,
-            default_total_memory_bytes=1_024,
+            total_cpu_millis=1_000,
+            total_memory_bytes=1_024,
         )
     assert table.version == before
     assert table.schema.names == ["x"]
