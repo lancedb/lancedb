@@ -316,7 +316,7 @@ Enterprise execution":
 
 ### Typed states and attempt identity
 
-The existing `id` and string status APIs keep their behavior. For a detailed
+The existing identity and string status APIs keep their behavior. For a detailed
 state, use Python's `status_typed()`, TypeScript's `statusTyped()`, or Rust's
 `status_typed()`. Known states are `created`, `queued`, `in_progress`,
 `succeeded`, `failed`, `canceled`, and `timed_out`. Unknown future states retain
@@ -324,22 +324,24 @@ their original value and never establish success.
 
 The detail getters report the last observation. Call `status()` or `refresh()`
 to populate registry metadata. A handle that follows recovery can select a
-different attempt during either call while the existing `id` stays unchanged.
-Save `job_id` (`jobId` in TypeScript) after refreshing and use that saved value
-throughout an exact-attempt diagnostic read; refreshing again may select a
-later attempt.
+different attempt during either call while the existing handle ID stays
+unchanged. Save Python's `job_id()` (`jobId` in TypeScript) after refreshing
+and use that saved value throughout an exact-attempt diagnostic read;
+refreshing again may select a later attempt.
 
-| Python field | Meaning |
+| Python method | Meaning |
 | --- | --- |
-| `job_id` | Identity of one attempt. Embedded identities last for the handle's lifetime and cannot be reopened. |
-| `operation_id` | Root of the explicit retry lineage, when reported. |
-| `attempt` | One-based attempt ordinal. Worker replacement does not increment it. |
-| `retry_of` | Immediate predecessor attempt, when reported. |
-| `source_table_version` | Source snapshot pinned for the attempt, when reported. |
-| `execution_epoch` | Execution fencing token, when reported. |
+| `job_id()` | Identity of one attempt. Embedded identities last for the handle's lifetime and cannot be reopened. |
+| `operation_id()` | Root of the explicit retry lineage, when reported. |
+| `attempt()` | One-based attempt ordinal. Worker replacement does not increment it. |
+| `retry_of()` | Immediate predecessor attempt, when reported. |
+| `lifecycle_state()` | Detailed cached lifecycle state, including unknown future values. |
+| `source_table_version()` | Source snapshot pinned for the attempt, when reported. |
+| `execution_epoch()` | Execution fencing token, when reported. |
 
-TypeScript exposes the same fields in camel case. Older servers may omit
-lineage and pin metadata; a missing value is unknown.
+Python data access uses synchronous methods on both handle types.
+TypeScript exposes the same values as camel-case properties. Older servers
+may omit lineage and pin metadata; a missing value is unknown.
 
 ### Retry an exact attempt
 
@@ -445,7 +447,7 @@ returning a cursor is rejected rather than treated as complete.
 <CodeGroup>
 ```python Python
 job.refresh()
-attempt_job_id = job.job_id
+attempt_job_id = job.job_id()
 token = ""
 while token is not None:
     errors = tbl.function_errors(job_id=attempt_job_id, limit=1000, page_token=token)

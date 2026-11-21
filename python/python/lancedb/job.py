@@ -315,22 +315,20 @@ class AsyncJob(Generic[T]):
             return "finished"
         return await self._inner.status()
 
-    @property
     def job_id(self) -> Optional[str]:
         """Identity of the selected attempt last observed by this handle.
 
         For operation handles, ``refresh()`` or ``status()`` can select a
-        different attempt while ``id`` stays unchanged. Save this value after
-        refreshing and use it throughout paged diagnostics. Local IDs cannot
+        different attempt while ``id()`` stays unchanged. Save this value after
+        refreshing and use it throughout paged diagnostics. Embedded IDs cannot
         be reopened on a server.
         """
         return (
-            getattr(self._inner, "job_id", self.id)
+            getattr(self._inner, "job_id", self.id())
             if self._inner is not None
             else self._local_job_id
         )
 
-    @property
     def operation_id(self) -> Optional[str]:
         """Root of the explicit retry lineage, when known."""
         return (
@@ -339,33 +337,28 @@ class AsyncJob(Generic[T]):
             else self._local_job_id
         )
 
-    @property
     def attempt(self) -> Optional[int]:
         """One-based attempt ordinal; worker replacement does not increment it."""
         return getattr(self._inner, "attempt", None) if self._inner is not None else 1
 
-    @property
     def retry_of(self) -> Optional[str]:
         """Immediate predecessor attempt, when supplied by the backend."""
         return getattr(self._inner, "retry_of", None)
 
-    @property
     def lifecycle_state(self) -> Optional[JobState]:
         """Detailed state last observed; unknown values never imply success."""
-        raw = getattr(self._inner, "lifecycle_state", None) or self.state
+        raw = getattr(self._inner, "lifecycle_state", None) or self.state()
         return JobState(raw) if raw is not None else None
 
     async def status_typed(self) -> JobState:
         """Refresh and return the detailed, forward-compatible lifecycle state."""
         state = await self.status()
-        return self.lifecycle_state or JobState(state)
+        return self.lifecycle_state() or JobState(state)
 
-    @property
     def source_table_version(self) -> Optional[int]:
         """Source snapshot pinned for this attempt, when reported."""
         return getattr(self._inner, "source_table_version", None)
 
-    @property
     def execution_epoch(self) -> Optional[int]:
         """Most recent execution's fencing token, when reported."""
         return getattr(self._inner, "execution_epoch", None)
@@ -882,48 +875,60 @@ class Job(Generic[T]):
     def __init__(self, inner: Optional[AsyncJob[T]]):
         self._inner = inner if inner is not None else AsyncJob(None)
 
-    @property
     def job_id(self) -> Optional[str]:
-        """Selected attempt ID; refresh can change it while ``id`` stays fixed.
+        """Selected attempt ID; refresh can change it while ``id()`` stays fixed.
 
         Save the value after refreshing for paged diagnostics.
-        See :attr:`AsyncJob.job_id`.
+        See [AsyncJob.job_id()][lancedb.job.AsyncJob.job_id].
         """
-        return self._inner.job_id
+        return self._inner.job_id()
 
-    @property
     def operation_id(self) -> Optional[str]:
-        """Root retry identity. See :attr:`AsyncJob.operation_id`."""
-        return self._inner.operation_id
+        """Root retry identity.
 
-    @property
+        See [AsyncJob.operation_id()][lancedb.job.AsyncJob.operation_id].
+        """
+        return self._inner.operation_id()
+
     def attempt(self) -> Optional[int]:
-        """One-based attempt ordinal. See :attr:`AsyncJob.attempt`."""
-        return self._inner.attempt
+        """One-based attempt ordinal.
 
-    @property
+        See [AsyncJob.attempt()][lancedb.job.AsyncJob.attempt].
+        """
+        return self._inner.attempt()
+
     def retry_of(self) -> Optional[str]:
-        """Immediate predecessor. See :attr:`AsyncJob.retry_of`."""
-        return self._inner.retry_of
+        """Immediate predecessor.
 
-    @property
+        See [AsyncJob.retry_of()][lancedb.job.AsyncJob.retry_of].
+        """
+        return self._inner.retry_of()
+
     def lifecycle_state(self) -> Optional[JobState]:
-        """Detailed state last observed. See :attr:`AsyncJob.lifecycle_state`."""
-        return self._inner.lifecycle_state
+        """Detailed state last observed.
+
+        See [AsyncJob.lifecycle_state()][lancedb.job.AsyncJob.lifecycle_state].
+        """
+        return self._inner.lifecycle_state()
 
     def status_typed(self) -> JobState:
         """Refresh the detailed lifecycle state. See :meth:`AsyncJob.status_typed`."""
         return LOOP.run(self._inner.status_typed())
 
-    @property
     def source_table_version(self) -> Optional[int]:
-        """Pinned source snapshot. See :attr:`AsyncJob.source_table_version`."""
-        return self._inner.source_table_version
+        """Pinned source snapshot.
 
-    @property
+        See the async handle's
+        [source_table_version()][lancedb.job.AsyncJob.source_table_version].
+        """
+        return self._inner.source_table_version()
+
     def execution_epoch(self) -> Optional[int]:
-        """Execution fencing token. See :attr:`AsyncJob.execution_epoch`."""
-        return self._inner.execution_epoch
+        """Execution fencing token.
+
+        See [AsyncJob.execution_epoch()][lancedb.job.AsyncJob.execution_epoch].
+        """
+        return self._inner.execution_epoch()
 
     def id(self) -> Optional[str]:
         """Return the operation's opaque server ID without a backend call.

@@ -70,17 +70,30 @@ async def test_job_checkout_latest_refreshes_the_complete_snapshot(
         creation_ms=2000, spec=spec, result=result, failure=failure
     )
     inner = SimpleNamespace(
-        _state=None, _description=None, job_type=None, status=AsyncMock()
+        id="operation-1",
+        _state=None,
+        _description=None,
+        job_type=None,
+        status=AsyncMock(),
     )
 
     async def observe():
         inner._state = state
         inner.job_type = "refresh_column"
         inner._description = description
+        inner.job_id = "attempt-2"
+        inner.operation_id = "operation-1"
+        inner.attempt = 2
+        inner.retry_of = "attempt-1"
+        inner.lifecycle_state = str(JobState(state))
+        inner.source_table_version = 7
+        inner.execution_epoch = 3
 
     inner.refresh = AsyncMock(side_effect=observe)
     job, call = job_snapshot(inner)
     assert job.state() is None
+    assert job.job_id() == "operation-1"
+    assert job.lifecycle_state() is None
     assert job.job_type() is None
     assert job.creation_ms() is None
     assert job.spec() is None
@@ -95,6 +108,14 @@ async def test_job_checkout_latest_refreshes_the_complete_snapshot(
     assert job.spec() is spec
     assert job.result() is result
     assert job.failure() is failure
+    assert job.id() == "operation-1"
+    assert job.job_id() == "attempt-2"
+    assert job.operation_id() == "operation-1"
+    assert job.attempt() == 2
+    assert job.retry_of() == "attempt-1"
+    assert job.lifecycle_state() == JobState(state)
+    assert job.source_table_version() == 7
+    assert job.execution_epoch() == 3
     inner.refresh.assert_awaited_once_with()
     inner.status.assert_not_called()
 
@@ -157,11 +178,11 @@ def test_local_jobs_retain_identity_and_typed_state(sync):
     job = AsyncJob(None)
     if sync:
         job = Job(job)
-    assert job.job_id == job.operation_id
-    assert job.job_id == job.job_id
-    assert job.attempt == 1
-    assert job.retry_of is None
-    assert job.lifecycle_state is JobState.SUCCEEDED
+    assert job.job_id() == job.operation_id()
+    assert job.job_id() == job.job_id()
+    assert job.attempt() == 1
+    assert job.retry_of() is None
+    assert job.lifecycle_state() is JobState.SUCCEEDED
 
 
 def test_unknown_job_state_is_preserved_without_becoming_success():
