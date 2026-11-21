@@ -794,18 +794,34 @@ def test_remote_create_rejects_invalid_interval_without_request(seconds):
 
 
 @pytest.mark.experimental_functions
-def test_namespace_forwards_automatic_refresh_request(tmp_path):
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"auto_refresh_enabled": True},
+        {"default_total_cpu_millis": 8000, "default_total_gpu_count": 0},
+        {"default_total_memory_bytes": 1024},
+    ],
+)
+def test_namespace_forwards_automatic_refresh_request(tmp_path, options):
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
-        db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
+        db.create_materialized_view("mv", "source", **options)
 
 
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
-async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"auto_refresh_enabled": True},
+        {"default_total_cpu_millis": 8000, "default_total_gpu_count": 0},
+        {"default_total_memory_bytes": 1024},
+    ],
+)
+async def test_async_namespace_forwards_automatic_refresh_request(tmp_path, options):
     db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
-        await db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
+        await db.create_materialized_view("mv", "source", **options)
 
 
 @pytest.mark.experimental_functions
