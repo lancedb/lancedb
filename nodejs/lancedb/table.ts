@@ -1408,6 +1408,15 @@ export abstract class Table {
    * full rescan and reinitialize it at the range end version.
    *
    * LanceDB Enterprise tables reject this operation.
+   *
+   * @example
+   * const delta = await table.delta("baseline");
+   * const reader = delta.insertedRows();
+   * console.log((await reader.schema()).fields.map((field) => field.name));
+   * for await (const batch of reader) {
+   *   console.log(batch.getChild("id")?.toJSON());
+   * }
+   * console.log(await delta.listTransactions());
    */
   async delta(
     // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
@@ -2547,14 +2556,20 @@ class TableDeltaReaderImpl implements TableDeltaReader {
       throw this.#error;
     }
     if (this.#schemaSetup === undefined) {
-      this.#schemaSetup = (async () => {
-        const native = await this.#getNative();
-        const schema = tableFromIPC(await native.schema()).schema;
-        this.#schema = schema;
-        return schema;
-      })();
+      this.#schemaSetup = this.#loadSchema();
     }
     return this.#schemaSetup;
+  }
+
+  async #loadSchema(): Promise<Schema> {
+    try {
+      const native = await this.#getNative();
+      const schema = tableFromIPC(await native.schema()).schema;
+      this.#schema = schema;
+      return schema;
+    } catch (error) {
+      return this.#fail(error);
+    }
   }
 
   next(): Promise<IteratorResult<RecordBatch>> {
@@ -2630,10 +2645,12 @@ class TableDeltaReaderImpl implements TableDeltaReader {
   }
 
   async #fail(error: unknown): Promise<never> {
-    this.#done = true;
-    this.#error = error;
-    await this.#release();
-    throw error;
+    if (this.#error === undefined) {
+      this.#done = true;
+      this.#error = error;
+      await this.#release();
+    }
+    throw this.#error;
   }
 
   async #release(): Promise<void> {

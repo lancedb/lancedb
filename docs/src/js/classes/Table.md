@@ -585,6 +585,18 @@ LanceDB Enterprise tables reject this operation.
 
 `Promise`&lt;[`TableDelta`](TableDelta.md)&gt;
 
+#### Example
+
+```ts
+const delta = await table.delta("baseline");
+const reader = delta.insertedRows();
+console.log((await reader.schema()).fields.map((field) => field.name));
+for await (const batch of reader) {
+  console.log(batch.getChild("id")?.toJSON());
+}
+console.log(await delta.listTransactions());
+```
+
 ***
 
 ### disableRTE()

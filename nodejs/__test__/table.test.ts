@@ -17,6 +17,7 @@ import {
   PhraseQuery,
   Query,
   Table,
+  TableDelta,
   TableDeltaReader,
   VectorQuery,
   blob,
@@ -4294,6 +4295,50 @@ describe("when dealing with table delta", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+
+  it("routes schema and Arrow decode failures through terminal cleanup", async () => {
+    let schemaOpens = 0;
+    const schemaFailure = new TableDelta({
+      insertedRows: async () => {
+        schemaOpens += 1;
+        return {
+          schema: async () => {
+            throw new Error("schema export failed");
+          },
+          next: async () => {
+            throw new Error("reader must not poll after schema failure");
+          },
+        };
+      },
+    } as never);
+
+    const schemaReader = schemaFailure.insertedRows();
+    await expect(schemaReader.schema()).rejects.toThrow("schema export failed");
+    await expect(schemaReader.next()).rejects.toThrow("schema export failed");
+    expect(schemaOpens).toBe(1);
+
+    const nextReader = schemaFailure.insertedRows();
+    await expect(nextReader.next()).rejects.toThrow("schema export failed");
+    expect(schemaOpens).toBe(2);
+
+    let decodeOpens = 0;
+    const decodeFailure = new TableDelta({
+      insertedRows: async () => {
+        decodeOpens += 1;
+        return {
+          schema: async () => Buffer.from("not an Arrow IPC schema"),
+          next: async () => {
+            throw new Error("reader must not poll after decode failure");
+          },
+        };
+      },
+    } as never);
+
+    const decodeReader = decodeFailure.insertedRows();
+    await expect(decodeReader.schema()).rejects.toThrow();
+    await expect(decodeReader.next()).rejects.toThrow();
+    expect(decodeOpens).toBe(1);
   });
 
   it("uses one reader cursor and releases it on early drop", async () => {
