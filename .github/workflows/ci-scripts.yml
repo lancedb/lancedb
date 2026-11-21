@@ -9,6 +9,7 @@ on:
       - python/pyproject.toml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/check_python_wheel.py
       - ci/extract_sdk_doc_links.py
       - ci/build_cli_linux.sh
       - ci/package_cli.py
@@ -23,6 +24,7 @@ on:
       - python/pyproject.toml
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
+      - ci/check_python_wheel.py
       - ci/extract_sdk_doc_links.py
       - ci/build_cli_linux.sh
       - ci/package_cli.py
