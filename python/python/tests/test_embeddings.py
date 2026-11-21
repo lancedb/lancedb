@@ -1242,3 +1242,28 @@ def test_cohere_default_model_is_not_a_retired_v2_model():
     assert cohere.name == "embed-multilingual-v3.0"
     assert "v2.0" not in cohere.name
     assert cohere.ndims() == 1024
+
+
+def test_cohere_embeds_in_batches_of_at_most_96_texts():
+    # Cohere's embed endpoint rejects requests with more than 96 texts.
+    from lancedb.embeddings.cohere import CohereEmbeddingFunction
+
+    calls = []
+
+    def fake_embed(texts, model, **kwargs):
+        assert len(texts) <= 96
+        calls.append(list(texts))
+        return MagicMock(embeddings=[[float(t)] for t in texts])
+
+    func = get_registry().get("cohere").create()
+    texts = [str(i) for i in range(200)]
+    client = MagicMock()
+    client.embed.side_effect = fake_embed
+    with (
+        patch.object(CohereEmbeddingFunction, "client", client),
+        patch.object(CohereEmbeddingFunction, "_init_client"),
+    ):
+        result = func.generate_embeddings(texts)
+
+    assert [len(c) for c in calls] == [96, 96, 8]
+    assert [r[0] for r in result] == [float(i) for i in range(200)]
