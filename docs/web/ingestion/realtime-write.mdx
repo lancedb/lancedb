@@ -209,11 +209,11 @@ frames.delete("frame_id IN (2000, 2001)")
 
 ### Disabling RTE {#disable}
 
-Stop writes and wait for in-flight writes to finish, then flush pending writes
-into the base table and disable. `checkpoint_rte()` only drains writes that
-existed when it started, so anything written during the checkpoint can be left
-behind. `disable_rte()` is rejected while the write-ahead log still holds rows,
-so run `checkpoint_rte()` first.
+On LanceDB Enterprise, stop writes and wait for in-flight writes to finish,
+then flush pending writes into the base table and disable. `checkpoint_rte()`
+only drains writes that existed when it started, so anything written during the
+checkpoint can be left behind. `disable_rte()` is rejected while the
+write-ahead log still holds rows, so run `checkpoint_rte()` first.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -221,6 +221,19 @@ frames.checkpoint_rte()
 frames.disable_rte()
 ```
 </CodeGroup>
+
+<Warning>
+On LanceDB Embedded, RTE can't currently be turned off once rows have been
+written through it. `checkpoint_rte()` isn't supported on local tables and
+fails with a not-supported error (`NotImplementedError` in Python), and
+`disable_rte()` is rejected once any rows have been written through RTE.
+`disable_rte()` works only before the first RTE write.
+
+In 0.41.0, `disable_rte()` on an Embedded table wasn't rejected: it succeeded,
+and rows not yet merged into the base table stopped appearing in reads.
+Running `enable_rte` again with the same spec makes them visible again. On
+0.41.0, don't call `disable_rte()` after writing through RTE.
+</Warning>
 
 ## Write throughput {#write-throughput}
 
