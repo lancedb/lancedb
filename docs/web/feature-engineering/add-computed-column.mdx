@@ -75,7 +75,8 @@ Function declarations can set `default_total_cpu_millis`,
 `default_total_memory_bytes`, and `default_total_gpu_count`. Each optional
 value supplies a default for both manual and automatic refreshes.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.add_columns(
     {"caption": version(jpeg=col("jpeg"))},
     default_total_cpu_millis=8000,
@@ -83,6 +84,23 @@ table.add_columns(
     default_total_gpu_count=2,
 )
 ```
+
+```rust Rust icon="rust"
+use lancedb::table::computed_columns::ComputedColumnOptions;
+
+table
+    .add_columns()
+    .function(function_application)
+    .computed_options(ComputedColumnOptions {
+        default_total_cpu_millis: Some(8000),
+        default_total_memory_bytes: Some(16 * 1024_u64.pow(3)),
+        default_total_gpu_count: Some(2),
+        ..Default::default()
+    })
+    .execute()
+    .await?;
+```
+</CodeGroup>
 
 Refresh `total_*` values override these column defaults. Unspecified column
 values inherit the pinned Function's `default_total_*` settings, then the
