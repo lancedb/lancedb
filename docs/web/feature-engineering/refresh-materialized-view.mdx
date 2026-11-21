@@ -60,20 +60,20 @@ LanceDB Embedded it always matches `rows_written` from the most recent
 refresh.
 
 {/*
-Draft: publish this section after the Python/Rust resource-budget SDK support
-is released. TypeScript parity is tracked separately in issue #4903.
+Draft: publish this section after the resource-control SDK support is released.
 
 ## Resource budgets {#resources}
 
-For training-data curation, bound the resources used to recompute a view:
+Bound the resources used to recompute a view:
 
 <CodeGroup>
 ```python Python icon="python"
 job = view.refresh_async(
     total_cpu_millis=8000,
     total_memory_bytes=16 * 1024**3,
-    total_gpu_count=2,
+    total_gpu_count=4,
     gpu_class="h100",
+    gpu_count=2,
 )
 job.wait()
 ```
@@ -86,34 +86,42 @@ async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
         .refresh()
         .total_cpu_millis(8000)
         .total_memory_bytes(16_u64 << 30)
-        .total_gpu_count(2)
+        .total_gpu_count(4)
         .gpu_class("h100")
+        .gpu_count(2)
         .execute_async()
         .await?;
     job.wait().await?;
     Ok(())
 }
 ```
+
+```typescript TypeScript icon="js"
+await view.refresh({
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  totalGpuCount: 4,
+  gpuClass: "h100",
+  gpuCount: 2,
+});
+```
 </CodeGroup>
 
-The same options are available on `refresh`, asynchronous Python connections,
-and the Rust refresh builder (`total_cpu_millis`, `total_memory_bytes`, `total_gpu_count`, and
-`gpu_class`). CPU is in millicores (8000 means eight cores), memory is bytes,
-and GPU count is an aggregate concurrent cap. Each resource may be overridden independently. Use zero GPUs for a CPU-only view, or specify a GPU cap alone.
+CPU is in millicores (8000 means eight cores), memory is in bytes, and
+`total_gpu_count` is the aggregate concurrent GPU cap. `gpu_count` allocates
+that many devices together to each worker; the total cap must fit at least
+one worker. Use `total_gpu_count=0` for a CPU-only view.
 
-The cap covers the refresh execution and its Function processes together.
-It does not allocate that budget separately to each Function. A GPU class
-selects placement for this execution; discover configured classes with
-`db.list_gpu_classes()`. A cap does not promise more parallelism: current MV
-refreshes use at most one GPU. Omitted settings keep existing defaults.
+Each omitted setting inherits the view's creation setting, then the Function
+setting. Total budgets across distinct pinned Function versions are summed;
+the per-worker count uses their largest default. Remaining total budgets use
+deployment defaults. An unresolved GPU class is equivalent to `"any"`, and
+an explicit `gpu_class="any"` overrides a concrete creation or Function class.
+Discover configured classes with `db.list_gpu_classes()`.
 
-These controls require an Enterprise server with an isolated backend that can
-enforce them; Embedded and unsupported execution backends reject them. Earlier
-Enterprise servers reject the new SQL options. See the
+These controls require LanceDB Enterprise with an isolated backend that can
+enforce them; Embedded and unsupported execution backends reject them. See the
 [SQL resource options](/sql/dml/refresh-materialized-view#resources).
-
-TypeScript does not expose these options yet; SDK parity is tracked in
-[issue #4903](https://github.com/lancedb/lancedb/issues/4903).
 
 */}
 
