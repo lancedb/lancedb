@@ -9127,7 +9127,8 @@ async def test_function_profile_capture_wait_and_retained_export(
         paths.append(request.path)
         assert request.headers["x-api-key"] == "fake"
         assert request.headers["x-lancedb-database"] == "dev"
-        body = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
         if request.path == "/v1/table/test/describe/":
             result = {"version": 1, "schema": {"fields": []}}
         elif request.path == "/v1/table/test/backfill_column":

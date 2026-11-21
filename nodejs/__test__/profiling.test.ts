@@ -61,7 +61,8 @@ async function withProfileServer(
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(chunk);
-      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const bytes = Buffer.concat(chunks);
+      const body = bytes.length === 0 ? {} : JSON.parse(bytes.toString());
       const result = handler(request.url ?? "", body, request.headers);
       response.writeHead(result.status ?? 200, {
         "Content-Type": "application/json",
@@ -80,7 +81,11 @@ async function withProfileServer(
       apiKey: "fake",
       hostOverride: `http://127.0.0.1:${port}`,
     });
-    await run(db);
+    try {
+      await run(db);
+    } catch (error) {
+      throw serverError ?? error;
+    }
     if (serverError) throw serverError;
   } finally {
     server.closeAllConnections();

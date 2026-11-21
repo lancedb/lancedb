@@ -207,14 +207,6 @@ jobs:
       - uses: ./.github/workflows/build_mac_wheel
         with:
           args: --profile ci --features ${{ matrix.features }}
-      - name: Retain profiling client wheel for dev verification
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-client-wheel-macos-${{ matrix.features }}
-          path: ${{ github.workspace }}/target/wheels/*.whl
-          if-no-files-found: error
-          retention-days: 1
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
