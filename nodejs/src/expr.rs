@@ -163,6 +163,15 @@ impl Expr {
         })
     }
 
+    /// The column name when this is a bare column reference, otherwise null.
+    #[napi]
+    pub fn column_name(&self) -> Option<String> {
+        match &self.inner {
+            DfExpr::Column(column) if column.relation.is_none() => Some(column.name.clone()),
+            _ => None,
+        }
+    }
+
     #[napi]
     pub fn to_sql(&self) -> napi::Result<String> {
         lancedb::expr::expr_to_sql_string(&self.inner)
