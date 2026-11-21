@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use arrow_schema::Field;
 use chrono::{DateTime, Utc};
 use lance::index::scalar::IndexDetails;
 use scalar::FtsIndexBuilder;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
 use crate::index::vector::IvfRqIndexBuilder;
+use crate::utils::{supported_vector_data_type, supports_btree_field};
 use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 
 use self::{
@@ -28,13 +30,39 @@ pub mod scalar;
 pub mod vector;
 pub mod waiter;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoIndex {
+    IvfPq,
+    BTree,
+}
+
+impl AutoIndex {
+    pub(crate) fn resolve(field: &Field) -> Option<Self> {
+        if supported_vector_data_type(field.data_type()) {
+            Some(Self::IvfPq)
+        } else if supports_btree_field(field) {
+            Some(Self::BTree)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn unsupported_message(field: &Field) -> String {
+        format!(
+            "there are no indices supported for the field `{}` with the data type {}",
+            field.name(),
+            field.data_type()
+        )
+    }
+}
+
 /// Supported index types.
 #[derive(Debug, Clone)]
 pub enum Index {
     Auto,
     /// A `BTree` index is an sorted index on scalar columns.
     /// This index is good for scalar columns with mostly distinct values and does best when
-    /// the query is highly selective. It can apply to numeric, temporal, and string columns.
+    /// the query is highly selective. It can apply to numeric, temporal, string, and binary columns.
     ///
     /// BTree index is useful to answer queries with
     /// equality (`=`), inequality (`>`, `>=`, `<`, `<=`),and range queries.
@@ -579,7 +607,9 @@ pub struct IndexStatistics {
 
 #[cfg(test)]
 mod tests {
-    use super::IndexType;
+    use super::{AutoIndex, Field, IndexType};
+    use arrow_schema::DataType;
+    use std::sync::Arc;
 
     #[test]
     fn builtin_scalar_index_type_names() {
@@ -604,6 +634,42 @@ mod tests {
                     index_type
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_resolve_auto_index() {
+        let vector =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 16);
+        for (data_type, expected) in [
+            (DataType::Int32, Some(AutoIndex::BTree)),
+            (DataType::Utf8, Some(AutoIndex::BTree)),
+            (DataType::LargeUtf8, Some(AutoIndex::BTree)),
+            (DataType::Utf8View, Some(AutoIndex::BTree)),
+            (DataType::Binary, Some(AutoIndex::BTree)),
+            (DataType::LargeBinary, Some(AutoIndex::BTree)),
+            (DataType::Null, None),
+            (vector.clone(), Some(AutoIndex::IvfPq)),
+            (
+                DataType::List(Arc::new(Field::new("item", vector, true))),
+                Some(AutoIndex::IvfPq),
+            ),
+            (
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+                None,
+            ),
+            (
+                DataType::Struct(vec![Field::new("child", DataType::Int32, true)].into()),
+                None,
+            ),
+        ] {
+            let field = Field::new("value", data_type, true);
+            assert_eq!(
+                AutoIndex::resolve(&field),
+                expected,
+                "{}",
+                field.data_type()
+            );
         }
     }
 }
