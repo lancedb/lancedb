@@ -2,8 +2,10 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Float, Float32 } from "../arrow";
-import { EmbeddingFunction } from "./embedding_function";
+import { EmbeddingFunction, type FunctionOptions } from "./embedding_function";
 import { registerBuiltIn } from "./registry";
+
+const DEFAULT_MODEL = "Xenova/all-MiniLM-L6-v2";
 
 export type XenovaTransformerOptions = {
   /** The wasm compatible model to use */
@@ -43,15 +45,26 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
   #tokenizerOptions: XenovaTransformerOptions["tokenizerOptions"];
   #ndims?: number;
 
+  /**
+   * The model and tokenizer repositories these options download, other than
+   * the default model. See `EmbeddingFunctionConstructor.loadedModels`.
+   */
+  static loadedModels(options: FunctionOptions): [string, undefined][] {
+    const model = options.model ?? DEFAULT_MODEL;
+    const names = new Set([model, options.tokenizer ?? model]);
+    names.delete(DEFAULT_MODEL);
+    return [...names].map((name) => [String(name), undefined]);
+  }
+
   constructor(
     optionsRaw: Partial<XenovaTransformerOptions> = {
-      model: "Xenova/all-MiniLM-L6-v2",
+      model: DEFAULT_MODEL,
     },
   ) {
     super();
     const options = this.resolveVariables(optionsRaw);
 
-    const modelName = options?.model ?? "Xenova/all-MiniLM-L6-v2";
+    const modelName = options?.model ?? DEFAULT_MODEL;
     this.#tokenizerOptions = {
       padding: true,
       ...options.tokenizerOptions,
