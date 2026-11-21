@@ -4,7 +4,7 @@
 import json
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
-from typing import List, Literal, Optional, Tuple
+from typing import Annotated, List, Literal, Optional, Tuple
 
 import pyarrow as pa
 import pydantic
@@ -19,6 +19,7 @@ from lancedb.pydantic import (
 from packaging.version import Version
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import PositiveInt, conint, constr
 
 
 def test_pydantic_to_arrow():
@@ -1302,3 +1303,61 @@ def test_tz_aware_time_is_rejected_before_write(mem_db, container):
     with pytest.raises(ValueError, match="timezone-naive wall-clock.*tzinfo"):
         mem_db.create_table(table_name, data=[row])
     assert table_name not in mem_db.table_names()
+
+
+def test_constrained_types_inside_optional_and_list():
+    # Pydantic keeps the Annotated wrapper of a constrained type when it is nested
+    # inside Optional or List, so the schema has to look through it.
+    class Point(pydantic.BaseModel):
+        x: float
+
+    class TestModel(pydantic.BaseModel):
+        age: PositiveInt
+        opt_age: Optional[PositiveInt] = None
+        scores: List[PositiveInt]
+        opt_scores: Optional[List[conint(ge=0, le=100)]] = None
+        maybe_scores: List[Optional[PositiveInt]]
+        maybe_ages: List[Annotated[Optional[int], Field(ge=0)]]
+        opt_count: Optional[Annotated[Optional[int], Field(ge=0)]] = None
+        code: Optional[constr(max_length=8)] = None
+        ratio: Optional[Annotated[float, Field(ge=0)]] = None
+        point: Optional[Annotated[Point, Field(description="a point")]] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("age").type == pa.int64()
+    assert not schema.field("age").nullable
+    assert schema.field("opt_age").type == pa.int64()
+    assert schema.field("opt_age").nullable
+    assert schema.field("scores").type == pa.list_(pa.int64())
+    assert schema.field("opt_scores").type == pa.list_(pa.int64())
+    assert schema.field("opt_scores").nullable
+    assert schema.field("maybe_scores").type == pa.list_(
+        pa.field("item", pa.int64(), True)
+    )
+    assert schema.field("maybe_ages").type == pa.list_(
+        pa.field("item", pa.int64(), True)
+    )
+    assert schema.field("opt_count").type == pa.int64()
+    assert schema.field("opt_count").nullable
+    assert schema.field("code").type == pa.utf8()
+    assert schema.field("code").nullable
+    assert schema.field("ratio").type == pa.float64()
+    assert schema.field("point").type == pa.struct([pa.field("x", pa.float64(), False)])
+    assert schema.field("point").nullable
+
+
+def test_constrained_types_inside_optional_and_list_round_trip(mem_db):
+    class TestModel(LanceModel):
+        age: Optional[PositiveInt] = None
+        scores: List[PositiveInt]
+        code: Optional[constr(max_length=8)] = None
+
+    rows = [
+        TestModel(age=3, scores=[1, 2], code="abc"),
+        TestModel(age=None, scores=[], code=None),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.to_arrow().to_pylist() == [row.model_dump() for row in rows]
