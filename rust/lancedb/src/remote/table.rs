@@ -20,7 +20,6 @@ use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::error::{HttpErrorSource, RemoteErrorMetadata};
 use crate::expr::expr_to_sql_string;
-use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::scalar::{FtsQuery, Operator};
 use crate::index::waiter::{MAX_WAIT, wait_for_index};
@@ -53,13 +52,12 @@ use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatis
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
-    resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
-    validate_fts_field,
+    resolve_arrow_fts_field_path, validate_fts_field,
 };
 use crate::{DistanceType, Error};
 use crate::{
     error::Result,
-    index::{IndexBuilder, IndexConfig},
+    index::{AutoIndex, Index, IndexBuilder, IndexConfig},
     query::{AnalyzePlanDistributedMetrics, QueryExecutionOptions},
     table::{
         AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats, TableDefinition, UpdateBuilder,
@@ -806,23 +804,19 @@ impl<S: HttpSend> RemoteTable<S> {
                 }
                 ("FTS", Some(params))
             }
-            Index::Auto => {
-                if supported_vector_data_type(field.data_type()) {
+            Index::Auto => match AutoIndex::resolve(&field) {
+                Some(AutoIndex::IvfPq) => {
                     body[METRIC_TYPE_KEY] =
                         serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
                     ("IVF_PQ", None)
-                } else if supported_btree_data_type(field.data_type()) {
-                    ("BTREE", None)
-                } else {
+                }
+                Some(AutoIndex::BTree) => ("BTREE", None),
+                None => {
                     return Err(Error::NotSupported {
-                        message: format!(
-                            "there are no indices supported for the field `{}` with the data type {}",
-                            field.name(),
-                            field.data_type()
-                        ),
+                        message: AutoIndex::unsupported_message(&field),
                     });
                 }
-            }
+            },
             Index::IvfHnswPq(_) => {
                 return Err(Error::NotSupported {
                     message: "IVF_HNSW_PQ is not supported in LanceDB Enterprise. Please use IVF_HNSW_SQ instead.".into(),
@@ -5483,7 +5477,13 @@ mod tests {
             ),
             Field::new(
                 "payload",
-                DataType::Struct(vec![Field::new("text", DataType::Utf8, false)].into()),
+                DataType::Struct(
+                    vec![
+                        Field::new("text", DataType::Utf8, false),
+                        Field::new("bytes", DataType::Binary, false),
+                    ]
+                    .into(),
+                ),
                 false,
             ),
             Field::new(
@@ -9879,6 +9879,10 @@ mod tests {
                 "index_type": "IVF_PQ",
                 "metric_type": "l2",
             }),
+            json!({
+                "column": "payload.bytes",
+                "index_type": "BTREE",
+            }),
             {
                 let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
                 body["column"] = "payload.text".into();
@@ -9965,6 +9969,11 @@ mod tests {
             .unwrap();
         table
             .create_index(&["Image.Embedding"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["Payload.Bytes"], Index::Auto)
             .execute()
             .await
             .unwrap();

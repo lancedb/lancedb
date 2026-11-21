@@ -4,7 +4,7 @@
 //! Scalar indices are exact indices that are used to quickly satisfy a variety of filters
 //! against a column of scalar values.
 //!
-//! Scalar indices are currently supported on numeric, string, boolean, and temporal columns.
+//! Scalar indices are currently supported on numeric, string, binary, boolean, and temporal columns.
 //!
 //! A scalar index will help with queries with filters like `x > 10`, `x < 10`, `x = 10`,
 //! etc.  Scalar indices can also speed up prefiltering for vector searches.  A single
@@ -23,7 +23,7 @@
 /// the correct row ids.
 ///
 /// This index is good for scalar columns with mostly distinct values and does best when
-/// the query is highly selective.
+/// the query is highly selective. BTree supports numeric, temporal, string, and binary columns.
 ///
 /// The btree index does not currently have any parameters though parameters such as the
 /// block size may be added in the future.

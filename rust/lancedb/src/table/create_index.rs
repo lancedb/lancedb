@@ -14,7 +14,10 @@ use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
 use lance_arrow::json::is_json_field;
 use lance_index::IndexType;
-use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
+use lance_index::scalar::{
+    BuiltinIndexType, ScalarIndexParams, bitmap::BitmapIndexPlugin, fmindex::FMIndexPlugin,
+    label_list::LabelListIndexPlugin,
+};
 use lance_index::vector::bq::RQBuildParams;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
@@ -25,12 +28,11 @@ use crate::error::{Error, Result};
 
 /// Resolved column, index parameters and index type for one build.
 pub(super) type PreparedIndex = (String, Box<dyn lance::index::IndexParams>, IndexType);
-use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
+use crate::index::{AutoIndex, Index};
 use crate::utils::{
-    resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
-    supported_fm_data_type, supported_label_list_data_type, supported_vector_data_type,
-    supported_zonemap_data_type, validate_fts_field,
+    resolve_lance_fts_field_path, supported_vector_data_type, supports_btree_field,
+    supports_scalar_index, supports_zonemap_field, validate_fts_field,
 };
 
 use super::NativeTable;
@@ -156,8 +158,8 @@ impl NativeTable {
         {
             return Ok(None);
         }
-        let params = self.make_index_params(&field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(&field, &opts.index);
+        let index_type = Self::get_index_type_for_field(&field, &opts.index)?;
+        let params = Self::make_index_params(&field, opts.index.clone(), index_type)?;
         Ok(Some((column, params, index_type)))
     }
 
@@ -273,14 +275,14 @@ impl NativeTable {
     }
 
     // Convert LanceDB Index to Lance IndexParams
-    pub(super) async fn make_index_params(
-        &self,
+    fn make_index_params(
         field: &Field,
         index_opts: Index,
+        index_type: IndexType,
     ) -> Result<Box<dyn lance::index::IndexParams>> {
         match index_opts {
             Index::Auto => {
-                if supported_vector_data_type(field.data_type()) {
+                if index_type == IndexType::Vector {
                     // Use IvfPq as the default for auto vector indices
                     let dim = Self::get_vector_dimension(field)?;
                     let ivf_params = lance_index::vector::ivf::IvfBuildParams::default();
@@ -294,26 +296,18 @@ impl NativeTable {
                             pq_params,
                         );
                     Ok(Box::new(lance_idx_params))
-                } else if supported_btree_data_type(field.data_type()) {
+                } else {
                     Ok(Box::new(ScalarIndexParams::for_builtin(
                         BuiltinIndexType::BTree,
                     )))
-                } else {
-                    Err(Error::InvalidInput {
-                        message: format!(
-                            "there are no indices supported for the field `{}` with the data type {}",
-                            field.name(),
-                            field.data_type()
-                        ),
-                    })?
                 }
             }
-            Index::BTree(_) => {
-                Self::validate_index_type(field, "BTree", supported_btree_data_type)?;
-                Ok(Box::new(ScalarIndexParams::for_builtin(
-                    BuiltinIndexType::BTree,
-                )))
-            }
+            Index::BTree(_) => Self::scalar_index_params(
+                field,
+                "BTree",
+                BuiltinIndexType::BTree,
+                supports_btree_field(field),
+            ),
             Index::Bitmap(_) => {
                 if is_json_field(field) {
                     return Err(Error::Schema {
@@ -323,29 +317,31 @@ impl NativeTable {
                         ),
                     });
                 }
-                Self::validate_index_type(field, "Bitmap", supported_bitmap_data_type)?;
-                Ok(Box::new(ScalarIndexParams::for_builtin(
+                Self::scalar_index_params(
+                    field,
+                    "Bitmap",
                     BuiltinIndexType::Bitmap,
-                )))
+                    supports_scalar_index(&BitmapIndexPlugin, field),
+                )
             }
-            Index::LabelList(_) => {
-                Self::validate_index_type(field, "LabelList", supported_label_list_data_type)?;
-                Ok(Box::new(ScalarIndexParams::for_builtin(
-                    BuiltinIndexType::LabelList,
-                )))
-            }
-            Index::Fm(_) => {
-                Self::validate_index_type(field, "FM", supported_fm_data_type)?;
-                Ok(Box::new(ScalarIndexParams::for_builtin(
-                    BuiltinIndexType::Fm,
-                )))
-            }
-            Index::ZoneMap(_) => {
-                Self::validate_index_type(field, "ZoneMap", supported_zonemap_data_type)?;
-                Ok(Box::new(ScalarIndexParams::for_builtin(
-                    BuiltinIndexType::ZoneMap,
-                )))
-            }
+            Index::LabelList(_) => Self::scalar_index_params(
+                field,
+                "LabelList",
+                BuiltinIndexType::LabelList,
+                supports_scalar_index(&LabelListIndexPlugin, field),
+            ),
+            Index::Fm(_) => Self::scalar_index_params(
+                field,
+                "FM",
+                BuiltinIndexType::Fm,
+                supports_scalar_index(&FMIndexPlugin, field),
+            ),
+            Index::ZoneMap(_) => Self::scalar_index_params(
+                field,
+                "ZoneMap",
+                BuiltinIndexType::ZoneMap,
+                supports_zonemap_field(field),
+            ),
             Index::NGram(_) => Ok(Box::new(ScalarIndexParams::for_builtin(
                 BuiltinIndexType::NGram,
             ))),
@@ -511,19 +507,28 @@ impl NativeTable {
         }
     }
 
+    fn scalar_index_params(
+        field: &Field,
+        index_name: &str,
+        index_type: BuiltinIndexType,
+        supported: bool,
+    ) -> Result<Box<dyn lance::index::IndexParams>> {
+        Self::validate_index_type(field, index_name, |_| supported)?;
+        Ok(Box::new(ScalarIndexParams::for_builtin(index_type)))
+    }
+
     // Helper method to get the correct IndexType based on the Index variant and field data type
-    pub(super) fn get_index_type_for_field(&self, field: &Field, index: &Index) -> IndexType {
-        match index {
-            Index::Auto => {
-                if supported_vector_data_type(field.data_type()) {
-                    IndexType::Vector
-                } else if supported_btree_data_type(field.data_type()) {
-                    IndexType::BTree
-                } else {
-                    // This should not happen since make_index_params would have failed
-                    IndexType::BTree
+    fn get_index_type_for_field(field: &Field, index: &Index) -> Result<IndexType> {
+        let index_type = match index {
+            Index::Auto => match AutoIndex::resolve(field) {
+                Some(AutoIndex::IvfPq) => IndexType::Vector,
+                Some(AutoIndex::BTree) => IndexType::BTree,
+                None => {
+                    return Err(Error::InvalidInput {
+                        message: AutoIndex::unsupported_message(field),
+                    });
                 }
-            }
+            },
             Index::BTree(_) => IndexType::BTree,
             Index::Bitmap(_) => IndexType::Bitmap,
             Index::LabelList(_) => IndexType::LabelList,
@@ -540,7 +545,8 @@ impl NativeTable {
             | Index::IvfHnswPq(_)
             | Index::IvfHnswSq(_)
             | Index::IvfHnswFlat(_) => IndexType::Vector,
-        }
+        };
+        Ok(index_type)
     }
 }
 
@@ -554,8 +560,8 @@ mod tests {
     use arrow_array::record_batch;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
-        LargeBinaryArray, LargeStringArray, ListArray, RecordBatch, StringArray, StructArray,
-        UInt32Array, UInt64Array,
+        LargeBinaryArray, LargeStringArray, ListArray, NullArray, RecordBatch, StringArray,
+        StructArray, UInt32Array, UInt64Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
@@ -1426,6 +1432,89 @@ mod tests {
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+    }
+
+    #[tokio::test]
+    async fn test_create_btree_on_binary() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = RecordBatch::try_from_iter([
+            (
+                "bytes",
+                Arc::new(BinaryArray::from(vec![b"aa".as_slice(), b"zz".as_slice()])) as ArrayRef,
+            ),
+            (
+                "large_bytes",
+                Arc::new(LargeBinaryArray::from(vec![
+                    b"aa".as_slice(),
+                    b"zz".as_slice(),
+                ])) as ArrayRef,
+            ),
+            (
+                "large_text",
+                Arc::new(LargeStringArray::from(vec!["aa", "zz"])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let table = conn
+            .create_table("binary_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        for (column, filter) in [
+            ("bytes", "bytes = X'6161'"),
+            ("large_bytes", "large_bytes = X'6161'"),
+            ("large_text", "large_text = 'aa'"),
+        ] {
+            for index in [Index::BTree(Default::default()), Index::Auto] {
+                table
+                    .create_index(&[column.to_uppercase()], index)
+                    .execute()
+                    .await
+                    .unwrap();
+                let stats = table
+                    .index_stats(&format!("{column}_idx"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(stats.index_type, crate::index::IndexType::BTree);
+                assert_eq!(stats.num_indexed_rows, 2);
+            }
+            assert_eq!(table.count_rows(Some(filter.to_string())).await.unwrap(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_btree_and_zonemap_reject_null_type() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Null, true)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(NullArray::new(2))]).unwrap();
+        let table = conn
+            .create_table("null_values", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        for index in [
+            Index::BTree(Default::default()),
+            Index::ZoneMap(Default::default()),
+            Index::Auto,
+        ] {
+            let error = table
+                .create_index(&["value"], index)
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("data type Null"), "{error}");
+        }
+
+        assert_eq!(
+            table
+                .count_rows(Some("value IS NULL".into()))
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
