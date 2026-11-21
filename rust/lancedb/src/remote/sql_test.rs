@@ -1239,17 +1239,38 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             panic!("CREATE must use SQL, not REST: {}", request.url().path());
         })
         .with_sql_client(sql_client.clone());
-        for (enabled, interval, expected) in [
-            (None, None, ""),
-            (Some(true), None, " WITH (auto_refresh_enabled = true)"),
+        for (enabled, interval, cpu, gpu, expected) in [
+            (None, None, None, None, ""),
+            (
+                Some(true),
+                None,
+                None,
+                None,
+                " WITH (auto_refresh_enabled = true)",
+            ),
             (
                 Some(false),
                 Some(0.5),
+                None,
+                None,
                 " WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 0.5)",
+            ),
+            (
+                None,
+                None,
+                Some(8000),
+                Some(0),
+                " WITH (total_cpu_millis = 8000, total_gpu_count = 0)",
             ),
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    gpu_class: Default::default(),
+                    gpu_count: Default::default(),
+                    total_cpu_millis: cpu,
+                    total_memory_bytes: None,
+                    total_gpu_count: gpu,
+
                     exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec!["team".into(), "reports".into()],
@@ -1278,7 +1299,7 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             );
         }
         assert_eq!(count.load(Ordering::SeqCst), 0);
-        assert_eq!(statements.lock().unwrap().len(), 3);
+        assert_eq!(statements.lock().unwrap().len(), 4);
         assert!(
             headers
                 .lock()
@@ -1333,6 +1354,12 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+
             exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
@@ -1396,6 +1423,12 @@ async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry
         .with_sql_client(client);
         let job = db
             .create_materialized_view_async(CreateMaterializedViewRequest {
+                gpu_class: Default::default(),
+                gpu_count: Default::default(),
+                total_cpu_millis: None,
+                total_memory_bytes: None,
+                total_gpu_count: None,
+
                 exist_ok: true,
                 name: "adults".into(),
                 namespace_path: vec!["team".into()],
@@ -1483,6 +1516,12 @@ async fn remote_create_registry_handle_reopens_describes_and_cancels() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+
             exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
@@ -1716,10 +1755,11 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     let third = view
         .refresh()
         .full(true)
-        .cpu_millis(8000)
-        .memory_bytes(16 << 30)
-        .gpu_count(2)
+        .total_cpu_millis(8000)
+        .total_memory_bytes(16 << 30)
+        .total_gpu_count(2)
         .gpu_class("h100")
+        .gpu_count(2)
         .execute_async()
         .await
         .unwrap()
@@ -1727,9 +1767,8 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
     for invalid in [
-        view.refresh().cpu_millis(1),
         view.refresh().gpu_class("H200:8"),
-        view.refresh().gpu_count(0).gpu_class("h100"),
+        view.refresh().total_gpu_count(0).gpu_class("h100"),
     ] {
         assert!(matches!(
             invalid.execute_async().await,
@@ -1757,7 +1796,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
             "DESCRIBE MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
-            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2, gpu_class = 'h100')",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2, gpu_class = 'h100', gpu_count = 2)",
         ]
     );
     assert!(
@@ -3212,6 +3251,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
+        request_json["total_cpu_millis"] = serde_json::json!(8000);
+        request_json["total_memory_bytes"] = serde_json::json!(17179869184_u64);
+        request_json["total_gpu_count"] = serde_json::json!(0);
         request_json["row_timeout_seconds"] = serde_json::json!(0.75);
         request_json["secret_bindings"] = serde_json::json!([{
             "kind": "env",
@@ -3220,6 +3262,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         }]);
         let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
         version_json["batch_size"] = serde_json::json!(12);
+        for field in ["total_cpu_millis", "total_memory_bytes", "total_gpu_count"] {
+            version_json[field] = request_json[field].clone();
+        }
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
@@ -3298,6 +3343,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.name(), "embed");
         assert_eq!(created.version(), "1");
         assert_eq!(created.batch_size(), Some(12));
+        assert_eq!(created.total_cpu_millis(), Some(8000));
+        assert_eq!(created.total_memory_bytes(), Some(17179869184));
+        assert_eq!(created.total_gpu_count(), Some(0));
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));

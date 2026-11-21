@@ -305,6 +305,7 @@ pub enum PythonRuntimeSpec {
     ///     },
     ///     env: BTreeMap::new(),
     ///     gpu_class: Some("a10g".to_string()),
+    ///     gpus_per_worker: std::num::NonZeroU32::new(2),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -314,6 +315,8 @@ pub enum PythonRuntimeSpec {
         env: BTreeMap<String, String>,
         /// Operator-defined GPU class; absent uses the deployment default.
         gpu_class: Option<String>,
+        /// GPUs allocated together to each worker.
+        gpus_per_worker: Option<std::num::NonZeroU32>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -365,17 +368,30 @@ impl PythonRuntimeSpec {
         matches!(self, Self::PythonV2 { .. })
     }
 
-    /// Operator-defined GPU class, or `None` to use the deployment default.
+    /// Requested GPU class, `"any"` for any eligible class, or `None` for the
+    /// deployment default. This does not identify the hardware selected for execution.
     pub fn gpu_class(&self) -> Option<&str> {
         match self {
             Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
             _ => None,
         }
     }
+
+    /// GPUs allocated to one worker; zero for CPU runtimes.
+    pub fn gpus_per_worker(&self) -> u32 {
+        match self {
+            Self::PythonV2 {
+                gpus_per_worker, ..
+            } => gpus_per_worker.map_or(1, std::num::NonZeroU32::get),
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct PythonRuntimeV1Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<Value>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -388,6 +404,8 @@ struct PythonRuntimeV1Wire {
 
 #[derive(Deserialize)]
 struct PythonRuntimeV2Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<std::num::NonZeroU32>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -420,6 +438,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu_class requires kind='python_v2'",
                     ));
                 }
+                if wire.gpus_per_worker.is_some() {
+                    return Err(de::Error::custom(
+                        "gpus_per_worker requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -440,6 +463,7 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                     environment: wire.environment,
                     env: wire.env,
                     gpu_class: wire.gpu_class,
+                    gpus_per_worker: wire.gpus_per_worker,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -460,6 +484,8 @@ impl Serialize for PythonRuntimeSpec {
             gpu: Option<bool>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu_class: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpus_per_worker: Option<std::num::NonZeroU32>,
         }
 
         #[derive(Serialize)]
@@ -479,6 +505,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: None,
                 gpu_class: None,
+                gpus_per_worker: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
@@ -486,6 +513,7 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu_class,
+                gpus_per_worker,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
@@ -493,6 +521,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: Some(true),
                 gpu_class: gpu_class.as_deref(),
+                gpus_per_worker: *gpus_per_worker,
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -675,6 +704,24 @@ pub struct FunctionVersion {
         deserialize_with = "deserialize_max_concurrency"
     )]
     max_concurrency: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_cpu_millis"
+    )]
+    total_cpu_millis: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_memory_bytes"
+    )]
+    total_memory_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_gpu_count"
+    )]
+    total_gpu_count: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     row_timeout_seconds: Option<RowTimeoutSeconds>,
@@ -771,6 +818,21 @@ impl FunctionVersion {
     /// Operator-defined GPU class declared at registration.
     pub fn gpu_class(&self) -> Option<&str> {
         self.gpu_class.as_deref()
+    }
+
+    /// Default total CPU budget for executions of this pinned Function.
+    pub fn total_cpu_millis(&self) -> Option<u64> {
+        self.total_cpu_millis
+    }
+
+    /// Default total memory budget for executions of this pinned Function.
+    pub fn total_memory_bytes(&self) -> Option<u64> {
+        self.total_memory_bytes
+    }
+
+    /// Default aggregate GPU budget, independent of the per-worker device count.
+    pub fn total_gpu_count(&self) -> Option<u32> {
+        self.total_gpu_count
     }
 
     /// Default maximum rows in one callable batch, when declared.
@@ -900,6 +962,44 @@ where
     Ok(value)
 }
 
+fn deserialize_total_cpu_millis<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_cpu_millis: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom("total_cpu_millis must be positive"));
+    }
+    Ok(value)
+}
+
+fn deserialize_total_memory_bytes<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_memory_bytes: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom("total_memory_bytes must be positive"));
+    }
+    Ok(value)
+}
+
+fn deserialize_total_gpu_count<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_gpu_count: {error}")))
+}
+
 fn deserialize_max_concurrency<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u32>, D::Error>
@@ -970,6 +1070,27 @@ pub struct FunctionRegistrationRequest {
         deserialize_with = "deserialize_max_concurrency"
     )]
     pub max_concurrency: Option<u32>,
+    /// Default total CPU capacity for one execution, in millicores.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_cpu_millis"
+    )]
+    pub total_cpu_millis: Option<u64>,
+    /// Default total memory for one execution, in bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_memory_bytes"
+    )]
+    pub total_memory_bytes: Option<u64>,
+    /// Default total GPUs across one execution's workers.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_gpu_count"
+    )]
+    pub total_gpu_count: Option<u32>,
     /// Deadline for each Python call, in seconds: one row for scalar Functions
     /// and one batch for vectorized Functions. It does not govern Function
     /// initialization.
@@ -1010,6 +1131,11 @@ impl FunctionRegistrationRequest {
         let invalid_input = |message: &'static str| Error::InvalidInput {
             message: message.to_string(),
         };
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
+            return Err(invalid_input(
+                "total_cpu_millis and total_memory_bytes must be positive integers",
+            ));
+        }
         validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
         validate_max_concurrency_value(self.max_concurrency).map_err(invalid_input)?;
         validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
@@ -1618,6 +1744,7 @@ mod refresh_result_tests {
 #[cfg(test)]
 mod conda_environment_tests {
     use super::{PythonEnvironmentSpec, PythonRuntimeSpec};
+    use serde_json::Value;
 
     #[test]
     fn conda_channels_round_trip_and_pip_stays_bare() {
@@ -1679,6 +1806,28 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"any","gpus_per_worker":2}"#,
+        ).unwrap();
+        assert_eq!(runtime.gpus_per_worker(), 2);
+        assert_eq!(runtime.gpu_class(), Some("any"));
+        let encoded = super::canonical_json(&runtime).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).unwrap()["gpus_per_worker"],
+            2
+        );
+        for count in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(true),
+            serde_json::json!("2"),
+            serde_json::json!(1.5),
+            serde_json::json!(4294967296_u64),
+        ] {
+            let mut value: Value = serde_json::from_str(&encoded).unwrap();
+            value["gpus_per_worker"] = count;
+            assert!(serde_json::from_value::<PythonRuntimeSpec>(value).is_err());
+        }
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,

@@ -655,7 +655,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -666,6 +666,12 @@ impl Connection {
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
         query: Option<String>,
         exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
@@ -685,6 +691,22 @@ impl Connection {
             if let Some(seconds) = auto_refresh_interval_seconds {
                 builder = builder.auto_refresh_interval_seconds(seconds);
             }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -701,7 +723,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -712,6 +734,12 @@ impl Connection {
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
         query: Option<String>,
         exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
@@ -731,6 +759,22 @@ impl Connection {
             if let Some(seconds) = auto_refresh_interval_seconds {
                 builder = builder.auto_refresh_interval_seconds(seconds);
             }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }

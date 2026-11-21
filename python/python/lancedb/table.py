@@ -132,6 +132,7 @@ from .schema import (
     row_addressable_blob_v2_paths,
     schema_has_blob_field,
 )
+from .resources import _resource_options
 
 
 def _should_push_down_query_table(
@@ -3456,7 +3457,11 @@ class Table(ABC):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ):
         """
         Add new columns with defined values.
@@ -3525,13 +3530,12 @@ class Table(ABC):
             When omitted, the server determines when to refresh. Applies to every
             computed output in this call.
             Scheduling options require computed or Function columns.
-        auto_refresh_resource_budget: dict[str, int], optional
-            Aggregate CPU, memory, and GPU budget for automatic refreshes of a
-            registered Function declaration. ``cpu_millis`` and
-            ``memory_bytes`` are required; ``gpu_count`` defaults to zero.
-            This option cannot be used with SQL-expression columns. LanceDB
-            Enterprise only.
-
+        total_cpu_millis: int, optional
+            Default total CPU budget for manual and automatic Function refreshes.
+        total_memory_bytes: int, optional
+            Default total memory budget for these refreshes, in bytes.
+        total_gpu_count: int, optional
+            Default total GPU budget across the Function workers.
         Returns
         -------
         AddColumnsResult
@@ -3556,6 +3560,13 @@ class Table(ABC):
         >>> table.to_arrow()["score"].to_pylist()
         [0.25, 0.75]
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
 
     @abstractmethod
     def refresh_column(
@@ -3566,11 +3577,13 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -3625,13 +3638,10 @@ class Table(ABC):
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
-        resource_budget: dict[str, int], optional
-            Aggregate resources for one registered Function refresh. The
-            ``cpu_millis`` and ``memory_bytes`` keys are required;
-            ``gpu_count`` is optional and defaults to zero, which requests a
-            CPU-only budget. This budget cannot be combined with the top-level
-            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
-            reject it.
+        total_cpu_millis: int, optional
+            Override the total CPU budget in millicores for this refresh.
+        total_memory_bytes: int, optional
+            Override the total memory budget in bytes for this refresh.
         supervisor_resources: dict[str, int], optional
             CPU, memory, and ephemeral-storage limits for the Function refresh
             supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
@@ -3648,11 +3658,10 @@ class Table(ABC):
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
-        gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers without changing
-            the deployment's CPU and memory defaults. None leaves the server's
-            configured budget unchanged. For a complete CPU and memory budget,
-            use ``resource_budget`` instead. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Nonnegative total GPU budget for Function workers without changing
+            the other resource limits. Unspecified resources inherit column defaults,
+            then Function defaults, then deployment defaults. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -3675,7 +3684,7 @@ class Table(ABC):
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it and use ``resource_budget`` instead. LanceDB
+            columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
@@ -3714,11 +3723,13 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -3772,13 +3783,10 @@ class Table(ABC):
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
-        resource_budget: dict[str, int], optional
-            Aggregate resources for one registered Function refresh. The
-            ``cpu_millis`` and ``memory_bytes`` keys are required;
-            ``gpu_count`` is optional and defaults to zero, which requests a
-            CPU-only budget. This budget cannot be combined with the top-level
-            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
-            reject it.
+        total_cpu_millis: int, optional
+            Override the total CPU budget in millicores for this refresh.
+        total_memory_bytes: int, optional
+            Override the total memory budget in bytes for this refresh.
         supervisor_resources: dict[str, int], optional
             CPU, memory, and ephemeral-storage limits for the Function refresh
             supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
@@ -3795,11 +3803,10 @@ class Table(ABC):
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
-        gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers without changing
-            the deployment's CPU and memory defaults. None leaves the server's
-            configured budget unchanged. For a complete CPU and memory budget,
-            use ``resource_budget`` instead. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Nonnegative total GPU budget for Function workers without changing
+            the other resource limits. Unspecified resources inherit column defaults,
+            then Function defaults, then deployment defaults. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -3822,7 +3829,7 @@ class Table(ABC):
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it and use ``resource_budget`` instead. LanceDB
+            columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
@@ -6485,15 +6492,30 @@ class LanceTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         return LOOP.run(
             self._table.add_columns(
                 transforms,
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                auto_refresh_resource_budget=auto_refresh_resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
 
@@ -6505,11 +6527,13 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -6535,11 +6559,12 @@ class LanceTable(Table):
                 batch_size=batch_size,
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
-                resource_budget=resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
                 supervisor_resources=supervisor_resources,
                 planning_workers=planning_workers,
                 gpu_class=gpu_class,
-                gpu_count=gpu_count,
+                total_gpu_count=total_gpu_count,
                 retry_policy=retry_policy,
                 error_policy=error_policy,
                 max_failed_fraction=max_failed_fraction,
@@ -6554,6 +6579,7 @@ class LanceTable(Table):
                 include_quarantined=include_quarantined,
                 function_version=function_version,
                 recompute=recompute,
+                gpu_count=gpu_count,
             )
         )
 
@@ -6565,11 +6591,13 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -6597,11 +6625,12 @@ class LanceTable(Table):
                     batch_size=batch_size,
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
-                    resource_budget=resource_budget,
+                    total_cpu_millis=total_cpu_millis,
+                    total_memory_bytes=total_memory_bytes,
                     supervisor_resources=supervisor_resources,
                     planning_workers=planning_workers,
                     gpu_class=gpu_class,
-                    gpu_count=gpu_count,
+                    total_gpu_count=total_gpu_count,
                     retry_policy=retry_policy,
                     error_policy=error_policy,
                     max_failed_fraction=max_failed_fraction,
@@ -6616,6 +6645,7 @@ class LanceTable(Table):
                     include_quarantined=include_quarantined,
                     function_version=function_version,
                     recompute=recompute,
+                    gpu_count=gpu_count,
                 )
             )
         )
@@ -9033,7 +9063,11 @@ class AsyncTable:
         computed: dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -9100,13 +9134,12 @@ class AsyncTable:
             not force recomputation. Applies to every declared computed output.
             These options cannot be used with one-time transforms or ordinary
             all-null columns.
-        auto_refresh_resource_budget: dict[str, int], optional
-            Aggregate CPU, memory, and GPU budget for automatic refreshes of
-            registered Function outputs. ``cpu_millis`` and ``memory_bytes``
-            are required; ``gpu_count`` defaults to zero. SQL-expression
-            columns do not use Function workers and reject this option.
-            LanceDB Enterprise only.
-
+        total_cpu_millis: int, optional
+            Default total CPU budget for manual and automatic Function refreshes.
+        total_memory_bytes: int, optional
+            Default total memory budget for these refreshes, in bytes.
+        total_gpu_count: int, optional
+            Default total GPU budget across the Function workers.
         Examples
         --------
         >>> await table.add_columns(  # doctest: +SKIP
@@ -9121,6 +9154,13 @@ class AsyncTable:
             version: the new version number of the table after adding columns.
 
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         if auto_refresh_enabled is not None and type(auto_refresh_enabled) is not bool:
             raise ValueError("auto_refresh_enabled must be a boolean")
         if auto_refresh_interval_seconds is not None and (
@@ -9134,7 +9174,11 @@ class AsyncTable:
         options_supplied = (
             auto_refresh_enabled is not None
             or auto_refresh_interval_seconds is not None
-            or auto_refresh_resource_budget is not None
+            or total_cpu_millis is not None
+            or total_memory_bytes is not None
+            or total_gpu_count is not None
+            or gpu_class is not None
+            or gpu_count is not None
         )
         function_application = None
         function_output_name = None
@@ -9163,7 +9207,11 @@ class AsyncTable:
                 function_output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
-                auto_refresh_resource_budget,
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
+                gpu_class,
+                gpu_count,
             )
 
         if isinstance(transforms, pa.Field):
@@ -9184,7 +9232,11 @@ class AsyncTable:
                 list(computed.items()),
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
-                auto_refresh_resource_budget,
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
+                gpu_class,
+                gpu_count,
             )
         if options_supplied:
             raise ValueError(
@@ -9208,11 +9260,13 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -9267,13 +9321,10 @@ class AsyncTable:
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
-        resource_budget: dict[str, int], optional
-            Aggregate resources for one registered Function refresh. The
-            ``cpu_millis`` and ``memory_bytes`` keys are required;
-            ``gpu_count`` is optional and defaults to zero, which requests a
-            CPU-only budget. This budget cannot be combined with the top-level
-            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
-            reject it.
+        total_cpu_millis: int, optional
+            Override the total CPU budget in millicores for this refresh.
+        total_memory_bytes: int, optional
+            Override the total memory budget in bytes for this refresh.
         supervisor_resources: dict[str, int], optional
             CPU, memory, and ephemeral-storage limits for the Function refresh
             supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
@@ -9290,11 +9341,10 @@ class AsyncTable:
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
-        gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers without changing
-            the deployment's CPU and memory defaults. None leaves the server's
-            configured budget unchanged. For a complete CPU and memory budget,
-            use ``resource_budget`` instead. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Nonnegative total GPU budget for Function workers without changing
+            the other resource limits. Unspecified resources inherit column defaults,
+            then Function defaults, then deployment defaults. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -9317,7 +9367,7 @@ class AsyncTable:
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it and use ``resource_budget`` instead. LanceDB
+            columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
@@ -9345,17 +9395,25 @@ class AsyncTable:
         RefreshColumnResult
             The number of rows filled and the new version of the table.
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         return await self._inner.refresh_column(
             column,
             where=where,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             publication_interval_rows=publication_interval_rows,
-            resource_budget=resource_budget,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
             supervisor_resources=supervisor_resources,
             planning_workers=planning_workers,
             gpu_class=gpu_class,
-            gpu_count=gpu_count,
+            total_gpu_count=total_gpu_count,
             retry_policy=None
             if retry_policy is None
             else FunctionRetryPolicy.model_validate(retry_policy).model_dump_json(),
@@ -9372,6 +9430,7 @@ class AsyncTable:
             include_quarantined=include_quarantined,
             function_version=function_version,
             recompute=recompute,
+            gpu_count=gpu_count,
         )
 
     async def retry_failed(
@@ -9579,11 +9638,13 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -9637,13 +9698,10 @@ class AsyncTable:
             actual publication boundary can be larger than this threshold
             because it also depends on completed work and Function batching.
             LanceDB Enterprise only; local refreshes reject this option.
-        resource_budget: dict[str, int], optional
-            Aggregate resources for one registered Function refresh. The
-            ``cpu_millis`` and ``memory_bytes`` keys are required;
-            ``gpu_count`` is optional and defaults to zero, which requests a
-            CPU-only budget. This budget cannot be combined with the top-level
-            ``gpu_count`` shorthand. LanceDB Enterprise only; local refreshes
-            reject it.
+        total_cpu_millis: int, optional
+            Override the total CPU budget in millicores for this refresh.
+        total_memory_bytes: int, optional
+            Override the total memory budget in bytes for this refresh.
         supervisor_resources: dict[str, int], optional
             CPU, memory, and ephemeral-storage limits for the Function refresh
             supervisor pod. Keys are ``cpu_millis``, ``memory_bytes`` and
@@ -9660,11 +9718,10 @@ class AsyncTable:
             letters, digits, or hyphens, without a leading or trailing hyphen.
             None keeps the Function's registered class or the deployment
             default. LanceDB Enterprise only.
-        gpu_count: int, optional
-            Positive aggregate GPU budget for Function workers without changing
-            the deployment's CPU and memory defaults. None leaves the server's
-            configured budget unchanged. For a complete CPU and memory budget,
-            use ``resource_budget`` instead. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Nonnegative total GPU budget for Function workers without changing
+            the other resource limits. Unspecified resources inherit column defaults,
+            then Function defaults, then deployment defaults. LanceDB Enterprise only.
         retry_policy: FunctionRetryPolicy, optional
             Override retries of failed user-code calls. Only use when repeating
             partial work is safe. Set max_attempts=1 to disable retries.
@@ -9687,7 +9744,7 @@ class AsyncTable:
             Deadline for Function initialization. LanceDB Enterprise only.
         num_workers: int, optional
             Worker count for an expression column; registered Function
-            columns reject it and use ``resource_budget`` instead. LanceDB
+            columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
@@ -9731,6 +9788,13 @@ class AsyncTable:
         >>> asyncio.run(refresh_in_background())  # doctest: +SKIP
         'finished'
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         return _typed_job(
             await self._inner.refresh_column_async(
                 column,
@@ -9738,11 +9802,12 @@ class AsyncTable:
                 batch_size=batch_size,
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
-                resource_budget=resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
                 supervisor_resources=supervisor_resources,
                 planning_workers=planning_workers,
                 gpu_class=gpu_class,
-                gpu_count=gpu_count,
+                total_gpu_count=total_gpu_count,
                 retry_policy=None
                 if retry_policy is None
                 else FunctionRetryPolicy.model_validate(retry_policy).model_dump_json(),
@@ -9759,6 +9824,7 @@ class AsyncTable:
                 include_quarantined=include_quarantined,
                 function_version=function_version,
                 recompute=recompute,
+                gpu_count=gpu_count,
             ),
             RefreshColumnJobResult.from_json,
         )

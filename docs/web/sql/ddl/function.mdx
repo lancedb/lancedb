@@ -63,8 +63,9 @@ version is unaffected.
 | `apt` | OS packages to install in the worker environment |
 | `image` | a specific container image to run the worker in, such as `'host/repo@sha256:...'` |
 | `python_version` | worker Python version; `3.12` when omitted, whatever Python you send the statement from |
-| `gpu` | `'true'` when every execution needs a GPU |
-| `gpu_class` | which configured GPU class to run on, when `gpu = 'true'` |
+| `gpu` | Enable GPU execution with `True` (Python) or `true` (SQL); defaults to CPU execution |
+| `gpu_class` | Operator-configured GPU class, such as `h100`; requires GPU execution |
+| `gpu_count` | GPUs allocated together per Function worker; positive integer, defaults to one; requires GPU execution |
 | `result_stability` | `'input_and_context'` or `'per_call'` |
 | `batch_size` | maximum rows per Function call |
 | `row_timeout_seconds` | per-row (or per-batch, for a vectorized Function) execution timeout |
@@ -76,7 +77,7 @@ version is unaffected.
 | `LANGUAGE` other than `python` | refused |
 | `pip` and `conda` together | refused (pick one) |
 | `conda_channels` without `conda` | refused |
-| `gpu` set to anything but `'true'` | refused |
+| An invalid GPU class, zero GPU count, or a count above the configured class limit | refused; use a configured `gpu_class` and a positive `gpu_count` |
 | An empty body | refused |
 | Any other option | refused, and the message lists what is supported |
 

@@ -60,7 +60,6 @@ export {
   FunctionRefreshPlanningConfig,
   FunctionRefreshPodResources,
   FunctionRetryPolicy,
-  FunctionWorkerResourceBudget,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
