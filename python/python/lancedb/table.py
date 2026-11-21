@@ -3272,7 +3272,7 @@ class Table(ABC):
         The server does not enforce coordination. Cancellation cannot undo deletion
         or prove storage I/O stopped. Preview is available without deletion.
 
-        Save ``job.id`` to reopen with ``db.open_job(id)``. Waiting returns
+        Save ``job.id()`` to reopen with ``db.open_job(id)``. Waiting returns
         [CleanupResult][lancedb.cleanup.CleanupResult]; timeout leaves work running.
         Unknown totals after retry/recovery remain None. Auxiliary sweeps are
         best effort and excluded from the version-deletion counts.
