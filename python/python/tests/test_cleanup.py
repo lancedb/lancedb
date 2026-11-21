@@ -114,7 +114,7 @@ async def test_cleanup_submission_wait_and_reopen(asynchronous, outcome):
             db = lancedb.connect(**kwargs)
             table = db.create_table("test", [{"id": 1}])
             job = table.cleanup_async(min_age_seconds=0)
-        assert job.id == "cleanup-job" and not polls
+        assert job.id() == "cleanup-job" and not polls
         if outcome in ("missing", "FAILED", "CANCELLED"):
             with pytest.raises(
                 Exception,
@@ -133,7 +133,7 @@ async def test_cleanup_submission_wait_and_reopen(asynchronous, outcome):
             assert isinstance(stats, CleanupResult)
             assert stats.old_versions == result["old_versions"]
             reopened = (
-                await db.open_job(job.id) if asynchronous else db.open_job(job.id)
+                await db.open_job(job.id()) if asynchronous else db.open_job(job.id())
             )
             assert (await reopened.wait() if asynchronous else reopened.wait()) == stats
     assert len(server.tickets) == 1
