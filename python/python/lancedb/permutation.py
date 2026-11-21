@@ -294,10 +294,12 @@ class PermutationBuilder:
         """
         Store the permutation table in an embedded database.
 
-        Persisting a plan makes the same split available to another process or
-        another machine with access to the destination storage. The plan is an
-        ordinary LanceDB table containing row ids and split ids; it can be
-        opened with [open_table][lancedb.db.DBConnection.open_table] and passed to
+        The base table can be Embedded or Enterprise; this connection is only the
+        plan destination. Persisting a plan makes the same split available to
+        another process or another machine with access to the destination storage.
+        The plan is an ordinary LanceDB table containing row ids and split ids; it
+        can be opened with [open_table][lancedb.db.DBConnection.open_table] and
+        passed to
         [Permutation.from_tables][lancedb.permutation.Permutation.from_tables].
         The table returned by ``execute`` keeps the destination connection and
         namespace context, so it can be pickled and reopened directly.
@@ -305,8 +307,10 @@ class PermutationBuilder:
         Parameters
         ----------
         db: DBConnection
-            An embedded LanceDB connection. Local files and object storage are
-            supported; LanceDB Enterprise connections are not supported yet.
+            An embedded LanceDB connection for the plan destination. Local files
+            and object storage are supported. The base table may be Embedded or
+            Enterprise; persisting the plan itself to Enterprise is not supported
+            yet.
         table_name: str
             The name of the permutation table to create.
         namespace_path: list[str], optional
