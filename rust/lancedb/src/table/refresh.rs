@@ -301,10 +301,9 @@ pub struct RefreshColumnOptions {
     /// when the Function does not declare one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_class: Option<String>,
-    /// Positive aggregate GPU budget for Function workers in LanceDB
-    /// Enterprise.
-    ///
-    /// `None` leaves the server's configured budget unchanged.
+    /// Nonnegative total GPU budget for Function workers in LanceDB Enterprise.
+    /// Omitted values inherit column defaults, then Function defaults, then
+    /// deployment defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_gpu_count: Option<u32>,
 }

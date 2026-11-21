@@ -716,7 +716,11 @@ pub struct FunctionVersion {
         deserialize_with = "deserialize_default_total_memory_bytes"
     )]
     default_total_memory_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_default_total_gpu_count"
+    )]
     default_total_gpu_count: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -964,7 +968,8 @@ fn deserialize_default_total_cpu_millis<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let value = Option::<u64>::deserialize(deserializer)?;
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("default_total_cpu_millis: {error}")))?;
     if value == Some(0) {
         return Err(de::Error::custom(
             "default_total_cpu_millis must be positive",
@@ -979,13 +984,24 @@ fn deserialize_default_total_memory_bytes<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let value = Option::<u64>::deserialize(deserializer)?;
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("default_total_memory_bytes: {error}")))?;
     if value == Some(0) {
         return Err(de::Error::custom(
             "default_total_memory_bytes must be positive",
         ));
     }
     Ok(value)
+}
+
+fn deserialize_default_total_gpu_count<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("default_total_gpu_count: {error}")))
 }
 
 fn deserialize_max_concurrency<'de, D>(
@@ -1073,7 +1089,11 @@ pub struct FunctionRegistrationRequest {
     )]
     pub default_total_memory_bytes: Option<u64>,
     /// Default total GPUs across one execution's workers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_default_total_gpu_count"
+    )]
     pub default_total_gpu_count: Option<u32>,
     /// Deadline for each Python call, in seconds: one row for scalar Functions
     /// and one batch for vectorized Functions. It does not govern Function
