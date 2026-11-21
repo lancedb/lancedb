@@ -1081,7 +1081,7 @@ describe("remote connection", () => {
               totalMemoryBytes: 1_024,
               totalGpuCount: 1.5,
             },
-            "resourceBudget.totalGpuCount",
+            "totalGpuCount",
           ],
           [
             {
@@ -1089,7 +1089,7 @@ describe("remote connection", () => {
               totalMemoryBytes: 1_024,
               totalGpuCount: -1,
             },
-            "resourceBudget.totalGpuCount",
+            "totalGpuCount",
           ],
           [
             {
@@ -1097,7 +1097,7 @@ describe("remote connection", () => {
               totalMemoryBytes: 1_024,
               totalGpuCount: 2 ** 32,
             },
-            "resourceBudget.totalGpuCount",
+            "totalGpuCount",
           ],
           [
             {
@@ -1105,7 +1105,7 @@ describe("remote connection", () => {
               totalMemoryBytes: 1_024,
               totalGpuCount: Number.NaN,
             },
-            "resourceBudget.totalGpuCount",
+            "totalGpuCount",
           ],
           [
             {
@@ -1113,7 +1113,7 @@ describe("remote connection", () => {
               totalMemoryBytes: 1_024,
               totalGpuCount: Number.POSITIVE_INFINITY,
             },
-            "resourceBudget.totalGpuCount",
+            "totalGpuCount",
           ],
           [
             {

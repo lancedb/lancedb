@@ -270,7 +270,7 @@ pub struct RefreshColumnOptions {
     /// Override the registered Function's maximum concurrent user-code calls
     /// for this logical execution. Must be greater than zero. `None` uses the
     /// registration default, or disabled when the Function declares none.
-    /// This is not an account quota and does not change `resource_budget`.
+    /// This is not an account quota and does not change total resource limits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_concurrency: Option<u32>,
     /// Opt-in row-count threshold for publishing completed Function outputs.
