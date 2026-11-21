@@ -208,6 +208,13 @@ jobs:
         with:
           args: --profile ci --features ${{ matrix.features }}
       - uses: ./.github/workflows/run_tests
+      - name: Retain profiling client wheel for dev verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-client-wheel-macos-${{ matrix.features }}
+          path: python/target/wheels/*.whl
+          retention-days: 1
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels

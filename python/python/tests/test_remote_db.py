@@ -9078,3 +9078,130 @@ async def test_paged_function_errors_retain_history_and_expose_continuation(
             with pytest.raises(ValueError, match="current failures"):
                 errors.rows()
     assert received == [{"job_id": "attempt-1", "page_token": "", "history": True}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.parametrize("kind", ["cpu", "memory", "gpu"])
+async def test_function_profile_capture_wait_and_retained_export(
+    sync_api, kind, tmp_path
+):
+    state = {"polls": 0, "finished": False}
+    paths = []
+    profile = {
+        "profile_id": "profile-1",
+        "job_id": "job-1",
+        "worker_id": "worker-1",
+        "execution_epoch": 3,
+        "session_slot": 2,
+        "kind": kind,
+        "duration_seconds": 2,
+        "status": "pending",
+        "requested_at_millis": 1000,
+        "deadline_at_millis": 46000,
+        "expires_at_millis": 3601000,
+        "completed_at_millis": None,
+        "error": None,
+        "artifact_id": None,
+    }
+    artifacts = {
+        "cpu": {
+            "$schema": "https://www.speedscope.app/file-format-schema.json",
+            "shared": {"frames": [{"name": "work"}]},
+            "profiles": [],
+        },
+        "memory": {
+            "format": "lancedb.tracemalloc.v1",
+            "allocations": [{"size_bytes": 4096}],
+            "truncated": False,
+        },
+        "gpu": {
+            "format": "lancedb.cuda.v1",
+            "traceEvents": [{"name": "compute", "ph": "X", "ts": 10, "dur": 2}],
+            "truncated": True,
+        },
+    }
+
+    def handler(request):
+        paths.append(request.path)
+        assert request.headers["x-api-key"] == "fake"
+        assert request.headers["x-lancedb-database"] == "dev"
+        body = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
+        if request.path == "/v1/jobs/describe":
+            result = {
+                "job_id": "job-1",
+                "job_type": "function_refresh",
+                "job_state": "DONE" if state["finished"] else "IN_PROGRESS",
+            }
+        elif request.path == "/v1/jobs/profile/capture":
+            assert body == {
+                "job_id": "job-1",
+                "worker_id": "worker-1",
+                "session_slot": 2,
+                "kind": kind,
+                "duration_seconds": 2.0,
+            }
+            result = profile
+        elif request.path == "/v1/jobs/profile/status":
+            assert body == {"job_id": "job-1", "profile_id": "profile-1"}
+            state["polls"] += 1
+            result = dict(
+                profile,
+                status="complete" if state["polls"] > 1 else "capturing",
+                artifact_id="profile-1" if state["polls"] > 1 else None,
+            )
+        elif request.path == "/v1/jobs/profile/artifact":
+            assert body == {"job_id": "job-1", "profile_id": "profile-1"}
+            result = artifacts[kind]
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+        request.send_response(
+            200 if request.path != "/v1/jobs/profile/capture" else 202
+        )
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(result).encode())
+
+    async def exercise(db):
+        async def invoke(function, *args, **kwargs):
+            if sync_api:
+                return await asyncio.to_thread(function, *args, **kwargs)
+            return await function(*args, **kwargs)
+
+        job = await invoke(db.open_job, "job-1")
+        capture = await invoke(
+            job.capture_profile,
+            "worker-1",
+            kind=kind,
+            duration=timedelta(seconds=2),
+            session_slot=2,
+        )
+        assert capture.profile_id == "profile-1"
+        assert capture.worker_id == "worker-1"
+        assert capture.session_slot == 2
+        assert capture.execution_epoch == 3
+        assert capture.status == "pending"
+        completed = await invoke(
+            job.wait_for_profile,
+            capture.profile_id,
+            timeout=timedelta(seconds=2),
+            poll_interval=timedelta(milliseconds=10),
+        )
+        assert completed.status == "complete"
+        assert job.state() == "running"
+        state["finished"] = True
+        await invoke(job.refresh)
+        assert job.state() == "finished"
+        assert await invoke(job.profile_artifact, capture.profile_id) == artifacts[kind]
+        path = tmp_path / "profile.json"
+        await invoke(job.export_profile, capture.profile_id, path)
+        assert json.loads(path.read_text()) == artifacts[kind]
+        assert paths.count("/v1/jobs/describe") == 2
+        assert not any(path.endswith("/cancel") for path in paths)
+
+    if sync_api:
+        with mock_lancedb_connection(handler) as db:
+            await exercise(db)
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            await exercise(db)

@@ -4,7 +4,10 @@
 use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatch;
-use lancedb::job::{JobEventsRequest, JobWaitOptions};
+use lancedb::job::{
+    FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions, JobEventsRequest,
+    JobWaitOptions,
+};
 use napi::bindgen_prelude::Buffer;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
@@ -13,6 +16,18 @@ use crate::error::NapiErrorExt;
 
 type JobProgressFn =
     ThreadsafeFunction<serde_json::Value, (), serde_json::Value, napi::Status, false>;
+
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+fn profile_integer(value: f64, name: &str) -> napi::Result<u64> {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=MAX_SAFE_INTEGER).contains(&value) {
+        return Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            format!("{name} must be a nonnegative safe integer"),
+        ));
+    }
+    Ok(value as u64)
+}
 
 /// A handle to an operation that may still be running.
 #[napi]
@@ -142,7 +157,6 @@ impl Job {
     ) -> napi::Result<Option<serde_json::Value>> {
         let mut options = JobWaitOptions::new();
         if let Some(timeout_ms) = timeout_ms {
-            const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
             if !timeout_ms.is_finite()
                 || timeout_ms.fract() != 0.0
                 || !(0.0..=MAX_SAFE_INTEGER).contains(&timeout_ms)
@@ -231,6 +245,84 @@ impl Job {
     #[napi(getter)]
     pub fn failure(&self) -> Option<JobFailureInfo> {
         self.inner.failure().map(Into::into)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn capture_profile(
+        &self,
+        worker_id: String,
+        kind: String,
+        duration_seconds: Option<f64>,
+        session_slot: Option<f64>,
+    ) -> napi::Result<String> {
+        let kind: FunctionProfileKind =
+            serde_json::from_value(serde_json::json!(kind)).map_err(|_| {
+                napi::Error::new(napi::Status::InvalidArg, "kind must be cpu, memory or gpu")
+            })?;
+        let mut options = FunctionProfileOptions::new(kind);
+        if let Some(slot) = session_slot {
+            options = options.session_slot(profile_integer(slot, "sessionSlot")? as usize);
+        }
+        if let Some(seconds) = duration_seconds {
+            let duration = Duration::try_from_secs_f64(seconds).map_err(|_| {
+                napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "durationSeconds must be finite and nonnegative",
+                )
+            })?;
+            options = options.duration(duration);
+        }
+        let profile = self
+            .inner
+            .capture_profile(worker_id, options)
+            .await
+            .default_error()?;
+        serde_json::to_string(&profile).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn profile_status(&self, profile_id: String) -> napi::Result<String> {
+        let profile = self
+            .inner
+            .profile_status(profile_id)
+            .await
+            .default_error()?;
+        serde_json::to_string(&profile).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_profile(
+        &self,
+        profile_id: String,
+        timeout_ms: Option<f64>,
+        poll_interval_ms: Option<f64>,
+    ) -> napi::Result<String> {
+        let mut options = FunctionProfileWaitOptions::new();
+        if let Some(ms) = timeout_ms {
+            options = options.timeout(Duration::from_millis(profile_integer(ms, "timeoutMs")?));
+        }
+        if let Some(ms) = poll_interval_ms {
+            options = options.poll_interval(Duration::from_millis(profile_integer(
+                ms,
+                "pollIntervalMs",
+            )?));
+        }
+        let profile = self
+            .inner
+            .wait_for_profile(profile_id, options)
+            .await
+            .default_error()?;
+        serde_json::to_string(&profile).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn profile_artifact(&self, profile_id: String) -> napi::Result<String> {
+        Ok(self
+            .inner
+            .profile_artifact(profile_id)
+            .await
+            .default_error()?
+            .to_string())
     }
 
     /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.

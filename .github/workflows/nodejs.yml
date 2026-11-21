@@ -143,6 +143,15 @@ jobs:
           echo "Run 'pnpm run docs', fix any warnings, and commit the changes."
           exit 1
         fi
+    - name: Retain generated profiling client API documentation
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: profiling-client-api-${{ matrix.node-version }}-${{ matrix.features }}
+        path: |
+          docs/src/js/
+          nodejs/lancedb/native.d.ts
+        retention-days: 1
     - uses: actions/setup-node@v6
       name: Setup Node.js ${{ matrix.node-version }} for test
       with:

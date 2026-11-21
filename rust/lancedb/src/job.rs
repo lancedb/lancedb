@@ -3,6 +3,13 @@
 
 //! Handles to operations a server may run asynchronously.
 
+mod profile;
+
+pub use profile::{
+    FunctionProfile, FunctionProfileKind, FunctionProfileOptions, FunctionProfileStatus,
+    FunctionProfileWaitOptions,
+};
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -14,6 +21,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
+use tokio::time::{Instant, sleep_until, timeout_at};
 use uuid::Uuid;
 
 use crate::database::JobDescription;
@@ -162,6 +170,22 @@ pub(crate) trait JobHandle: Send + Sync {
 
     async fn stack(&self, _worker_id: &str) -> Result<Value> {
         job_detail_not_supported("worker stack capture")
+    }
+
+    async fn capture_profile(
+        &self,
+        _worker_id: &str,
+        _options: FunctionProfileOptions,
+    ) -> Result<FunctionProfile> {
+        job_detail_not_supported("Function worker profiling")
+    }
+
+    async fn profile_status(&self, _profile_id: &str) -> Result<FunctionProfile> {
+        job_detail_not_supported("Function worker profiling")
+    }
+
+    async fn profile_artifact(&self, _profile_id: &str) -> Result<Value> {
+        job_detail_not_supported("Function worker profiling")
     }
 
     /// A printable report of recorded Function job metrics.
@@ -753,6 +777,135 @@ where
         }
     }
 
+    /// Request an on-demand profile from a running Enterprise Function worker.
+    ///
+    /// Returns the accepted capture identity without waiting for recording to
+    /// finish. The server pins the worker, Python session and execution epoch.
+    /// Requires System Operate permission and a supporting Enterprise server.
+    /// Only one capture per job can be active. GPU traces require initialized
+    /// PyTorch CUDA/CUPTI; CPU sampling requires readable per-thread procfs.
+    /// Captures add workload-dependent overhead.
+    ///
+    /// ```no_run
+    /// # async fn capture(job: &lancedb::job::Job) -> Result<(), Box<dyn std::error::Error>> {
+    /// use std::time::Duration;
+    /// use lancedb::job::{FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions};
+    /// let profile = job.capture_profile("worker-id",
+    ///     FunctionProfileOptions::new(FunctionProfileKind::Gpu)
+    ///         .duration(Duration::from_secs(2))).await?;
+    /// job.wait_for_profile(&profile.profile_id, FunctionProfileWaitOptions::new()).await?;
+    /// let artifact = job.profile_artifact(&profile.profile_id).await?;
+    /// std::fs::write("gpu.trace.json", serde_json::to_vec(&artifact)?)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn capture_profile(
+        &self,
+        worker_id: impl AsRef<str>,
+        options: FunctionProfileOptions,
+    ) -> Result<FunctionProfile> {
+        let worker_id = worker_id.as_ref();
+        options.validate(worker_id)?;
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.capture_profile(worker_id, options).await,
+            JobInner::Completed(_) => job_detail_not_supported("Function worker profiling"),
+        }
+    }
+
+    /// Fetch the capture's current identity and status without waiting.
+    ///
+    /// Capture failures are returned as [`FunctionProfileStatus::Failed`] with
+    /// the server's reason. This does not change the parent job's cached state.
+    /// Retained captures can be looked up after the refresh job completes.
+    pub async fn profile_status(&self, profile_id: impl AsRef<str>) -> Result<FunctionProfile> {
+        let profile_id = profile_id.as_ref();
+        profile::validate_profile_id(profile_id)?;
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.profile_status(profile_id).await,
+            JobInner::Completed(_) => job_detail_not_supported("Function worker profiling"),
+        }
+    }
+
+    /// Wait for a capture to finish, independently of the Function refresh job.
+    ///
+    /// Returns [`Error::Timeout`] when the client deadline elapses and
+    /// [`Error::Runtime`] when capture fails. Neither cancels the capture or
+    /// refresh job. Keep the profile ID to wait again or retrieve it later.
+    pub async fn wait_for_profile(
+        &self,
+        profile_id: impl AsRef<str>,
+        options: FunctionProfileWaitOptions,
+    ) -> Result<FunctionProfile> {
+        let profile_id = profile_id.as_ref();
+        profile::validate_profile_id(profile_id)?;
+        if options.poll_interval.is_zero() {
+            return Err(Error::InvalidInput {
+                message: "profile poll interval must be greater than zero".into(),
+            });
+        }
+        let deadline =
+            Instant::now()
+                .checked_add(options.timeout)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "profile wait timeout is too large".into(),
+                })?;
+        let wait = async {
+            let mut previous: Option<FunctionProfile> = None;
+            loop {
+                let profile = self.profile_status(profile_id).await?;
+                if previous
+                    .as_ref()
+                    .is_some_and(|old| !old.same_capture(&profile))
+                {
+                    return Err(Error::Runtime {
+                        message: "profile response changed the capture's execution identity".into(),
+                    });
+                }
+                match profile.status {
+                    FunctionProfileStatus::Complete => return Ok(profile),
+                    FunctionProfileStatus::Failed => {
+                        return Err(Error::Runtime {
+                            message: format!(
+                                "Function worker profile {} failed: {}",
+                                profile.profile_id,
+                                profile.error.as_deref().unwrap_or("no reason reported")
+                            ),
+                        });
+                    }
+                    FunctionProfileStatus::Pending | FunctionProfileStatus::Capturing => {}
+                }
+                previous = Some(profile);
+                let next_poll = Instant::now()
+                    .checked_add(options.poll_interval)
+                    .unwrap_or(deadline)
+                    .min(deadline);
+                sleep_until(next_poll).await;
+            }
+        };
+        timeout_at(deadline, wait)
+            .await
+            .map_err(|_| Error::Timeout {
+                message: format!(
+                    "waiting for Function worker profile {profile_id}; capture and refresh job continue on the server"
+                ),
+            })?
+    }
+
+    /// Retrieve the actual profile JSON, including a retained capture after refresh.
+    ///
+    /// CPU artifacts use speedscope, Python memory artifacts use tracemalloc,
+    /// and GPU artifacts use Chrome Trace Event JSON. GPU truncation flags are
+    /// preserved. Artifacts expire after at most one hour and eight captures
+    /// per job, or earlier when job scratch is reclaimed or archived.
+    pub async fn profile_artifact(&self, profile_id: impl AsRef<str>) -> Result<Value> {
+        let profile_id = profile_id.as_ref();
+        profile::validate_profile_id(profile_id)?;
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.profile_artifact(profile_id).await,
+            JobInner::Completed(_) => job_detail_not_supported("Function worker profiling"),
+        }
+    }
+
     /// Fetch a printable run report for a server-side Function job.
     ///
     /// The server report includes recorded phase timings, finishing-supervisor
@@ -1111,6 +1264,48 @@ mod tests {
     use std::future::pending;
 
     use super::*;
+
+    struct PendingProfileStatus;
+
+    #[async_trait]
+    impl JobHandle for PendingProfileStatus {
+        async fn status(&self) -> Result<String> {
+            panic!("profile wait fetched parent status")
+        }
+        async fn wait(&self) -> Result<TerminalResult> {
+            panic!("profile wait waited for parent completion")
+        }
+        async fn cancel(&self) -> Result<()> {
+            panic!("profile wait cancelled parent job")
+        }
+        async fn profile_status(&self, _profile_id: &str) -> Result<FunctionProfile> {
+            pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn profile_timeout_bounds_pending_requests_and_rejects_deadline_overflow() {
+        let job = Job::new(Box::new(PendingProfileStatus));
+        let started = Instant::now();
+        assert!(matches!(
+            job.wait_for_profile(
+                "profile-1",
+                FunctionProfileWaitOptions::new().timeout(Duration::from_millis(50))
+            )
+            .await,
+            Err(Error::Timeout { .. })
+        ));
+        assert_eq!(started.elapsed(), Duration::from_millis(50));
+        assert_eq!(job.state(), None);
+        assert!(matches!(
+            job.wait_for_profile(
+                "profile-1",
+                FunctionProfileWaitOptions::new().timeout(Duration::MAX)
+            )
+            .await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn wait_timeout_preserves_local_task_and_typed_result() {

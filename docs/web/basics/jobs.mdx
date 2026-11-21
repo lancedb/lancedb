@@ -607,6 +607,118 @@ support stack inspection. For a worker that already timed out, inspect the
 recorded failure events for retained traceback evidence.
 */}
 
+## Profile a Function worker {#profiling}
+
+On a supporting Enterprise server, request a CPU profile, retained Python
+allocation profile, or PyTorch CUDA activity trace through the existing Job
+handle. A capture is a diagnostic operation on that refresh job. It records
+one selected worker's Python execution session and pins its execution epoch.
+Choose a worker ID from the job's recorded events or the Console.
+
+<CodeGroup>
+```python Synchronous Python icon="python"
+from datetime import timedelta
+
+job = db.open_job(refresh_job_id)
+profile = job.capture_profile(
+    worker_id,
+    kind="cpu",
+    duration=timedelta(seconds=10),
+    session_slot=0,
+)
+print(profile.profile_id, profile.status)
+job.wait_for_profile(
+    profile.profile_id,
+    timeout=timedelta(seconds=60),
+    poll_interval=timedelta(seconds=5),
+)
+job.export_profile(profile.profile_id, "cpu.speedscope.json")
+```
+
+```python Asynchronous Python icon="python"
+from datetime import timedelta
+
+job = await async_db.open_job(refresh_job_id)
+profile = await job.capture_profile(
+    worker_id, kind="gpu", duration=timedelta(seconds=2)
+)
+await job.wait_for_profile(profile.profile_id, timeout=timedelta(seconds=60))
+await job.export_profile(profile.profile_id, "gpu.trace.json")
+```
+
+```typescript TypeScript icon="js"
+const job = await db.openJob(refreshJobId);
+const profile = await job.captureProfile(workerId, {
+  kind: "gpu",
+  durationSeconds: 2,
+  sessionSlot: 0,
+});
+console.log(profile.profileId, profile.status);
+await job.waitForProfile(profile.profileId, {
+  timeoutMs: 60_000,
+  pollIntervalMs: 5_000,
+});
+await job.exportProfile(profile.profileId, "gpu.trace.json");
+```
+
+```rust Rust icon="rust"
+use std::time::Duration;
+use lancedb::job::{
+    FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions,
+};
+
+let job = db.open_job(refresh_job_id).await?;
+let profile = job.capture_profile(
+    worker_id,
+    FunctionProfileOptions::new(FunctionProfileKind::Cpu)
+        .duration(Duration::from_secs(10)),
+).await?;
+job.wait_for_profile(
+    &profile.profile_id,
+    FunctionProfileWaitOptions::new()
+        .timeout(Duration::from_secs(60))
+        .poll_interval(Duration::from_secs(5)),
+).await?;
+let artifact = job.profile_artifact(&profile.profile_id).await?;
+std::fs::write("cpu.speedscope.json", serde_json::to_vec(&artifact)?)?;
+```
+</CodeGroup>
+
+| Kind | Evidence and export | Recording window |
+| --- | --- | --- |
+| `cpu` | Python stack samples weighted by thread CPU time; speedscope JSON | 1–30 seconds, default 10 |
+| `memory` | Python allocations made during capture and retained at its end; tracemalloc JSON | 1–30 seconds, default 10 |
+| `gpu` | PyTorch CUDA kernels, copies, memset and available CUDA host APIs; Chrome Trace Event JSON | 1–5 seconds, default 5 |
+
+Captures require System Operate permission and a running Function refresh with
+an available worker session. Slot zero selects the first Python session.
+Only one capture per job can be active. The capture window excludes supervisor
+dispatch delay. CPU sampling needs readable per-thread procfs and is unavailable
+in dedicated sandboxes. GPU tracing needs already initialized PyTorch CUDA with
+CUPTI support. Captures add workload-dependent time and memory overhead.
+
+`wait_for_profile` / `waitForProfile` defaults to a 60-second timeout and two
+seconds between status requests. Both are configurable. A timeout stops only
+that client's wait; the capture and parent refresh keep running. Keep the
+profile ID to wait again. A failed capture raises an error with the server's
+reason. Use `profile_status` / `profileStatus` to inspect its typed status and
+failure details independently of the refresh job's status.
+
+Retrieve a completed capture with `profile_artifact` / `profileArtifact` to get
+the actual JSON in memory, or export it to a file as above. Files are overwritten
+only after retrieval succeeds. Retained lookup works after refresh completion:
+reopen the parent job, then use the saved profile ID. Retention is at most one
+hour and eight captures per job, until earlier scratch reclamation or archival.
+Permission, unsupported-session, expired-artifact and unsupported-server errors
+are surfaced by the normal client error handling.
+
+Open CPU exports in speedscope and GPU exports in Perfetto. Truncation flags
+remain in the downloaded JSON. CUDA durations can overlap across streams, so
+their sum is not elapsed time or GPU utilization. Python operator attribution,
+GPU allocation stacks, native CPU frames and native allocations are outside
+these capture formats. Concurrent CUDA profilers in the same Python session
+are unsupported.
+
 ## Embedded and Enterprise execution {#in-process}
 
 The following table describes LanceDB Embedded operations and registry jobs on

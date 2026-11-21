@@ -755,6 +755,12 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.job.JobFailureInfo
 
+::: lancedb.profiling.FunctionProfile
+
+::: lancedb.profiling.FunctionProfileKind
+
+::: lancedb.profiling.FunctionProfileStatus
+
 ::: lancedb.sql.Query
 
 ::: lancedb.sql.AsyncQuery
