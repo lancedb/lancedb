@@ -4276,6 +4276,61 @@ describe("when dealing with table delta", () => {
     await table.checkoutLatest();
   });
 
+  it("does not start a rejected reader until it is used", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_lazy", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+
+    const delta = await table.delta(1);
+    const reader = delta.insertedRows();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(unhandled).toEqual([]);
+      await expect(reader.schema()).rejects.toThrow(/stable row ids/);
+      await expect(reader.next()).rejects.toThrow(/stable row ids/);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("uses one reader cursor and releases it on early drop", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_reader", [{ id: 1 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 2 }]);
+    const delta = await table.delta(1);
+
+    const reader = delta.insertedRows();
+    expect(reader[Symbol.asyncIterator]()).toBe(reader);
+    const first = await reader.next();
+    expect(first.done).toBe(false);
+    const [second, third] = await Promise.all([reader.next(), reader.next()]);
+    expect(second.done).toBe(true);
+    expect(third.done).toBe(true);
+    expect((await reader.schema()).fields.map((field) => field.name)).toEqual([
+      "id",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+
+    const dropped = delta.insertedRows();
+    for await (const _batch of dropped) {
+      break;
+    }
+    expect(await dropped.next()).toEqual({ done: true, value: undefined });
+    expect((await dropped.schema()).fields.map((field) => field.name)).toEqual([
+      "id",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+  });
+
   it("rejects invalid endpoints and cross-branch tags", async () => {
     const conn = await connect(tmpDir.name, { readConsistencyInterval: 0 });
     const table = await conn.createTable("delta_errors", [{ id: 0 }], {

@@ -283,8 +283,14 @@ export interface TableDeltaTransaction {
  * `schema()` is available before consuming the stream, including when the
  * range is empty. The stream yields Arrow record batches without
  * materializing the full result.
+ *
+ * A reader owns one native cursor. It is single-use:
+ * `[Symbol.asyncIterator]()` returns the same iterator, concurrent pulls are
+ * serialized, and `return()` releases the native stream on early drop.
  */
-export interface TableDeltaReader extends AsyncIterable<RecordBatch> {
+export interface TableDeltaReader
+  extends AsyncIterable<RecordBatch>,
+    AsyncIterator<RecordBatch> {
   schema(): Promise<Schema>;
 }
 
@@ -2457,22 +2463,22 @@ export class TableDelta {
 
   /** Stream rows inserted in `(beginVersion, endVersion]`. */
   insertedRows(): TableDeltaReader {
-    return tableDeltaReader(this.#inner.insertedRows());
+    return tableDeltaReader(() => this.#inner.insertedRows());
   }
 
   /** Stream rows updated in `(beginVersion, endVersion]`. */
   updatedRows(): TableDeltaReader {
-    return tableDeltaReader(this.#inner.updatedRows());
+    return tableDeltaReader(() => this.#inner.updatedRows());
   }
 
   /** Stream inserted and updated rows in `(beginVersion, endVersion]`. */
   upsertedRows(): TableDeltaReader {
-    return tableDeltaReader(this.#inner.upsertedRows());
+    return tableDeltaReader(() => this.#inner.upsertedRows());
   }
 
   /** Stream deleted row IDs. Each batch has one `_rowid: uint64` column. */
   deletedRowIds(): TableDeltaReader {
-    return tableDeltaReader(this.#inner.deletedRowIds());
+    return tableDeltaReader(() => this.#inner.deletedRowIds());
   }
 
   /** List readable transactions committed in `(beginVersion, endVersion]`. */
@@ -2510,14 +2516,148 @@ function toNativeDeltaRef(value: DeltaVersion): NativeDeltaRef {
 }
 
 function tableDeltaReader(
-  promisedInner: Promise<NativeBatchIterator>,
+  open: () => Promise<NativeBatchIterator>,
 ): TableDeltaReader {
-  return {
-    schema: async () => tableFromIPC((await promisedInner).schema()).schema,
-    [Symbol.asyncIterator](): AsyncIterator<RecordBatch> {
-      return RecordBatchIterator(promisedInner);
-    },
-  };
+  return new TableDeltaReaderImpl(open);
+}
+
+class TableDeltaReaderImpl implements TableDeltaReader {
+  readonly #open: () => Promise<NativeBatchIterator>;
+  #setup?: Promise<NativeBatchIterator>;
+  #schema?: Schema;
+  #schemaSetup?: Promise<Schema>;
+  #iterator?: AsyncIterator<RecordBatch>;
+  #error?: unknown;
+  #done = false;
+  #pullQueue: Promise<void> = Promise.resolve();
+
+  constructor(open: () => Promise<NativeBatchIterator>) {
+    this.#open = open;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RecordBatch> {
+    return this;
+  }
+
+  async schema(): Promise<Schema> {
+    if (this.#schema !== undefined) {
+      return this.#schema;
+    }
+    if (this.#error !== undefined) {
+      throw this.#error;
+    }
+    if (this.#schemaSetup === undefined) {
+      this.#schemaSetup = (async () => {
+        const native = await this.#getNative();
+        const schema = tableFromIPC(await native.schema()).schema;
+        this.#schema = schema;
+        return schema;
+      })();
+    }
+    return this.#schemaSetup;
+  }
+
+  next(): Promise<IteratorResult<RecordBatch>> {
+    return this.#serialize(() => this.#pull());
+  }
+
+  async return(): Promise<IteratorResult<RecordBatch>> {
+    await this.#serialize(async () => {
+      this.#done = true;
+      await this.#release();
+    });
+    return { done: true, value: undefined };
+  }
+
+  async throw(error?: unknown): Promise<IteratorResult<RecordBatch>> {
+    await this.#serialize(async () => {
+      this.#done = true;
+      await this.#release();
+    });
+    throw error;
+  }
+
+  async #pull(): Promise<IteratorResult<RecordBatch>> {
+    if (this.#error !== undefined) {
+      throw this.#error;
+    }
+    if (this.#done) {
+      return { done: true, value: undefined };
+    }
+
+    // Capture the schema before polling the reader's shared native iterator.
+    await this.schema();
+    try {
+      const result = await this.#getIterator().next();
+      if (result.done) {
+        this.#done = true;
+        await this.#release();
+      }
+      return result;
+    } catch (error) {
+      return this.#fail(error);
+    }
+  }
+
+  #getIterator(): AsyncIterator<RecordBatch> {
+    if (this.#iterator === undefined) {
+      this.#iterator = RecordBatchIterator(this.#getNative())[
+        Symbol.asyncIterator
+      ]();
+    }
+    return this.#iterator;
+  }
+
+  async #getNative(): Promise<NativeBatchIterator> {
+    if (this.#error !== undefined) {
+      throw this.#error;
+    }
+    if (this.#done) {
+      throw new Error("table delta reader is already consumed");
+    }
+    if (this.#setup === undefined) {
+      try {
+        this.#setup = this.#open();
+      } catch (error) {
+        return this.#fail(error);
+      }
+    }
+    try {
+      return await this.#setup;
+    } catch (error) {
+      return this.#fail(error);
+    }
+  }
+
+  async #fail(error: unknown): Promise<never> {
+    this.#done = true;
+    this.#error = error;
+    await this.#release();
+    throw error;
+  }
+
+  async #release(): Promise<void> {
+    const iterator = this.#iterator;
+    this.#iterator = undefined;
+    this.#setup = undefined;
+    if (iterator?.return !== undefined) {
+      try {
+        await iterator.return();
+      } catch {
+        // The native stream already failed or completed; releasing the
+        // reference is enough.
+      }
+    }
+  }
+
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.#pullQueue.then(operation, operation);
+    this.#pullQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
 }
 
 /**
