@@ -1,29 +1,214 @@
 ---
 title: "Agno"
 sidebarTitle: "Agno"
-description: "Build a search assistant using the Agno agent framework with LanceDB as the knowledge backend."
+description: "Store agent knowledge in LanceDB and retrieve it with vector, keyword, or hybrid search."
+availability:
+  embedded: available
+  enterprise: available
 ---
 
 import {
   PyFrameworksAgnoAgent,
+  PyFrameworksAgnoAsk,
   PyFrameworksAgnoCliChat,
+  PyFrameworksAgnoDelete,
+  PyFrameworksAgnoEnterprise,
   PyFrameworksAgnoIngestYoutube,
+  PyFrameworksAgnoOllama,
+  PyFrameworksAgnoPath,
+  PyFrameworksAgnoQuickstart,
+  PyFrameworksAgnoSearch,
+  PyFrameworksAgnoSearchMode,
   PyFrameworksAgnoSetup,
+  PyFrameworksAgnoUrl,
+  PyFrameworksAgnoUserScope,
 } from '/snippets/integrations.mdx';
 
-[Agno](https://docs.agno.com/introduction) is a framework for building agentic AI applications.
-It supports LanceDB as a knowledge backend, allowing you to easily ingest and retrieve external content for your agents.
+[Agno](https://docs.agno.com/introduction) builds agents that can search an external knowledge base before they answer.
+Its `LanceDb` adapter writes chunk embeddings, text, and metadata into one LanceDB table.
+Pass that adapter to a `Knowledge` object, then pass the object to an `Agent`.
 
-When you pair Agno's `Knowledge` system with LanceDB, you get a clean Agentic RAG setup.
-We'll walk through the steps below to build a YouTube transcript-aware Agno assistant that can:
-- Ingest a transcript from a YouTube video via the YouTube API
-- Store embeddings and metadata in LanceDB
-- Retrieve context during responses with hybrid search
-- Ask questions about the video content in a CLI chat loop
+With `search_knowledge=True`, the model receives a `search_knowledge_base` tool.
+Agno runs the tool against LanceDB and feeds the returned chunks back into the answer.
+That is the retrieval memory for documents you have ingested.
+Conversational user memories created with `enable_agentic_memory` stay in Agno's session database.
 
-## Prerequisites {#prerequisites}
+## Install Agno and LanceDB {#install-agno-and-lancedb}
 
-Install dependencies:
+<CodeGroup>
+```bash pip icon="terminal"
+pip install -U agno lancedb openai
+```
+
+```bash uv icon="terminal"
+uv add agno lancedb openai
+```
+</CodeGroup>
+
+Export an OpenAI key before you embed or ask a question:
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+Install `pypdf` when you insert PDF files or PDF URLs. The text notes below do not need it.
+
+## Store notes and ask an agent {#store-notes-and-ask-an-agent}
+
+A directory URI opens a LanceDB Embedded database on disk.
+`SearchType.hybrid` runs vector search and LanceDB full-text search on the same query.
+`OpenAIEmbedder` is the default embedder. Set `id` when you want a specific model.
+`text-embedding-3-small` uses 1536 dimensions.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoQuickstart}
+</CodeBlock>
+
+`knowledge.insert()` chunks the text, embeds each chunk, and adds the rows to the LanceDB table.
+Pass `name` so you can delete that document later.
+
+Attach the same `Knowledge` object to an agent.
+`search_knowledge` defaults to `True`. The example sets it explicitly.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoAsk}
+</CodeBlock>
+
+The agent calls LanceDB, then answers from the retrieved notes.
+A local table lives in the directory you passed as `uri`.
+
+## Read the retrieved chunks {#read-the-retrieved-chunks}
+
+`knowledge.search()` returns the same chunks the agent would see, without calling the chat model.
+The query is still embedded.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoSearch}
+</CodeBlock>
+
+Each result is a document with `name`, `content`, and `meta_data`.
+
+## Choose vector, keyword, or hybrid search {#choose-vector-keyword-or-hybrid-search}
+
+Set `search_type` on the `LanceDb` instance. You can change it later on the same object.
+
+| `search_type` | What LanceDB runs |
+|:---|:---|
+| `SearchType.vector` | Nearest vectors for the embedded query. This is the default. |
+| `SearchType.keyword` | Full-text search over the stored payload. Agno creates the FTS index on first use. |
+| `SearchType.hybrid` | Vector search and full-text search together. Agno drops duplicate chunks. |
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoSearchMode}
+</CodeBlock>
+
+Keyword search is the right mode when the question contains a name, an id, or another exact string.
+Vector search matches paraphrases. Hybrid search keeps both signals.
+
+Dictionary `filters` are applied in Agno after LanceDB returns candidates, so a filtered call can return fewer rows than `max_results`.
+Filter-expression lists are ignored by this adapter.
+Prefer `user_id` when you need the filter to run inside LanceDB.
+
+## LanceDb parameters {#lancedb-parameters}
+
+| Name | Type | Purpose | Default |
+|:---|:---|:---|:---|
+| `uri` | `str` | Directory for LanceDB Embedded, or a `db://` URI for LanceDB Enterprise. | `/tmp/lancedb` |
+| `table_name` | `str` | Table that stores chunks. Required when `table` is omitted. | none |
+| `table` | `LanceTable` | Existing table to reuse. | none |
+| `connection` | `DBConnection` | Existing LanceDB connection. Otherwise Agno calls `lancedb.connect`. | none |
+| `api_key` | `str` | API key for a `db://` URI. Falls back to `LANCEDB_API_KEY`. | none |
+| `embedder` | `Embedder` | Embeds chunks and queries. `dimensions` must be set. | `OpenAIEmbedder()` |
+| `search_type` | `SearchType` | `vector`, `keyword`, or `hybrid`. | `SearchType.vector` |
+| `distance` | `Distance` | `cosine`, `l2`, or `max_inner_product`. Import it from `agno.vectordb.distance`. | `Distance.cosine` |
+| `nprobes` | `int` | IVF probes for vector search. | none |
+| `on_bad_vectors` | `str` | `error`, `drop`, `fill`, or `null`. | none |
+| `fill_value` | `float` | Fill value when `on_bad_vectors` is `fill`. | none |
+| `reranker` | `Reranker` | Deprecated on `LanceDb`. Pass the reranker to `Knowledge` instead. | none |
+
+`knowledge.ainsert()` and `knowledge.asearch()` are the async entry points.
+The LanceDB adapter embeds asynchronously, then writes and searches through the synchronous table.
+
+## Scope notes to one user {#scope-notes-to-one-user}
+
+Pass `user_id` to store chunks for one user.
+A search with that `user_id` returns the user's rows plus shared rows.
+Shared rows are inserts that omit `user_id`.
+A search that omits `user_id` reads every row.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoUserScope}
+</CodeBlock>
+
+LanceDB stores `user_id` as its own column and applies it with a prefilter, so the owner check happens before the top-k cutoff.
+
+## Delete notes {#delete-notes}
+
+`delete_by_name()` removes every chunk inserted under that name.
+`delete_by_metadata()` matches the dictionary you stored on `metadata`.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoDelete}
+</CodeBlock>
+
+`vector_db.drop()` drops the whole LanceDB table.
+
+## Load a file or URL {#load-a-file-or-url}
+
+`path` reads a local file. A `.txt` file uses Agno's text reader. The snippet expects `handbook.txt` in the working directory.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoPath}
+</CodeBlock>
+
+`url` downloads a remote file. PDF URLs need `pypdf`.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoUrl}
+</CodeBlock>
+
+`upsert=True` is the default, so inserting the same content again replaces the previous chunks.
+
+## Connect to LanceDB Enterprise {#connect-to-lancedb-enterprise}
+
+A `db://` URI stores the same knowledge table in LanceDB Enterprise.
+Set `LANCEDB_URI` to that URI and `LANCEDB_API_KEY` to the database API key.
+A `db://` URI without an API key raises `ValueError`.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoEnterprise}
+</CodeBlock>
+
+Pass `enterprise_db` to `Knowledge` the same way as the local `vector_db`.
+
+## Use a local Ollama embedder {#use-a-local-ollama-embedder}
+
+Install Ollama, pull an embedding model, and install the Python client with `pip install ollama`.
+Set `dimensions` to the size of that model. `nomic-embed-text` uses 768.
+Store those vectors in `agent_notes_ollama`.
+The OpenAI quickstart writes 1536-dimensional vectors to `agent_notes` in the same directory, and a later search fails when the query width does not match that column.
+Insert the notes with the Ollama embedder, then search `agent_notes_ollama`.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoOllama}
+</CodeBlock>
+
+The embedder calls your local Ollama server. The `Ollama` chat model does too, when you use it for the answer.
+See Agno's embedder guide: [Ollama embedder](https://docs.agno.com/knowledge/concepts/embedder/ollama/ollama-embedder).
+
+## Ask questions about a YouTube transcript {#ask-questions-about-a-youtube-transcript}
+
+The same `Knowledge` object can index a transcript instead of short notes.
+This walkthrough builds a CLI assistant that:
+
+- Fetches a transcript with the YouTube API
+- Stores embeddings and metadata in LanceDB
+- Retrieves context with hybrid search
+- Answers follow-up questions in a loop
+
+### Prerequisites {#prerequisites}
+
+Install the extra packages for this walkthrough:
 
 <CodeGroup>
 ```bash pip icon="terminal"
@@ -35,54 +220,54 @@ uv add agno openai lancedb youtube-transcript-api beautifulsoup4
 ```
 </CodeGroup>
 
-## Step 1: Configure LanceDB-backed knowledge {#step-1-configure-lancedb-backed-knowledge}
+### Step 1: Configure LanceDB-backed knowledge {#step-1-configure-lancedb-backed-knowledge}
 
-First, you can initialize the core `Knowledge` object that your agent will use for retrieval.
-It configures LanceDB as the vector store, enables hybrid search with native LanceDB FTS, and sets the embedding model.
+Initialize the `Knowledge` object the agent searches.
+The snippet configures LanceDB as the vector store, enables hybrid search with native LanceDB FTS, and sets the embedding model.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksAgnoSetup}
 </CodeBlock>
 
-## Step 2: Fetch and ingest the YouTube transcript {#step-2-fetch-and-ingest-the-youtube-transcript}
+### Step 2: Fetch and ingest the YouTube transcript {#step-2-fetch-and-ingest-the-youtube-transcript}
 
-Next, extract a YouTube video ID, fetch the full transcript, and flatten it into text for indexing.
-The snippet shown below then inserts that transcript text into the Agno knowledge base, which writes vectors and metadata to LanceDB.
+Extract a YouTube video ID, fetch the transcript, and flatten it into text.
+The snippet then inserts that text into the Agno knowledge base, which writes vectors and metadata to LanceDB.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksAgnoIngestYoutube}
 </CodeBlock>
 
 <Info>
-This path explicitly fetches the transcript first, then inserts transcript text into LanceDB through Agno.
+This path fetches the transcript first, then inserts the transcript text into LanceDB through Agno.
 </Info>
 
-## Step 3: Create an Agno agent with knowledge search {#step-3-create-an-agno-agent-with-knowledge-search}
+### Step 3: Create an Agno agent with knowledge search {#step-3-create-an-agno-agent-with-knowledge-search}
 
-The next step is to construct an Agno `Agent` and attach the knowledge base you just populated.
-With `search_knowledge=True`, the agent performs retrieval before answering, so responses stay grounded in transcript context.
+Construct an Agno `Agent` and attach the knowledge base you just populated.
+With `search_knowledge=True`, the agent performs retrieval before answering, so responses stay grounded in the transcript.
 
 In Agno, retrieval is exposed as a tool call that the model can invoke at runtime.
-When `search_knowledge=True`, Agno makes a knowledge-search tool (shown in output as `search_knowledge_base(...)`) available to the model; the model decides when to call it, Agno executes the tool, and the returned context is fed back into the final answer.
+When `search_knowledge=True`, Agno makes a knowledge-search tool (shown in output as `search_knowledge_base(...)`) available to the model. The model decides when to call it, Agno executes the tool, and the returned context is fed back into the final answer.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksAgnoAgent}
 </CodeBlock>
 
-## Step 4: Start a CLI chat loop {#step-4-start-a-cli-chat-loop}
+### Step 4: Start a CLI chat loop {#step-4-start-a-cli-chat-loop}
 
-You can now ask an initial question and then start an interactive loop for follow-up queries.
-Each prompt runs through the same retrieval pipeline, so you can iteratively inspect what the transcript contains.
+Ask an initial question, then start an interactive loop for follow-up queries.
+Each prompt runs through the same retrieval pipeline, so you can inspect what the transcript contains.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksAgnoCliChat}
 </CodeBlock>
 
 <Info>
-Want local-first inference? Replace OpenAI model/embedder classes with Agno's Ollama providers. See Agno's Ollama knowledge examples: [docs.agno.com/examples/models/ollama/chat/knowledge](https://docs.agno.com/examples/models/ollama/chat/knowledge).
+For local inference, use the [Ollama embedder](#use-a-local-ollama-embedder) section above with `agno.models.ollama.Ollama` as the chat model.
 </Info>
 
-### Question 1 {#question-1}
+#### Question 1 {#question-1}
 
 The following question is asked in the CLI chat loop:
 ```
@@ -107,11 +292,11 @@ The following question is asked in the CLI chat loop:
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-We get the response based on the transcript's contents as expected.
+The response follows the transcript.
 
-### Question 2 {#question-2}
+#### Question 2 {#question-2}
 
-Let's ask a more specific question about the CEO of LanceDB, which is also in the transcript:
+A more specific question about the CEO of LanceDB, which is also in the transcript:
 
 ```
 You: What is the name of the CEO of LanceDB? 
@@ -135,17 +320,22 @@ INFO Found 10 documents
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-We get the response based on the transcript's contents and title as expected.
+The response follows the transcript and the video title.
 
 ## Why this works well {#why-this-works-well}
 
-To start, LanceDB Embedded can run from a local directory, so transcript data can stay on your machine.
+LanceDB Embedded reads and writes a local directory, so the knowledge table can stay on your machine.
 
-- You do not need to maintain a separate transcript parser in your application code.
-- You do not need to hand-roll chunking and retrieval orchestration across multiple modules.
-- One explicit Agno `Knowledge` object, backed by LanceDB, defines both ingestion and search behavior in one place.
-- Fewer moving parts means the tutorial stays readable and the same pattern is easier to carry into production code.
+- One `Knowledge` object, backed by LanceDB, defines both ingestion and search.
+- Vector search, full-text search, and hybrid search are a `search_type` change on that same table.
+- `user_id` keeps one user's notes in the table without a second database.
+- The same `uri` and `table_name` open the table again the next time the agent starts.
 
-As your application needs grow, you can migrate to LanceDB [Enterprise](/index#architecture) for
-convenience features like automatic compaction and reindexing and the ability to scale to
-really large datasets.
+As the table grows, move the `uri` to LanceDB [Enterprise](/index#architecture) for automatic compaction, reindexing, and larger datasets.
+
+<Card
+  title="Agno LanceDB reference"
+  href="https://docs.agno.com/knowledge/vector-stores/lancedb/overview"
+>
+Agno's own LanceDB guide covers the adapter parameters and more knowledge examples.
+</Card>
