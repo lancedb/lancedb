@@ -324,6 +324,9 @@ class Connection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[pa.RecordBatch] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery: ...
     async def describe_query(self, query_id: UUID) -> QueryDescription: ...
     async def create_table(

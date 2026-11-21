@@ -375,19 +375,29 @@ impl Connection {
         self.get_inner().map(|inner| inner.uri().to_string())
     }
 
-    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None, timeout=None, read_timeout=None, cancel_on_drop=false))]
     pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
         parameters: Option<PyArrowType<RecordBatch>>,
+        timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
+        cancel_on_drop: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
             let mut operation = inner
                 .execute_query_async(query)
-                .default_namespace_path(default_namespace_path);
+                .default_namespace_path(default_namespace_path)
+                .cancel_on_drop(cancel_on_drop);
+            if let Some(timeout) = timeout {
+                operation = operation.timeout(timeout);
+            }
+            if let Some(timeout) = read_timeout {
+                operation = operation.read_timeout(timeout);
+            }
             if let Some(PyArrowType(parameters)) = parameters {
                 operation = operation.parameters(parameters);
             }

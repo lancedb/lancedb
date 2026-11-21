@@ -4237,6 +4237,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: None,
+                options: Default::default(),
             })
             .await
             .map_err(cleanup::map_error)?;
@@ -4266,6 +4267,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: None,
+                options: Default::default(),
             })
             .await
             .map_err(cleanup::map_error)?;
@@ -4298,6 +4300,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: None,
+                options: Default::default(),
             })
             .await
             .map_err(optimize::map_optimize_error)?;
@@ -4958,6 +4961,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: options.parameters,
+                options: Default::default(),
             })
             .await
             .map_err(prewarm::map_error)?;
@@ -4997,6 +5001,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: options.parameters,
+                options: Default::default(),
             })
             .await
             .map_err(prewarm::map_explain_error)?;

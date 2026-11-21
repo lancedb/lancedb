@@ -1717,6 +1717,9 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> pa.RecordBatchReader:
         """Execute SQL and return a blocking Arrow reader.
 
@@ -1731,6 +1734,9 @@ class DBConnection(EnforceOverrides):
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         ).reader()
 
     def execute_query_async(
@@ -1739,6 +1745,9 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery:
         """Start executing SQL and return its query handle.
 
@@ -1764,12 +1773,23 @@ class DBConnection(EnforceOverrides):
         With or without parameters, the server chooses whether to stream rows on the
         initial call or return a polling continuation. The reader follows
         either path transparently. Dropping an unread handle or its reader
-        stops a directly streamed query; deferred execution requires explicit
-        cancellation. Open ``reader()`` directly: a streamed query needs its
-        reader to make progress and reports ``running`` until the stream ends.
+        stops a directly streamed query. Set ``cancel_on_drop=True`` to also
+        attempt cancellation of deferred Flight execution when its unread handle
+        or reader is dropped. By default, deferred queries can be detached.
+        Open ``reader()`` directly: a streamed query needs its reader to make
+        progress and reports ``running`` until the stream ends.
         Once a server-side SQL job exists, ``describe().job_id`` exposes its
         durable Job Registry id while the query is still running. This is
         separate from the connection-scoped query ``id``.
+
+        ``timeout`` limits submission and result consumption together, starting
+        when the query is submitted. It also applies before a reader is opened.
+        ``read_timeout`` overrides the connection's limit for each server read.
+        Both accept ``datetime.timedelta``. On expiry or a failed result read,
+        the SDK stops reading and attempts to cancel Flight execution.
+        Cancellation on drop is best effort and requires the connection's runtime
+        to remain alive. Durable server-side jobs require explicit
+        ``cancel_job(query.job_id)`` regardless of these options.
 
         LanceDB Embedded connections do not support SQL.
         """
@@ -4630,6 +4650,9 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncRecordBatchReader:
         """Execute SQL and return an asynchronous Arrow reader.
 
@@ -4644,6 +4667,9 @@ class AsyncConnection(object):
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
         return await submitted.reader()
 
@@ -4653,6 +4679,9 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncSqlQuery:
         """Start executing SQL and return its query handle.
 
@@ -4660,6 +4689,11 @@ class AsyncConnection(object):
         references. The namespace defaults to ``["public"]``. ``parameters``
         binds values to ``$1`` / ``$name`` placeholders; see
         [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        ``timeout`` covers submission through result consumption, including
+        time before opening a reader. ``read_timeout`` limits each server read.
+        ``cancel_on_drop=True`` also attempts to cancel deferred Flight execution
+        when its unread handle or reader is dropped. See the synchronous method
+        above for cancellation and durable-job behavior.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
@@ -4667,6 +4701,9 @@ class AsyncConnection(object):
                 query,
                 default_namespace_path=default_namespace_path,
                 parameters=to_parameter_batch(parameters),
+                timeout=timeout,
+                read_timeout=read_timeout,
+                cancel_on_drop=cancel_on_drop,
             )
         )
 
