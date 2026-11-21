@@ -291,6 +291,20 @@ pub struct JobInfo {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub created_at_millis: i64,
+    /// Terminal timestamp, in milliseconds since the epoch; unknown on older servers.
+    pub completed_at_millis: Option<i64>,
+    /// Creation-to-completion wall time, including queueing and pauses.
+    /// Absent for unfinished jobs or when the server cannot establish the duration.
+    pub duration_millis: Option<i64>,
+    /// Columns affected by this job. Empty when unavailable or not column-scoped.
+    pub columns: Vec<String>,
+    /// Pinned Function catalog name, with namespace segments joined by `$`.
+    /// Present for computed column refreshes when supplied by the server.
+    pub function_name: Option<String>,
+    /// Pinned Function version, when supplied by the server.
+    pub function_version: Option<String>,
+    /// Durable failure summary; absent when unavailable or the job did not fail.
+    pub failure: Option<crate::error::JobFailure>,
     /// Latest progress sample for a job type that reports structured progress.
     pub progress: Option<serde_json::Value>,
     /// Coarse server-derived phase, including phases introduced by newer

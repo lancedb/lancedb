@@ -243,6 +243,90 @@ listing. It is a lazy iterator: iteration performs requests and can raise
 request errors. Use `list(db.list_jobs(...))` to collect all remaining results;
 there is no `.to_list()` method.
 
+{/* Draft for the SDK and Enterprise releases that provide job listing metadata.
+
+With a server and SDK that provide listing metadata, `JobInfo` also exposes
+`columns`, `function_name`, `function_version`, `completed_at_millis`,
+`duration_millis`, and `failure`. Function names include their namespace, joined
+by `$`, and the version is pinned to the computed column refresh. Duration is
+creation-to-completion wall time, including queueing and pauses; running jobs
+have no completed duration. Unknown scalar values and failure summaries stay
+absent (`None` in Python/Rust, `undefined` in TypeScript), and unavailable or
+non-column-scoped `columns` are empty. A zero duration is a measured value.
+Failure summaries include phase, message, and retryability; open the job for
+full diagnostics.
+
+<CodeGroup>
+```python Python icon="python"
+latest = next(
+    (
+        info
+        for info in db.list_jobs(table="events", job_type="function_refresh")
+        if "embedding" in info.columns
+    ),
+    None,
+)
+if latest is not None:
+    print(latest.function_name, latest.function_version, latest.duration_millis)
+    if latest.failure is not None:
+        print(latest.failure.message)
+```
+
+```rust Rust icon="rust"
+use futures::TryStreamExt;
+use lancedb::{database::JobListFilter, listing::ListingOptions, Connection, Result};
+
+async fn print_latest_refresh(db: &Connection) -> Result<()> {
+    let mut filter = JobListFilter::default();
+    filter.table = Some("events".into());
+    filter.job_types = vec!["function_refresh".into()];
+    let mut jobs = db.list_jobs_filtered(filter, ListingOptions::default());
+    while let Some(info) = jobs.try_next().await? {
+        if info.columns.iter().any(|column| column == "embedding") {
+            println!(
+                "{:?} {:?} {:?}",
+                info.function_name, info.function_version, info.duration_millis
+            );
+            if let Some(failure) = info.failure {
+                println!("{:?}", failure.message);
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+```
+
+```typescript TypeScript icon="js"
+for await (const info of db.listJobs({ pageLimit: 50 })) {
+  if (
+    info.jobType === "function_refresh" &&
+    info.table === "events" &&
+    info.columns.includes("embedding")
+  ) {
+    console.log(info.functionName, info.functionVersion, info.durationMillis);
+    if (info.failure !== undefined) {
+      console.log(info.failure.message);
+    }
+    break;
+  }
+}
+```
+</CodeGroup>
+
+Python and Rust support server-side table filtering. TypeScript `listJobs`
+currently accepts only pagination options, so its example filters rows on the
+client and may read more pages. The displayed table name has no namespace;
+use a table name unique within the listed database for this TypeScript example.
+Use Python, Rust, or SQL for an exact namespaced table listing.
+
+SQL `SHOW JOBS EXTENDED` and `SHOW JOBS EXTENDED FOR TABLE events` expose the
+same metadata. Plain `SHOW JOBS` keeps its existing result columns.
+The extended result returns `columns` as a list and `failure` as nullable JSON
+text.
+
+*/}
+
 <Note>
 Job filters and synchronous `Listing` indexing, slicing, and `len()` require
 a Python SDK release that includes these APIs. Older SDKs expose only
