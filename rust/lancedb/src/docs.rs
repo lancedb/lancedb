@@ -157,7 +157,7 @@ impl DocLink {
     /// edition.
     pub const fn path(self) -> &'static str {
         match self {
-            Self::Compaction => "/performance",
+            Self::Compaction => "/maintenance/compaction",
             Self::Reindexing => "/indexing/reindexing",
             Self::Sql => "/search/sql",
             Self::BranchDiff | Self::BranchCherryPick => "/tables/branching",
@@ -176,7 +176,7 @@ impl DocLink {
     /// Optional `#anchor` fragment on the target documentation page.
     pub const fn anchor(self) -> Option<&'static str> {
         match self {
-            Self::Compaction => Some("compaction-and-cleanup"),
+            Self::Compaction => Some("when"),
             Self::Reindexing => Some("incremental-reindexing"),
             Self::BranchDiff => Some("diff-a-branch"),
             Self::BranchCherryPick => Some("merge-a-branch"),
