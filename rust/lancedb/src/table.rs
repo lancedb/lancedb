@@ -724,7 +724,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
-        new_data: Box<dyn RecordBatchReader + Send>,
+        new_data: Box<dyn Scannable>,
     ) -> Result<MergeResult>;
     /// Set the unenforced primary key for the table to a single column.
     ///
@@ -1235,6 +1235,8 @@ pub struct Table {
     inner: Arc<dyn BaseTable>,
     database: Option<Arc<dyn Database>>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    // Connection default for `MergeInsertBuilder::source_collect_threshold_bytes`.
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
 }
 
 #[cfg(all(test, feature = "remote"))]
@@ -1260,6 +1262,7 @@ mod test_utils {
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
 
@@ -1284,6 +1287,7 @@ mod test_utils {
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
 
@@ -1306,6 +1310,7 @@ mod test_utils {
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
 
@@ -1330,6 +1335,7 @@ mod test_utils {
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
 
@@ -1358,6 +1364,7 @@ mod test_utils {
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
+                merge_insert_source_collect_threshold_bytes: None,
             }
         }
     }
@@ -1375,6 +1382,7 @@ impl From<Arc<dyn BaseTable>> for Table {
             inner,
             database: None,
             embedding_registry: Arc::new(MemoryRegistry::new()),
+            merge_insert_source_collect_threshold_bytes: None,
         }
     }
 }
@@ -1385,6 +1393,7 @@ impl Table {
             inner,
             database: Some(database),
             embedding_registry: Arc::new(MemoryRegistry::new()),
+            merge_insert_source_collect_threshold_bytes: None,
         }
     }
 
@@ -1414,7 +1423,16 @@ impl Table {
             inner,
             database: Some(database),
             embedding_registry,
+            merge_insert_source_collect_threshold_bytes: None,
         }
+    }
+
+    pub(crate) fn with_merge_insert_source_collect_threshold_bytes(
+        mut self,
+        bytes: Option<usize>,
+    ) -> Self {
+        self.merge_insert_source_collect_threshold_bytes = bytes;
+        self
     }
 
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
@@ -1459,6 +1477,8 @@ impl Table {
             inner: self.inner.query_snapshot().await?,
             database: self.database.clone(),
             embedding_registry: self.embedding_registry.clone(),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 
@@ -1472,6 +1492,8 @@ impl Table {
                 .await?,
             database: self.database.clone(),
             embedding_registry: self.embedding_registry.clone(),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 
@@ -1877,8 +1899,7 @@ impl Table {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
-    /// #   RecordBatchIterator, Int32Array};
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
@@ -1892,36 +1913,32 @@ impl Table {
     /// #  Field::new("vector", DataType::FixedSizeList(
     /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
     /// # ]));
-    /// let new_data = RecordBatchIterator::new(
-    ///     vec![RecordBatch::try_new(
-    ///         schema.clone(),
-    ///         vec![
-    ///             Arc::new(Int32Array::from_iter_values(0..10)),
-    ///             Arc::new(
-    ///                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-    ///                     (0..10).map(|_| Some(vec![Some(1.0); 128])),
-    ///                     128,
-    ///                 ),
-    ///             ),
-    ///         ],
-    ///     )
-    ///     .unwrap()]
-    ///     .into_iter()
-    ///     .map(Ok),
+    /// let new_data = RecordBatch::try_new(
     ///     schema.clone(),
-    /// );
+    ///     vec![
+    ///         Arc::new(Int32Array::from_iter_values(0..10)),
+    ///         Arc::new(
+    ///             FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                 (0..10).map(|_| Some(vec![Some(1.0); 128])),
+    ///                 128,
+    ///             ),
+    ///         ),
+    ///     ],
+    /// )
+    /// .unwrap();
     /// // Perform an upsert operation
     /// let mut merge_insert = tbl.merge_insert(&["id"]);
     /// merge_insert
     ///     .when_matched_update_all(None)
     ///     .when_not_matched_insert_all();
-    /// merge_insert.execute(Box::new(new_data)).await.unwrap();
+    /// merge_insert.execute(new_data).await.unwrap();
     /// # });
     /// ```
     pub fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder {
         MergeInsertBuilder::new(
             self.inner.clone(),
             on.iter().map(|s| s.to_string()).collect(),
+            self.merge_insert_source_collect_threshold_bytes,
         )
     }
 
@@ -2992,6 +3009,8 @@ impl Table {
             inner,
             database: self.database.clone(),
             embedding_registry: self.embedding_registry.clone(),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 
@@ -3372,6 +3391,8 @@ impl Table {
             inner,
             database: self.database.clone(),
             embedding_registry: self.embedding_registry.clone(),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 
@@ -3394,6 +3415,8 @@ impl Table {
             inner,
             database: self.database.clone(),
             embedding_registry: self.embedding_registry.clone(),
+            merge_insert_source_collect_threshold_bytes: self
+                .merge_insert_source_collect_threshold_bytes,
         })
     }
 
@@ -4668,9 +4691,9 @@ impl BaseTable for NativeTable {
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
-        new_data: Box<dyn RecordBatchReader + Send>,
+        new_data: Box<dyn Scannable>,
     ) -> Result<MergeResult> {
-        let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        let source_schema = new_data.schema();
         self.ensure_not_a_view("merge insert into").await?;
         computed_columns::ensure_not_written(
             &Schema::from(self.dataset.get().await?.schema()),

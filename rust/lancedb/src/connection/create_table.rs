@@ -20,6 +20,7 @@ pub struct CreateTableBuilder {
     parent: Arc<dyn Database>,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
     request: CreateTableRequest,
 }
 
@@ -34,8 +35,17 @@ impl CreateTableBuilder {
             parent,
             embeddings: Vec::new(),
             embedding_registry,
+            merge_insert_source_collect_threshold_bytes: None,
             request: CreateTableRequest::new(name, data),
         }
+    }
+
+    pub(super) fn merge_insert_source_collect_threshold_bytes(
+        mut self,
+        bytes: Option<usize>,
+    ) -> Self {
+        self.merge_insert_source_collect_threshold_bytes = bytes;
+        self
     }
 
     /// Set the mode for creating the table
@@ -228,6 +238,9 @@ impl CreateTableBuilder {
             parent.create_table(self.request).await?,
             parent,
             embedding_registry,
+        )
+        .with_merge_insert_source_collect_threshold_bytes(
+            self.merge_insert_source_collect_threshold_bytes,
         ))
     }
 }
