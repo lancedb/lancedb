@@ -47,6 +47,10 @@ class FakeRun:
         self.stale_views = 0
         self.failure = None
         self.too_large_from = None
+        # When set, a rank's view is the one its last refresh brought, as it
+        # is between the heartbeats of a real run.
+        self.views_need_refresh = False
+        self.refreshes = 0
 
     def reading_wave(self):
         with self.lock:
@@ -63,8 +67,17 @@ class FakeRank:
     def __init__(self, run, rank):
         self.run = run
         self.rank = rank
+        self.limit = run.reading_wave() + HORIZON
+
+    def refresh_view(self):
+        with self.run.lock:
+            self.run.refreshes += 1
+        self.limit = self.run.reading_wave() + HORIZON
+        return SimpleNamespace(announce_limit=self.limit, horizon=HORIZON)
 
     def view(self):
+        if self.run.views_need_refresh:
+            return SimpleNamespace(announce_limit=self.limit, horizon=HORIZON)
         limit = self.run.reading_wave() + HORIZON
         with self.run.lock:
             if self.run.stale_views:
@@ -163,6 +176,8 @@ def run(table, monkeypatch):
     run.backend = backend
     monkeypatch.setattr(_prewarm_session, "backend_for", lambda _table: backend)
     monkeypatch.setattr(_prewarm_session, "_POLL_INTERVAL_S", 0.005)
+    monkeypatch.setattr(_prewarm_session, "_REPORT_INTERVAL_S", 0.005)
+    monkeypatch.setattr(_prewarm_session, "_VIEW_CHECK_INTERVAL_S", 0.002)
     return run
 
 
@@ -221,6 +236,8 @@ def test_a_table_with_stable_row_ids_is_warmed_by_row_address(tmp_path, monkeypa
     backend = FakeBackend(table, run)
     monkeypatch.setattr(_prewarm_session, "backend_for", lambda _table: backend)
     monkeypatch.setattr(_prewarm_session, "_POLL_INTERVAL_S", 0.005)
+    monkeypatch.setattr(_prewarm_session, "_REPORT_INTERVAL_S", 0.005)
+    monkeypatch.setattr(_prewarm_session, "_VIEW_CHECK_INTERVAL_S", 0.002)
 
     ds = dataset(table)
     perm = ds._perm_table.to_arrow()
@@ -329,6 +346,17 @@ def test_the_announcer_survives_a_limit_that_moved_down(table, run):
     assert ids(dataset(table)) == expected
     assert run.beyond_horizon > 0
     assert sorted(run.announced) == [0, 1, 2, 3, 4]
+
+
+def test_a_held_back_announcer_asks_for_the_view_instead_of_waiting_for_it(table, run):
+    """No heartbeat brings a view here, so every wave past the first limit
+    is announced only because the announcer refreshed its view."""
+    run.views_need_refresh = True
+    ds = dataset(table)
+    assert sorted(ids(ds)) == list(range(NUM_ROWS))
+    assert sorted(run.announced) == list(range(plan_of(ds).num_waves))
+    assert run.refreshes > 0
+    assert run.beyond_horizon == 0
 
 
 def test_ranks_share_a_run_and_stay_within_the_horizon(table, run, monkeypatch):

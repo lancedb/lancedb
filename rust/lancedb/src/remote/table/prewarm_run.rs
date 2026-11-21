@@ -358,7 +358,8 @@ mod tests {
         PrewarmRunOptions::new("job-7-attempt-0-epoch-0", 42, 2).with_columns(["image"])
     }
 
-    /// A script with an open run and a join whose heartbeats stay quiet.
+    /// A script with an open run and a join whose heartbeat ticks an hour
+    /// apart, so the only heartbeats are the ones a newly read wave sends.
     fn opened() -> Script {
         Script::default()
             .reply(
@@ -367,6 +368,7 @@ mod tests {
                 json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
             )
             .reply("join", 200, view(3_600_000))
+            .reply("heartbeat", 200, view(3_600_000))
     }
 
     #[tokio::test]
@@ -658,9 +660,12 @@ mod tests {
         let rank = run.join(1, 0).await.unwrap();
         rank.wait_ready(4, Duration::from_secs(60)).await.unwrap();
         tokio::time::sleep(Duration::from_millis(2_500)).await;
+        // One sent when the wave was first read, then one a tick.
         let beats = script.calls("heartbeat");
-        assert_eq!(beats.len(), 2, "{beats:?}");
-        assert_eq!(beats[1], json!({ "rank": 1, "current_wave": 4 }));
+        assert_eq!(beats.len(), 3, "{beats:?}");
+        for beat in beats {
+            assert_eq!(beat, json!({ "rank": 1, "current_wave": 4 }));
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -956,9 +961,59 @@ mod tests {
         rank.report_wave(5);
         rank.report_wave(3);
         tokio::time::sleep(Duration::from_millis(1_500)).await;
+        // One sent when wave 5 was reported, then the tick.
+        let beat = json!({ "rank": 0, "current_wave": 5 });
+        assert_eq!(script.calls("heartbeat"), vec![beat.clone(), beat]);
+    }
+
+    const HOUR_MS: u64 = 3_600_000;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_higher_reported_wave_is_sent_without_waiting_for_the_tick() {
+        let script = Script::default()
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
+            )
+            .reply("join", 200, view(HOUR_MS))
+            .reply("heartbeat", 200, view(HOUR_MS));
+        let run = script.table().open_prewarm_run(options()).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
+
+        rank.report_wave(3);
+        tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(
             script.calls("heartbeat"),
-            vec![json!({ "rank": 0, "current_wave": 5 })]
+            vec![json!({ "rank": 0, "current_wave": 3 })]
         );
+
+        // The same wave, or a lower one, is nothing new to send.
+        rank.report_wave(3);
+        rank.report_wave(1);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(script.calls("heartbeat").len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refreshing_the_view_sends_a_heartbeat_and_records_its_reply() {
+        let mut moved_on = view(HOUR_MS);
+        moved_on["reading_wave"] = json!(7);
+        let script = Script::default()
+            .reply(
+                "open",
+                200,
+                json!({ "run_id": "run-1", "version": 42, "wave_positions": 64 }),
+            )
+            .reply("join", 200, view(HOUR_MS))
+            .reply("heartbeat", 200, moved_on);
+        let run = script.table().open_prewarm_run(options()).await.unwrap();
+        let rank = run.join(0, 0).await.unwrap();
+        let before = rank.view();
+
+        let refreshed = rank.refresh_view().await.unwrap();
+        assert_eq!(script.calls("heartbeat").len(), 1);
+        assert_ne!(refreshed, before);
+        assert_eq!(rank.view(), refreshed);
     }
 }

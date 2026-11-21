@@ -20,6 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -284,6 +285,7 @@ impl PrewarmRun {
             rank,
             current_wave: AtomicU64::new(first_wave),
             view: Mutex::new(view),
+            beat_now: Notify::new(),
         });
         let heartbeat = tokio::spawn(heartbeat_loop(shared.clone()));
         Ok(PrewarmRunRank {
@@ -300,6 +302,8 @@ struct RankShared {
     /// The wave this rank is reading, as heartbeats report it.
     current_wave: AtomicU64,
     view: Mutex<RunView>,
+    /// Wakes the heartbeat loop before its next tick.
+    beat_now: Notify,
 }
 
 impl RankShared {
@@ -317,6 +321,20 @@ impl RankShared {
             rank: self.rank,
             joined: Some(self),
         }
+    }
+
+    /// Send one heartbeat and record the view it returns. A missed beat is
+    /// sent again on the next tick, so one interval bounds the attempt.
+    async fn beat(&self) -> Result<RunView> {
+        let interval = Duration::from_millis(self.view().heartbeat_interval_ms.max(1));
+        let body = json!({
+            "rank": self.rank,
+            "current_wave": self.current_wave.load(Ordering::Relaxed),
+        });
+        let deadline = Instant::now() + interval;
+        let view: RunView = self.member().call("heartbeat", body, deadline).await?;
+        self.record(view.clone());
+        Ok(view)
     }
 }
 
@@ -509,8 +527,25 @@ impl PrewarmRunRank {
     /// Report that this rank is reading `wave`, for readers in other
     /// processes. Heartbeats carry the highest wave reported; a lower one is
     /// ignored.
+    ///
+    /// A higher wave is sent at once instead of on the next tick. The server
+    /// learns where a rank is reading only from heartbeats, and it lets
+    /// rank 0 announce only a few waves past the slowest rank, so a rank
+    /// that reads faster than that per tick would otherwise stall the run
+    /// until the tick.
     pub fn report_wave(&self, wave: u64) {
-        self.shared.current_wave.fetch_max(wave, Ordering::Relaxed);
+        let previous = self.shared.current_wave.fetch_max(wave, Ordering::Relaxed);
+        if wave > previous {
+            self.shared.beat_now.notify_one();
+        }
+    }
+
+    /// Send a heartbeat now and return the view it brings back, which
+    /// [`PrewarmRunRank::view`] then reports too. For rank 0 while the
+    /// announce limit holds it back: the limit moves when other ranks read
+    /// on, and this handle hears of that only in a heartbeat reply.
+    pub async fn refresh_view(&self) -> Result<RunView> {
+        self.shared.beat().await
     }
 
     /// Ask the server to warm `ranges` of `wave` again after a read found
@@ -557,22 +592,14 @@ impl Drop for PrewarmRunRank {
 async fn heartbeat_loop(shared: Arc<RankShared>) {
     loop {
         let interval = Duration::from_millis(shared.view().heartbeat_interval_ms.max(1));
-        tokio::time::sleep(interval).await;
-        let body = json!({
-            "rank": shared.rank,
-            "current_wave": shared.current_wave.load(Ordering::Relaxed),
-        });
-        // A missed beat is retried on the next tick, so one interval bounds it.
-        let deadline = Instant::now() + interval;
-        match shared
-            .member()
-            .call::<RunView>("heartbeat", body, deadline)
-            .await
-        {
+        // The tick keeps the rank alive; a reported wave does not wait for it.
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = shared.beat_now.notified() => {}
+        }
+        match shared.beat().await {
             Ok(view) => {
-                let open = view.status == RunStatus::Open;
-                shared.record(view);
-                if !open {
+                if view.status != RunStatus::Open {
                     return;
                 }
             }

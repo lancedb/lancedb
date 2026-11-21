@@ -124,6 +124,15 @@ impl PrewarmRunRank {
         self.inner.report_wave(wave);
     }
 
+    /// Send a heartbeat now and return the view it brings back, as JSON.
+    pub fn refresh_view(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let view = inner.refresh_view().await.infer_error()?;
+            serde_json::to_string(&view).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
     pub fn rewarm(
         self_: PyRef<'_, Self>,
         wave: u64,

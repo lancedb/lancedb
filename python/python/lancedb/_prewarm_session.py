@@ -40,9 +40,17 @@ T = TypeVar("T")
 # placeholder until the time a replaced supervisor takes to resume is measured.
 DEFAULT_WAIT_READY_TIMEOUT_S = 600.0
 
-# How often the session reports the rank's wave and checks whether rank 0 may
-# announce more.
+# How often rank 0, held back by the announce limit, asks the server for a
+# new view, and how long it waits after an announcement was refused.
 _POLL_INTERVAL_S = 0.5
+
+# How often the session looks at the wave its readers have reached. This reads
+# shared memory; a call is made only when the wave has moved.
+_REPORT_INTERVAL_S = 0.1
+
+# How often rank 0, held back by the announce limit, looks at the view it
+# already has. Reads no further than memory.
+_VIEW_CHECK_INTERVAL_S = 0.05
 
 # A wait for a wave is logged once it has taken this long.
 _SLOW_WAIT_LOG_S = 5.0
@@ -202,17 +210,24 @@ class Session:
             self._announcer.start()
 
     def _report_loop(self) -> None:
-        while not self._stop.wait(_POLL_INTERVAL_S):
+        while not self._stop.wait(_REPORT_INTERVAL_S):
             wave = min(self._slots[split] for split in self._rank_splits)
             if wave < SPLIT_DONE:
                 self._rank.report_wave(wave)
 
     def _announce_loop(self) -> None:
         wave = self._plan.first_wave
+        refreshed = time.monotonic()
         try:
             while wave < self._plan.num_waves and not self._stop.is_set():
                 if wave > self._rank.view().announce_limit:
-                    self._stop.wait(_POLL_INTERVAL_S)
+                    # The limit moves when the slowest rank reads on. This
+                    # rank's own heartbeats bring the new view, but only
+                    # every few seconds, so ask for it while held back.
+                    self._stop.wait(_VIEW_CHECK_INTERVAL_S)
+                    if time.monotonic() - refreshed >= _POLL_INTERVAL_S:
+                        self._refresh_view()
+                        refreshed = time.monotonic()
                     continue
                 try:
                     # One wave per call: a wave of a row-by-row shuffle is
@@ -240,6 +255,18 @@ class Session:
             # wait times out.
             if not self._stop.is_set():
                 self._announcer_stopped.value = True
+
+    def _refresh_view(self) -> None:
+        try:
+            self._rank.refresh_view()
+        except Exception:
+            # The next heartbeat brings the view anyway, and a run that has
+            # ended fails the readers' waits.
+            logger.debug(
+                "prewarm run %s: refreshing the view failed",
+                self.state.run_id,
+                exc_info=True,
+            )
 
     def close(self) -> None:
         """Leave the run. Never raises, so it cannot hide a training error."""

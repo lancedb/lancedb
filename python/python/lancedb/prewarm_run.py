@@ -117,8 +117,19 @@ class AsyncPrewarmRunRank:
 
     def report_wave(self, wave: int) -> None:
         """Report that this rank is reading ``wave``, for readers in other
-        processes. Heartbeats carry the highest wave reported."""
+        processes. Heartbeats carry the highest wave reported, and a higher
+        wave is sent at once instead of on the next heartbeat."""
         self._inner.report_wave(wave)
+
+    async def refresh_view(self) -> RunView:
+        """Send a heartbeat now and return the view it brings back, which
+        `view` then reports too.
+
+        For rank 0 while `RunView.announce_limit` holds it back: the limit
+        moves when other ranks read on, and this handle hears of that only in
+        a heartbeat reply.
+        """
+        return RunView._from_json(await self._inner.refresh_view())
 
     async def rewarm(self, wave: int, ranges: Iterable[Sequence[int]]) -> None:
         """Warm ``ranges`` of ``wave`` again after a read found them missing.
@@ -215,6 +226,10 @@ class PrewarmRunRank:
     def report_wave(self, wave: int) -> None:
         """See `AsyncPrewarmRunRank.report_wave`."""
         self._inner.report_wave(wave)
+
+    def refresh_view(self) -> RunView:
+        """See `AsyncPrewarmRunRank.refresh_view`."""
+        return LOOP.run(self._inner.refresh_view())
 
     def rewarm(self, wave: int, ranges: Iterable[Sequence[int]]) -> None:
         """See `AsyncPrewarmRunRank.rewarm`."""
