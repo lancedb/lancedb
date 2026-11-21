@@ -3,7 +3,7 @@
 
 import json
 from datetime import date, datetime, time, timedelta, timezone
-from enum import Enum
+from enum import Enum, Flag, IntFlag
 from typing import List, Literal, Optional, Tuple
 
 import pyarrow as pa
@@ -1239,6 +1239,68 @@ def test_literal_with_mixed_value_types_raises_type_error(annotation):
 
     with pytest.raises(TypeError, match="same type"):
         pydantic_to_schema(TestModel)
+
+
+class _PlainColor(Enum):
+    RED = "red"
+    BLUE = "blue"
+
+
+class _Perm(Flag):
+    READ = 1
+
+
+class _NestedPlainColor(pydantic.BaseModel):
+    color: Literal[_PlainColor.RED]
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Literal[_PlainColor.RED],
+        Literal[_PlainColor.RED, _PlainColor.BLUE],
+        Optional[Literal[_PlainColor.RED]],
+        List[Literal[_PlainColor.RED]],
+        Literal[_Perm.READ],
+        _NestedPlainColor,
+    ],
+    ids=["single", "several", "optional", "list", "flag", "nested"],
+)
+def test_literal_of_plain_enum_members_raises_type_error(annotation):
+    # The value of a plain Enum member is stored, but the Literal only accepts
+    # the member itself, so the table could not be read back with to_pydantic.
+    TestModel = pydantic.create_model("TestModel", value=(annotation, ...))
+
+    with pytest.raises(TypeError, match="plain Enum members cannot be read back"):
+        pydantic_to_schema(TestModel)
+
+
+def test_literal_of_mixin_enum_members_round_trip(mem_db):
+    class StrColor(str, Enum):
+        RED = "red"
+        BLUE = "blue"
+
+    class Size(int, Enum):
+        SMALL = 1
+        LARGE = 2
+
+    class Perm(IntFlag):
+        READ = 1
+
+    class TestModel(LanceModel):
+        color: Literal[StrColor.RED, StrColor.BLUE]
+        size: Literal[Size.LARGE]
+        perm: Literal[Perm.READ]
+        vector: Vector(2)
+
+    rows = [
+        TestModel(color=StrColor.BLUE, size=Size.LARGE, perm=Perm.READ, vector=[1, 2]),
+        TestModel(color=StrColor.RED, size=Size.LARGE, perm=Perm.READ, vector=[3, 4]),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.search().to_pydantic(TestModel) == rows
 
 
 def test_literal_time_and_timedelta_round_trip(mem_db):
