@@ -112,7 +112,7 @@ jobs:
       # `pip install -e .` builds the extension with maturin, which is most of
       # this job's ~33 minutes. It had no Rust cache, so every dependency was
       # recompiled from scratch on every run.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -198,7 +198,7 @@ jobs:
           python-version: "3.13"
       # maturin runs cargo natively on macOS (docker is Linux-only), so the host
       # target dir is cacheable. This job had no Rust cache.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -236,7 +236,7 @@ jobs:
       # maturin runs cargo natively on Windows (docker is Linux-only), so the
       # host target dir is cacheable. This job had no Rust cache at all and so
       # rebuilt every dependency from scratch on every run.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. The repo sits at
           # GitHub's cache cap, so per-PR saves just evict main's entries.
@@ -271,7 +271,7 @@ jobs:
           python-version: "3.10"
       # As with Doctest, `pip install -e .` compiles the extension and this job
       # had no Rust cache, which is most of its ~37 minutes.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes

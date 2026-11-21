@@ -120,7 +120,7 @@ def test_wal_hybrid_fuses_on_the_key_and_drops_it_again():
         with_row_ids=True,
     )
     results = builder._finish_hybrid_results(
-        combined, blob_mode="lazy", blob_sources={}
+        combined, blob_mode="lazy", blob_sources={}, schema=None
     )
 
     assert "_rowid" not in results.column_names, "the surrogate is internal"

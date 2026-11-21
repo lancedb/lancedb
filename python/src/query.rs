@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::expr::PyExpr;
 use crate::runtime::future_into_py;
+use crate::sync_stream::SyncRecordBatchStream;
 use crate::util::parse_distance_type;
 use crate::{arrow::RecordBatchStream, util::PyLanceDB};
 use crate::{error::PythonErrorExt, index::class_name};
@@ -33,6 +34,7 @@ use lancedb::query::{HasQuery, QueryBase};
 use lancedb::table::AnyQuery;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
+use pyo3::Py;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
@@ -63,6 +65,34 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
     let mut options = QueryExecutionOptions::default();
     options.analyze_plan_distributed_metrics = analyze_plan_distributed_metrics;
     Ok(options)
+}
+
+fn execute_to_reader_sync<Q>(
+    py: Python<'_>,
+    query: Q,
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> PyResult<Py<PyAny>>
+where
+    Q: ExecutableQuery + Send + 'static,
+{
+    let reader =
+        py.detach(move || crate::arrow::execute_to_reader_sync(query, max_batch_length, timeout))?;
+    Python::attach(|py| reader.into_pyarrow(py).map(|obj| obj.unbind()))
+}
+
+fn query_execution_options(
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> QueryExecutionOptions {
+    let mut options = QueryExecutionOptions::default();
+    if let Some(max_batch_length) = max_batch_length {
+        options.max_batch_length = max_batch_length;
+    }
+    if let Some(timeout) = timeout {
+        options.timeout = Some(timeout);
+    }
+    options
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
@@ -357,6 +387,7 @@ pub struct PyQueryRequest {
     pub offset: Option<usize>,
     pub take_offsets: Option<Vec<u64>>,
     pub take_row_ids: Option<Vec<u64>>,
+    pub preserve_order: Option<bool>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
@@ -380,6 +411,7 @@ pub struct PyQueryRequest {
     pub postfilter: Option<bool>,
     pub norm: Option<String>,
     pub order_by: Option<Vec<PyColumnOrdering>>,
+    pub scan_in_order: Option<bool>,
 }
 
 impl From<AnyQuery> for PyQueryRequest {
@@ -390,6 +422,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 offset: query_request.offset,
                 take_offsets: query_request.take_offsets,
                 take_row_ids: query_request.take_row_ids,
+                preserve_order: query_request.preserve_order.then_some(true),
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
@@ -417,12 +450,14 @@ impl From<AnyQuery> for PyQueryRequest {
                 order_by: query_request
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: query_request.scan_in_order,
             },
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
                 take_offsets: vector_query.base.take_offsets,
                 take_row_ids: vector_query.base.take_row_ids,
+                preserve_order: vector_query.base.preserve_order.then_some(true),
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
@@ -449,6 +484,7 @@ impl From<AnyQuery> for PyQueryRequest {
                     .base
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: vector_query.base.scan_in_order,
             },
         }
     }
@@ -667,6 +703,10 @@ impl Query {
         Ok(())
     }
 
+    pub fn scan_in_order(&mut self, ordered: bool) {
+        self.inner = self.inner.clone().scan_in_order(ordered);
+    }
+
     #[pyo3(signature = ())]
     pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
@@ -684,16 +724,56 @@ impl Query {
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let mut opts = QueryExecutionOptions::default();
-            if let Some(max_batch_length) = max_batch_length {
-                opts.max_batch_length = max_batch_length;
-            }
-            if let Some(timeout) = timeout {
-                opts.timeout = Some(timeout);
-            }
+            let opts = query_execution_options(max_batch_length, timeout);
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this local query and return a pull-driven synchronous iterator.
+    ///
+    /// The query is started once. Each `__next__` fetches exactly one batch
+    /// from the caller's thread while the GIL is released. `None` keeps the
+    /// core's default 1024-row output cap, `0` lets the engine choose, and a
+    /// positive value caps each returned batch.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_sync(
+        self_: PyRef<'_, Self>,
+        py: Python<'_>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<SyncRecordBatchStream> {
+        let inner = self_.inner.clone();
+        let opts = query_execution_options(max_batch_length, timeout);
+        let stream = py.detach(move || {
+            crate::runtime::block_on_interruptible(async move {
+                inner.execute_with_options(opts).await.infer_error()
+            })
+        })?;
+        Ok(SyncRecordBatchStream::new(stream))
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
@@ -751,6 +831,10 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
+    pub fn preserve_order(&mut self) {
+        self.inner = self.inner.clone().preserve_order();
+    }
+
     pub fn use_rte(&mut self, enable: bool) {
         self.inner = self.inner.clone().use_rte(enable);
     }
@@ -782,6 +866,20 @@ impl TakeQuery {
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
@@ -907,6 +1005,45 @@ impl FTSQuery {
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(
+            self_.py(),
+            self_
+                .inner
+                .clone()
+                .full_text_search(self_.fts_query.clone()),
+            max_batch_length,
+            timeout,
+        )
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(
+            self_.py(),
+            self_
+                .inner
+                .clone()
+                .full_text_search(self_.fts_query.clone()),
+            max_batch_length,
+            timeout,
+        )
     }
 
     pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
@@ -1146,6 +1283,29 @@ impl VectorQuery {
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {

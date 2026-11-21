@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crate::runtime::{block_on, future_into_py, spawn_background};
+use crate::runtime::{block_on, block_on_interruptible, future_into_py, spawn_background};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -29,14 +29,14 @@ use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
+    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, DeltaRef, Duration,
     FieldMetadataUpdate, FtsToken as LanceDbFtsToken, FunctionRefreshPlanningConfig,
     FunctionRefreshPodResources, FunctionWorkerResourceBudget, IndexRemapMode, NewColumnTransform,
-    Ref, RefreshColumnOptions, Table as LanceDbTable,
+    Ref, RefreshColumnOptions, Table as LanceDbTable, TableDelta as LanceDbTableDelta,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
-    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyErr, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{
@@ -1619,6 +1619,14 @@ impl Table {
         })
     }
 
+    pub fn schema_sync(self_: PyRef<'_, Self>) -> PyResult<Py<PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let schema = self_.py().detach(move || {
+            block_on_interruptible(async move { inner.schema().await.infer_error() })
+        })?;
+        Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+    }
+
     #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false, retries=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
@@ -2067,6 +2075,22 @@ impl Table {
         )
     }
 
+    #[pyo3(signature = (from_version, to_version=None))]
+    pub fn delta(
+        self_: PyRef<'_, Self>,
+        from_version: LanceVersion,
+        to_version: Option<LanceVersion>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let delta = inner
+                .delta(from_version, to_version.map(Into::into))
+                .await
+                .infer_error()?;
+            Ok(TableDelta::new(delta))
+        })
+    }
+
     pub fn list_versions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2109,6 +2133,15 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.checkout_latest().await.infer_error()
+        })
+    }
+
+    /// Return an independent handle pinned to the currently selected snapshot.
+    pub fn _checkout_current(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let current = inner.checkout_current().await.infer_error()?;
+            Ok(Table::new(current))
         })
     }
 
@@ -2240,15 +2273,29 @@ impl Table {
     }
 
     /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids, buffer_size=None))]
+    #[pyo3(signature = (column, row_ids, buffer_size=None, *, version=None, snapshot_identity=None))]
     pub fn fetch_blob_files(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
         buffer_size: Option<usize>,
+        version: Option<u64>,
+        snapshot_identity: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
+            let inner = match (version, snapshot_identity) {
+                (None, None) => inner,
+                (Some(version), Some(identity)) => inner
+                    .query_snapshot_with_identity(version, &identity)
+                    .await
+                    .infer_error()?,
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "deferred blob reads require both query version and snapshot identity",
+                    ));
+                }
+            };
             let handles = inner
                 .fetch_blob_files(column.as_str(), &row_ids)
                 .await
@@ -2292,6 +2339,37 @@ impl Table {
                 inner: Arc::new(file),
                 closed: AtomicBool::new(false),
             })
+        })
+    }
+
+    /// Explain Enterprise version cleanup without submitting a job.
+    #[pyo3(signature = (min_age_seconds=None))]
+    pub fn explain_cleanup<'py>(
+        self_: PyRef<'py, Self>,
+        min_age_seconds: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = lancedb::table::CleanupOptions::new();
+        options.min_age_seconds = min_age_seconds;
+        future_into_py(self_.py(), async move {
+            let plan = inner.explain_cleanup(options).await.infer_error()?;
+            serde_json::to_string(&plan)
+                .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
+    /// Submit Enterprise version cleanup and retain its durable job and result.
+    #[pyo3(signature = (min_age_seconds=None))]
+    pub fn cleanup_async<'py>(
+        self_: PyRef<'py, Self>,
+        min_age_seconds: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut options = lancedb::table::CleanupOptions::new();
+        options.min_age_seconds = min_age_seconds;
+        future_into_py(self_.py(), async move {
+            let job = inner.cleanup_async(options).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
         })
     }
 
@@ -3182,6 +3260,103 @@ pub enum LanceVersion {
     Tag(String),
 }
 
+impl From<LanceVersion> for DeltaRef {
+    fn from(version: LanceVersion) -> Self {
+        match version {
+            LanceVersion::Version(version) => DeltaRef::Version(version),
+            LanceVersion::Tag(tag) => DeltaRef::Tag(tag),
+        }
+    }
+}
+
+/// Streaming row changes between two table versions.
+#[pyclass]
+pub struct TableDelta {
+    inner: Arc<LanceDbTableDelta>,
+}
+
+impl TableDelta {
+    fn new(inner: LanceDbTableDelta) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[pymethods]
+impl TableDelta {
+    /// The version this delta starts from (exclusive).
+    pub fn begin_version(&self) -> u64 {
+        self.inner.begin_version()
+    }
+
+    /// The version this delta ends at (inclusive).
+    pub fn end_version(&self) -> u64 {
+        self.inner.end_version()
+    }
+
+    pub fn inserted_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.inserted_rows().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn updated_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.updated_rows().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn upserted_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.upserted_rows().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn deleted_row_ids(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let stream = inner.deleted_row_ids().await.infer_error()?;
+            Ok(crate::arrow::RecordBatchStream::new(stream.into()))
+        })
+    }
+
+    pub fn list_transactions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let transactions = inner.list_transactions().await.infer_error()?;
+            Python::attach(|py| {
+                let output = PyList::empty(py);
+                for transaction in transactions {
+                    let item = PyDict::new(py);
+                    item.set_item("read_version", transaction.read_version)?;
+                    item.set_item("uuid", transaction.uuid)?;
+                    item.set_item("operation", transaction.operation.name())?;
+                    item.set_item("tag", transaction.tag)?;
+                    match transaction.transaction_properties {
+                        Some(properties) => {
+                            let py_properties = PyDict::new(py);
+                            for (key, value) in properties.iter() {
+                                py_properties.set_item(key, value)?;
+                            }
+                            item.set_item("transaction_properties", py_properties)?;
+                        }
+                        None => item.set_item("transaction_properties", py.None())?,
+                    }
+                    output.append(item)?;
+                }
+                Ok(output.unbind())
+            })
+        })
+    }
+}
+
 #[derive(FromPyObject)]
 #[pyo3(from_item_all)]
 pub struct MergeInsertParams {
@@ -3239,9 +3414,14 @@ impl Tags {
         })
     }
 
-    pub fn create(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+    #[pyo3(signature = (tag, version=None))]
+    pub fn create(self_: PyRef<Self>, tag: String, version: Option<u64>) -> PyResult<Bound<PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
+            let version = match version {
+                Some(version) => version,
+                None => inner.version().await.infer_error()?,
+            };
             let mut tags = inner.tags().await.infer_error()?;
             tags.create(tag.as_str(), version).await.infer_error()?;
             Ok(())
@@ -3278,6 +3458,35 @@ impl Branches {
     }
 }
 
+/// Add the from_tag hint to a native branch lookup failure.
+///
+/// The caller only invokes this for a native `NotFound`, which identifies an
+/// unresolved branch path. A missing version is `VersionNotFound`, and a REST
+/// 404 is an ambiguous `TableNotFound`, so neither gets the hint. The original
+/// exception class and message are preserved apart from the added note.
+fn add_from_tag_hint(error: PyErr, branch: &str) -> PyErr {
+    let hint = format!("If '{branch}' is a tag, pass from_tag='{branch}' instead of from_ref.");
+    Python::attach(|py| {
+        let value = error.value(py);
+        if value.hasattr("add_note").unwrap_or(false)
+            && value.call_method1("add_note", (hint.clone(),)).is_ok()
+        {
+            return error;
+        }
+        // Python 3.10 has no BaseException.add_note. Native branch lookup
+        // failures are runtime errors with one string argument, so append the
+        // hint to that message without changing the exception class.
+        let Ok(args) = value.getattr("args") else {
+            return error;
+        };
+        let Ok(original) = args.get_item(0).and_then(|arg| arg.extract::<String>()) else {
+            return error;
+        };
+        let _ = value.setattr("args", (format!("{original}\n{hint}"),));
+        error
+    })
+}
+
 #[pymethods]
 impl Branches {
     pub fn list(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
@@ -3298,18 +3507,42 @@ impl Branches {
         })
     }
 
-    #[pyo3(signature = (name, from_ref=None, from_version=None))]
+    #[pyo3(signature = (name, from_ref=None, from_version=None, *, from_tag=None))]
     pub fn create(
         self_: PyRef<'_, Self>,
         name: String,
         from_ref: Option<String>,
         from_version: Option<u64>,
+        from_tag: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let from = Ref::Version(from_ref, from_version);
-            let table = inner.create_branch(&name, from).await.infer_error()?;
-            Ok(Table::new(table))
+            let from_branch = if from_tag.is_none() {
+                from_ref.clone()
+            } else {
+                None
+            };
+            let from = match from_tag {
+                Some(tag) => Ref::Tag(tag),
+                None => Ref::Version(from_ref, from_version),
+            };
+            match inner.create_branch(&name, from).await {
+                Ok(table) => Ok(Table::new(table)),
+                Err(error) => {
+                    // A missing branch is a native NotFound. A missing version
+                    // is VersionNotFound, and a remote 404 is an ambiguous
+                    // TableNotFound, so only the native branch case hints.
+                    let missing_branch = matches!(
+                        &error,
+                        lancedb::Error::Lance { source } if source.is_not_found()
+                    );
+                    let error = Err::<(), _>(error).infer_error().unwrap_err();
+                    match from_branch {
+                        Some(branch) if missing_branch => Err(add_from_tag_hint(error, &branch)),
+                        _ => Err(error),
+                    }
+                }
+            }
         })
     }
 

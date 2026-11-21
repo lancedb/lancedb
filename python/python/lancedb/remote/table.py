@@ -50,6 +50,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.cleanup import CleanupPlan, CleanupResult
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -84,6 +85,7 @@ from ..table import (
     IndexStatistics,
     Query,
     Table,
+    TableDelta,
     Tags,
 )
 from ..types import BaseTokenizerType, ScalarIndexType
@@ -285,6 +287,19 @@ class RemoteTable(Table):
     def list_versions(self):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> TableDelta:
+        """Compare two versions or tags.
+
+        Streamed version deltas are not supported by LanceDB Enterprise tables;
+        this raises ``NotImplementedError``.
+        """
+        async_delta = LOOP.run(self._table.delta(from_version, to_version))
+        return TableDelta(async_delta._inner)
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported in LanceDB Enterprise."""
@@ -604,7 +619,7 @@ class RemoteTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -927,6 +942,14 @@ class RemoteTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        return LOOP.run(self._table._execute_arrow(query, timeout=timeout))
+
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
@@ -1093,7 +1116,8 @@ class RemoteTable(Table):
         cleanup_old_versions() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op in LanceDB Enterprise.",
+            "cleanup_old_versions() is a no-op in LanceDB Enterprise. "
+            "Use cleanup_async() to submit durable cleanup explicitly.",
             stacklevel=2,
         )
         pass
@@ -1107,6 +1131,19 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         pass
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview cleanup without submitting a job or deleting files."""
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
 
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
@@ -1548,9 +1585,15 @@ class RemoteTable(Table):
         return LOOP.run(self._table.uri())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder

@@ -1833,6 +1833,104 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  describe("on a GeoArrow column", () => {
+    // Row `10 * y + x` sits at (x, y). The triangle's bounding box covers the
+    // 25 points with x <= 4 and y <= 4, but only the 15 with x + y <= 4
+    // intersect the triangle itself.
+    const inTriangle =
+      "ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))";
+    const triangleIds = [0, 1, 2, 3, 4, 10, 11, 12, 13, 20, 21, 22, 30, 31, 40];
+    let geoTbl: Table;
+
+    beforeEach(async () => {
+      const point = new Struct([
+        new Field("x", new Float64(), false),
+        new Field("y", new Float64(), false),
+      ]);
+      const geoSchema = new Schema([
+        new Field("id", new Int32(), false),
+        new Field(
+          "geom",
+          point,
+          true,
+          new Map([
+            ["ARROW:extension:name", "geoarrow.point"],
+            ["ARROW:extension:metadata", "{}"],
+          ]),
+        ),
+        new Field(
+          "vec",
+          new FixedSizeList(2, new Field("item", new Float32())),
+        ),
+      ]);
+      const data = makeArrowTable(
+        Array.from({ length: 100 }, (_, i) => ({
+          id: i,
+          geom: { x: i % 10, y: Math.floor(i / 10) },
+          vec: [i, i],
+        })),
+        { schema: geoSchema },
+      );
+      const db = await connect(tmpDir.name);
+      geoTbl = await db.createTable("points", data);
+    });
+
+    const ids = (rows: { id: number }[]) => rows.map((row) => row.id);
+
+    test("create an RTree index and filter with it", async () => {
+      await geoTbl.createIndex("geom", { config: Index.rtree() });
+      expect(await geoTbl.listIndices()).toEqual([
+        expect.objectContaining({
+          name: "geom_idx",
+          indexType: "RTree",
+          columns: ["geom"],
+        }),
+      ]);
+      const stats = await geoTbl.indexStats("geom_idx");
+      expect(stats?.indexType).toEqual("RTREE");
+      expect(stats?.numIndexedRows).toEqual(100);
+
+      const query = geoTbl.query().where(inTriangle);
+      expect(await query.explainPlan(true)).toContain("ScalarIndexQuery");
+      expect(ids(await query.toArray()).sort((a, b) => a - b)).toEqual(
+        triangleIds,
+      );
+    });
+
+    test("prefilter a vector search with an RTree index", async () => {
+      await geoTbl.createIndex("geom", {
+        config: Index.rtree({ pageSize: 16 }),
+      });
+      // Row 99 sits outside the triangle; its nearest vectors are 98, 97, ...
+      const prefiltered = geoTbl
+        .query()
+        .nearestTo([99, 99])
+        .where(inTriangle)
+        .limit(5);
+      expect(await prefiltered.explainPlan(true)).toContain("ScalarIndexQuery");
+      expect(ids(await prefiltered.toArray())).toEqual([40, 31, 30, 22, 21]);
+
+      const postfiltered = geoTbl
+        .query()
+        .nearestTo([99, 99])
+        .where(inTriangle)
+        .postfilter()
+        .limit(5);
+      expect(await postfiltered.toArray()).toEqual([]);
+    });
+
+    test("reject invalid RTree options", async () => {
+      for (const pageSize of [1, 0, -1, 2.5, Number.NaN, 2 ** 32]) {
+        expect(() => Index.rtree({ pageSize })).toThrow(
+          "page_size must be at least 2",
+        );
+      }
+      await expect(
+        geoTbl.createIndex("id", { config: Index.rtree() }),
+      ).rejects.toThrow("GeoArrow");
+    });
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
@@ -3921,6 +4019,123 @@ describe("when dealing with tags", () => {
     expect(await table.countRows()).toBe(1);
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
+  });
+
+  it("defaults create version to the handle's visible version", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+    const tags = await table.tags();
+
+    await tags.create("live");
+    expect(await tags.getVersion("live")).toBe(2);
+
+    await table.checkout(1);
+    await tags.create("pinned");
+    expect(await tags.getVersion("pinned")).toBe(1);
+
+    // An explicit version is independent of the version this handle shows.
+    await tags.create("explicit", 2);
+    expect(await tags.getVersion("explicit")).toBe(2);
+
+    // A tag checkout is still a visible version, not "latest".
+    await table.checkoutLatest();
+    await table.add([{ id: 3 }]);
+    expect(await table.version()).toBe(3);
+    await table.checkout("live");
+    await tags.create("tag-checkout");
+    expect(await tags.getVersion("tag-checkout")).toBe(2);
+  });
+});
+
+describe("when dealing with branches", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("forks from a tag on a branch with the same version as main", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+
+    const exp = await branches.create("exp");
+    await exp.add([{ i: 10 }]);
+    const expVersion = await exp.version();
+    await (await exp.tags()).create("exp-v2", expVersion);
+
+    // main reaches the same numeric version with different rows.
+    await table.add([{ i: 100 }]);
+    expect(await table.version()).toBe(expVersion);
+
+    const fromTag = await branches.create("from-tag", {
+      fromTag: "exp-v2",
+    });
+    expect(fromTag.currentBranch()).toBe("from-tag");
+    expect(await fromTag.countRows("i = 10")).toBe(1);
+    expect(await fromTag.countRows("i = 100")).toBe(0);
+
+    // The existing positional branch/version path keeps its ordering.
+    const positional = await branches.create("from-exp", "exp", expVersion);
+    expect(positional.currentBranch()).toBe("from-exp");
+    expect(await positional.countRows("i = 10")).toBe(1);
+    expect(await positional.countRows("i = 100")).toBe(0);
+  });
+
+  it("rejects fromTag combined with another source before main normalization", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    await (await table.tags()).create("baseline");
+    const branches = await table.branches();
+
+    // fromRef="main" must not normalize the conflict away.
+    const mixedSources = { fromTag: "baseline", fromRef: "main" };
+    await expect(branches.create("conflict", mixedSources)).rejects.toThrow(
+      "fromTag cannot be combined",
+    );
+
+    // JavaScript callers can still pass the legacy version position.
+    const createWithLegacyVersion = branches.create.bind(branches) as (
+      name: string,
+      options: { fromTag: string },
+      fromVersion: number,
+    ) => Promise<Table>;
+    await expect(
+      createWithLegacyVersion("conflict", { fromTag: "baseline" }, 1),
+    ).rejects.toThrow("fromTag cannot be combined");
+    expect(await branches.list()).not.toHaveProperty("conflict");
+  });
+
+  it("hints at fromTag only for a missing Embedded branch", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+    const base = await branches.create("base");
+    await base.add([{ i: 1 }]);
+    await (await table.tags()).create("baseline");
+
+    // A tag passed through fromRef keeps the original failure and gains a
+    // static hint without probing the ref again.
+    await expect(branches.create("missing", "baseline")).rejects.toThrow(
+      'branches.create("missing", { fromTag: "baseline" })',
+    );
+
+    // A missing version is not an unresolved branch, so it gets no hint.
+    const missingVersion = await branches
+      .create("missing-version", "base", 9999)
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+    expect(missingVersion?.message).toContain("9999");
+    expect(missingVersion?.message).not.toContain("fromTag");
   });
 });
 

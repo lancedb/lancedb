@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import {
+  CleanupOptions,
+  CleanupPlan,
+  CleanupResult,
+  decodeCleanupPlan,
+  decodeCleanupResult,
+  validateCleanupOptions,
+} from "./cleanup";
 import { CompactionResult, decodeCompactionResult } from "./compaction";
 import {
   PrewarmDataPlan,
@@ -1342,6 +1350,28 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
+   * Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+   * Requires table Ownership and parent Usage. Retention inherits from the table
+   * then deployment when omitted. Local/historical handles are unsupported.
+   * Before submission, disable/drain automatic cleanup and prevent other cleanup,
+   * tag/branch publication and restore until completion, including direct clients.
+   * Coordination is not enforced by the server. Cancellation cannot undo deletion
+   * or prove storage I/O stopped. Preview is available without deletion.
+   * Wait timeout leaves work running; save the ID and reopen with db.openJob().
+   * @example
+   * const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+   * const result = await job.wait({ timeoutMs: 600000 });
+   */
+  async cleanupAsync(_options?: CleanupOptions): Promise<Job<CleanupResult>> {
+    throw new Error("durable cleanup jobs are only supported on remote tables");
+  }
+
+  /** Preview version deletion without creating a job. Execution re-evaluates current state. */
+  async explainCleanup(_options?: CleanupOptions): Promise<CleanupPlan> {
+    throw new Error("cleanup previews require LanceDB Enterprise");
+  }
+
+  /**
    * Submit remote compaction and return its durable job after acceptance.
    *
    * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
@@ -2091,6 +2121,21 @@ export class LocalTable extends Table {
     );
   }
 
+  async cleanupAsync(options?: CleanupOptions): Promise<Job<CleanupResult>> {
+    validateCleanupOptions(options);
+    return new Job(
+      await this.inner.cleanupAsync(options?.minAgeSeconds),
+      decodeCleanupResult,
+    );
+  }
+
+  async explainCleanup(options?: CleanupOptions): Promise<CleanupPlan> {
+    validateCleanupOptions(options);
+    return decodeCleanupPlan(
+      await this.inner.explainCleanup(options?.minAgeSeconds),
+    );
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
     validateCompactionOptions(options?.compactionOptions);
     return await this.inner.optimize(
@@ -2298,6 +2343,17 @@ export interface CherryPickResult {
 }
 
 /**
+ * Options for creating a branch from a named source.
+ */
+export interface CreateBranchOptions {
+  /**
+   * Tag to fork from. The tag keeps the branch and version it points to.
+   * Cannot be combined with `fromRef` or `fromVersion`.
+   */
+  fromTag: string;
+}
+
+/**
  * Branch manager for a {@link Table}.
  *
  * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
@@ -2320,6 +2376,18 @@ export class Branches {
   }
 
   /**
+   * Create a branch from a tag and return a handle scoped to it.
+   *
+   * @param name Name of the new branch.
+   * @param options Named source. `fromTag` keeps the tag's branch and version.
+   * @example
+   * ```typescript
+   * const branches = await table.branches();
+   * const branch = await branches.create("exp", { fromTag: "baseline" });
+   * ```
+   */
+  async create(name: string, options: CreateBranchOptions): Promise<Table>;
+  /**
    * Create a branch and return a handle scoped to it.
    *
    * @param name Name of the new branch.
@@ -2330,8 +2398,35 @@ export class Branches {
     name: string,
     fromRef?: string,
     fromVersion?: number,
+  ): Promise<Table>;
+  async create(
+    name: string,
+    fromRefOrOptions?: string | CreateBranchOptions,
+    fromVersion?: number,
   ): Promise<Table> {
-    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
+    if (typeof fromRefOrOptions === "object" && fromRefOrOptions !== null) {
+      // The public options shape only adds `fromTag`. Forward any runtime
+      // `fromRef`/`fromVersion` fields so the native check remains the single
+      // authority for rejecting mixed sources before `main` normalization.
+      const options = fromRefOrOptions as CreateBranchOptions & {
+        fromRef?: string;
+        fromVersion?: number;
+      };
+      if (typeof options.fromTag !== "string") {
+        throw new Error("branch source options must include fromTag");
+      }
+      return new LocalTable(
+        await this.#inner.create(
+          name,
+          options.fromRef,
+          fromVersion ?? options.fromVersion,
+          options.fromTag,
+        ),
+      );
+    }
+    return new LocalTable(
+      await this.#inner.create(name, fromRefOrOptions, fromVersion),
+    );
   }
 
   /**

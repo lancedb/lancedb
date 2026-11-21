@@ -1382,6 +1382,111 @@ describe("remote connection", () => {
     );
   });
 
+  it("forks Enterprise branches from tags and defaults tag versions", async () => {
+    const requests: { path: string; body: Record<string, unknown> }[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/branches/list/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            }),
+          );
+          return;
+        }
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 2,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw ? JSON.parse(raw) : {};
+          requests.push({ path, body });
+          if (path.endsWith("/tags/version/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: 3, branch: "base" }));
+            return;
+          }
+          if (path.endsWith("/tags/create/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          if (path.endsWith("/branches/create/")) {
+            if (body["name"] === "missing") {
+              res
+                .writeHead(404, { "Content-Type": "application/json" })
+                .end(JSON.stringify({ message: "not found" }));
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          res.writeHead(404).end();
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("t", undefined, { branch: "exp" });
+        await (await table.tags()).create("baseline");
+
+        const branches = await table.branches();
+        const fromTag = await branches.create("from-tag", {
+          fromTag: "baseline",
+        });
+        expect(fromTag.currentBranch()).toBe("from-tag");
+
+        // An Enterprise 404 is an ambiguous table-or-source failure, so the
+        // Embedded branch hint must not be appended based on its message.
+        const missing = await branches
+          .create("missing", { fromTag: "baseline" })
+          .then(
+            () => undefined,
+            (error: Error) => error,
+          );
+        expect(missing).toBeDefined();
+        expect(missing?.message).not.toContain("fromTag");
+      },
+    );
+
+    // Omitting the tag version resolves the handle's visible branch version.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/create/",
+      body: {
+        tag: "baseline",
+        version: 2,
+        branch: "exp",
+      },
+    });
+    // A tag source uses the existing coordinate lookup and the normal
+    // branches/create body; there is no from_tag field on the wire.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/version/",
+      body: { tag: "baseline" },
+    });
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/branches/create/",
+      // biome-ignore lint/style/useNamingConvention: snake_case is the server wire format
+      body: { name: "from-tag", from_branch: "base", from_version: 3 },
+    });
+  });
+
   it("sends FTS options to remote tables", async () => {
     let createIndexBody: Record<string, unknown> | undefined;
 
@@ -1433,6 +1538,87 @@ describe("remote connection", () => {
     expect(createIndexBody?.["index_type"]).toBe("FTS");
     expect(createIndexBody?.["block_size"]).toBe(256);
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
+  });
+
+  it("sends RTree options to remote tables", async () => {
+    const createIndexBodies: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "geom",
+                    type: {
+                      type: "struct",
+                      fields: [
+                        {
+                          name: "x",
+                          type: { type: "double" },
+                          nullable: false,
+                        },
+                        {
+                          name: "y",
+                          type: { type: "double" },
+                          nullable: false,
+                        },
+                      ],
+                    },
+                    nullable: true,
+                    metadata: { "ARROW:extension:name": "geoarrow.point" },
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBodies.push(JSON.parse(raw));
+            res.writeHead(200).end();
+          });
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("geom", { config: Index.rtree() });
+        await table.createIndex("geom", {
+          config: Index.rtree({ pageSize: 1024 }),
+          name: "geom_rtree",
+        });
+      },
+    );
+
+    expect(createIndexBodies).toEqual([
+      {
+        column: "geom",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        index_type: "RTREE",
+      },
+      {
+        column: "geom",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        index_type: "RTREE",
+        name: "geom_rtree",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        page_size: 1024,
+      },
+    ]);
   });
 
   it("diffs and cherry-picks remote branches", async () => {
@@ -3141,4 +3327,60 @@ describe("table overrides", () => {
     );
     expect(requests).toEqual([]);
   });
+});
+
+describe("cleanup typed results", () => {
+  test.each(["counts", "no_op", "unknown", "missing", "FAILED", "CANCELLED"])(
+    "reopens and waits for cleanup (%s)",
+    async (outcome) => {
+      const known = outcome !== "unknown";
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "cleanup-job",
+              ["job_type"]: "cleanup",
+              ["job_state"]: ["FAILED", "CANCELLED"].includes(outcome)
+                ? outcome
+                : "DONE",
+              result:
+                outcome === "missing"
+                  ? null
+                  : {
+                      ["format_version"]: 1,
+                      ["min_age_seconds"]: 0,
+                      ["statistics_complete"]: known,
+                      ["old_versions"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 2
+                        : null,
+                      ["bytes_removed"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 123
+                        : null,
+                    },
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CleanupResult>("cleanup-job");
+          if (["missing", "FAILED", "CANCELLED"].includes(outcome)) {
+            await expect(job.wait()).rejects.toThrow();
+          } else {
+            const result = await job.wait();
+            expect(result.statisticsComplete).toBe(known);
+            expect(result.oldVersions).toBe(
+              known ? (outcome === "no_op" ? 0 : 2) : null,
+            );
+            expect(result.minAgeSeconds).toBe(0);
+          }
+        },
+      );
+    },
+  );
 });

@@ -641,6 +641,8 @@ class RemoteDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -685,6 +687,10 @@ class RemoteDBConnection(DBConnection):
         data_storage_version: str, optional
             Not supported in LanceDB Enterprise. Raises NotImplementedError.
         enable_v2_manifest_paths: bool, optional
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
+        initial_bases: list, optional
+            Not supported in LanceDB Enterprise. Raises NotImplementedError.
+        allow_external_blob_outside_bases: bool, default False
             Not supported in LanceDB Enterprise. Raises NotImplementedError.
 
         Returns
@@ -761,6 +767,16 @@ class RemoteDBConnection(DBConnection):
                     f"{option} is not supported for table creation in "
                     "LanceDB Enterprise"
                 )
+        if initial_bases:
+            raise NotImplementedError(
+                "initial_bases is not supported for table creation in "
+                "LanceDB Enterprise"
+            )
+        if allow_external_blob_outside_bases:
+            raise NotImplementedError(
+                "allow_external_blob_outside_bases is not supported for table "
+                "creation in LanceDB Enterprise"
+            )
         if exist_ok:
             if mode == "create":
                 mode = "exist_ok"

@@ -77,7 +77,7 @@ jobs:
           echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
       - name: Create Release Notes
         id: release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
+        uses: mikepenz/release-changelog-builder-action@32e3c96f29a6532607f638797455e9e98cfc703d # v4.2.2
         with:
           configuration: .github/release_notes.json
           toTag: ${{ steps.extract_version.outputs.tag }}
@@ -85,7 +85,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Create GH release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # Marking betas as pre-releases keeps them from taking the "Latest"
           # badge on the releases page.

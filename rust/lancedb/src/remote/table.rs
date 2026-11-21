@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 pub mod blobs;
+mod cleanup;
 pub mod insert;
 mod ipc_stream;
 mod optimize;
@@ -79,7 +80,7 @@ use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, Version, WriteParams};
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
@@ -1326,6 +1327,13 @@ impl<S: HttpSend> RemoteTable<S> {
         params: &QueryRequest,
     ) -> Result<()> {
         params.check_filter()?;
+        if params.scan_in_order == Some(true) {
+            return Err(Error::NotSupported {
+                message: "scan_in_order(true) requires an ordered scan of Embedded storage; \
+                          LanceDB Enterprise tables do not support storage-order scans yet"
+                    .to_string(),
+            });
+        }
         body["prefilter"] = params.prefilter.into();
         // Only forward use_rte when explicitly set; a server that predates it
         // ignores the field and routes as it would by default.
@@ -2647,6 +2655,44 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
+/// Reject per-write layout options that the remote insert protocol cannot carry.
+///
+/// Remote inserts only transmit `mode`; file and row-group sizing is managed by
+/// the server. Silently dropping these values would produce a different layout
+/// than the caller requested.
+fn ensure_remote_add_supports_write_params(write_params: Option<&WriteParams>) -> Result<()> {
+    let Some(write_params) = write_params else {
+        return Ok(());
+    };
+    let defaults = WriteParams::default();
+    let unsupported: Vec<&str> = [
+        (
+            "max_rows_per_file",
+            write_params.max_rows_per_file != defaults.max_rows_per_file,
+        ),
+        (
+            "max_rows_per_group",
+            write_params.max_rows_per_group != defaults.max_rows_per_group,
+        ),
+        (
+            "max_bytes_per_file",
+            write_params.max_bytes_per_file != defaults.max_bytes_per_file,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, differs)| differs.then_some(name))
+    .collect();
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+    Err(Error::NotSupported {
+        message: format!(
+            "write_options.lance_write_params layout options are not supported when adding data to a LanceDB Enterprise table: {}; only mode=overwrite is supported",
+            unsupported.join(", ")
+        ),
+    })
+}
+
 #[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -3301,6 +3347,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
+        ensure_remote_add_supports_write_params(add.write_options.lance_write_params.as_ref())?;
 
         if add.allow_external_blob_outside_bases {
             return Err(Error::NotSupported {
@@ -3381,7 +3428,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && request.has_take()
         {
-            return crate::query::create_take_plan(self, request, options, false).await;
+            return crate::query::create_take_plan(self, request, options, request.preserve_order)
+                .await;
         }
 
         let streams = self.execute_query(query, &options).await?;
@@ -3405,8 +3453,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && request.has_take()
         {
-            let plan =
-                crate::query::create_take_plan(self, request, options.clone(), false).await?;
+            let plan = crate::query::create_take_plan(
+                self,
+                request,
+                options.clone(),
+                request.preserve_order,
+            )
+            .await?;
             let inner = execute_plan(plan, Default::default())?;
             let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
             let inner = if let Some(timeout) = options.timeout {
@@ -3469,7 +3522,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && request.has_take()
         {
-            return crate::query::explain_take_plan(self, request, verbose, false).await;
+            return crate::query::explain_take_plan(self, request, verbose, request.preserve_order)
+                .await;
         }
 
         let base_request = self
@@ -4122,6 +4176,67 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             prune: None,
         })
     }
+    async fn explain_cleanup(
+        &self,
+        options: crate::table::CleanupOptions,
+    ) -> Result<crate::table::CleanupPlan> {
+        self.check_mutable().await?;
+        let statement = format!(
+            "EXPLAIN (FORMAT JSON) {}",
+            cleanup::statement(&self.name, self.branch.as_deref(), &options)?
+        );
+        let client = self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "cleanup previews require a Flight SQL endpoint with EXPLAIN (FORMAT JSON) VACUUM support".into(),
+        })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(cleanup::map_error)?;
+        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
+            batches.push(batch);
+        }
+        cleanup::plan(&batches)
+    }
+
+    async fn cleanup_async(
+        &self,
+        options: crate::table::CleanupOptions,
+    ) -> Result<Job<crate::table::CleanupResult>> {
+        self.check_mutable().await?;
+        let statement = cleanup::statement(&self.name, self.branch.as_deref(), &options)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "manual cleanup requires a Flight SQL endpoint and SQL VACUUM support"
+                    .into(),
+            })?;
+        let query = client
+            .execute(crate::database::ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: self.namespace.clone(),
+                parameters: None,
+            })
+            .await
+            .map_err(cleanup::map_error)?;
+        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
+            batches.push(batch);
+        }
+        let job_id = cleanup::receipt(&batches)?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn compact_async(
         &self,
         options: crate::table::optimize::CompactionOverrides,
@@ -5137,6 +5252,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delta_not_supported() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("table.delta must not send a remote request")
+        });
+
+        let error = table.delta(1u64, None).await.unwrap_err();
+        assert!(
+            matches!(error, Error::NotSupported { .. }),
+            "expected NotSupported, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_version() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -5458,6 +5586,96 @@ mod tests {
 
         assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
         assert!(err.to_string().contains("LanceDB Embedded"));
+    }
+
+    #[rstest]
+    #[case("max_rows_per_file")]
+    #[case("max_rows_per_group")]
+    #[case("max_bytes_per_file")]
+    #[tokio::test]
+    async fn add_rejects_layout_write_params_before_any_request(#[case] field: &str) {
+        for write_parallelism in [None, Some(2)] {
+            let table = Table::new_with_handler::<String>("my_table", |request| {
+                panic!("Unexpected request: {}", request.url().path())
+            });
+            let data = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+            let mut params = WriteParams::default();
+            match field {
+                "max_rows_per_file" => params.max_rows_per_file = 50_000,
+                "max_rows_per_group" => params.max_rows_per_group = 100,
+                "max_bytes_per_file" => params.max_bytes_per_file = 64 * 1024 * 1024,
+                other => panic!("unexpected field: {other}"),
+            }
+
+            let mut add = table.add(data).write_options(crate::table::WriteOptions {
+                lance_write_params: Some(params),
+            });
+            if let Some(write_parallelism) = write_parallelism {
+                add = add.write_parallelism(write_parallelism);
+            }
+
+            let err = add.execute().await.unwrap_err();
+            assert!(
+                matches!(err, Error::NotSupported { .. }),
+                "{field}: {err:?}"
+            );
+            let message = err.to_string();
+            assert!(message.contains(field), "{field}: {message}");
+            assert!(
+                message.contains("only mode=overwrite is supported"),
+                "{field}: {message}"
+            );
+        }
+    }
+
+    #[rstest]
+    #[case(None, false)]
+    #[case(Some(lance::dataset::WriteMode::Create), false)]
+    #[case(Some(lance::dataset::WriteMode::Append), false)]
+    #[case(Some(lance::dataset::WriteMode::Overwrite), true)]
+    #[tokio::test]
+    async fn add_preserves_supported_write_params(
+        #[case] mode: Option<lance::dataset::WriteMode>,
+        #[case] expect_overwrite: bool,
+    ) {
+        let data = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let describe_body = describe_response(&data.schema());
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    let mode = request
+                        .url()
+                        .query_pairs()
+                        .find(|(k, _)| k == "mode")
+                        .map(|(_, v)| v.into_owned());
+                    assert_eq!(
+                        mode.as_deref(),
+                        expect_overwrite.then_some("overwrite"),
+                        "unexpected insert mode for {mode:?}"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 9}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected request path: {}", path),
+            });
+
+        let mut add = table.add(data);
+        if let Some(mode) = mode {
+            add = add.write_options(crate::table::WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    mode,
+                    ..Default::default()
+                }),
+            });
+        }
+
+        assert_eq!(add.execute().await.unwrap().version, 9);
     }
 
     #[tokio::test]
@@ -6580,6 +6798,27 @@ mod tests {
 
         let result = table.drop_columns(&["a", "b"]).await.unwrap();
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    #[tokio::test]
+    async fn test_query_scan_in_order_true_is_not_supported() {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("scan_in_order(true) must fail before sending a request")
+        });
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .execute()
+            .await
+            .err()
+            .expect("remote scans cannot guarantee manifest order");
+        assert!(
+            matches!(&err, Error::NotSupported { message }
+                if message.contains("scan_in_order(true)")
+                    && message.contains("Enterprise tables")),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -8472,8 +8711,8 @@ mod tests {
                     Field::new("_rowoffset", DataType::UInt64, false),
                 ])),
                 vec![
-                    Arc::new(Int32Array::from(vec![5])),
-                    Arc::new(arrow_array::UInt64Array::from(vec![5])),
+                    Arc::new(Int32Array::from(vec![1, 5])),
+                    Arc::new(arrow_array::UInt64Array::from(vec![1, 5])),
                 ],
             )
             .unwrap();
@@ -8485,7 +8724,8 @@ mod tests {
         });
 
         let request = table
-            .take_offsets(vec![5, 5])
+            .take_offsets(vec![5, 1, 5])
+            .preserve_order()
             .select(crate::query::Select::columns(&["id"]))
             .into_request();
         let batches = table
@@ -8497,12 +8737,24 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
         assert!(
             batches
                 .iter()
                 .all(|batch| batch.schema().fields().len() == 1)
         );
+        let ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<arrow_array::types::Int32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![5, 1, 5]);
     }
 
     #[rstest::rstest]
