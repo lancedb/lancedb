@@ -738,6 +738,9 @@ class LanceNamespaceDBConnection(DBConnection):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> "MaterializedView":
         """Define a materialized view over a table in the root namespace.
@@ -757,6 +760,9 @@ class LanceNamespaceDBConnection(DBConnection):
                         with_no_data=with_no_data,
                         auto_refresh_enabled=auto_refresh_enabled,
                         auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                        default_total_cpu_millis=default_total_cpu_millis,
+                        default_total_memory_bytes=default_total_memory_bytes,
+                        default_total_gpu_count=default_total_gpu_count,
                         exist_ok=exist_ok,
                     )
                 ).name
@@ -776,6 +782,9 @@ class LanceNamespaceDBConnection(DBConnection):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> Job[None]:
         job = LOOP.run(
@@ -789,6 +798,9 @@ class LanceNamespaceDBConnection(DBConnection):
                 with_no_data=with_no_data,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                default_total_cpu_millis=default_total_cpu_millis,
+                default_total_memory_bytes=default_total_memory_bytes,
+                default_total_gpu_count=default_total_gpu_count,
                 exist_ok=exist_ok,
             )
         )
@@ -1396,6 +1408,9 @@ class AsyncLanceNamespaceDBConnection:
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> "AsyncMaterializedView":
         """Define a materialized view over a table in the root namespace."""
@@ -1409,6 +1424,9 @@ class AsyncLanceNamespaceDBConnection:
             with_no_data=with_no_data,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            default_total_cpu_millis=default_total_cpu_millis,
+            default_total_memory_bytes=default_total_memory_bytes,
+            default_total_gpu_count=default_total_gpu_count,
             exist_ok=exist_ok,
         )
         # Reopen through the namespace so the view's table carries the
@@ -1427,6 +1445,9 @@ class AsyncLanceNamespaceDBConnection:
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job."""
@@ -1440,6 +1461,9 @@ class AsyncLanceNamespaceDBConnection:
             with_no_data=with_no_data,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            default_total_cpu_millis=default_total_cpu_millis,
+            default_total_memory_bytes=default_total_memory_bytes,
+            default_total_gpu_count=default_total_gpu_count,
             exist_ok=exist_ok,
         )
 
