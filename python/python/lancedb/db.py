@@ -811,6 +811,14 @@ class DBConnection(EnforceOverrides):
             Positive, finite refresh interval in seconds in LanceDB Enterprise.
             When omitted, the server determines when to refresh.
 
+        default_total_cpu_millis: int, optional
+            Default total CPU budget in millicores for initial population and
+            refreshes. Overrides Function defaults. LanceDB Enterprise only.
+        default_total_memory_bytes: int, optional
+            Default total memory budget in bytes. LanceDB Enterprise only.
+        default_total_gpu_count: int, optional
+            Default total GPU budget across workers. LanceDB Enterprise only.
+
         Returns
         -------
         MaterializedView

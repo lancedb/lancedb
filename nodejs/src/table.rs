@@ -1995,8 +1995,7 @@ fn positive_u32(value: Option<f64>, name: &str) -> napi::Result<Option<u32>> {
 
 /// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 /// option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-/// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
-/// `resourceBudget`.
+/// `batchSize`, `gpuClass` and `totalGpuCount` and rejects the rest.
 #[napi(object)]
 #[derive(Clone, Debug, Default)]
 pub struct RefreshColumnOptions {
@@ -2015,16 +2014,16 @@ pub struct RefreshColumnOptions {
     pub max_concurrency: Option<f64>,
     /// GPU class for Function workers.
     pub gpu_class: Option<String>,
-    /// Complete aggregate CPU and memory budget for a registered Function
-    /// refresh. `gpuCount` inside the budget defaults to zero.
+    /// Override the total CPU budget in millicores for this refresh.
     pub total_cpu_millis: Option<f64>,
+    /// Override the total memory budget in bytes for this refresh.
     pub total_memory_bytes: Option<f64>,
     /// CPU, memory, and ephemeral-storage limits for the refresh supervisor.
     pub supervisor_resources: Option<FunctionRefreshPodResources>,
     /// Resources and sizing for the refresh planning fleet.
     pub planning_workers: Option<FunctionRefreshPlanningConfig>,
-    /// Positive aggregate GPU budget for Function workers.
-    pub total_gpu_count: Option<u32>,
+    /// Nonnegative total GPU budget for Function workers.
+    pub total_gpu_count: Option<f64>,
     /// Override retries of failed user-code calls for this refresh.
     pub retry_policy: Option<FunctionRetryPolicy>,
     /// `"fail"` (default) stops on a row error; `"skip"` writes null and
@@ -2119,7 +2118,20 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
                 ))
             })
             .transpose()?;
-        options.total_gpu_count = value.total_gpu_count;
+        options.total_gpu_count = value
+            .total_gpu_count
+            .map(|count| {
+                if !count.is_finite()
+                    || count.fract() != 0.0
+                    || !(0.0..=u32::MAX as f64).contains(&count)
+                {
+                    return Err(napi::Error::from_reason(
+                        "totalGpuCount must be an integer between 0 and 4294967295",
+                    ));
+                }
+                Ok(count as u32)
+            })
+            .transpose()?;
         options.retry_policy = value.retry_policy.map(|policy| {
             let mut converted = lancedb::function::FunctionRetryPolicy::default();
             if let Some(max_attempts) = policy.max_attempts {

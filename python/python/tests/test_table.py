@@ -6566,7 +6566,7 @@ def test_refresh_column_rejects_invalid_batch_size(tmp_path, method, batch_size)
         ({"publication_interval_rows": 60}, "publication_interval_rows"),
         (
             {"total_cpu_millis": 1000, "total_memory_bytes": 1024},
-            "resource_budget",
+            "total_cpu_millis",
         ),
         (
             {

@@ -2069,13 +2069,13 @@ pub struct RefreshMaterializedViewBuilder {
 }
 
 impl RefreshMaterializedViewBuilder {
-    /// Cap total CPU capacity in millicores; requires memory and GPU budgets.
+    /// Override total CPU capacity in millicores for this refresh.
     pub fn total_cpu_millis(mut self, total_cpu_millis: u64) -> Self {
         self.options.total_cpu_millis = Some(total_cpu_millis);
         self
     }
 
-    /// Cap total memory in bytes; requires CPU and GPU budgets.
+    /// Override total memory in bytes for this refresh.
     pub fn total_memory_bytes(mut self, total_memory_bytes: u64) -> Self {
         self.options.total_memory_bytes = Some(total_memory_bytes);
         self

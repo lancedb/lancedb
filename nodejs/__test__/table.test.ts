@@ -6313,7 +6313,7 @@ describe("computed columns", () => {
         totalCpuMillis: 1_000,
         totalMemoryBytes: 1_024,
       }),
-    ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
+    ).rejects.toThrow("total_cpu_millis requires a LanceDB Enterprise refresh");
     await expect(
       table.refreshColumn("x", {
         supervisorResources: {

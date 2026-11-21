@@ -3461,12 +3461,6 @@ class Table(ABC):
         default_total_memory_bytes: Optional[int] = None,
         default_total_gpu_count: Optional[int] = None,
     ):
-        _resource_options(
-            default_total_cpu_millis,
-            default_total_memory_bytes,
-            default_total_gpu_count,
-            prefix="default_",
-        )
         """
         Add new columns with defined values.
 
@@ -3564,6 +3558,12 @@ class Table(ABC):
         >>> table.to_arrow()["score"].to_pylist()
         [0.25, 0.75]
         """
+        _resource_options(
+            default_total_cpu_millis,
+            default_total_memory_bytes,
+            default_total_gpu_count,
+            prefix="default_",
+        )
 
     @abstractmethod
     def refresh_column(
