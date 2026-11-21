@@ -212,6 +212,8 @@ pub struct ExecuteQueryRequest {
     /// also binds `$<name>`. See
     /// [`ExecuteQueryAsyncBuilder::parameters`](crate::connection::ExecuteQueryAsyncBuilder::parameters).
     pub parameters: Option<RecordBatch>,
+    /// Execution limits and cancellation behavior for this statement.
+    pub options: crate::sql::QueryOptions,
 }
 
 impl ExecuteQueryRequest {
@@ -220,6 +222,7 @@ impl ExecuteQueryRequest {
             query: query.into(),
             default_namespace_path: vec!["public".to_string()],
             parameters: None,
+            options: Default::default(),
         }
     }
 }

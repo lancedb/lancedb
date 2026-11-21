@@ -1421,6 +1421,9 @@ class RemoteDBConnection(DBConnection):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery:
         """Start executing SQL through this LanceDB Enterprise connection.
 
@@ -1436,6 +1439,9 @@ class RemoteDBConnection(DBConnection):
                     query,
                     default_namespace_path=default_namespace_path,
                     parameters=parameters,
+                    timeout=timeout,
+                    read_timeout=read_timeout,
+                    cancel_on_drop=cancel_on_drop,
                 )
             )
         )

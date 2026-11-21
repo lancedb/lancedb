@@ -1008,6 +1008,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 query: sql,
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
@@ -1024,6 +1025,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
@@ -1046,6 +1048,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 query: format!("DROP STORAGE INTEGRATION {name}"),
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         result.reader().await?.try_collect::<Vec<_>>().await?;

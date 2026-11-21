@@ -55,6 +55,7 @@ impl SqlClient {
                     query: statement,
                     default_namespace_path: namespace,
                     parameters: None,
+                    options: Default::default(),
                 },
                 true,
             )
@@ -133,6 +134,7 @@ impl SqlClient {
                 query: format!("DESCRIBE MATERIALIZED VIEW {}", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         let mut reader = query.reader().await?;

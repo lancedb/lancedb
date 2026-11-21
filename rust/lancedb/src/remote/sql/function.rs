@@ -51,6 +51,7 @@ impl SqlClient {
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             definition,
         )
@@ -76,6 +77,7 @@ impl SqlClient {
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             definition,
         )
@@ -119,6 +121,7 @@ impl SqlClient {
                     ),
                     default_namespace_path: namespace.to_vec(),
                     parameters: None,
+                    options: Default::default(),
                 },
                 |batches| {
                     let rows = strings(&batches, "status")?;

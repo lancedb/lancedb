@@ -83,6 +83,7 @@ impl SqlClient {
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: Some(parameters),
+                options: Default::default(),
             },
             |_| Ok(()),
         )
@@ -102,6 +103,7 @@ impl SqlClient {
                 query: format!("DESCRIBE SECRET {}", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             secret_info,
         )
@@ -121,6 +123,7 @@ impl SqlClient {
                 query: format!("DROP SECRET IF EXISTS {}", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             |_| Ok(()),
         )

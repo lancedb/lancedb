@@ -3,13 +3,30 @@
 
 //! Handles to SQL queries running on a LanceDB Enterprise database.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::{Result, arrow::SendableRecordBatchStream};
+
+/// Controls for one SQL execution.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct QueryOptions {
+    /// Limit submission and result consumption together, starting at submission.
+    /// On expiry, the SDK stops reading and attempts to cancel Flight execution.
+    /// Durable server-side jobs still require explicit job cancellation.
+    pub timeout: Option<Duration>,
+    /// Limit each wait for a server response or the next result batch.
+    /// Defaults to the connection's read timeout.
+    pub read_timeout: Option<Duration>,
+    /// Attempt to cancel deferred Flight execution when its unread handle or
+    /// reader is dropped. Defaults to false so deferred queries can be detached.
+    /// Directly streamed queries always stop when their reader is dropped.
+    pub cancel_on_drop: bool,
+}
 
 /// The externally visible lifecycle state of a submitted SQL query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,8 +90,8 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// The handle can be inspected, opened as an Arrow reader, or cancelled.
 /// The server may stream results on the initial call or defer execution and
 /// return result tickets. Dropping an unread handle or its reader stops a
-/// directly streamed query; deferred execution continues until explicitly
-/// cancelled. This applies equally with and without parameters.
+/// directly streamed query. Deferred execution continues until cancelled,
+/// unless a timeout or `cancel_on_drop` was set on its execution builder. This applies equally with and without parameters.
 /// [`Self::id`] is scoped to the connection that submitted the query. When the
 /// server runs the statement as a SQL job, [`Self::job_id`] exposes the durable
 /// Job Registry identifier accepted by `open_job`.

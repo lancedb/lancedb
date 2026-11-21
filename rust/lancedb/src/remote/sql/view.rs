@@ -111,6 +111,7 @@ impl SqlClient {
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             move |batches| view_description(batches, namespace_path),
         )
@@ -132,6 +133,7 @@ impl SqlClient {
                 query: format!("DESCRIBE VIEW {}", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             move |batches| view_description(batches, namespace_path),
         )

@@ -183,11 +183,13 @@ impl StreamingQuery {
                 .map_err(|error| sql_flight_error(&request_id, &error))?;
             let mut request = tonic::Request::new(futures::stream::iter(messages));
             *request.metadata_mut() = metadata;
+            client.set_execution_timeout(&mut request);
             tokio::time::timeout(read_timeout, flight.do_exchange(request)).await
         } else {
             let mut request =
                 tonic::Request::new(Ticket::new(CommandTicket { command }.encode_to_vec()));
             *request.metadata_mut() = metadata;
+            client.set_execution_timeout(&mut request);
             tokio::time::timeout(read_timeout, flight.do_get(request)).await
         }
         .map_err(|_| sql_error(&request_id, "SQL query submission timed out"))?
@@ -274,6 +276,20 @@ impl StreamingQuery {
         }
     }
 
+    pub(super) fn start_deadline(self: &Arc<Self>) {
+        let Some(deadline) = self.client.deadline else {
+            return;
+        };
+        let query = Arc::downgrade(self);
+        tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            if let Some(query) = query.upgrade() {
+                query.settle(Lifecycle::Failed("SQL query result timed out".to_string()));
+                query.response.lock().unwrap().take();
+            }
+        });
+    }
+
     pub(super) fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Instant::now();
     }
@@ -328,11 +344,15 @@ impl StreamingQuery {
         *lifecycle = state;
         drop(lifecycle);
         let _ = self.terminal_at.set(Instant::now());
+        self.cancelled.notify_waiters();
         true
     }
 
     fn is_cancelled(&self) -> bool {
-        *self.lifecycle.lock().unwrap() == Lifecycle::Cancelled
+        matches!(
+            *self.lifecycle.lock().unwrap(),
+            Lifecycle::Cancelled | Lifecycle::Failed(_)
+        )
     }
 
     fn job_id(&self) -> Option<String> {
@@ -359,6 +379,11 @@ impl StreamingQuery {
     }
 
     fn cancelled_error(&self) -> Error {
+        if let Lifecycle::Failed(message) = &*self.lifecycle.lock().unwrap() {
+            return Error::Runtime {
+                message: message.clone(),
+            };
+        }
         Error::JobCancelled {
             job_id: Some(self.id.to_string()),
         }
@@ -377,13 +402,7 @@ impl StreamingQuery {
     /// Take the rows and wait for the first batch, which carries the schema.
     async fn prepare(&self) -> Result<PreparedStream> {
         let Some(rows) = self.response.lock().unwrap().take() else {
-            // Taken by an earlier attempt that failed, or dropped by a cancel.
-            return Err(match &*self.lifecycle.lock().unwrap() {
-                Lifecycle::Failed(message) => Error::Runtime {
-                    message: message.clone(),
-                },
-                _ => self.cancelled_error(),
-            });
+            return Err(self.cancelled_error());
         };
         let mut rows = Borrowed {
             query: self,
@@ -518,7 +537,7 @@ impl QueryHandle for StreamingQueryHandle {
     }
 
     async fn reader(&self) -> Result<SendableRecordBatchStream> {
-        let timeout = self.query.client.overall_timeout()?;
+        let timeout = self.query.client.execution_timeout()?;
         if self
             .result_started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
