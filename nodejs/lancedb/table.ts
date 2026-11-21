@@ -24,6 +24,7 @@ import {
   Field,
   IntoVector,
   MultiVector,
+  RecordBatch,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
@@ -57,7 +58,10 @@ import {
   IndexConfig,
   IndexStatistics,
   JobFailureInfo,
+  RecordBatchIterator as NativeBatchIterator,
   Branches as NativeBranches,
+  DeltaRef as NativeDeltaRef,
+  TableDelta as NativeTableDelta,
   OptimizeStats,
   RTEStats,
   RefreshColumnOptions,
@@ -73,6 +77,7 @@ import {
   AutoQuery,
   FullTextQuery,
   Query,
+  RecordBatchIterator,
   TakeQuery,
   VectorQuery,
   createAutoQuery,
@@ -251,6 +256,36 @@ export interface Version {
   version: number;
   timestamp: Date;
   metadata: Record<string, string>;
+}
+
+/**
+ * One endpoint of a table delta: a positive version number/bigint or a tag on
+ * the table handle's current branch.
+ *
+ * Use a `bigint` when the version may exceed `Number.MAX_SAFE_INTEGER`.
+ * Strings are always tags.
+ */
+export type DeltaVersion = number | bigint | string;
+
+/** A committed transaction in a table delta range. */
+export interface TableDeltaTransaction {
+  /** The version the transaction was based on. Exact u64 value. */
+  readVersion: bigint;
+  uuid: string;
+  operation: string;
+  tag?: string;
+  transactionProperties?: Record<string, string>;
+}
+
+/**
+ * A streaming table-delta reader.
+ *
+ * `schema()` is available before consuming the stream, including when the
+ * range is empty. The stream yields Arrow record batches without
+ * materializing the full result.
+ */
+export interface TableDeltaReader extends AsyncIterable<RecordBatch> {
+  schema(): Promise<Schema>;
 }
 
 /** Token produced by the tokenizer configured on a full-text search index. */
@@ -1349,6 +1384,34 @@ export abstract class Table {
    * out state and the read_consistency_interval, if any, will apply.
    */
   abstract restore(): Promise<void>;
+
+  /**
+   * Compare two persisted versions or same-branch tags on an Embedded table.
+   *
+   * `fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+   * `toVersion` uses the version currently visible through this handle,
+   * including a checked-out version. The endpoints are fixed when the delta is
+   * created.
+   *
+   * Row readers require stable row IDs at both endpoints. Create the table with
+   * `storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+   * them. `listTransactions()` works without stable row IDs.
+   *
+   * Row readers reject ranges containing a Restore, or ranges whose transaction
+   * history cannot prove they are restore-free. Recompute the checkpoint with a
+   * full rescan and reinitialize it at the range end version.
+   *
+   * LanceDB Enterprise tables reject this operation.
+   */
+  async delta(
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    fromVersion: DeltaVersion,
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    toVersion?: DeltaVersion,
+  ): Promise<TableDelta> {
+    throw new Error("table.delta is only supported on LanceDB Embedded tables");
+  }
+
   /**
    * Submit durable remote cleanup through SQL VACUUM and return after acceptance.
    * Requires table Ownership and parent Usage. Retention inherits from the table
@@ -2087,6 +2150,18 @@ export class LocalTable extends Table {
     await this.inner.checkoutLatest();
   }
 
+  async delta(
+    fromVersion: DeltaVersion,
+    toVersion?: DeltaVersion,
+  ): Promise<TableDelta> {
+    return new TableDelta(
+      await this.inner.delta(
+        toNativeDeltaRef(fromVersion),
+        toVersion === undefined ? undefined : toNativeDeltaRef(toVersion),
+      ),
+    );
+  }
+
   async listVersions(): Promise<Version[]> {
     return (await this.inner.listVersions()).map((version) => ({
       version: version.version,
@@ -2351,6 +2426,98 @@ export interface CreateBranchOptions {
    * Cannot be combined with `fromRef` or `fromVersion`.
    */
   fromTag: string;
+}
+
+/**
+ * A handle for reading changes between two pinned table versions.
+ *
+ * Created by {@link Table.delta}. Endpoints are fixed at creation; later writes
+ * or tag moves do not change this delta.
+ */
+export class TableDelta {
+  readonly #inner: NativeTableDelta;
+
+  /**
+   * Construct a table-delta handle. Internal use only.
+   * @hidden
+   */
+  constructor(inner: NativeTableDelta) {
+    this.#inner = inner;
+  }
+
+  /** The exclusive start version, as an exact u64 bigint. */
+  get beginVersion(): bigint {
+    return this.#inner.beginVersion();
+  }
+
+  /** The inclusive end version, as an exact u64 bigint. */
+  get endVersion(): bigint {
+    return this.#inner.endVersion();
+  }
+
+  /** Stream rows inserted in `(beginVersion, endVersion]`. */
+  insertedRows(): TableDeltaReader {
+    return tableDeltaReader(this.#inner.insertedRows());
+  }
+
+  /** Stream rows updated in `(beginVersion, endVersion]`. */
+  updatedRows(): TableDeltaReader {
+    return tableDeltaReader(this.#inner.updatedRows());
+  }
+
+  /** Stream inserted and updated rows in `(beginVersion, endVersion]`. */
+  upsertedRows(): TableDeltaReader {
+    return tableDeltaReader(this.#inner.upsertedRows());
+  }
+
+  /** Stream deleted row IDs. Each batch has one `_rowid: uint64` column. */
+  deletedRowIds(): TableDeltaReader {
+    return tableDeltaReader(this.#inner.deletedRowIds());
+  }
+
+  /** List readable transactions committed in `(beginVersion, endVersion]`. */
+  async listTransactions(): Promise<TableDeltaTransaction[]> {
+    const transactions = await this.#inner.listTransactions();
+    return transactions.map((transaction) => ({
+      readVersion: transaction.readVersion,
+      uuid: transaction.uuid,
+      operation: transaction.operation,
+      tag: transaction.tag ?? undefined,
+      transactionProperties: transaction.transactionProperties ?? undefined,
+    }));
+  }
+}
+
+function toNativeDeltaRef(value: DeltaVersion): NativeDeltaRef {
+  if (typeof value === "string") {
+    if (value.length === 0) {
+      throw new Error("delta tag must be a non-empty string");
+    }
+    return { tag: value };
+  }
+  if (typeof value === "bigint") {
+    if (value <= 0n) {
+      throw new Error("delta version must be a positive u64 bigint");
+    }
+    return { version: value };
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      "delta version must be a positive safe integer; use bigint for larger versions",
+    );
+  }
+  return { version: BigInt(value) };
+}
+
+function tableDeltaReader(
+  promisedInner: Promise<NativeBatchIterator>,
+): TableDeltaReader {
+  return {
+    schema: async () => tableFromIPC((await promisedInner).schema()).schema,
+    [Symbol.asyncIterator](): AsyncIterator<RecordBatch> {
+      return RecordBatchIterator(promisedInner);
+    },
+  };
 }
 
 /**
