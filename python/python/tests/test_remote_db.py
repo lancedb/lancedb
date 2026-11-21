@@ -9034,3 +9034,47 @@ def test_remote_prewarm_preview_reports_old_server_format_support():
         ):
             table.explain_prewarm_data()
     assert len(server.tickets) == 1
+
+
+@pytest.mark.parametrize("async_table", [False, True])
+@pytest.mark.asyncio
+async def test_paged_function_errors_retain_history_and_expose_continuation(
+    async_table,
+):
+    received = []
+
+    def handler(request):
+        length = int(request.headers.get("content-length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 8, "schema": {"fields": []}}
+        else:
+            assert request.path == "/v1/table/test/errors"
+            received.append(body)
+            response = {
+                "records": [],
+                "fragments": [],
+                "truncated": False,
+                "workflow_version": 1,
+                "page_token": "next",
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            errors = await table.function_errors(job_id="attempt-1", page_token="")
+            assert errors.page_token == "next"
+            with pytest.raises(ValueError, match="current failures"):
+                await errors.rows()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            errors = table.function_errors(job_id="attempt-1", page_token="")
+            assert errors.page_token == "next"
+            with pytest.raises(ValueError, match="current failures"):
+                errors.rows()
+    assert received == [{"job_id": "attempt-1", "page_token": "", "history": True}]

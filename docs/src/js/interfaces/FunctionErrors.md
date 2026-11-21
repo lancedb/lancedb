@@ -20,6 +20,16 @@ Fragments whose detail was capped.
 
 ***
 
+### pageToken?
+
+```ts
+optional pageToken: string;
+```
+
+Continue the same job/filter. Absent for complete pages and older servers.
+
+***
+
 ### records
 
 ```ts

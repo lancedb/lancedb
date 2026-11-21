@@ -237,7 +237,7 @@ pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, JobFailure, Result};
 pub use function::FunctionVersion;
-pub use job::Job;
+pub use job::{Job, JobState};
 pub use lance::table::format::BasePath;
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;

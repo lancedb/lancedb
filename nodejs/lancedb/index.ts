@@ -2,21 +2,21 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
-  Connection,
+  type Connection,
   LocalConnection,
   cleanseStorageOptions,
 } from "./connection";
 
 import {
-  ConnectNamespaceOptions,
-  ConnectionOptions,
+  type ConnectNamespaceOptions,
+  type ConnectionOptions,
   Connection as LanceDbConnection,
   JsHeaderProvider as NativeJsHeaderProvider,
-  Session,
+  type Session,
   tokenize as nativeTokenize,
 } from "./native.js";
 
-import { HeaderProvider } from "./header";
+import type { HeaderProvider } from "./header";
 import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
@@ -118,7 +118,12 @@ export {
   Job,
   JobEventsOptions,
 } from "./job";
-export type { JobProgress, JobProgressCallback, JobWaitOptions } from "./job";
+export type {
+  JobProgress,
+  JobProgressCallback,
+  JobState,
+  JobWaitOptions,
+} from "./job";
 
 export {
   AutoQuery,

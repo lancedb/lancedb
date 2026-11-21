@@ -3272,7 +3272,7 @@ class Table(ABC):
         The server does not enforce coordination. Cancellation cannot undo deletion
         or prove storage I/O stopped. Preview is available without deletion.
 
-        Save ``job.id`` to reopen with ``db.open_job(id)``. Waiting returns
+        Save ``job.id()`` to reopen with ``db.open_job(id)``. Waiting returns
         [CleanupResult][lancedb.cleanup.CleanupResult]; timeout leaves work running.
         Unknown totals after retry/recovery remain None. Auxiliary sweeps are
         best effort and excluded from the version-deletion counts.
@@ -3952,6 +3952,7 @@ class Table(ABC):
         column: Optional[str] = None,
         limit: Optional[int] = None,
         history: bool = False,
+        page_token: Optional[str] = None,
     ) -> "FunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
@@ -3977,6 +3978,10 @@ class Table(ABC):
             Include retained historical errors instead of current failures.
             Requires Enterprise workflow version 1 or later. Historical records
             cannot be used with the current-input ``rows()`` helper.
+        page_token: str, optional
+            Empty starts retained history, including repaired rows, for an exact
+            job_id. Continue with the response's
+            page_token until it is None, keeping all filters unchanged.
 
         Returns
         -------
@@ -6621,12 +6626,17 @@ class LanceTable(Table):
         column: Optional[str] = None,
         limit: Optional[int] = None,
         history: bool = False,
+        page_token: Optional[str] = None,
     ) -> "FunctionErrors":
         """The per-row errors Function refreshes recorded on this table. See
         [`Table.function_errors`][lancedb.table.Table.function_errors]."""
         return LOOP.run(
             self._table.function_errors(
-                job_id=job_id, column=column, limit=limit, history=history
+                job_id=job_id,
+                column=column,
+                limit=limit,
+                history=history,
+                page_token=page_token,
             )
         ).as_sync(self)
 
@@ -9435,6 +9445,7 @@ class AsyncTable:
         column: Optional[str] = None,
         limit: Optional[int] = None,
         history: bool = False,
+        page_token: Optional[str] = None,
     ) -> "AsyncFunctionErrors":
         """
         The per-row errors Function refreshes recorded on this table.
@@ -9460,6 +9471,10 @@ class AsyncTable:
             Include retained historical errors instead of current failures.
             Requires Enterprise workflow version 1 or later. Historical records
             cannot be used with the current-input ``rows()`` helper.
+        page_token: str, optional
+            Empty starts retained history, including repaired rows, for an exact
+            job_id. Continue with the response's
+            page_token until it is None, keeping all filters unchanged.
 
         Returns
         -------
@@ -9522,9 +9537,13 @@ class AsyncTable:
         ...     print("listing stopped at the limit")
         """
         raw = await self._inner.function_errors(
-            job_id=job_id, column=column, limit=limit, history=history
+            job_id=job_id,
+            column=column,
+            limit=limit,
+            history=history,
+            page_token=page_token,
         )
-        return AsyncFunctionErrors(raw, self, history=history)
+        return AsyncFunctionErrors(raw, self, history=history or page_token is not None)
 
     async def column_statuses(
         self, column: Optional[str] = None
