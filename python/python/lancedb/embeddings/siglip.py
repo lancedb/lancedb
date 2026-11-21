@@ -14,9 +14,9 @@ from tqdm import tqdm
 from pydantic import PrivateAttr
 
 from ..util import attempt_import_or_raise
-from .base import EmbeddingFunction
+from .base import ImageEmbeddingFunction
 from .registry import register
-from .utils import IMAGES, url_retrieve
+from .utils import IMAGES
 
 if TYPE_CHECKING:
     import PIL
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 @register("siglip")
-class SigLipEmbeddings(EmbeddingFunction):
+class SigLipEmbeddings(ImageEmbeddingFunction):
     # Deprecated: prefer CLIP embeddings via `open-clip`.
     model_name: str = "google/siglip-base-patch16-224"
     device: str = "cpu"
@@ -147,8 +147,8 @@ class SigLipEmbeddings(EmbeddingFunction):
             elif parsed.scheme == "":
                 path = image if os.name == "nt" else parsed.path
                 return PIL_Image.open(path).convert("RGB")
-            elif parsed.scheme.startswith("http"):
-                image_bytes = url_retrieve(image)
+            elif parsed.scheme in ("http", "https"):
+                image_bytes = self._fetch_image_url(image)
                 return PIL_Image.open(io.BytesIO(image_bytes)).convert("RGB")
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")

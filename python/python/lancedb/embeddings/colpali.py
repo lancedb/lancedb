@@ -5,18 +5,19 @@
 from functools import lru_cache
 from logging import warning
 from typing import List, Union, Optional, Any, Callable
+from urllib.parse import urlparse
 import numpy as np
 import io
 import warnings
 
 from ..util import attempt_import_or_raise
-from .base import EmbeddingFunction
+from .base import ImageEmbeddingFunction
 from .registry import register
-from .utils import TEXT, IMAGES, is_flash_attn_2_available
+from .utils import TEXT, IMAGES, _ImageDownloadError, is_flash_attn_2_available
 
 
 @register("colpali")
-class ColPaliEmbeddings(EmbeddingFunction):
+class ColPaliEmbeddings(ImageEmbeddingFunction):
     """
     An embedding function that uses the ColPali engine for
     multimodal multi-vector embeddings.
@@ -277,16 +278,14 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Convert image inputs to PIL Images.
         """
         PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
-        requests = attempt_import_or_raise("requests", "requests")
         images = self.sanitize_input(images)
         pil_images = []
         try:
             for image in images:
                 if isinstance(image, str):
-                    if image.startswith(("http://", "https://")):
-                        response = requests.get(image, timeout=10)
-                        response.raise_for_status()
-                        pil_images.append(PIL_Image.open(io.BytesIO(response.content)))
+                    if urlparse(image).scheme in ("http", "https"):
+                        image_bytes = self._fetch_image_url(image)
+                        pil_images.append(PIL_Image.open(io.BytesIO(image_bytes)))
                     else:
                         with PIL_Image.open(image) as im:
                             pil_images.append(im.copy())
@@ -295,6 +294,8 @@ class ColPaliEmbeddings(EmbeddingFunction):
                 else:
                     # Assume it's a PIL Image; will raise if invalid
                     pil_images.append(image)
+        except _ImageDownloadError:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to process image: {e}")
 

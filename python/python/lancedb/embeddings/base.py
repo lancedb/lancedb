@@ -10,7 +10,12 @@ import numpy as np
 import pyarrow as pa
 from pydantic import BaseModel, Field, PrivateAttr
 
-from .utils import TEXT, retry_with_exponential_backoff
+from .utils import (
+    TEXT,
+    _ImageDownloadError,
+    retry_with_exponential_backoff,
+    url_retrieve,
+)
 
 
 class UntrustedEmbeddingConfigError(PermissionError):
@@ -265,6 +270,47 @@ class EmbeddingFunction(BaseModel, ABC):
 
     def __hash__(self) -> int:
         return hash(frozenset(vars(self).items()))
+
+
+class ImageEmbeddingFunction(EmbeddingFunction):
+    """Base for embedding functions that download image URLs.
+
+    Used by ``open-clip``, ``siglip``, ``jina``, and ``colpali``. Only HTTP(S)
+    downloads are supported. Local paths, image bytes, and PIL images remain
+    available when URL downloads are disabled. Applications must still validate
+    untrusted image references, including their hosts and redirect destinations.
+
+    Parameters
+    ----------
+    allow_image_downloads : bool, default True
+        Allow downloading images by URL. Set False for applications that should
+        not fetch image URLs supplied as input.
+    image_download_timeout : float, default 10
+        Positive, finite connect/read inactivity timeout in seconds, per socket
+        operation. This is not a total download deadline.
+    image_download_max_bytes : int, default 52428800
+        Positive maximum response size in bytes (50 MiB), per image download.
+
+    Examples
+    --------
+    >>> from lancedb.embeddings import get_registry
+    >>> func = get_registry().get("jina").create(allow_image_downloads=False)
+    >>> func.allow_image_downloads
+    False
+    """
+
+    allow_image_downloads: bool = True
+    image_download_timeout: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    image_download_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
+
+    def _fetch_image_url(self, url: str) -> bytes:
+        if not self.allow_image_downloads:
+            raise _ImageDownloadError("Image URL downloads are disabled")
+        return url_retrieve(
+            url,
+            timeout=self.image_download_timeout,
+            max_bytes=self.image_download_max_bytes,
+        )
 
 
 class EmbeddingFunctionConfig(BaseModel):

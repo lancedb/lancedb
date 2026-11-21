@@ -15,9 +15,9 @@ from pydantic import PrivateAttr
 from tqdm import tqdm
 
 from ..util import attempt_import_or_raise
-from .base import EmbeddingFunction
+from .base import ImageEmbeddingFunction
 from .registry import register
-from .utils import IMAGES, url_retrieve
+from .utils import IMAGES
 
 if TYPE_CHECKING:
     import PIL
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 @register("open-clip")
-class OpenClipEmbeddings(EmbeddingFunction):
+class OpenClipEmbeddings(ImageEmbeddingFunction):
     """
     An embedding function that uses the OpenClip API
     For multi-modal text-to-image search
@@ -161,8 +161,8 @@ class OpenClipEmbeddings(EmbeddingFunction):
                 return PIL_Image.open(url2pathname(parsed.path))
             elif parsed.scheme == "":
                 return PIL_Image.open(image if os.name == "nt" else parsed.path)
-            elif parsed.scheme.startswith("http"):
-                return PIL_Image.open(io.BytesIO(url_retrieve(image)))
+            elif parsed.scheme in ("http", "https"):
+                return PIL_Image.open(io.BytesIO(self._fetch_image_url(image)))
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
 

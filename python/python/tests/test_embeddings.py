@@ -1204,7 +1204,7 @@ def test_jina_generate_image_input_dict_local_path(tmp_path):
     Image.new("RGB", (4, 4), color="red").save(image_path, format="PNG")
 
     for image in (str(image_path), image_path):
-        image_dict = JinaEmbeddings._generate_image_input_dict(image)
+        image_dict = JinaEmbeddings()._generate_image_input_dict(image)
         assert "image" in image_dict
         assert isinstance(image_dict["image"], str) and len(image_dict["image"]) > 0
 
