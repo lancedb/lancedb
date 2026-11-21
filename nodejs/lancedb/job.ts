@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
+import { decodeCleanupResult } from "./cleanup";
 import { decodeCompactionResult } from "./compaction";
 import { JobFailureInfo, Job as NativeJob } from "./native";
 import { decodePrewarmDataResult } from "./prewarm";
@@ -123,7 +124,9 @@ export class Job<T = void> {
         ? (decodePrewarmDataResult as (value: unknown) => T)
         : inner.jobType === "compact"
           ? (decodeCompactionResult as (value: unknown) => T)
-          : undefined);
+          : inner.jobType === "cleanup"
+            ? (decodeCleanupResult as (value: unknown) => T)
+            : undefined);
   }
 
   /**

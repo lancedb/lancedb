@@ -742,8 +742,14 @@ pub trait ExecutableQuery {
     /// an Stream of Arrow [`arrow_array::RecordBatch`] (and you can also independently
     /// access the [`arrow_schema::Schema`] without polling the stream).
     ///
-    /// Note: The size of the returned batches and the order of individual rows is
-    /// not deterministic.
+    /// Note: The size of the returned batches is not deterministic. Row order
+    /// depends on the query shape: an ordinary unfiltered base-only scan of a
+    /// fixed table version in Embedded returns manifest order unless
+    /// [`Query::scan_in_order`] is set to `false` or a nonempty
+    /// [`QueryBase::order_by`] adds a sort. RTE
+    /// tables scan the LSM by default; use `use_rte(false)` for the base-only
+    /// guarantee. Ranked searches return rank order, while Enterprise and
+    /// namespace-pushed scans have no order guarantee.
     ///
     /// LanceDb will use many threads to calculate results and, when
     /// the result set is large, multiple batches will be processed at one time.
@@ -867,6 +873,13 @@ pub struct QueryRequest {
     #[doc(hidden)]
     pub take_row_ids: Option<Vec<u64>>,
 
+    /// Restore `take_offsets` occurrences in the exact requested input order.
+    ///
+    /// This is client-side execution metadata and is not sent to remote
+    /// services. It cannot be combined with an explicit `order_by`.
+    #[doc(hidden)]
+    pub preserve_order: bool,
+
     /// Apply filter to the returned rows.
     pub filter: Option<QueryFilter>,
 
@@ -915,6 +928,11 @@ pub struct QueryRequest {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     pub order_by: Option<Vec<ColumnOrdering>>,
 
+    /// Require (`Some(true)`), allow (`Some(false)`), or leave unchanged (`None`)
+    /// the scan order. See [`Query::scan_in_order`] for the contract and its
+    /// boundaries.
+    pub scan_in_order: Option<bool>,
+
     /// Controls RTE read routing. When unset (the default), a query against a
     /// table that carries an RTE write spec (see
     /// [`crate::Table::enable_rte`]) is routed through the LSM scanner so
@@ -937,6 +955,7 @@ impl Default for QueryRequest {
             offset: None,
             take_offsets: None,
             take_row_ids: None,
+            preserve_order: false,
             filter: None,
             filter_error: None,
             full_text_search: None,
@@ -948,6 +967,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
+            scan_in_order: None,
             use_rte: None,
         }
     }
@@ -1034,6 +1054,64 @@ impl Query {
     /// single query object for both vector and plain queries.
     pub(crate) fn into_vector(self) -> VectorQuery {
         VectorQuery::new(self)
+    }
+
+    /// Require the results to follow storage order instead of allowing an
+    /// unordered scan.
+    ///
+    /// An unfiltered plain base-only scan of an Embedded table, pinned to one
+    /// dataset version, returns rows in that version's manifest order:
+    /// fragments in manifest order, then rows in fragment order. Ordinary
+    /// unfiltered base-only scans already use Lance's ordered scan by default,
+    /// so leaving this unset preserves that behavior. RTE tables scan the LSM
+    /// by default and do not provide this guarantee unless `use_rte(false)`
+    /// selects the base table. Use `true` when a caller assigns meaning to row
+    /// positions and must fail instead of silently receiving a different order.
+    ///
+    /// Explicit `true` also disables scalar-index filter planning. Legacy
+    /// scalar-index plans can materialize index rows in a different sequence,
+    /// so filters are evaluated over the manifest-ordered scan instead. Default
+    /// filtered scans can still use those plans and may not preserve manifest
+    /// order. The filter result is unchanged, but the scan can read more data.
+    ///
+    /// Leaving this unset preserves the backend default. In particular, a
+    /// namespace-backed native table configured for `QueryTable` pushdown may
+    /// not preserve order because the request has no order field; request
+    /// `true` to execute against Embedded storage.
+    ///
+    /// The order is fixed only for the dataset version being scanned.
+    /// Compaction, updates, or opening a newer version can change it, so pin a
+    /// version when positions must remain stable across executions. A latest
+    /// handle can also observe a different version between two executions.
+    ///
+    /// - `true` requires manifest order without adding a sort. A nonempty
+    ///   [`QueryBase::order_by`], take query, vector, full-text, hybrid, or
+    ///   reranked query conflicts with storage order and fails with
+    ///   [`Error::InvalidInput`].
+    ///   Enterprise tables and RTE/LSM reads fail with [`Error::NotSupported`]
+    ///   because they cannot uphold the requirement; set `use_rte(false)` to
+    ///   read the RTE base table in storage order. Namespace-backed native
+    ///   tables execute against Embedded storage instead of using `QueryTable`
+    ///   pushdown, which has no order field, and fail if that storage cannot be
+    ///   read.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use lancedb::query::ExecutableQuery;
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let rows = table.query().scan_in_order(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    /// - `false` allows the backend to scan without preserving order. An
+    ///   explicit nonempty `order_by` still applies its sort.
+    ///
+    /// A nonempty `order_by` replaces manifest order with a global sort. Vector
+    /// and full-text searches return ranked results regardless of this option.
+    pub fn scan_in_order(mut self, ordered: bool) -> Self {
+        self.request.scan_in_order = Some(ordered);
+        self
     }
 
     /// Find the nearest vectors to the given query vector.
@@ -2065,7 +2143,6 @@ impl ExecutionPlan for TakeRestoreExec {
 pub struct TakeQuery {
     parent: Arc<dyn BaseTable>,
     request: QueryRequest,
-    preserve_order: bool,
 }
 
 struct TakeLookup {
@@ -2077,6 +2154,20 @@ struct TakeLookup {
     output_limit: Option<usize>,
     preserve_order: bool,
     output_projection: Option<Vec<(String, String)>>,
+}
+
+/// Take queries restore rows in the requested offset or row-id order, so an
+/// explicit storage-order requirement cannot be honored. Check this before the
+/// lookup strips the take selectors and hands the inner request to a scan.
+pub(crate) fn validate_take_scan_in_order(request: &QueryRequest) -> Result<()> {
+    if request.scan_in_order == Some(true) {
+        return Err(Error::InvalidInput {
+            message: "scan_in_order(true) conflicts with take by row id or offset, which \
+                      defines its own result order"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl TakeQuery {
@@ -2100,7 +2191,6 @@ impl TakeQuery {
                 take_offsets: Some(offsets),
                 ..Default::default()
             },
-            preserve_order: false,
         }
     }
 
@@ -2122,16 +2212,17 @@ impl TakeQuery {
                 take_row_ids: Some(row_ids),
                 ..Default::default()
             },
-            preserve_order: false,
         }
     }
 
     /// Preserve the requested offset order when restoring duplicate occurrences.
     ///
-    /// This is reserved for readers whose API explicitly guarantees ordering.
-    pub(crate) fn preserve_order(mut self) -> Self {
+    /// Found rows follow the input order, including repeated offsets. Missing
+    /// non-negative offsets are omitted. This cannot be combined with an
+    /// explicit `order_by`.
+    pub fn preserve_order(mut self) -> Self {
         debug_assert!(self.request.take_offsets.is_some());
-        self.preserve_order = true;
+        self.request.preserve_order = true;
         self
     }
 
@@ -2193,6 +2284,7 @@ impl TakeQuery {
         request: &QueryRequest,
         preserve_order: bool,
     ) -> Result<TakeLookup> {
+        validate_take_scan_in_order(request)?;
         let (indices, by_row_id) = match (&request.take_offsets, &request.take_row_ids) {
             (Some(indices), None) => (indices.clone(), false),
             (None, Some(indices)) => (indices.clone(), true),
@@ -2203,8 +2295,25 @@ impl TakeQuery {
                 });
             }
         };
-        let preserve_order =
-            preserve_order || (by_row_id && request.order_by.as_ref().is_none_or(Vec::is_empty));
+        // The explicit flag only applies to offset takes. Row-id takes retain
+        // their existing implicit ordering behavior: input order when no sort is
+        // requested, and the explicit sort otherwise.
+        let explicit_preserve_order = !by_row_id && (preserve_order || request.preserve_order);
+        if explicit_preserve_order
+            && request
+                .order_by
+                .as_ref()
+                .is_some_and(|order_by| !order_by.is_empty())
+        {
+            return Err(Error::InvalidInput {
+                message: "preserve_order cannot be combined with an explicit order_by".to_string(),
+            });
+        }
+        let preserve_order = if by_row_id {
+            request.order_by.as_ref().is_none_or(Vec::is_empty)
+        } else {
+            explicit_preserve_order
+        };
         let (mut request, ordering_column, drop_ordering_column, output_projection) = if by_row_id {
             let mut request = request.clone();
             let with_row_id = request.with_row_id;
@@ -2527,7 +2636,7 @@ impl ExecutableQuery for TakeQuery {
                 self.parent.as_ref(),
                 &self.request,
                 options,
-                self.preserve_order,
+                self.request.preserve_order,
             )
             .await;
         }
@@ -2564,7 +2673,7 @@ impl ExecutableQuery for TakeQuery {
                 self.parent.as_ref(),
                 &self.request,
                 verbose,
-                self.preserve_order,
+                self.request.preserve_order,
             )
             .await;
         }
@@ -4295,6 +4404,53 @@ mod tests {
         );
     }
 
+    async fn make_preserve_order_test_table(tmp_dir: &tempfile::TempDir) -> Table {
+        let dataset_path = tmp_dir.path().join("preserve_order.lance");
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table(
+                "my_table",
+                RecordBatch::try_from_iter([(
+                    "idx",
+                    Arc::new(Int32Array::from(vec![0, 1, 2, 3])) as Arc<dyn Array>,
+                )])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add(
+                RecordBatch::try_from_iter([(
+                    "idx",
+                    Arc::new(Int32Array::from(vec![4, 5, 6, 7])) as Arc<dyn Array>,
+                )])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table.delete("idx IN (1, 6)").await.unwrap();
+        table
+    }
+
+    fn collect_ids(batches: &[RecordBatch]) -> Vec<i32> {
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("idx")
+                    .unwrap()
+                    .as_primitive::<Int32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_take_offsets_applies_pagination_after_restoration() {
         let tmp_dir = tempdir().unwrap();
@@ -4346,6 +4502,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_take_offsets_preserve_order_across_fragments_deletes_and_batches() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_preserve_order_test_table(&tmp_dir).await;
+        let offsets = vec![5, 0, 5, 2, 99, 4, 0];
+        let expected = vec![7, 0, 7, 3, 5, 0];
+
+        let batches = table
+            .take_offsets(offsets.clone())
+            .preserve_order()
+            .select(Select::Columns(vec!["idx".to_string()]))
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert!(batches.iter().all(|batch| batch.num_rows() <= 1));
+        assert_eq!(collect_ids(&batches), expected);
+
+        let converted = table
+            .take_offsets(offsets)
+            .preserve_order()
+            .select(Select::Columns(vec!["idx".to_string()]))
+            .into_request();
+        let batches = table
+            .base_table()
+            .query(
+                &AnyQuery::Query(converted),
+                QueryExecutionOptions::default(),
+            )
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_ids(&batches), expected);
+
+        let batches = table
+            .take_offsets(vec![])
+            .preserve_order()
+            .select(Select::Columns(vec!["idx".to_string()]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserve_order_paginates_after_restoration() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_preserve_order_test_table(&tmp_dir).await;
+
+        let batches = table
+            .take_offsets(vec![5, 0, 5, 2, 4, 0])
+            .preserve_order()
+            .select(Select::Columns(vec!["idx".to_string()]))
+            .offset(2)
+            .limit(4)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_ids(&batches), vec![7, 3, 5, 0]);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserve_order_rejects_order_by() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_preserve_order_test_table(&tmp_dir).await;
+
+        let error = table
+            .take_offsets(vec![0, 2])
+            .preserve_order()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "idx".to_string(),
+            )]))
+            .execute()
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("preserve_order cannot be combined with an explicit order_by"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_take_offsets_create_plan_restores_occurrences() {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
@@ -4393,6 +4647,78 @@ mod tests {
         assert!(analyzed.contains("GlobalLimitExec"));
         assert!(analyzed.contains("TakeRestoreExec"));
         assert!(!analyzed.contains("CoalescePartitionsExec"));
+    }
+
+    #[tokio::test]
+    async fn test_take_scan_in_order_is_rejected_before_lookup() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let mut offsets = table
+            .take_offsets(vec![5, 1, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(2)
+            .offset(1);
+        offsets.mut_query().scan_in_order = Some(true);
+
+        let plan_err = offsets
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .expect_err("take planning must reject scan_in_order(true)");
+        assert!(
+            matches!(&plan_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {plan_err}"
+        );
+
+        let execution_err = offsets
+            .execute()
+            .await
+            .err()
+            .expect("take execution must reject scan_in_order(true)");
+        assert!(
+            matches!(&execution_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {execution_err}"
+        );
+
+        let explain_err = offsets
+            .explain_plan(false)
+            .await
+            .expect_err("take explain must reject scan_in_order(true)");
+        assert!(
+            matches!(&explain_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {explain_err}"
+        );
+
+        let mut row_ids = table.take_row_ids(vec![5, 1]);
+        row_ids.mut_query().scan_in_order = Some(true);
+        let row_id_err = row_ids
+            .execute()
+            .await
+            .err()
+            .expect("take by row id must reject scan_in_order(true)");
+        assert!(
+            matches!(&row_id_err, Error::InvalidInput { message }
+                if message.contains("take by row id or offset")),
+            "unexpected error: {row_id_err}"
+        );
+
+        // Allowing unordered scans leaves an ordinary take unchanged.
+        let mut allowed = table.take_offsets(vec![5, 1]);
+        allowed.mut_query().scan_in_order = Some(false);
+        let batches = allowed
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2
+        );
     }
 
     #[rstest::rstest]
@@ -4611,6 +4937,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_take_row_ids_ignores_offset_preserve_flag_with_explicit_sort() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let mut request = table
+            .take_row_ids(vec![17, 5, 1, 5])
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .offset(1)
+            .limit(2)
+            .into_request();
+        request.preserve_order = true;
+
+        let batches = table
+            .base_table()
+            .query(&AnyQuery::Query(request), QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(
+            actual["id"].as_primitive::<Int32Type>().values().as_ref(),
+            &[5, 5]
+        );
     }
 
     #[tokio::test]

@@ -344,6 +344,46 @@ fn server_build_suffix(_source: &(dyn std::error::Error + Send + Sync + 'static)
     String::new()
 }
 
+/// Actionable guidance attached to a [`Error::TableNotFound`].
+///
+/// The hint is kept in the error source chain so the missing-table
+/// classification and the original failure stay unchanged.
+#[derive(Debug)]
+pub(crate) struct TableNotFoundHint {
+    hint: String,
+    source: BoxError,
+}
+
+impl TableNotFoundHint {
+    pub(crate) fn new(hint: impl Into<String>, source: BoxError) -> Self {
+        Self {
+            hint: hint.into(),
+            source,
+        }
+    }
+}
+
+impl Display for TableNotFoundHint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.hint)
+    }
+}
+
+impl std::error::Error for TableNotFoundHint {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+fn table_not_found_hint<'a>(
+    source: &'a (dyn std::error::Error + Send + Sync + 'static),
+) -> &'a str {
+    source
+        .downcast_ref::<TableNotFoundHint>()
+        .map(|hint| hint.hint.as_str())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
@@ -351,7 +391,11 @@ pub enum Error {
     InvalidTableName { name: String, reason: String },
     #[snafu(display("Invalid input, {message}"))]
     InvalidInput { message: String },
-    #[snafu(display("Table '{name}' was not found{}", server_build_suffix(source.as_ref())))]
+    #[snafu(display(
+        "Table '{name}' was not found{}{}",
+        server_build_suffix(source.as_ref()),
+        table_not_found_hint(source.as_ref())
+    ))]
     TableNotFound { name: String, source: BoxError },
     #[snafu(display(
         "Table '{name}' exists but could not be loaded (it may be corrupt or incomplete): {source}"

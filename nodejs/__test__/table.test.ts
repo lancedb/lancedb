@@ -4020,6 +4020,123 @@ describe("when dealing with tags", () => {
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
   });
+
+  it("defaults create version to the handle's visible version", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+    const tags = await table.tags();
+
+    await tags.create("live");
+    expect(await tags.getVersion("live")).toBe(2);
+
+    await table.checkout(1);
+    await tags.create("pinned");
+    expect(await tags.getVersion("pinned")).toBe(1);
+
+    // An explicit version is independent of the version this handle shows.
+    await tags.create("explicit", 2);
+    expect(await tags.getVersion("explicit")).toBe(2);
+
+    // A tag checkout is still a visible version, not "latest".
+    await table.checkoutLatest();
+    await table.add([{ id: 3 }]);
+    expect(await table.version()).toBe(3);
+    await table.checkout("live");
+    await tags.create("tag-checkout");
+    expect(await tags.getVersion("tag-checkout")).toBe(2);
+  });
+});
+
+describe("when dealing with branches", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("forks from a tag on a branch with the same version as main", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+
+    const exp = await branches.create("exp");
+    await exp.add([{ i: 10 }]);
+    const expVersion = await exp.version();
+    await (await exp.tags()).create("exp-v2", expVersion);
+
+    // main reaches the same numeric version with different rows.
+    await table.add([{ i: 100 }]);
+    expect(await table.version()).toBe(expVersion);
+
+    const fromTag = await branches.create("from-tag", {
+      fromTag: "exp-v2",
+    });
+    expect(fromTag.currentBranch()).toBe("from-tag");
+    expect(await fromTag.countRows("i = 10")).toBe(1);
+    expect(await fromTag.countRows("i = 100")).toBe(0);
+
+    // The existing positional branch/version path keeps its ordering.
+    const positional = await branches.create("from-exp", "exp", expVersion);
+    expect(positional.currentBranch()).toBe("from-exp");
+    expect(await positional.countRows("i = 10")).toBe(1);
+    expect(await positional.countRows("i = 100")).toBe(0);
+  });
+
+  it("rejects fromTag combined with another source before main normalization", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    await (await table.tags()).create("baseline");
+    const branches = await table.branches();
+
+    // fromRef="main" must not normalize the conflict away.
+    const mixedSources = { fromTag: "baseline", fromRef: "main" };
+    await expect(branches.create("conflict", mixedSources)).rejects.toThrow(
+      "fromTag cannot be combined",
+    );
+
+    // JavaScript callers can still pass the legacy version position.
+    const createWithLegacyVersion = branches.create.bind(branches) as (
+      name: string,
+      options: { fromTag: string },
+      fromVersion: number,
+    ) => Promise<Table>;
+    await expect(
+      createWithLegacyVersion("conflict", { fromTag: "baseline" }, 1),
+    ).rejects.toThrow("fromTag cannot be combined");
+    expect(await branches.list()).not.toHaveProperty("conflict");
+  });
+
+  it("hints at fromTag only for a missing Embedded branch", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+    const base = await branches.create("base");
+    await base.add([{ i: 1 }]);
+    await (await table.tags()).create("baseline");
+
+    // A tag passed through fromRef keeps the original failure and gains a
+    // static hint without probing the ref again.
+    await expect(branches.create("missing", "baseline")).rejects.toThrow(
+      'branches.create("missing", { fromTag: "baseline" })',
+    );
+
+    // A missing version is not an unresolved branch, so it gets no hint.
+    const missingVersion = await branches
+      .create("missing-version", "base", 9999)
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+    expect(missingVersion?.message).toContain("9999");
+    expect(missingVersion?.message).not.toContain("fromTag");
+  });
 });
 
 /** Returns a Date strictly later than every instant observed before the call. */

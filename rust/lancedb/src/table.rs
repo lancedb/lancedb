@@ -29,7 +29,9 @@ use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
-use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
+use lance_io::object_store::{
+    LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor, StorageOptionsProvider,
+};
 pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
@@ -49,7 +51,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::connection::NamespaceClientPushdownOperation;
+use crate::connection::{LayeredStorageOptionsProvider, NamespaceClientPushdownOperation};
 
 use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
@@ -82,11 +84,14 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod delta;
 pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub use optimize::CompactionResult;
+mod cleanup;
+pub use cleanup::{CleanupOptions, CleanupPlan, CleanupResult};
 mod prewarm;
 pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
@@ -110,6 +115,7 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
+pub use delta::{DeltaRef, TableDelta};
 pub use function_column_status::{
     FunctionColumnAutoRefreshBlockedReason, FunctionColumnAutoRefreshState,
     FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
@@ -281,6 +287,10 @@ pub struct WriteOptions {
     ///
     /// Overlapping `OpenTableBuilder` options (e.g. [AddDataBuilder::mode]) will take
     /// precedence over their counterparts in `WriteOptions` (e.g. [WriteParams::mode]).
+    ///
+    /// In LanceDB Enterprise, `add` returns [`Error::NotSupported`] when
+    /// `max_rows_per_file`, `max_rows_per_group`, or `max_bytes_per_file` is
+    /// non-default, because the remote insert protocol only transmits the write mode.
     pub lance_write_params: Option<WriteParams>,
 }
 
@@ -901,6 +911,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Submit Enterprise version cleanup and retain its durable job and outcome.
+    async fn cleanup_async(&self, _options: CleanupOptions) -> Result<Job<CleanupResult>> {
+        Err(Error::NotSupported {
+            message: "durable cleanup jobs are only supported on remote tables".into(),
+        })
+    }
+
+    async fn explain_cleanup(&self, _options: CleanupOptions) -> Result<CleanupPlan> {
+        Err(Error::NotSupported {
+            message: "cleanup previews require LanceDB Enterprise".into(),
+        })
+    }
+
     /// Submit remote compaction and retain its durable job and actual outcome.
     async fn compact_async(
         &self,
@@ -1050,6 +1073,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Compare two persisted versions on this table's current branch.
+    ///
+    /// The default implementation returns [`Error::NotSupported`]; table types
+    /// without a local Lance dataset, such as remote tables, cannot stream row
+    /// changes.
+    async fn delta(
+        &self,
+        _from_version: DeltaRef,
+        _to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        Err(Error::NotSupported {
+            message: "table.delta is only supported on LanceDB Embedded tables".into(),
+        })
+    }
     /// Return a new table handle pinned to the exact revision currently visible.
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
         Err(Error::NotSupported {
@@ -1891,9 +1928,16 @@ impl Table {
     /// Create a [`Query`] Builder.
     ///
     /// Queries allow you to search your existing data.  By default the query will
-    /// return all the data in the table in no particular order.  The builder
+    /// return all the data in the table.  The builder
     /// returned by this method can be used to control the query using filtering,
     /// vector similarity, sorting, and more.
+    ///
+    /// An ordinary unfiltered base-only scan of a fixed table version in
+    /// Embedded returns manifest order: fragments in manifest order, then rows
+    /// in fragment order. RTE tables scan the LSM by default; use
+    /// `use_rte(false)` for the base table guarantee. Compaction, updates, and
+    /// newer versions can change that order. Use [`Query::scan_in_order`] to
+    /// require it explicitly and fail on paths that cannot uphold it.
     ///
     /// Note: By default, all columns are returned.  For best performance, you should
     /// only fetch the columns you need.  See [`Query::select_with_projection`] for
@@ -1961,8 +2005,10 @@ impl Table {
     ///
     /// ## Full scan
     ///
-    /// This query will return everything in the table in no particular
-    /// order.
+    /// This query returns everything in the table. On an Embedded table, an
+    /// ordinary unfiltered base-only scan of a fixed version returns manifest
+    /// order. RTE tables scan the LSM by default and need `use_rte(false)` for
+    /// base manifest order.
     ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
@@ -2123,6 +2169,35 @@ impl Table {
         options: optimize::CompactionOverrides,
     ) -> Result<Job<CompactionResult>> {
         self.inner.compact_async(options).await
+    }
+
+    /// Submit durable version cleanup through SQL VACUUM and return after acceptance.
+    ///
+    /// Retention resolves invocation > selected table/branch > deployment. Requires
+    /// Ownership and parent Usage. Local and historical handles are unsupported.
+    /// Operators must disable/drain automatic cleanup and prevent other cleanup,
+    /// tag/branch publication and restore until completion, including direct clients.
+    /// The server does not enforce that coordination. Preview is available without deletion.
+    /// Wait, cancel and reopen reuse the shared Job APIs; timeout does not cancel,
+    /// and cancellation cannot undo deletion or prove storage I/O has stopped.
+    ///
+    /// ```
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let job = table.cleanup_async(lancedb::table::CleanupOptions::new()
+    ///     .min_age_seconds(604800)).await?;
+    /// let result = job.wait().await?;
+    /// println!("{:?}", result.old_versions);
+    /// # Ok(()) }
+    /// ```
+    pub async fn cleanup_async(&self, options: CleanupOptions) -> Result<Job<CleanupResult>> {
+        self.inner.cleanup_async(options).await
+    }
+
+    /// Explain Enterprise version cleanup without deleting files or submitting a job.
+    /// Requires the same ownership and retention options as [`Self::cleanup_async`].
+    /// Counts are observational estimates, not a reservation for later execution.
+    pub async fn explain_cleanup(&self, options: CleanupOptions) -> Result<CleanupPlan> {
+        self.inner.explain_cleanup(options).await
     }
 
     /// Language-binding entry point retaining optional compaction fields.
@@ -2862,6 +2937,48 @@ impl Table {
     /// version to replace the current table with a previous version.
     pub async fn version(&self) -> Result<u64> {
         self.inner.version().await
+    }
+
+    /// Compare two persisted versions of this table on its current branch.
+    ///
+    /// `from_version` is exclusive and `to_version` is inclusive. Both accept
+    /// a version number (starting at 1) or a tag on the current branch.
+    /// Omitting `to_version` uses the version this handle currently sees,
+    /// including a time-travel [`Self::checkout`]. The endpoints are resolved
+    /// once when this method is called, so moving a tag or advancing the table
+    /// later does not change the delta, and the table's own checkout state is
+    /// left untouched.
+    ///
+    /// The returned [`TableDelta`] streams the rows inserted, updated,
+    /// upserted, or deleted between the endpoints. Those row-level readers
+    /// require stable row ids at both endpoints; create the table with
+    /// `storage_options={"new_table_enable_stable_row_ids": "true"}` to enable
+    /// them. [`TableDelta::list_transactions`] works without stable row ids.
+    /// Equal valid versions produce empty streams with the same schemas.
+    ///
+    /// Reversed ranges, version 0, missing versions or tags, and tags from a
+    /// different branch are rejected. A row-level range that contains a
+    /// `Restore`, or whose transaction history is incomplete, is rejected
+    /// because the restored snapshot can retain older row-version metadata that
+    /// the delta readers would omit; recompute the checkpoint with a full
+    /// rescan and reinitialize it at the end version. Remote tables return
+    /// [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::table::DeltaRef;
+    /// # async fn example(table: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let delta = table.delta(1u64, Some(DeltaRef::Version(table.version().await?))).await?;
+    /// let _inserted = delta.inserted_rows().await?;
+    /// let transactions = delta.list_transactions().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delta(
+        &self,
+        from_version: impl Into<DeltaRef>,
+        to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        self.inner.delta(from_version.into(), to_version).await
     }
 
     /// Return a new table handle pinned to the exact revision currently visible.
@@ -3679,7 +3796,7 @@ impl NativeTable {
         }
 
         // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
+        let mut params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
@@ -3690,9 +3807,49 @@ impl NativeTable {
 
         // Use DatasetBuilder::from_namespace which automatically fetches location
         // and storage options from the namespace
-        let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
-            .await
-            .map_err(|e| map_namespace_lance_error(e, name))?;
+        let mut builder =
+            DatasetBuilder::from_namespace(namespace_client.clone(), table_id.clone())
+                .await
+                .map_err(|e| map_namespace_lance_error(e, name))?;
+
+        // A caller-supplied read-params accessor replaces the namespace-backed
+        // accessor in with_read_params. Preserve an explicit provider/accessor;
+        // only layer static caller options onto the live namespace provider so
+        // refresh keeps working and namespace values retain their precedence.
+        if let Some(mut store_options) = params.store_options.take() {
+            if let Some(accessor) = store_options.get_accessor() {
+                if accessor.provider().is_some() {
+                    builder = builder.with_store_params(store_options);
+                } else {
+                    let caller_options = accessor
+                        .initial_storage_options()
+                        .cloned()
+                        .unwrap_or_default();
+                    let namespace_provider: Arc<dyn StorageOptionsProvider> =
+                        Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                            namespace_client.clone(),
+                            table_id,
+                        ));
+                    let provider: Arc<dyn StorageOptionsProvider> =
+                        Arc::new(LayeredStorageOptionsProvider::new(
+                            caller_options.clone(),
+                            namespace_provider,
+                        ));
+                    let accessor = if caller_options.is_empty() {
+                        Arc::new(StorageOptionsAccessor::with_provider(provider))
+                    } else {
+                        Arc::new(StorageOptionsAccessor::with_initial_and_provider(
+                            caller_options,
+                            provider,
+                        ))
+                    };
+                    store_options.storage_options_accessor = Some(accessor);
+                    builder = builder.with_store_params(store_options);
+                }
+            } else {
+                builder = builder.with_store_params(store_options);
+            }
+        }
 
         let dataset = builder
             .with_read_params(params)
@@ -3901,10 +4058,9 @@ impl NativeTable {
         table_id.push(name.to_string());
 
         // Set up storage options provider from namespace
-        let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-            namespace_client.clone(),
-            table_id,
-        ));
+        let namespace_provider: Arc<dyn StorageOptionsProvider> = Arc::new(
+            LanceNamespaceStorageOptionsProvider::new(namespace_client.clone(), table_id),
+        );
 
         // Start with provided params or defaults
         let mut params = params.unwrap_or_default();
@@ -3914,17 +4070,40 @@ impl NativeTable {
             params.session = Some(sess);
         }
 
-        // Ensure store_params exists and set the storage options provider
+        // Ensure store_params exists and preserve an already-layered provider
+        // from create_table, or attach the namespace provider to the caller's
+        // initial options for other callers.
         let store_params = params
             .store_params
             .get_or_insert_with(ObjectStoreParams::default);
-        let accessor = match store_params.storage_options().cloned() {
-            Some(options) => {
-                StorageOptionsAccessor::with_initial_and_provider(options, storage_options_provider)
+        let accessor = match store_params.storage_options_accessor.take() {
+            Some(existing)
+                if existing.provider().is_some()
+                    && existing.initial_storage_options().is_some() =>
+            {
+                existing
             }
-            None => StorageOptionsAccessor::with_provider(storage_options_provider),
+            Some(existing) => {
+                let options = existing
+                    .initial_storage_options()
+                    .cloned()
+                    .unwrap_or_default();
+                let provider: Arc<dyn StorageOptionsProvider> = Arc::new(
+                    LayeredStorageOptionsProvider::new(options.clone(), namespace_provider),
+                );
+                if options.is_empty() {
+                    Arc::new(StorageOptionsAccessor::with_provider(provider))
+                } else {
+                    Arc::new(StorageOptionsAccessor::with_initial_and_provider(
+                        options, provider,
+                    ))
+                }
+            }
+            None => Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
+                LayeredStorageOptionsProvider::new(HashMap::new(), namespace_provider),
+            ))),
         };
-        store_params.storage_options_accessor = Some(Arc::new(accessor));
+        store_params.storage_options_accessor = Some(accessor);
 
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
@@ -4108,10 +4287,18 @@ impl BaseTable for NativeTable {
         self
     }
 
-    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
-    /// never clear it), so repeated identical scans agree.
+    /// Lance scans fragments in order at one dataset version (`Scanner::ordered`
+    /// defaults to true, and we never clear it), so repeated scans of a local
+    /// handle agree. A main/latest handle that may push its query to a namespace
+    /// server does not: the QueryTable request carries no order.
     fn scan_order_is_deterministic(&self) -> bool {
-        true
+        let may_push_down_namespace_query = self.namespace_client.is_some()
+            && self
+                .pushdown_operations
+                .contains(&NamespaceClientPushdownOperation::QueryTable)
+            && self.dataset.current_branch().is_none()
+            && self.dataset.time_travel_version().is_none();
+        !may_push_down_namespace_query
     }
 
     fn name(&self) -> &str {
@@ -4141,6 +4328,15 @@ impl BaseTable for NativeTable {
         Ok(self.dataset.get().await?.version().version)
     }
 
+    async fn delta(
+        &self,
+        from_version: DeltaRef,
+        to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        let visible = self.dataset.get().await?;
+        TableDelta::from_visible_snapshot(&visible, from_version, to_version).await
+    }
+
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
         let current = self.dataset.get().await?;
         let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
@@ -4151,6 +4347,14 @@ impl BaseTable for NativeTable {
             dataset,
             ..self.clone()
         }))
+    }
+
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        // A native handle can advance between requests when read consistency
+        // refreshes, and a namespace-backed handle can answer a query from a
+        // different snapshot than the local count/version. Hand the caller an
+        // independent time-travel handle so one build sees one dataset.
+        Ok(Some(self.checkout_current().await?))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
@@ -5727,6 +5931,60 @@ mod tests {
         let at2 = table.checkout_branch("exp2", Some(v2)).await.unwrap();
         assert_eq!(at2.count_rows(Some("i = 20".to_string())).await.unwrap(), 1);
         assert_eq!(at2.count_rows(Some("i = 10".to_string())).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_branch_from_tag_on_branch_with_same_version_as_main() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let fork_point = table.version().await.unwrap();
+
+        // Advance exp and main to the same version number with different rows.
+        let exp = table.create_branch("exp", fork_point).await.unwrap();
+        exp.add(sample_rows(vec![10])).execute().await.unwrap();
+        let exp_version = exp.version().await.unwrap();
+        table.add(sample_rows(vec![100])).execute().await.unwrap();
+        assert_eq!(exp_version, table.version().await.unwrap());
+
+        // Tag exp at that shared version number. The tag must keep exp's branch
+        // identity, so forking from it sees exp's snapshot rather than main's
+        // version with the same number.
+        let mut tags = exp.tags().await.unwrap();
+        tags.create("exp-v2", exp_version).await.unwrap();
+
+        let from_tag = table
+            .create_branch(
+                "from-tag",
+                lance::dataset::refs::Ref::Tag("exp-v2".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(from_tag.current_branch().as_deref(), Some("from-tag"));
+        assert_eq!(
+            from_tag
+                .count_rows(Some("i = 10".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            from_tag
+                .count_rows(Some("i = 100".to_string()))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

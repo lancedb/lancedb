@@ -46,12 +46,13 @@ from ._blob import (
     validate_blob_mode,
 )
 from .types import BlobMode
-from lancedb.arrow import peek_reader, table_from_dicts
+from lancedb.arrow import AsyncRecordBatchReader, peek_reader, table_from_dicts
 from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
 from lancedb.job import AsyncJob, Job, _typed_job
 from lancedb.compaction import CompactionResult
+from lancedb.cleanup import CleanupPlan, CleanupResult, _validate_min_age_seconds
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -146,6 +147,12 @@ def _requires_local_namespace_execution(query: Query) -> bool:
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
+        # The namespace QueryTable request has no order_by field. Pushing a
+        # nonempty ordering down would drop it and return the wrong top-K rows.
+        or bool(query.order_by)
+        # An ordered scan is a local manifest-order guarantee. The request has
+        # no scan-order field, so run it locally where storage is available.
+        or query.scan_in_order is True
         or (
             query.full_text_query is not None
             and query.fast_search is True
@@ -299,7 +306,7 @@ def _maybe_add_fts_error_note(
 
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
+    from .db import DBConnection, LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -1589,6 +1596,63 @@ class Table(ABC):
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         raise NotImplementedError("current_branch is not supported for this table type")
 
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> "TableDelta":
+        """Compare two persisted versions of this table on its current branch.
+
+        ``from_version`` is exclusive and ``to_version`` is inclusive. Both
+        accept a version number (starting at 1) or a tag on the current branch.
+        Omitting ``to_version`` uses the version this handle currently sees,
+        including a time-travel checkout. Endpoints are resolved once when this
+        method is called, so moving a tag or advancing the table later does not
+        change the delta, and this table's checkout state is left untouched.
+
+        The returned [TableDelta][lancedb.table.TableDelta] streams inserted,
+        updated, upserted, and deleted rows. Those row-level readers require
+        stable row ids at both endpoints; create the table with
+        ``storage_options={"new_table_enable_stable_row_ids": "true"}`` to
+        enable them. ``list_transactions()`` works without stable row ids.
+        Equal valid versions produce empty readers with the same schemas.
+
+        Reversed ranges, version 0, missing versions or tags, and tags from a
+        different branch are rejected. A row-level range that contains a
+        ``Restore``, or whose transaction history is incomplete, is rejected
+        because the restored snapshot can retain older row-version metadata that
+        the delta readers would omit; recompute the checkpoint with a full
+        rescan and reinitialize it at the end version. Remote tables raise
+        ``NotImplementedError``.
+
+        Parameters
+        ----------
+        from_version: int | str
+            The version or tag to compare from (exclusive).
+        to_version: int | str, optional
+            The version or tag to compare to (inclusive). Defaults to the
+            currently visible version.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "delta_example",
+        ...     [{"id": 1}, {"id": 2}],
+        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
+        ... )
+        >>> table.tags.create("baseline", table.version)
+        >>> _ = table.add([{"id": 3}])
+        >>> delta = table.delta("baseline")
+        >>> inserted = delta.inserted_rows().read_all()
+        >>> inserted["id"].to_pylist()
+        [3]
+        >>> [transaction["operation"] for transaction in delta.list_transactions()]
+        ['Append']
+        """
+        raise NotImplementedError("delta is not supported for this table type")
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
@@ -2655,7 +2719,11 @@ class Table(ABC):
 
     @abstractmethod
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
         """
         Take a list of offsets from the table.
@@ -2667,9 +2735,13 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.
-        Repeated offsets produce repeated rows, which makes this method suitable for
-        sampling with replacement.
+        By default, no guarantees are made regarding the order in which results
+        are returned. Repeated offsets produce repeated rows, which makes this
+        method suitable for sampling with replacement. Set ``preserve_order=True``
+        to return found rows in input order, including repeated offsets. Missing
+        non-negative offsets are omitted. Negative offsets are rejected and are
+        not Python-style relative indices. ``preserve_order`` cannot be combined
+        with an explicit ``order_by``.
 
         Parameters
         ----------
@@ -2677,6 +2749,10 @@ class Table(ABC):
             The offsets to take.
         with_row_id: bool, default False
             If True, include the "_rowid" column in the results.
+        preserve_order: bool, default False
+            If True, return found rows in input order. Rust take queries apply
+            limit/offset after restoration; Python take builders and Query
+            conversion do not expose pagination.
 
         Returns
         -------
@@ -2797,6 +2873,15 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         results are returned.
 
+        A query result table that carries snapshot metadata keeps the snapshot
+        that produced it on LanceDB Enterprise. A query result without that
+        metadata, including a legacy query response, and a plain list are read
+        from the table's current snapshot; keep the source unchanged between
+        selection and fetching. Partial snapshot metadata is rejected. Row
+        positions are not row IDs: to read by position, call
+        ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
+        resulting ``_rowid`` values.
+
         Blobs inside lists cannot be fetched by row id yet.
 
         LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
@@ -2863,6 +2948,17 @@ class Table(ABC):
         row ids.
         One missing or deleted row ID rejects the entire batch; no partial
         handles are returned.
+
+        A query result table that carries snapshot metadata keeps the snapshot
+        that produced it on LanceDB Enterprise, so every returned handle reads
+        that snapshot. Metadata-free query results, including legacy server
+        responses, and plain lists are read from the table's current snapshot.
+        Partial snapshot metadata is rejected. A snapshot-bound handle fails
+        explicitly when the serving node cannot echo the query snapshot
+        identity; the 0.5.0 floor covers the basic remote Blob API but not that
+        echo. Row positions are not row IDs: call
+        ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
+        resulting ``_rowid`` values.
         """
 
     @abstractmethod
@@ -2920,6 +3016,25 @@ class Table(ABC):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
+
+    def _execute_pull_query(
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a pull-driven batch query, falling back to the normal path."""
+        return self._execute_query(query, batch_size=batch_size, timeout=timeout)
+
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        """Execute a query and collect the whole result eagerly."""
+        return self._execute_query(query, timeout=timeout).read_all()
 
     @abstractmethod
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
@@ -3134,6 +3249,38 @@ class Table(ABC):
         This function is not available in LanceDB Enterprise, which manages
         compaction for you automatically.
         """
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview version deletion without submitting a job or deleting files.
+
+        Uses the same retention, branch and Ownership boundary as cleanup_async.
+        Estimates exclude auxiliary sweeps and reserve no snapshot for execution.
+        """
+        raise NotImplementedError("cleanup previews require LanceDB Enterprise")
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit durable remote version cleanup through SQL VACUUM.
+
+        Omitted retention inherits selected table/branch then deployment policy.
+        Requires Ownership and parent Usage. Local/historical handles are unsupported.
+        Disable/drain automatic cleanup and prevent other cleanup, tag/branch
+        publication and restore until completion, including direct storage clients.
+        The server does not enforce coordination. Cancellation cannot undo deletion
+        or prove storage I/O stopped. Preview is available without deletion.
+
+        Save ``job.id`` to reopen with ``db.open_job(id)``. Waiting returns
+        [CleanupResult][lancedb.cleanup.CleanupResult]; timeout leaves work running.
+        Unknown totals after retry/recovery remain None. Auxiliary sweeps are
+        best effort and excluded from the version-deletion counts.
+
+        >>> job = table.cleanup_async(min_age_seconds=604800)  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "durable cleanup jobs are only supported on remote tables"
+        )
 
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
@@ -4189,7 +4336,10 @@ class LanceTable(Table):
             namespace_path = []
         self._conn = connection
         self._namespace_path = namespace_path
+        self._storage_options = storage_options
+        self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
+        self._managed_versioning = managed_versioning
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         # When the connection built the namespace client natively (e.g. an
@@ -4216,6 +4366,154 @@ class LanceTable(Table):
             )
         # Take queries read the pushdown set from the inner table.
         self._table._pushdown_operations = self._pushdown_operations
+        # These coordinates live on the Python wrapper: the native table only
+        # reports its current branch and version, not whether it is pinned.
+        self._branch = self._table.current_branch()
+        self._checkout_version: Optional[int] = None
+
+    def _pickle_connection_state(self) -> str:
+        """Serialize the connection, rejecting state a worker cannot recreate."""
+        connection = self._conn
+        namespace_client = getattr(connection, "_namespace_client", None)
+        namespace_impl = getattr(connection, "_namespace_client_impl", None)
+        if namespace_client is not None and namespace_impl is None:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r} backed by a namespace "
+                "connection whose custom namespace_client cannot be "
+                "reconstructed. Connect through connect_namespace(impl, "
+                "properties) or provide a picklable worker-side namespace "
+                "connection instead."
+            )
+
+        pickle_state = getattr(connection, "_pickle_state", None)
+        if pickle_state is not None:
+            return pickle_state()
+
+        session = getattr(connection, "session", None)
+        if session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceTable whose connection was created with a "
+                "Session; Session objects are not serializable. Create the "
+                "Session in each worker process instead."
+            )
+        return connection.serialize()
+
+    def _namespace_client_for_pickle(self) -> Optional[Any]:
+        """Keep a table-level namespace client only when pickle can carry it."""
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            return None
+        if namespace_client is getattr(self._conn, "_namespace_client", None):
+            # The serialized connection rebuilds its own namespace client.
+            return None
+        if namespace_client is getattr(self._conn, "_cached_namespace_client", None):
+            # Local manifest-mode connections cache their namespace client here.
+            return None
+
+        import pickle
+
+        try:
+            pickle.dumps(namespace_client)
+        except Exception as error:
+            raise TypeError(
+                f"Cannot pickle LanceTable {self.name!r}: its custom "
+                f"namespace_client ({type(namespace_client).__name__}) is not "
+                "serializable. Reopen the table in the worker through a "
+                "picklable namespace connection instead."
+            ) from error
+        return namespace_client
+
+    @classmethod
+    def _open_from_pickle_state(
+        cls, connection: "DBConnection", state: dict[str, Any]
+    ) -> "LanceTable":
+        """Reopen a table from the state returned by ``__getstate__``."""
+        async_connection = getattr(connection, "_conn", None)
+        if async_connection is None:
+            async_connection = connection._inner
+
+        # Only a table-level explicit client travels in the state. A connection
+        # namespace client must reopen through its own provider path so caller
+        # storage options keep their layering; passing the reconstructed client
+        # here would turn it into an explicit table provider.
+        namespace_client = state.get("namespace_client")
+
+        async_table = LOOP.run(
+            async_connection.open_table(
+                state["name"],
+                namespace_path=state["namespace_path"],
+                storage_options=state["storage_options"],
+                index_cache_size=state["index_cache_size"],
+                location=state["location"],
+                namespace_client=namespace_client,
+                managed_versioning=state["managed_versioning"],
+            )
+        )
+        table = cls(
+            connection,
+            state["name"],
+            namespace_path=state["namespace_path"],
+            storage_options=state["storage_options"],
+            index_cache_size=state["index_cache_size"],
+            location=state["location"],
+            namespace_client=namespace_client,
+            managed_versioning=state["managed_versioning"],
+            pushdown_operations=state["pushdown_operations"],
+            route_pushdown_to_rust=state["route_pushdown_to_rust"],
+            _async=async_table,
+        )
+
+        version = state["checkout_version"]
+        if state["branch"] is not None:
+            table = table.branches.checkout(state["branch"], version)
+        elif version is not None:
+            table.checkout(version)
+        return table
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return a process-independent state for pickle-based workers."""
+        if self._conn.uri.startswith("memory://"):
+            # In-memory databases cannot be reopened by name in another process.
+            # Keep the established behavior of exporting the visible table.
+            return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
+
+        # The native handle is authoritative: a tag checkout can move this
+        # wrapper onto another branch, so never trust the branch captured at
+        # construction time.
+        self._branch = self.current_branch()
+        return {
+            "kind": "lance",
+            "connection_state": self._pickle_connection_state(),
+            "name": self.name,
+            "namespace_path": list(self._namespace_path),
+            # Only caller-supplied overrides are safe to replay. Namespace-provided
+            # initial options may contain rotating credentials and must be fetched
+            # again by the reopened connection's storage-options provider.
+            "storage_options": self._storage_options,
+            "index_cache_size": self._index_cache_size,
+            "location": self._location,
+            "namespace_client": self._namespace_client_for_pickle(),
+            "managed_versioning": self._managed_versioning,
+            "pushdown_operations": set(self._pushdown_operations),
+            "route_pushdown_to_rust": self._route_pushdown_to_rust,
+            "branch": self._branch,
+            "checkout_version": self._checkout_version,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Rebuild a table from ``__getstate__`` in the current process."""
+        if state.get("kind") == "memory":
+            from . import connect
+
+            rebuilt = connect("memory://").create_table(state["name"], state["data"])
+            self.__dict__.update(rebuilt.__dict__)
+            return
+
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["connection_state"], for_worker=True)
+        reopened = type(self)._open_from_pickle_state(connection, state)
+        self.__dict__.update(reopened.__dict__)
 
     @property
     def name(self) -> str:
@@ -4227,10 +4525,40 @@ class LanceTable(Table):
         return self._namespace_path
 
     @classmethod
-    async def from_inner(cls, tbl: LanceDBTable):
+    async def from_inner(
+        cls,
+        tbl: LanceDBTable,
+        *,
+        connection: Optional["DBConnection"] = None,
+        name: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        location: Optional[str] = None,
+    ):
+        async_tbl = AsyncTable(tbl)
+        if connection is not None:
+            # A table created through a Python connection keeps that
+            # connection's explicit options. Reconstructing a bare connection
+            # from the native handle loses namespace, storage, manifest and
+            # Session state needed by pickle.
+            return cls(
+                connection,
+                name or async_tbl.name,
+                namespace_path=namespace_path,
+                storage_options=getattr(connection, "storage_options", None),
+                location=location,
+                namespace_client=getattr(connection, "_namespace_client", None),
+                managed_versioning=getattr(connection, "_managed_versioning", None),
+                pushdown_operations=getattr(
+                    connection, "_namespace_client_pushdown_operations", None
+                ),
+                route_pushdown_to_rust=getattr(
+                    connection, "_route_pushdown_to_rust", False
+                ),
+                _async=async_tbl,
+            )
+
         from .db import AsyncConnection, LanceDBConnection
 
-        async_tbl = AsyncTable(tbl)
         inner_conn = tbl.database()
         read_consistency_interval = await AsyncConnection(
             inner_conn
@@ -4336,11 +4664,26 @@ class LanceTable(Table):
         -------
         pa.Schema
             A PyArrow schema object."""
-        return LOOP.run(self._table.schema())
+        schema_sync = getattr(self._table, "_schema_sync", None)
+        if schema_sync is None:
+            return LOOP.run(self._table.schema())
+        return schema_sync()
 
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> "TableDelta":
+        """Compare two versions or tags.
+
+        See [Table.delta][lancedb.table.Table.delta].
+        """
+        async_delta = LOOP.run(self._table.delta(from_version, to_version))
+        return TableDelta(async_delta._inner)
 
     @property
     def version(self) -> int:
@@ -4348,9 +4691,15 @@ class LanceTable(Table):
         return LOOP.run(self._table.version())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder
@@ -4451,21 +4800,36 @@ class LanceTable(Table):
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
 
+    def _pin_current_snapshot(self) -> "LanceTable":
+        """Return an independent handle pinned to this table's current snapshot."""
+
+        async def do_pin():
+            pinned = await self._table._checkout_current()
+            return pinned, await pinned.version()
+
+        pinned, version = LOOP.run(do_pin())
+        return self._wrap_branch_handle(pinned, version)
+
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
-        # version is unused locally: the pin already lives on async_table and a
-        # local handle is not reopened via a serialized connection.
-        return LanceTable(
+        table = LanceTable(
             self._conn,
             async_table.name,
             namespace_path=self._namespace_path,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
             namespace_client=self._namespace_client,
+            managed_versioning=self._managed_versioning,
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
+        # The native handle knows its branch but not whether this wrapper is a
+        # pinned branch version, so carry that coordinate explicitly.
+        table._checkout_version = version
+        return table
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -4504,6 +4868,8 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         LOOP.run(self._table.checkout(version))
+        self._checkout_version = self.version
+        self._branch = self.current_branch()
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -4512,6 +4878,8 @@ class LanceTable(Table):
         version of the table.
         """
         LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
+        self._branch = self.current_branch()
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -4560,6 +4928,8 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+        self._checkout_version = None
+        self._branch = self.current_branch()
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -5551,8 +5921,16 @@ class LanceTable(Table):
         """
         if isinstance(query, FullTextQuery):
             query_type = "fts"
+        if (
+            vector_column_name is None
+            and query_type != "fts"
+            and not (query is None and query_type != "hybrid")
+        ):
+            schema = self.schema
+        else:
+            schema = None
         vector_column_name = infer_vector_column_name(
-            schema=self.schema,
+            schema=schema,
             query_type=query_type,
             query=query,
             vector_column_name=vector_column_name,
@@ -5590,6 +5968,8 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
         route_pushdown_to_rust: bool = False,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ):
         """
         Create a new table.
@@ -5643,13 +6023,29 @@ class LanceTable(Table):
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it. Each entry can be a
+            [BasePath][lancedb.schema.BasePath], a dict with `path`, `name`,
+            `is_dataset_root`, and `id` keys, or a `lance.DatasetBasePath`.
+            Blob URIs under a registered base are stored relative to it. When
+            supplying IDs for multiple bases, use distinct explicit non-zero
+            IDs; [BasePath][lancedb.schema.BasePath] describes the pinned-Lance
+            limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. The
+            opt-in applies only to the initial data; a later `add()` must
+            enable it again.
         """
         if namespace_path is None:
             namespace_path = []
         self = cls.__new__(cls)
         self._conn = db
         self._namespace_path = namespace_path
+        self._index_cache_size = None
         self._location = location
+        self._managed_versioning = None
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         self._route_pushdown_to_rust = route_pushdown_to_rust
@@ -5677,6 +6073,7 @@ class LanceTable(Table):
                 enable_v2_manifest_paths
             ).lower()
 
+        self._storage_options = storage_options
         self._table = LOOP.run(
             self._conn._conn.create_table(
                 name,
@@ -5691,8 +6088,12 @@ class LanceTable(Table):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         )
+        self._branch = self._table.current_branch()
+        self._checkout_version = None
         return self
 
     def delete(self, where: Union[str, Expr]) -> DeleteResult:
@@ -5796,6 +6197,55 @@ class LanceTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
+    def _execute_pull_query(
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a plain local scan with one Rust fetch per batch.
+
+        The caller has already checked that this is an embedded, non-namespace
+        plain lazy scan. A query shape that does not map to ``AsyncQuery``
+        keeps the existing reader path instead of guessing at its semantics.
+        """
+        async_query = self._table._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
+        if isinstance(async_query, AsyncQuery):
+            return async_query._execute_batches_sync(
+                max_batch_length=batch_size, timeout=timeout
+            )
+        return self._execute_query(query, batch_size=batch_size, timeout=timeout)
+
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        # Keep the Python namespace pushdown path, including its branch rule.
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and self.current_branch() is None
+            and not _requires_local_namespace_execution(query)
+        ):
+            return self._execute_query(query, timeout=timeout).read_all()
+
+        async_query = self._table._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
+        if (
+            self._table._inner._is_native()
+            and self._namespace_client is None
+            and not self._route_pushdown_to_rust
+            and isinstance(async_query, (AsyncQuery, AsyncVectorQuery, AsyncFTSQuery))
+        ):
+            return async_query._execute_eager_sync(timeout=timeout)
+        return LOOP.run(async_query._execute_eager(timeout=timeout))
+
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
@@ -5889,6 +6339,14 @@ class LanceTable(Table):
         return Job(
             LOOP.run(self._table.compact_async(compaction_options=compaction_options))
         )
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
 
     def optimize(
         self,
@@ -7164,6 +7622,9 @@ class AsyncTable:
         """
         return _restore_blob_extensions(await self._inner.schema())
 
+    def _schema_sync(self) -> pa.Schema:
+        return _restore_blob_extensions(self._inner.schema_sync())
+
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
         Get the embedding functions for the table
@@ -8201,10 +8662,18 @@ class AsyncTable:
         if query.take_offsets is not None or query.take_row_ids is not None:
             if query.take_offsets is not None and query.take_row_ids is not None:
                 raise ValueError("Only one of take_offsets and take_row_ids may be set")
+            if query.preserve_order is True and query.take_offsets is None:
+                raise ValueError("preserve_order only supports take_offsets")
+            if query.preserve_order is True and query.order_by:
+                raise ValueError(
+                    "preserve_order cannot be combined with an explicit order_by"
+                )
             take_query = (
                 self.take_row_ids(query.take_row_ids)
                 if query.take_row_ids is not None
-                else self.take_offsets(query.take_offsets)
+                else self.take_offsets(
+                    query.take_offsets, preserve_order=query.preserve_order is True
+                )
             )
             if query.columns is not None:
                 columns = query.columns
@@ -8242,6 +8711,8 @@ class AsyncTable:
             async_query = async_query.with_row_id()
         if query.order_by:
             async_query = async_query.order_by(query.order_by)
+        if query.scan_in_order is not None:
+            async_query = async_query.scan_in_order(query.scan_in_order)
 
         if query.vector:
             async_query = async_query.nearest_to(query.vector).distance_range(
@@ -8308,10 +8779,30 @@ class AsyncTable:
         # used for that code path right now.
 
         async_query = self._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
 
         return await async_query.to_batches(
             max_batch_length=batch_size, timeout=timeout
         )
+
+    async def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and not _requires_local_namespace_execution(query)
+        ):
+            return (await self._execute_query(query, timeout=timeout)).read_all()
+
+        async_query = self._sync_query_to_async(query)
+        async_query._blob_row_id_prepared = query._blob_row_id_prepared
+        return await async_query._execute_eager(timeout=timeout)
 
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
@@ -9321,6 +9812,10 @@ class AsyncTable:
         """
         return await self._inner.version()
 
+    async def _checkout_current(self) -> "AsyncTable":
+        """Return an independent handle pinned to the currently selected snapshot."""
+        return AsyncTable(await self._inner._checkout_current())
+
     async def list_versions(self):
         """
         List all versions of the table
@@ -9335,6 +9830,20 @@ class AsyncTable:
             )
 
         return versions
+
+    async def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> "AsyncTableDelta":
+        """Compare two versions or tags.
+
+        See [Table.delta][lancedb.table.Table.delta] for endpoint, stable-row-id,
+        and branch-tag semantics. The returned
+        [AsyncTableDelta][lancedb.table.AsyncTableDelta] streams
+        ``AsyncRecordBatchReader`` values.
+        """
+        return AsyncTableDelta(await self._inner.delta(from_version, to_version))
 
     async def checkout(self, version: int | str):
         """
@@ -9394,7 +9903,11 @@ class AsyncTable:
         await self._inner.restore(version)
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> AsyncTakeQuery:
         """
         Take a list of offsets from the table.
@@ -9406,8 +9919,12 @@ class AsyncTable:
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.
-        Repeated offsets produce repeated rows.
+        By default, no guarantees are made regarding the order in which results
+        are returned. Repeated offsets produce repeated rows. Set
+        ``preserve_order=True`` to return found rows in input order, including
+        repeated offsets. Missing non-negative offsets are omitted. Negative
+        offsets are rejected and are not Python-style relative indices.
+        ``preserve_order`` cannot be combined with an explicit ``order_by``.
 
         Parameters
         ----------
@@ -9415,6 +9932,10 @@ class AsyncTable:
             The offsets to take.
         with_row_id: bool, default False
             If True, include the "_rowid" column in the results.
+        preserve_order: bool, default False
+            If True, return found rows in input order. Rust take queries apply
+            limit/offset after restoration; Python take builders and Query
+            conversion do not expose pagination.
 
         Returns
         -------
@@ -9423,6 +9944,8 @@ class AsyncTable:
             offsets.
         """
         query = AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        if preserve_order:
+            query._inner.preserve_order()
         if with_row_id:
             query.with_row_id()
         return query
@@ -9474,8 +9997,12 @@ class AsyncTable:
         column: str,
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
+        selection = _normalize_blob_row_ids(row_ids, column)
         return await self._inner.fetch_blobs(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column,
+            selection.row_ids,
+            version=selection.version,
+            snapshot_identity=selection.snapshot_identity,
         )
 
     async def fetch_blob_ranges(
@@ -9501,8 +10028,13 @@ class AsyncTable:
         See [Table.fetch_blob_files][lancedb.table.Table.fetch_blob_files].
         """
         buffer_size = _validate_blob_buffer_size(buffer_size)
+        selection = _normalize_blob_row_ids(row_ids, column)
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column), buffer_size
+            column,
+            selection.row_ids,
+            buffer_size=buffer_size,
+            version=selection.version,
+            snapshot_identity=selection.snapshot_identity,
         )
         return _wrap_blob_files(handles)
 
@@ -9572,6 +10104,25 @@ class AsyncTable:
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._inner.current_branch()
+
+    async def explain_cleanup(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> CleanupPlan:
+        """Read-only preview; see Table.explain_cleanup."""
+        _validate_min_age_seconds(min_age_seconds)
+        return CleanupPlan.from_json(await self._inner.explain_cleanup(min_age_seconds))
+
+    async def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> AsyncJob[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        _validate_min_age_seconds(min_age_seconds)
+        return _typed_job(
+            await self._inner.cleanup_async(min_age_seconds), CleanupResult.from_json
+        )
 
     async def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
@@ -9920,6 +10471,26 @@ class FragmentSummaryStats:
     p99: int
 
 
+def _validate_branch_source(
+    from_ref: Optional[str],
+    from_version: Optional[int],
+    from_tag: Optional[str],
+) -> None:
+    if from_tag is None:
+        return
+    conflicts = [
+        name
+        for name, value in (("from_ref", from_ref), ("from_version", from_version))
+        if value is not None
+    ]
+    if conflicts:
+        raise ValueError(
+            "from_tag cannot be combined with "
+            + " or ".join(conflicts)
+            + "; pass only one source"
+        )
+
+
 class Tags:
     """
     Table tag manager.
@@ -9950,7 +10521,7 @@ class Tags:
         """
         return LOOP.run(self._table.tags.get_version(tag))
 
-    def create(self, tag: str, version: int) -> None:
+    def create(self, tag: str, version: Optional[int] = None) -> None:
         """
         Create a tag for a given table version.
 
@@ -9959,8 +10530,9 @@ class Tags:
         tag: str,
             The name of the tag to create. This name must be unique among all tag
             names for the table.
-        version: int,
-            The table version to tag.
+        version: int, optional
+            The table version to tag. Defaults to the version visible to this
+            handle, including a checked-out version.
         """
         LOOP.run(self._table.tags.create(tag, version))
 
@@ -10007,6 +10579,8 @@ class Branches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
+        *,
+        from_tag: Optional[str] = None,
     ) -> "Table":
         """Create a branch and return a handle scoped to it.
 
@@ -10018,9 +10592,13 @@ class Branches:
             Source branch to fork from. Defaults to ``main``.
         from_version: int, optional
             A specific version on ``from_ref`` to fork from. Defaults to latest.
+        from_tag: str, optional
+            Source tag to fork from. Cannot be combined with ``from_ref`` or
+            ``from_version``.
         """
+        _validate_branch_source(from_ref, from_version, from_tag)
         async_table = LOOP.run(
-            self._table.branches.create(name, from_ref, from_version)
+            self._table.branches.create(name, from_ref, from_version, from_tag=from_tag)
         )
         return self._wrap(async_table)
 
@@ -10072,6 +10650,128 @@ class Branches:
         return self._parent._wrap_branch_handle(async_table, version)
 
 
+class TableDelta:
+    """Streaming row changes between two table versions.
+
+    Created by [Table.delta][lancedb.table.Table.delta]. The endpoints are
+    fixed when the delta is created.
+
+    Row-level readers require stable row ids at both endpoints. Create the
+    table with ``storage_options={"new_table_enable_stable_row_ids": "true"}``
+    to enable them. [list_transactions][lancedb.table.TableDelta.list_transactions]
+    works without stable row ids.
+
+    A nonempty range that contains a ``Restore``, or whose transaction history
+    is incomplete, rejects the row-level readers. Recompute the checkpoint with
+    a full rescan and reinitialize it at the end version; transaction history
+    remains available.
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+        self._async = AsyncTableDelta(inner)
+
+    @property
+    def begin_version(self) -> int:
+        """The version this delta starts from (exclusive)."""
+        return self._inner.begin_version()
+
+    @property
+    def end_version(self) -> int:
+        """The version this delta ends at (inclusive)."""
+        return self._inner.end_version()
+
+    def inserted_rows(self) -> pa.RecordBatchReader:
+        """Stream rows inserted in ``(begin_version, end_version]``.
+
+        Each batch carries the table columns plus ``_rowid``,
+        ``_row_created_at_version``, and ``_row_last_updated_at_version``.
+        """
+        return _record_batch_reader(LOOP.run(self._async.inserted_rows()))
+
+    def updated_rows(self) -> pa.RecordBatchReader:
+        """Stream rows updated in ``(begin_version, end_version]``.
+
+        Newly inserted rows are excluded; use
+        [upserted_rows][lancedb.table.TableDelta.upserted_rows] for both.
+        """
+        return _record_batch_reader(LOOP.run(self._async.updated_rows()))
+
+    def upserted_rows(self) -> pa.RecordBatchReader:
+        """Stream inserted and updated rows in ``(begin_version, end_version]``."""
+        return _record_batch_reader(LOOP.run(self._async.upserted_rows()))
+
+    def deleted_row_ids(self) -> pa.RecordBatchReader:
+        """Stream the ``_rowid`` values of rows deleted in the range.
+
+        Each batch carries one ``_rowid`` column of type ``uint64``. Deleted
+        rows are not reconstructed from earlier versions.
+        """
+        return _record_batch_reader(LOOP.run(self._async.deleted_row_ids()))
+
+    def list_transactions(self) -> List[Dict[str, Any]]:
+        """List transactions committed in ``(begin_version, end_version]``.
+
+        Each item has ``read_version``, ``uuid``, ``operation``, ``tag``, and
+        ``transaction_properties``. Unlike row readers, this works without
+        stable row ids.
+        """
+        return LOOP.run(self._async.list_transactions())
+
+
+class AsyncTableDelta:
+    """Async streaming row changes between two table versions.
+
+    Created by [AsyncTable.delta][lancedb.table.AsyncTable.delta]. See
+    [TableDelta][lancedb.table.TableDelta] for the endpoint and stable-row-id
+    contract.
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+
+    @property
+    def begin_version(self) -> int:
+        """The version this delta starts from (exclusive)."""
+        return self._inner.begin_version()
+
+    @property
+    def end_version(self) -> int:
+        """The version this delta ends at (inclusive)."""
+        return self._inner.end_version()
+
+    async def inserted_rows(self) -> AsyncRecordBatchReader:
+        """Stream rows inserted in ``(begin_version, end_version]``."""
+        return AsyncRecordBatchReader(await self._inner.inserted_rows())
+
+    async def updated_rows(self) -> AsyncRecordBatchReader:
+        """Stream rows updated in ``(begin_version, end_version]``."""
+        return AsyncRecordBatchReader(await self._inner.updated_rows())
+
+    async def upserted_rows(self) -> AsyncRecordBatchReader:
+        """Stream inserted and updated rows in ``(begin_version, end_version]``."""
+        return AsyncRecordBatchReader(await self._inner.upserted_rows())
+
+    async def deleted_row_ids(self) -> AsyncRecordBatchReader:
+        """Stream the ``_rowid`` values of rows deleted in the range."""
+        return AsyncRecordBatchReader(await self._inner.deleted_row_ids())
+
+    async def list_transactions(self) -> List[Dict[str, Any]]:
+        """List transactions committed in ``(begin_version, end_version]``."""
+        return await self._inner.list_transactions()
+
+
+def _record_batch_reader(stream) -> pa.RecordBatchReader:
+    def iter_sync():
+        try:
+            while True:
+                yield LOOP.run(stream.__anext__())
+        except StopAsyncIteration:
+            return
+
+    return pa.RecordBatchReader.from_batches(stream.schema, iter_sync())
+
+
 class AsyncTags:
     """
     Async table tag manager.
@@ -10102,7 +10802,7 @@ class AsyncTags:
         """
         return await self._table.tags.get_version(tag)
 
-    async def create(self, tag: str, version: int) -> None:
+    async def create(self, tag: str, version: Optional[int] = None) -> None:
         """
         Create a tag for a given table version.
 
@@ -10111,8 +10811,9 @@ class AsyncTags:
         tag: str,
             The name of the tag to create. This name must be unique among all tag
             names for the table.
-        version: int,
-            The table version to tag.
+        version: int, optional
+            The table version to tag. Defaults to the version visible to this
+            handle, including a checked-out version.
         """
         await self._table.tags.create(tag, version)
 
@@ -10156,6 +10857,8 @@ class AsyncBranches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
+        *,
+        from_tag: Optional[str] = None,
     ) -> "AsyncTable":
         """Create a branch and return a handle scoped to it.
 
@@ -10167,12 +10870,19 @@ class AsyncBranches:
             Source branch to fork from. Defaults to ``main``.
         from_version: int, optional
             A specific version on ``from_ref`` to fork from. Defaults to latest.
+        from_tag: str, optional
+            Source tag to fork from. Cannot be combined with ``from_ref`` or
+            ``from_version``.
         """
+        _validate_branch_source(from_ref, from_version, from_tag)
         # "main" and None are two spellings of the root branch in lance; normalize
-        # so from_ref="main" behaves identically to the default.
+        # so from_ref="main" behaves identically to the default. This must happen
+        # after validating from_tag conflicts so an explicit from_ref is not lost.
         if from_ref == "main":
             from_ref = None
-        inner = await self._table.branches.create(name, from_ref, from_version)
+        inner = await self._table.branches.create(
+            name, from_ref, from_version, from_tag=from_tag
+        )
         return AsyncTable(inner)
 
     async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":

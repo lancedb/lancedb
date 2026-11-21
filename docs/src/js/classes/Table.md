@@ -268,6 +268,38 @@ const after = await table.getRTEStats();
 
 ***
 
+### cleanupAsync()
+
+```ts
+cleanupAsync(_options?): Promise<Job<CleanupResult>>
+```
+
+Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+Requires table Ownership and parent Usage. Retention inherits from the table
+then deployment when omitted. Local/historical handles are unsupported.
+Before submission, disable/drain automatic cleanup and prevent other cleanup,
+tag/branch publication and restore until completion, including direct clients.
+Coordination is not enforced by the server. Cancellation cannot undo deletion
+or prove storage I/O stopped. Preview is available without deletion.
+Wait timeout leaves work running; save the ID and reopen with db.openJob().
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CleanupResult`](../interfaces/CleanupResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000 });
+```
+
+***
+
 ### close()
 
 ```ts
@@ -650,6 +682,24 @@ await table.enableRTE({
   maintainedIndexes: ["id_idx"],
 });
 ```
+
+***
+
+### explainCleanup()
+
+```ts
+explainCleanup(_options?): Promise<CleanupPlan>
+```
+
+Preview version deletion without creating a job. Execution re-evaluates current state.
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`CleanupPlan`](../interfaces/CleanupPlan.md)&gt;
 
 ***
 

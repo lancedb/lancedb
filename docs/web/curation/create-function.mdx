@@ -98,10 +98,12 @@ is not a substitute for `lancedb.blob`.
 
 ## Batch: once per call, many rows at a time {#batch}
 
-A function is called once per batch instead of once per row when its
-parameters are annotated `pyarrow.Array`, or when it takes a single
-`pyarrow.RecordBatch` parameter to read more than one column together. The
-same doubling logic, vectorized over a whole batch at once:
+A function is called once per batch instead of once per row when all of its
+parameters are annotated `pyarrow.Array`. Those annotations say that a whole
+column arrives in one call, but not which Arrow type the column holds, so a
+batch function also passes `input_schema` and `output_schema`; every field of
+`input_schema` matches a parameter by name and by order. The same doubling
+logic, vectorized over a whole batch at once:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -111,6 +113,8 @@ from lancedb import function
 
 @function(
     pip=["numpy==2.2.0"],
+    input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
+    output_schema=pa.float64(),
     batch_size=32,
     max_concurrency=4,
     row_timeout_seconds=90,
@@ -119,6 +123,27 @@ def score_batch(value: pa.Array) -> pa.Array:
     return pc.multiply(value, 2)
 ```
 </CodeGroup>
+
+Read several columns in one call by taking one `pa.Array` parameter per
+column, with one schema field for each:
+
+```python
+@function(
+    input_schema=pa.schema([
+        pa.field("value", pa.float64(), nullable=False),
+        pa.field("weight", pa.float64(), nullable=False),
+    ]),
+    output_schema=pa.float64(),
+)
+def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+    return pc.multiply(value, weight)
+```
+
+A single `pyarrow.RecordBatch` parameter is also a batch function, but it does
+not read several columns at once: `input_schema` declares one field per
+parameter, so a `RecordBatch` parameter binds one input column and receives
+that column as a batch. A schema with more fields than the callable has
+parameters is rejected at decoration.
 
 Batching amortizes per-call overhead across many rows, which matters most
 once a function also does something with real fixed cost per call -- loading
@@ -184,7 +209,10 @@ gpu_class = next(
 @function(
     gpu=True,
     gpu_class=gpu_class,
+    row_timeout_seconds=600,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
+    input_schema=pa.schema([pa.field("text", pa.string(), nullable=True)]),
+    output_schema=pa.list_(pa.float32(), 384),
 )
 class embed_text:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
@@ -203,6 +231,15 @@ version = db.create_function_async(embed_text).wait()
 table.add_columns({"embedding": version(text=col("caption"))})
 ```
 </CodeGroup>
+
+`row_timeout_seconds` sets the per-call deadline, not the `__init__` budget.
+Current Enterprise builds default to 300 seconds for both CPU and GPU
+Functions. Enterprise 1.13.0 through 1.14.1, and 1.15.0 builds before the
+shared default was restored, reject a GPU refresh unless the Function
+definition or the refresh request sets a positive value; registration still
+succeeds. A refresh value overrides the definition. Size the deadline from the
+longest observed call. The 600 seconds above is one working GPU example, not a
+universal recommendation.
 
 Older servers that do not implement `GET /v1/gpu/classes` raise
 `NotImplementedError`. Without `gpu_class`, the deployment's default GPU

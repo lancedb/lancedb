@@ -1,6 +1,6 @@
 extends: existence
 message: "Avoid '%s'. OSS is not a product name: write 'LanceDB Embedded', or 'open source' as a property."
-link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+link: https://github.com/lancedb/lancedb/blob/main/docs/STYLE.md#names
 level: warning
 ignorecase: false
 # Bare OSS used as a product, as in "OSS and Enterprise" or "in OSS". "LanceDB

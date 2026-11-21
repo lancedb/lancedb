@@ -4803,6 +4803,84 @@ async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
 }
 
 #[tokio::test]
+async fn remote_cleanup_tracks_registry_job_and_real_result() {
+    use crate::table::CleanupOptions;
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["cleanup-job"])) as ArrayRef,
+        )])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let polls = Arc::new(AtomicUsize::new(0));
+    let observed = polls.clone();
+    let client = client_with_handler(move |request| {
+        assert_eq!(request.url().path(), "/v1/jobs/describe");
+        observed.fetch_add(1, Ordering::SeqCst);
+        http::Response::builder()
+            .status(200)
+            .body(
+                serde_json::json!({
+                    "job_id":"cleanup-job","job_type":"cleanup","job_state":"DONE",
+                    "result":{"format_version":1,"min_age_seconds":0,"statistics_complete":true,
+                        "old_versions":2,"bytes_removed":123}
+                })
+                .to_string(),
+            )
+            .unwrap()
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "inner".into()],
+        "team$inner$events".into(),
+        Default::default(),
+        Some(sql),
+    )
+    .with_branch(Some("o'brien".into()));
+    let job = table
+        .cleanup_async(CleanupOptions::new().min_age_seconds(0))
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("cleanup-job"));
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    let result = job.wait().await.unwrap();
+    assert_eq!(result.old_versions, Some(2));
+    assert_eq!(result.bytes_removed, Some(123));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["VACUUM \"events\" WITH (branch = 'o''brien', min_age_seconds = 0)"]
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_cleanup_rejects_historical_checkout_without_submitting() {
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/events/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version":7,"schema":{"fields":[]}}"#.to_string())
+                .unwrap()
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        None,
+    );
+    table.checkout(7).await.unwrap();
+    assert!(table.cleanup_async(Default::default()).await.is_err());
+}
+
+#[tokio::test]
 async fn remote_compaction_tracks_registry_job_and_real_result() {
     use crate::table::optimize::CompactionOverrides;
     let service = TestSqlService {
@@ -4942,4 +5020,49 @@ async fn remote_prewarm_preview_uses_sql_without_any_http_jobs() {
         );
         shutdown.send(()).unwrap();
     }
+}
+
+#[tokio::test]
+async fn remote_cleanup_preview_uses_sql_without_job_calls() {
+    let payload = serde_json::json!({"format_version":1,"source_version":42,"min_age_seconds":0,
+        "cutoff_millis":123,"versions_to_remove":2,"bytes_to_remove":100});
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([
+            (
+                "plan_type",
+                Arc::new(StringArray::from(vec!["logical_plan"])) as ArrayRef,
+            ),
+            (
+                "plan",
+                Arc::new(StringArray::from(vec![payload.to_string()])) as ArrayRef,
+            ),
+        ])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|_| -> http::Response<String> {
+            panic!("preview must not use HTTP jobs or execution fallback")
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into()],
+        "team$events".into(),
+        Default::default(),
+        Some(sql),
+    );
+    let plan = table
+        .explain_cleanup(crate::table::CleanupOptions::new().min_age_seconds(0))
+        .await
+        .unwrap();
+    assert_eq!(plan.source_version, 42);
+    assert_eq!(plan.versions_to_remove, 2);
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["EXPLAIN (FORMAT JSON) VACUUM \"events\" WITH (min_age_seconds = 0)"]
+    );
+    shutdown.send(()).unwrap();
 }
