@@ -309,6 +309,9 @@ describe("remote connection", () => {
       },
       async (db) => {
         const table = (await db.openTable("test")) as LocalTable;
+        await expect(table.delta(1)).rejects.toThrow(
+          "table.delta is only supported on LanceDB Embedded tables",
+        );
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],

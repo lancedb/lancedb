@@ -164,6 +164,10 @@ export {
 
 export {
   Table,
+  TableDelta,
+  TableDeltaReader,
+  TableDeltaTransaction,
+  DeltaVersion,
   FunctionColumnAutoRefreshStatus,
   FunctionColumnLastRefreshJob,
   FunctionColumnStatus,

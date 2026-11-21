@@ -552,6 +552,53 @@ containing the new version number of the table
 
 ***
 
+### delta()
+
+```ts
+delta(fromVersion, toVersion?): Promise<TableDelta>
+```
+
+Compare two persisted versions or same-branch tags on an Embedded table.
+
+`fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+`toVersion` uses the version currently visible through this handle,
+including a checked-out version. The endpoints are fixed when the delta is
+created.
+
+Row readers require stable row IDs at both endpoints. Create the table with
+`storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+them. `listTransactions()` works without stable row IDs.
+
+Row readers reject ranges containing a Restore, or ranges whose transaction
+history cannot prove they are restore-free. Recompute the checkpoint with a
+full rescan and reinitialize it at the range end version.
+
+LanceDB Enterprise tables reject this operation.
+
+#### Parameters
+
+* **fromVersion**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+* **toVersion?**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+#### Returns
+
+`Promise`&lt;[`TableDelta`](TableDelta.md)&gt;
+
+#### Example
+
+```ts
+const delta = await table.delta("baseline");
+const reader = delta.insertedRows();
+console.log((await reader.schema()).fields.map((field) => field.name));
+for await (const batch of reader) {
+  console.log(batch.getChild("id")?.toJSON());
+}
+console.log(await delta.listTransactions());
+```
+
+***
+
 ### disableRTE()
 
 ```ts

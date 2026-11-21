@@ -2,17 +2,18 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, DeltaRef as LanceDbDeltaRef,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig as LanceFunctionRefreshPlanningConfig,
     FunctionRefreshPodResources as LanceFunctionRefreshPodResources,
     FunctionWorkerResourceBudget as LanceFunctionWorkerResourceBudget, NewColumnTransform, Ref,
-    Table as LanceDbTable,
+    Table as LanceDbTable, TableDelta as LanceDbTableDelta,
 };
 use napi::Env;
 use napi::bindgen_prelude::*;
@@ -22,6 +23,7 @@ use napi_derive::napi;
 use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::{NapiErrorExt, convert_error};
 use crate::index::Index;
+use crate::iterator::RecordBatchIterator;
 use crate::job::JobFailureInfo;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
@@ -124,6 +126,57 @@ impl CompactionOptions {
             integer(self.batch_size, "batchSize", u32::MAX as u64, false)?.map(|v| v as usize);
         Ok(options)
     }
+}
+
+/// One endpoint of a table delta: a positive version or a same-branch tag.
+#[napi(object)]
+pub struct DeltaRef {
+    /// A persisted version, expressed as a positive lossless u64 bigint.
+    pub version: Option<BigInt>,
+    /// A tag on the table handle's current branch.
+    pub tag: Option<String>,
+}
+
+impl DeltaRef {
+    fn into_delta_ref(self) -> napi::Result<LanceDbDeltaRef> {
+        match (self.version, self.tag) {
+            (Some(version), None) => {
+                let (negative, value, lossless) = version.get_u64();
+                if negative || !lossless {
+                    return Err(napi::Error::from_reason(
+                        "delta version must be a positive lossless u64 bigint",
+                    ));
+                }
+                if value == 0 {
+                    return Err(napi::Error::from_reason(
+                        "delta version must be greater than zero",
+                    ));
+                }
+                Ok(LanceDbDeltaRef::Version(value))
+            }
+            (None, Some(tag)) => {
+                if tag.is_empty() {
+                    return Err(napi::Error::from_reason(
+                        "delta tag must be a non-empty string",
+                    ));
+                }
+                Ok(LanceDbDeltaRef::Tag(tag))
+            }
+            _ => Err(napi::Error::from_reason(
+                "delta reference must contain exactly one of version or tag",
+            )),
+        }
+    }
+}
+
+/// A committed transaction in a table delta range.
+#[napi(object)]
+pub struct TableDeltaTransaction {
+    pub read_version: BigInt,
+    pub uuid: String,
+    pub operation: String,
+    pub tag: Option<String>,
+    pub transaction_properties: Option<HashMap<String, String>>,
 }
 
 #[napi]
@@ -953,6 +1006,19 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn checkout_latest(&self) -> napi::Result<()> {
         self.inner_ref()?.checkout_latest().await.default_error()
+    }
+
+    /// Compare two persisted versions or same-branch tags.
+    #[napi(catch_unwind)]
+    pub async fn delta(
+        &self,
+        from_version: DeltaRef,
+        to_version: Option<DeltaRef>,
+    ) -> napi::Result<TableDelta> {
+        let from = from_version.into_delta_ref()?;
+        let to = to_version.map(DeltaRef::into_delta_ref).transpose()?;
+        let delta = self.inner_ref()?.delta(from, to).await.default_error()?;
+        Ok(TableDelta::new(delta))
     }
 
     #[napi(catch_unwind)]
@@ -2432,6 +2498,75 @@ fn from_tag_hint(name: &str, tag: &str) -> String {
     format!(
         "If {tag_literal} is a tag, use branches.create({name_literal}, {{ fromTag: {tag_literal} }}) instead of fromRef."
     )
+}
+
+/// A pinned version range with streaming row changes.
+#[napi]
+pub struct TableDelta {
+    inner: Arc<LanceDbTableDelta>,
+}
+
+impl TableDelta {
+    fn new(inner: LanceDbTableDelta) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[napi]
+impl TableDelta {
+    #[napi]
+    pub fn begin_version(&self) -> BigInt {
+        BigInt::from(self.inner.begin_version())
+    }
+
+    #[napi]
+    pub fn end_version(&self) -> BigInt {
+        BigInt::from(self.inner.end_version())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn inserted_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.inserted_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn updated_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.updated_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn upserted_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.upserted_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn deleted_row_ids(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.deleted_row_ids().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_transactions(&self) -> napi::Result<Vec<TableDeltaTransaction>> {
+        let transactions = self.inner.list_transactions().await.default_error()?;
+        Ok(transactions
+            .into_iter()
+            .map(|transaction| TableDeltaTransaction {
+                read_version: BigInt::from(transaction.read_version),
+                uuid: transaction.uuid,
+                operation: transaction.operation.name().to_string(),
+                tag: transaction.tag,
+                transaction_properties: transaction
+                    .transaction_properties
+                    .as_ref()
+                    .map(|properties| (**properties).clone()),
+            })
+            .collect())
+    }
 }
 
 /// Tags label table versions with human-readable names.

@@ -17,6 +17,8 @@ import {
   PhraseQuery,
   Query,
   Table,
+  TableDelta,
+  TableDeltaReader,
   VectorQuery,
   blob,
   connect,
@@ -4139,6 +4141,279 @@ describe("when dealing with branches", () => {
   });
 });
 
+describe("when dealing with table delta", () => {
+  let tmpDir: tmp.DirResult;
+  // biome-ignore lint/style/useNamingConvention: storage option wire format
+  const stableRowIds = { new_table_enable_stable_row_ids: "true" };
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  async function readDelta(
+    reader: TableDeltaReader,
+  ): Promise<arrow.RecordBatch[]> {
+    const batches: arrow.RecordBatch[] = [];
+    for await (const batch of reader) {
+      batches.push(batch);
+    }
+    return batches;
+  }
+
+  function deltaColumn(batches: arrow.RecordBatch[], name: string): unknown[] {
+    return batches.flatMap((batch) => batch.getChild(name)?.toJSON() ?? []);
+  }
+
+  it("streams rows, transactions, and empty schemas", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable(
+      "delta_rows",
+      [
+        { id: 1, value: 0 },
+        { id: 2, value: 0 },
+      ],
+      { mode: "overwrite", storageOptions: stableRowIds },
+    );
+    const tags = await table.tags();
+    await tags.create("baseline", await table.version());
+    await table.add([{ id: 3, value: 0 }]);
+    await table.update({ where: "id = 1", values: { value: 10 } });
+    await table.delete("id = 2");
+
+    const delta = await table.delta("baseline", 4n);
+    expect(delta.beginVersion).toBe(1n);
+    expect(delta.endVersion).toBe(4n);
+
+    const insertedReader = delta.insertedRows();
+    expect(
+      (await insertedReader.schema()).fields.map((field) => field.name),
+    ).toEqual([
+      "id",
+      "value",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+    const inserted = await readDelta(insertedReader);
+    expect(deltaColumn(inserted, "id")).toEqual([3]);
+
+    const updated = await readDelta(delta.updatedRows());
+    expect(deltaColumn(updated, "id")).toEqual([1]);
+    const upserted = await readDelta(delta.upsertedRows());
+    expect((deltaColumn(upserted, "id") as number[]).sort()).toEqual([1, 3]);
+
+    const deleted = await readDelta(delta.deletedRowIds());
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0].schema.fields.map((field) => field.name)).toEqual([
+      "_rowid",
+    ]);
+    const deletedIds = deltaColumn(deleted, "_rowid");
+    expect(deletedIds).toHaveLength(1);
+    expect(typeof deletedIds[0]).toBe("bigint");
+
+    const transactions = await delta.listTransactions();
+    expect(transactions.map((tx) => tx.operation)).toEqual([
+      "Append",
+      "Update",
+      "Delete",
+    ]);
+    expect(transactions.map((tx) => tx.readVersion)).toEqual([1n, 2n, 3n]);
+    expect(transactions.every((tx) => typeof tx.readVersion === "bigint")).toBe(
+      true,
+    );
+
+    // Early drop after the first batch must not throw or force the rest of the
+    // stream to materialize.
+    let batchesSeen = 0;
+    for await (const _batch of delta.upsertedRows()) {
+      batchesSeen += 1;
+      break;
+    }
+    expect(batchesSeen).toBe(1);
+
+    const equal = await table.delta(2, 2);
+    const equalReader = equal.insertedRows();
+    expect(
+      (await equalReader.schema()).fields.map((field) => field.name),
+    ).toEqual([
+      "id",
+      "value",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+    expect(await readDelta(equalReader)).toEqual([]);
+    expect(
+      (await equal.deletedRowIds().schema()).fields.map((field) => field.name),
+    ).toEqual(["_rowid"]);
+    expect(await equal.listTransactions()).toEqual([]);
+  });
+
+  it("pins the visible target without moving checkout state", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_pinned", [{ id: 1 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 2 }]);
+    await table.update({ where: "id = 1", values: { id: 10 } });
+
+    await table.checkout(2);
+    const pinned = await table.delta(1n);
+    expect(pinned.beginVersion).toBe(1n);
+    expect(pinned.endVersion).toBe(2n);
+    expect(deltaColumn(await readDelta(pinned.insertedRows()), "id")).toEqual([
+      2,
+    ]);
+    expect(await table.version()).toBe(2);
+
+    const explicit = await table.delta(1n, 3n);
+    expect(deltaColumn(await readDelta(explicit.updatedRows()), "id")).toEqual([
+      10,
+    ]);
+    expect(await table.version()).toBe(2);
+    await table.checkoutLatest();
+  });
+
+  it("does not start a rejected reader until it is used", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_lazy", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+
+    const delta = await table.delta(1);
+    const reader = delta.insertedRows();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(unhandled).toEqual([]);
+      await expect(reader.schema()).rejects.toThrow(/stable row ids/);
+      await expect(reader.next()).rejects.toThrow(/stable row ids/);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("routes schema and Arrow decode failures through terminal cleanup", async () => {
+    let schemaOpens = 0;
+    const schemaFailure = new TableDelta({
+      insertedRows: async () => {
+        schemaOpens += 1;
+        return {
+          schema: async () => {
+            throw new Error("schema export failed");
+          },
+          next: async () => {
+            throw new Error("reader must not poll after schema failure");
+          },
+        };
+      },
+    } as never);
+
+    const schemaReader = schemaFailure.insertedRows();
+    await expect(schemaReader.schema()).rejects.toThrow("schema export failed");
+    await expect(schemaReader.next()).rejects.toThrow("schema export failed");
+    expect(schemaOpens).toBe(1);
+
+    const nextReader = schemaFailure.insertedRows();
+    await expect(nextReader.next()).rejects.toThrow("schema export failed");
+    expect(schemaOpens).toBe(2);
+
+    let decodeOpens = 0;
+    const decodeFailure = new TableDelta({
+      insertedRows: async () => {
+        decodeOpens += 1;
+        return {
+          schema: async () => Buffer.from("not an Arrow IPC schema"),
+          next: async () => {
+            throw new Error("reader must not poll after decode failure");
+          },
+        };
+      },
+    } as never);
+
+    const decodeReader = decodeFailure.insertedRows();
+    await expect(decodeReader.schema()).rejects.toThrow();
+    await expect(decodeReader.next()).rejects.toThrow();
+    expect(decodeOpens).toBe(1);
+  });
+
+  it("uses one reader cursor and releases it on early drop", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_reader", [{ id: 1 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 2 }]);
+    const delta = await table.delta(1);
+
+    const reader = delta.insertedRows();
+    expect(reader[Symbol.asyncIterator]()).toBe(reader);
+    const first = await reader.next();
+    expect(first.done).toBe(false);
+    const [second, third] = await Promise.all([reader.next(), reader.next()]);
+    expect(second.done).toBe(true);
+    expect(third.done).toBe(true);
+    expect((await reader.schema()).fields.map((field) => field.name)).toEqual([
+      "id",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+
+    const dropped = delta.insertedRows();
+    for await (const _batch of dropped) {
+      break;
+    }
+    expect(await dropped.next()).toEqual({ done: true, value: undefined });
+    expect((await dropped.schema()).fields.map((field) => field.name)).toEqual([
+      "id",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+  });
+
+  it("rejects invalid endpoints and cross-branch tags", async () => {
+    const conn = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const table = await conn.createTable("delta_errors", [{ id: 0 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 1 }]);
+    const forkVersion = await table.version();
+
+    await expect(table.delta(0)).rejects.toThrow(/positive/);
+    await expect(table.delta(0n)).rejects.toThrow(/positive u64/);
+    await expect(table.delta(1n << 64n)).rejects.toThrow(/u64 bigint/);
+    await expect(table.delta(-1)).rejects.toThrow(/positive/);
+    await expect(table.delta("")).rejects.toThrow(/non-empty/);
+    await expect(table.delta(1.5)).rejects.toThrow(/safe integer/);
+    await expect(table.delta(Number.MAX_SAFE_INTEGER + 1)).rejects.toThrow(
+      /safe integer/,
+    );
+    await expect(table.delta(2, 1)).rejects.toThrow(/newer than/);
+    await expect(table.delta(999)).rejects.toThrow(/does not exist/);
+    await expect(table.delta("missing-tag")).rejects.toThrow(/does not exist/);
+
+    const branch = await (await table.branches()).create("exp");
+    await branch.add([{ id: 2 }]);
+    await table.add([{ id: 100 }]);
+    expect(await branch.version()).toBe(await table.version());
+    await (await table.tags()).create("main-tag", await table.version());
+    await (await branch.tags()).create("exp-tag", await branch.version());
+
+    const sameBranch = await branch.delta(BigInt(forkVersion), "exp-tag");
+    expect(sameBranch.endVersion).toBe(3n);
+    expect(
+      deltaColumn(await readDelta(sameBranch.insertedRows()), "id"),
+    ).toEqual([2]);
+    await expect(branch.delta("main-tag")).rejects.toThrow(/branch/i);
+    await expect(table.delta("exp-tag")).rejects.toThrow(/branch/i);
+  });
+});
+
 /** Returns a Date strictly later than every instant observed before the call. */
 async function nextMillisecond(): Promise<Date> {
   const start = Date.now();
@@ -6142,6 +6417,9 @@ describe("Enterprise table overrides", () => {
     class LegacyTable extends Table {}
 
     const table = new LegacyTable();
+    await expect(table.delta(1)).rejects.toThrow(
+      "table.delta is only supported on LanceDB Embedded tables",
+    );
     await expect(table.getTableOverrides()).rejects.toThrow(
       "getTableOverrides is not supported on this table type",
     );
