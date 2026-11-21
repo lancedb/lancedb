@@ -539,6 +539,7 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
             dtype,
             DataType::Boolean
                 | DataType::Utf8
+                | DataType::LargeUtf8
                 | DataType::Time32(_)
                 | DataType::Time64(_)
                 | DataType::Date32
