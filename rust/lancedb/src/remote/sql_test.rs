@@ -139,6 +139,7 @@ struct TestSqlService {
     first_continuation_count: Arc<AtomicUsize>,
     transient_poll_failures: Arc<AtomicUsize>,
     headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
+    result_deadlines: Arc<std::sync::Mutex<Vec<Option<String>>>>,
     gate_refresh_release: Arc<Notify>,
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
@@ -319,6 +320,7 @@ impl Default for TestSqlService {
             first_continuation_count: Arc::new(AtomicUsize::new(0)),
             transient_poll_failures: Arc::new(AtomicUsize::new(0)),
             headers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            result_deadlines: Arc::new(std::sync::Mutex::new(Vec::new())),
             gate_refresh_release: Arc::new(Notify::new()),
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -535,6 +537,14 @@ impl FlightService for TestSqlService {
             assert_eq!(
                 request.metadata().get(PROTOCOL_HEADER).unwrap(),
                 PROTOCOL_VERSION
+            );
+        }
+        if initial.is_none() {
+            self.result_deadlines.lock().unwrap().push(
+                request
+                    .metadata()
+                    .get("grpc-timeout")
+                    .map(|value| value.to_str().unwrap().to_owned()),
             );
         }
         let query = initial
@@ -5297,4 +5307,42 @@ async fn sql_deadline_applies_to_buffered_results_and_stops_its_timer_on_complet
         assert_overall_timeout(rows.try_next().await, "result");
         assert!(rows.try_next().await.unwrap().is_none());
     }
+}
+
+#[tokio::test]
+async fn sql_deadline_is_forwarded_to_deferred_result_requests() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let deadlines = service.result_deadlines.clone();
+    let headers = service.headers.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT 1");
+    request.options.timeout = Some(Duration::from_secs(3));
+    let query = client.execute(request).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!collect_result(&query).await.unwrap().is_empty());
+    let deadlines = deadlines.lock().unwrap();
+    let result_deadline = deadlines[0]
+        .as_deref()
+        .expect("the result request must carry an execution deadline");
+    assert_ne!(
+        Some(result_deadline),
+        headers.lock().unwrap()[0].grpc_timeout.as_deref(),
+        "the timeout budget must not restart for the result request"
+    );
+}
+
+#[tokio::test]
+async fn sql_rejects_timeouts_that_cannot_be_encoded_by_grpc() {
+    let (client, _shutdown) =
+        start_sql_service(TestSqlService::default(), ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT 1");
+    request.options.timeout = Some(Duration::from_secs(u64::MAX));
+    assert!(matches!(
+        client.execute(request).await,
+        Err(Error::InvalidInput { .. })
+    ));
 }

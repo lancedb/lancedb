@@ -1732,12 +1732,18 @@ class AsyncLanceNamespaceDBConnection:
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncRecordBatchReader:
         """Execute SQL when supported by the underlying connection."""
         return await self._inner.execute_query(
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
 
     async def execute_query_async(
@@ -1746,6 +1752,9 @@ class AsyncLanceNamespaceDBConnection:
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncSqlQuery:
         """Start executing SQL when supported by the underlying connection.
 
@@ -1755,6 +1764,9 @@ class AsyncLanceNamespaceDBConnection:
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
 
     async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:

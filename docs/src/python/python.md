@@ -381,7 +381,6 @@ query = db.execute_query_async(
 query.cancel()
 ```
 
-
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a

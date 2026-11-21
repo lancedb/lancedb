@@ -14,6 +14,7 @@ from lancedb import _lancedb
 from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.db import AsyncConnection
 from lancedb.remote.db import RemoteDBConnection
+from lancedb.namespace import AsyncLanceNamespaceDBConnection
 from lancedb.sql import AsyncQuery, Query, to_parameter_batch
 
 NIL_QUERY_ID = UUID(int=0)
@@ -465,3 +466,20 @@ def test_sync_query_cancellation_reaches_the_native_handle():
     native = FakeNativeQuery()
     Query(AsyncQuery(native)).cancel()
     assert native.cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["execute_query", "execute_query_async"])
+async def test_namespace_sql_execution_controls_are_forwarded(method):
+    native = FakeNativeConnection()
+    connection = AsyncLanceNamespaceDBConnection.__new__(
+        AsyncLanceNamespaceDBConnection
+    )
+    connection._inner = AsyncConnection(native)
+    await getattr(connection, method)(
+        "SELECT 1",
+        timeout=timedelta(seconds=30),
+        read_timeout=timedelta(seconds=5),
+        cancel_on_drop=True,
+    )
+    assert native.options == [(timedelta(seconds=30), timedelta(seconds=5), True)]

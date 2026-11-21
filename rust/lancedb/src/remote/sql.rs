@@ -54,6 +54,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const AUTOMATIC_CANCELLATION_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_SQL_TIMEOUT: Duration = Duration::from_secs(99_999_999 * 60 * 60);
 const MAX_SQL_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
 const SQL_JOB_ID_METADATA_KEY: &str = "x-lancedb-sql-job-id";
 const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
@@ -290,6 +291,11 @@ impl SqlClient {
             .options
             .timeout
             .map(|timeout| {
+                if timeout > MAX_SQL_TIMEOUT {
+                    return Err(Error::InvalidInput {
+                        message: "SQL query timeout exceeds the gRPC limit".to_string(),
+                    });
+                }
                 tokio::time::Instant::now()
                     .checked_add(timeout)
                     .ok_or_else(|| Error::InvalidInput {
