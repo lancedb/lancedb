@@ -82,6 +82,7 @@ from .index import (
     NGram,
     ZoneMap,
     RTree,
+    ScalarPlugin,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -353,6 +354,7 @@ IndexConfigType = Union[
     NGram,
     ZoneMap,
     RTree,
+    ScalarPlugin,
     FTS,
 ]
 
@@ -2027,7 +2029,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, ScalarPlugin, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -5132,7 +5134,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, ScalarPlugin, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -7811,6 +7813,7 @@ class AsyncTable:
                 NGram,
                 ZoneMap,
                 RTree,
+                ScalarPlugin,
                 FTS,
             ]
         ] = None,
@@ -7893,13 +7896,14 @@ class AsyncTable:
                     NGram,
                     ZoneMap,
                     RTree,
+                    ScalarPlugin,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, or FTS,"
-                    " but got " + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree,"
+                    " ScalarPlugin, or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -7940,6 +7944,7 @@ class AsyncTable:
                 NGram,
                 ZoneMap,
                 RTree,
+                ScalarPlugin,
                 FTS,
             ]
         ] = None,
