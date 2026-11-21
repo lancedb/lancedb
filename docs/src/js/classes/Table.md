@@ -191,6 +191,10 @@ the `restore` function.
 Calling this method will set the table into time-travel mode. If you
 wish to return to standard mode, call `checkoutLatest`.
 
+In local mode, a tag must reference this handle's branch. A tag on another
+branch is rejected without changing the handle. Use [Branches.checkout](Branches.md#checkout)
+to open a handle scoped to that branch before checking out its tag.
+
 #### Parameters
 
 * **version**: `string` \| `number`

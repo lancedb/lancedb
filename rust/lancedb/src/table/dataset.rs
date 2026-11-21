@@ -270,6 +270,9 @@ impl DatasetConsistencyWrapper {
         Ok(())
     }
 
+    /// Pin to a version on this wrapper's current branch.
+    ///
+    /// References to another branch are rejected without changing the state.
     pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
         let target_ref = target_version.into();
 
@@ -278,7 +281,10 @@ impl DatasetConsistencyWrapper {
             let should = match state.pinned_version {
                 None => true,
                 Some(version) => match &target_ref {
-                    refs::Ref::Version(_, Some(target_ver)) => version != *target_ver,
+                    refs::Ref::Version(branch, Some(target_ver)) => {
+                        version != *target_ver
+                            || branch.as_deref() != state.dataset.manifest().branch.as_deref()
+                    }
                     refs::Ref::Version(_, None) => true,
                     refs::Ref::VersionNumber(target_ver) => version != *target_ver,
                     refs::Ref::Tag(_) => true,
@@ -295,6 +301,16 @@ impl DatasetConsistencyWrapper {
         let version_value = new_dataset.version().version;
 
         let mut state = self.state.lock()?;
+        // Time travel must not change the branch used by checkout_latest or restore.
+        if new_dataset.manifest().branch != state.dataset.manifest().branch {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "cannot check out a version on branch '{}' with a handle scoped to branch '{}'; use a handle scoped to the target branch instead",
+                    new_dataset.manifest().branch.as_deref().unwrap_or("main"),
+                    state.dataset.manifest().branch.as_deref().unwrap_or("main"),
+                ),
+            });
+        }
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = Some(version_value);
         state.query_snapshot = false;
