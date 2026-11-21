@@ -1258,7 +1258,9 @@ class Job(Generic[T]):
         ...     "worker-id", kind="cpu", duration=timedelta(seconds=10)
         ... )
         >>> job.wait_for_profile(profile.profile_id)  # doctest: +SKIP
-        >>> job.export_profile(profile.profile_id, "cpu.speedscope.json")  # doctest: +SKIP
+        >>> job.export_profile(  # doctest: +SKIP
+        ...     profile.profile_id, "cpu.speedscope.json"
+        ... )
         """
         if self._inner is None:
             raise NotImplementedError(

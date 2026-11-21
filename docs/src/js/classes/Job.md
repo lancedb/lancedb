@@ -247,6 +247,43 @@ Request cancellation. Cancelling a finished operation is a no-op.
 
 ***
 
+### captureProfile()
+
+```ts
+captureProfile(workerId, options): Promise<FunctionProfile>
+```
+
+Request a profile of a running Enterprise Function worker session.
+Returns the accepted identity without waiting for recording to finish.
+Requires System Operate permission and server profiling support. The server
+pins the worker, Python session and execution epoch. One capture per job
+can be active. Captures add workload-dependent overhead.
+
+GPU tracing requires initialized PyTorch CUDA/CUPTI. CPU sampling requires
+readable per-thread procfs and is unavailable in dedicated sandboxes.
+
+#### Parameters
+
+* **workerId**: `string`
+
+* **options**: [`FunctionProfileOptions`](../interfaces/FunctionProfileOptions.md) = `{}`
+
+#### Returns
+
+`Promise`&lt;[`FunctionProfile`](../interfaces/FunctionProfile.md)&gt;
+
+#### Example
+
+```ts
+const profile = await job.captureProfile("worker-id", {
+  kind: "gpu", durationSeconds: 2,
+});
+await job.waitForProfile(profile.profileId, { timeoutMs: 60_000 });
+await job.exportProfile(profile.profileId, "gpu.trace.json");
+```
+
+***
+
 ### events()
 
 ```ts
@@ -276,6 +313,29 @@ per fragment. `filter` is a SQL-like expression over the `state`,
 
 ***
 
+### exportProfile()
+
+```ts
+exportProfile(profileId, path): Promise<void>
+```
+
+Write a completed capture's JSON after successful retrieval. Open CPU
+exports in speedscope and GPU exports in Perfetto. GPU activity durations
+can overlap and are not utilization; Python operator attribution and GPU
+allocation stacks are excluded. Filesystem errors propagate to the caller.
+
+#### Parameters
+
+* **profileId**: `string`
+
+* **path**: `string`
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### history()
 
 ```ts
@@ -291,6 +351,48 @@ Walk retained history one page at a time using the server's continuation.
 #### Returns
 
 `AsyncGenerator`&lt;`Table`&lt;`any`&gt;, `any`, `unknown`&gt;
+
+***
+
+### profileArtifact()
+
+```ts
+profileArtifact(profileId): Promise<Record<string, unknown>>
+```
+
+Retrieve a completed capture's actual JSON: speedscope for CPU,
+tracemalloc for Python allocations, or Chrome Trace Event JSON for GPU.
+Truncation flags are preserved. Retention is at most one hour and eight
+captures per job, until earlier scratch reclamation or archival.
+Permission, expired-artifact and unsupported-server errors propagate.
+
+#### Parameters
+
+* **profileId**: `string`
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+***
+
+### profileStatus()
+
+```ts
+profileStatus(profileId): Promise<FunctionProfile>
+```
+
+Fetch capture identity and status, including retained lookup after refresh.
+Failed captures return status "failed" with the server's error reason.
+This never changes the parent job's cached state.
+
+#### Parameters
+
+* **profileId**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionProfile`](../interfaces/FunctionProfile.md)&gt;
 
 ***
 
@@ -422,3 +524,26 @@ can also be reopened with `Connection.openJob`; query IDs cannot.
 ```ts
 const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
 ```
+
+***
+
+### waitForProfile()
+
+```ts
+waitForProfile(profileId, options): Promise<FunctionProfile>
+```
+
+Wait for a capture with a configurable timeout and polling cadence.
+Defaults to 60 seconds with two seconds between requests. A timeout stops
+only this wait; the capture and Function refresh continue. A failed capture
+rejects with its server-reported reason. Keep its ID to wait again.
+
+#### Parameters
+
+* **profileId**: `string`
+
+* **options**: [`FunctionProfileWaitOptions`](../interfaces/FunctionProfileWaitOptions.md) = `{}`
+
+#### Returns
+
+`Promise`&lt;[`FunctionProfile`](../interfaces/FunctionProfile.md)&gt;
