@@ -202,6 +202,34 @@ describe.each(arrowVersions)(
       expect(Object.keys(after)).not.toContain("exp");
     });
 
+    it("should list branches as plain serializable objects", async () => {
+      await (await table.branches()).create("exp");
+      const list = await (await table.branches()).list();
+      const exp = list["exp"];
+
+      // values are plain objects: enumerable, spreadable, JSON-serializable
+      expect(Object.keys(exp)).toEqual(
+        expect.arrayContaining([
+          "parentBranch",
+          "parentVersion",
+          "createAt",
+          "manifestSize",
+          "metadata",
+        ]),
+      );
+      expect({ ...exp }.parentBranch).toBeNull();
+
+      const serialized = JSON.parse(JSON.stringify(list));
+      expect(serialized["exp"].parentBranch).toBeNull();
+      expect(serialized["exp"].parentVersion).toBeGreaterThanOrEqual(0);
+      expect(typeof serialized["exp"].createAt).toBe("number");
+      expect(serialized["exp"].createAt).toBeGreaterThan(0);
+      expect(serialized["exp"].manifestSize).toBeGreaterThan(0);
+      expect(serialized["exp"].metadata).toEqual({});
+
+      await (await table.branches()).delete("exp");
+    });
+
     it("should open a branch via open_table", async () => {
       const db = await connect(tmpDir.name);
       await table.add([{ id: 1 }]);
