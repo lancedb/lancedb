@@ -43,6 +43,16 @@ GPU class for Function workers.
 
 ***
 
+### gpuCount?
+
+```ts
+optional gpuCount: number;
+```
+
+Positive GPU count allocated to each Function worker.
+
+***
+
 ### initTimeoutSeconds?
 
 ```ts
