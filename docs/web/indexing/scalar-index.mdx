@@ -33,7 +33,7 @@ with vector and full-text search.
 
 LanceDB supports these scalar index types, among others:
 
-- `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
+- `BTREE`: Stores column data in sorted order for binary search. Best for numeric, temporal, string, or binary columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
 - `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_has_all` and `array_has_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
@@ -53,7 +53,7 @@ Use scalar indexes with:
 
 | Data Type                                                       | Filter                                    | Index Type   |
 |:----------------------------------------------------------------|:------------------------------------------|:-------------|
-| Numeric, String, Temporal                                       | `<`, `=`, `>`, `in`, `between`, `is null` | `BTREE`      |
+| Numeric, String, Binary, Temporal                               | `<`, `=`, `>`, `in`, `between`, `is null` | `BTREE`      |
 | Boolean, numbers or strings with fewer than 1,000 unique values | `<`, `=`, `>`, `in`, `between`, `is null` | `BITMAP`     |
 | List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
