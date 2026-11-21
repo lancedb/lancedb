@@ -309,26 +309,6 @@ handle or its reader stops direct streaming. Deferred execution continues until
 explicitly cancelled by default; use `cancel_on_drop=True` to attempt cancellation
 when its unread handle or reader is dropped.
 
-Set `timeout` to bound submission and result consumption together, including
-any time before opening a reader. Set `read_timeout` to limit each server read.
-Both accept `datetime.timedelta` and apply to one execution. An expired timeout
-or failed result read stops reading and attempts to cancel Flight execution.
-Cancellation on drop requires the submitting runtime to remain alive. Durable
-server-side jobs require explicit `db.cancel_job(query.job_id)`.
-
-```python
-from datetime import timedelta
-
-query = db.execute_query_async(
-    "SELECT * FROM events",
-    timeout=timedelta(seconds=30),
-    read_timeout=timedelta(seconds=5),
-    cancel_on_drop=True,
-)
-# To stop this execution explicitly:
-query.cancel()
-```
-
 For example:
 
 ```python
@@ -380,6 +360,27 @@ reader = db.execute_query(
 #     print(batch.num_rows)
 # await query.cancel()
 ```
+
+Set `timeout` to bound submission and result consumption together, including
+any time before opening a reader. Set `read_timeout` to limit each server read.
+Both accept `datetime.timedelta` and apply to one execution. An expired timeout
+or failed result read stops reading and attempts to cancel Flight execution.
+Cancellation on drop requires the submitting runtime to remain alive. Durable
+server-side jobs require explicit `db.cancel_job(query.job_id)`.
+
+```python
+from datetime import timedelta
+
+query = db.execute_query_async(
+    "SELECT * FROM events",
+    timeout=timedelta(seconds=30),
+    read_timeout=timedelta(seconds=5),
+    cancel_on_drop=True,
+)
+# To stop this execution explicitly:
+query.cancel()
+```
+
 
 ## Namespaces (Synchronous)
 

@@ -91,7 +91,8 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// The server may stream results on the initial call or defer execution and
 /// return result tickets. Dropping an unread handle or its reader stops a
 /// directly streamed query. Deferred execution continues until cancelled,
-/// unless a timeout or `cancel_on_drop` was set on its execution builder. This applies equally with and without parameters.
+/// unless a timeout or `cancel_on_drop` was set on its execution builder.
+/// This applies equally with and without parameters.
 /// [`Self::id`] is scoped to the connection that submitted the query. When the
 /// server runs the statement as a SQL job, [`Self::job_id`] exposes the durable
 /// Job Registry identifier accepted by `open_job`.

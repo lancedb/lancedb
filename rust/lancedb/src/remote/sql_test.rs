@@ -5084,41 +5084,44 @@ async fn remote_cleanup_preview_uses_sql_without_job_calls() {
 #[tokio::test]
 async fn sql_deadline_expires_unread_streamed_and_deferred_queries() {
     for deferred in [false, true] {
-        let service = TestSqlService {
-            adaptive: true,
-            defer: deferred,
-            ..TestSqlService::default()
-        };
-        let cancellations = service.cancel_count.clone();
-        let headers = service.headers.clone();
-        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
-        let mut request = parameterized("SELECT exchange stall", parameter_row());
-        request.options.timeout = Some(Duration::from_secs(3));
-        let query = client.execute(request).await.unwrap();
-        assert!(headers.lock().unwrap()[0].grpc_timeout.is_some());
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(4)).await;
-        tokio::task::yield_now().await;
-        tokio::time::resume();
-        assert_overall_timeout(query.describe().await, "result");
-        assert_overall_timeout(client.describe(query.id()).await, "result");
-        assert_overall_timeout(query.reader().await, "result");
-        if deferred {
-            wait_for(
-                &cancellations,
-                1,
-                "expiry must cancel deferred execution without a reader",
-            )
-            .await;
+        for parameters in [None, Some(parameter_row())] {
+            let service = TestSqlService {
+                adaptive: true,
+                defer: deferred,
+                ..TestSqlService::default()
+            };
+            let cancellations = service.cancel_count.clone();
+            let headers = service.headers.clone();
+            let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+            let mut request = ExecuteQueryRequest::new("SELECT slow get");
+            request.parameters = parameters;
+            request.options.timeout = Some(Duration::from_secs(3));
+            let query = client.execute(request).await.unwrap();
+            assert!(headers.lock().unwrap()[0].grpc_timeout.is_some());
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(4)).await;
+            tokio::task::yield_now().await;
+            tokio::time::resume();
+            assert_overall_timeout(query.describe().await, "result");
+            assert_overall_timeout(client.describe(query.id()).await, "result");
+            assert_overall_timeout(query.reader().await, "result");
+            if deferred {
+                wait_for(
+                    &cancellations,
+                    1,
+                    "expiry must cancel deferred execution without a reader",
+                )
+                .await;
+            }
+            let ordinary = client
+                .execute(ExecuteQueryRequest::new("SELECT 1"))
+                .await
+                .unwrap();
+            assert!(
+                !collect_result(&ordinary).await.unwrap().is_empty(),
+                "query options must not change the connection defaults"
+            );
         }
-        let ordinary = client
-            .execute(ExecuteQueryRequest::new("SELECT 1"))
-            .await
-            .unwrap();
-        assert!(
-            !collect_result(&ordinary).await.unwrap().is_empty(),
-            "query options must not change the connection defaults"
-        );
     }
 }
 
@@ -5262,4 +5265,36 @@ async fn a_completed_query_is_not_cancelled_on_drop_or_deadline() {
     );
     drop(query);
     assert_eq!(cancellations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn sql_deadline_applies_to_buffered_results_and_stops_its_timer_on_completion() {
+    for deferred in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer: deferred,
+            ..TestSqlService::default()
+        };
+        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let mut request = ExecuteQueryRequest::new("SELECT 1");
+        request.options.timeout = Some(Duration::from_secs(3));
+        let query = client.execute(request).await.unwrap();
+        let mut rows = query.reader().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            query.describe().await.unwrap().status,
+            QueryStatus::Finished
+        );
+        match client.queries.get(query.id()).unwrap() {
+            RegisteredQuery::Polled(query) => {
+                assert!(query.deadline_task.lock().unwrap().is_none())
+            }
+            RegisteredQuery::Streamed(query) => assert!(query.deadline_stopped()),
+        }
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        tokio::time::resume();
+        assert_overall_timeout(rows.try_next().await, "result");
+        assert!(rows.try_next().await.unwrap().is_none());
+    }
 }

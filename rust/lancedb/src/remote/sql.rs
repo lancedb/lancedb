@@ -846,6 +846,7 @@ struct RemoteQuery {
     failure: StdMutex<Option<String>>,
     cleanup_started: AtomicBool,
     runtime: tokio::runtime::Handle,
+    deadline_task: StdMutex<Option<tokio::task::AbortHandle>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -891,6 +892,7 @@ impl RemoteQuery {
             failure: StdMutex::new(None),
             cleanup_started: AtomicBool::new(false),
             runtime: tokio::runtime::Handle::current(),
+            deadline_task: StdMutex::new(None),
         })
     }
 
@@ -899,7 +901,7 @@ impl RemoteQuery {
             return;
         };
         let query = Arc::downgrade(self);
-        self.runtime.spawn(async move {
+        let task = self.runtime.spawn(async move {
             tokio::time::sleep_until(deadline).await;
             if let Some(query) = query.upgrade()
                 && !matches!(
@@ -907,11 +909,16 @@ impl RemoteQuery {
                     QueryLifecycle::Completed | QueryLifecycle::Cancelled
                 )
             {
-                query.fail(&Error::Runtime {
-                    message: "SQL query result timed out".to_string(),
-                });
+                query.fail(&sql_result_timeout());
             }
         });
+        *self.deadline_task.lock().unwrap() = Some(task.abort_handle());
+    }
+
+    fn stop_deadline(&self) {
+        if let Some(task) = self.deadline_task.lock().unwrap().take() {
+            task.abort();
+        }
     }
 
     fn fail(self: &Arc<Self>, error: &Error) {
@@ -930,6 +937,7 @@ impl RemoteQuery {
                 other => other.to_string(),
             });
         drop(lifecycle);
+        self.stop_deadline();
         self.mark_terminal();
         self.cancelled.notify_waiters();
         self.cancel_in_background();
@@ -986,6 +994,7 @@ impl RemoteQuery {
         }
         *lifecycle = QueryLifecycle::Cancelled;
         drop(lifecycle);
+        self.stop_deadline();
         self.mark_terminal();
         self.cancelled.notify_waiters();
         self.state_changed.notify_waiters();
@@ -1020,13 +1029,17 @@ impl RemoteQuery {
 
     fn mark_result_completed(&self) -> Result<()> {
         let mut lifecycle = self.lifecycle.lock().unwrap();
-        if matches!(
-            *lifecycle,
-            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
-        ) {
+        if self.failure.lock().unwrap().is_some()
+            || matches!(
+                *lifecycle,
+                QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+            )
+        {
             return Err(self.cancelled_error());
         }
         *lifecycle = QueryLifecycle::Completed;
+        drop(lifecycle);
+        self.stop_deadline();
         Ok(())
     }
 
@@ -1587,15 +1600,9 @@ impl QueryHandle for RemoteQueryHandle {
                 let _ = error_sender.send(Err(error)).await;
             }
         });
-        let stream = futures::stream::unfold(
-            (receiver, cancel_on_drop),
-            |(mut receiver, guard)| async move {
-                receiver.recv().await.map(|item| (item, (receiver, guard)))
-            },
-        );
         result_start.commit();
-        let stream: SendableRecordBatchStream =
-            Box::pin(SimpleRecordBatchStream::new(stream, schema));
+        let stream =
+            sql_result_stream(receiver, schema, self.query.client.deadline, cancel_on_drop);
         Ok(match self.job_id() {
             Some(job_id) => attach_sql_job_id(stream, &job_id),
             None => stream,
@@ -1605,6 +1612,33 @@ impl QueryHandle for RemoteQueryHandle {
     async fn cancel(&self) -> Result<()> {
         self.query.cancel().await
     }
+}
+
+fn sql_result_timeout() -> Error {
+    Error::Runtime {
+        message: "SQL query result timed out".to_string(),
+    }
+}
+
+fn sql_result_stream<G: Send + 'static>(
+    receiver: mpsc::Receiver<Result<RecordBatch>>,
+    schema: SchemaRef,
+    deadline: Option<tokio::time::Instant>,
+    guard: G,
+) -> SendableRecordBatchStream {
+    let stream = futures::stream::unfold(Some((receiver, guard)), move |state| async move {
+        let (mut receiver, guard) = state?;
+        let item = match deadline {
+            Some(deadline) => tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => return Some((Err(sql_result_timeout()), None)),
+                item = receiver.recv() => item,
+            },
+            None => receiver.recv().await,
+        };
+        item.map(|item| (item, Some((receiver, guard))))
+    });
+    Box::pin(SimpleRecordBatchStream::new(stream, schema))
 }
 
 fn query_description(

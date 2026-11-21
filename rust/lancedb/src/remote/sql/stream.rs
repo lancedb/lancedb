@@ -21,9 +21,9 @@ use uuid::Uuid;
 use super::{
     ABANDONED_QUERY_RETENTION, DEFAULT_READ_TIMEOUT, ResultEndpointStream, ResultStartGuard,
     SqlClientInner, TERMINAL_QUERY_RETENTION, resolve_timeout, sql_error, sql_flight_error,
-    sql_status_error, with_overall_timeout,
+    sql_result_stream, sql_status_error, with_overall_timeout,
 };
-use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
 use crate::sql::{QueryDescription, QueryHandle, QueryStatus};
 
@@ -56,6 +56,7 @@ pub(super) struct StreamingQuery {
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
     job_id: StdMutex<Option<String>>,
+    deadline_task: StdMutex<Option<tokio::task::AbortHandle>>,
 }
 
 struct PreparedStream {
@@ -273,6 +274,7 @@ impl StreamingQuery {
             terminal_at: OnceLock::new(),
             last_accessed: StdMutex::new(Instant::now()),
             job_id: StdMutex::new(job_id.filter(|job_id| !job_id.is_empty())),
+            deadline_task: StdMutex::new(None),
         }
     }
 
@@ -281,13 +283,19 @@ impl StreamingQuery {
             return;
         };
         let query = Arc::downgrade(self);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             tokio::time::sleep_until(deadline).await;
             if let Some(query) = query.upgrade() {
                 query.settle(Lifecycle::Failed("SQL query result timed out".to_string()));
                 query.response.lock().unwrap().take();
             }
         });
+        *self.deadline_task.lock().unwrap() = Some(task.abort_handle());
+    }
+
+    #[cfg(test)]
+    pub(super) fn deadline_stopped(&self) -> bool {
+        self.deadline_task.lock().unwrap().is_none()
     }
 
     pub(super) fn touch(&self) {
@@ -344,6 +352,9 @@ impl StreamingQuery {
         *lifecycle = state;
         drop(lifecycle);
         let _ = self.terminal_at.set(Instant::now());
+        if let Some(task) = self.deadline_task.lock().unwrap().take() {
+            task.abort();
+        }
         self.cancelled.notify_waiters();
         true
     }
@@ -578,12 +589,8 @@ impl QueryHandle for StreamingQueryHandle {
                 let _ = error_sender.send(Err(error)).await;
             }
         });
-        let stream = futures::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|item| (item, receiver))
-        });
         result_start.commit();
-        let stream: SendableRecordBatchStream =
-            Box::pin(SimpleRecordBatchStream::new(stream, schema));
+        let stream = sql_result_stream(receiver, schema, self.query.client.deadline, ());
         Ok(match self.job_id() {
             Some(job_id) => super::attach_sql_job_id(stream, &job_id),
             None => stream,
