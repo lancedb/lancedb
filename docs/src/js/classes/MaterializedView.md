@@ -72,17 +72,29 @@ source version instead of the latest. Remote SQL refreshes do not support
 source-version pinning. Their results leave `mode`, `rowsWritten`, and
 `sourceVersion` absent because the SQL job adapter does not expose these metrics.
 
+Resource budgets and GPU placement require a supporting Enterprise server
+with an isolated execution backend. Embedded refreshes reject these options.
+Budgets apply to the entire execution, not individual Functions or workers,
+and do not increase refresh parallelism. Omit them to preserve defaults.
+
 #### Parameters
 
-* **options?**
-
-* **options.full?**: `boolean`
-
-* **options.sourceVersion?**: `number`
+* **options?**: [`RefreshMaterializedViewOptions`](../interfaces/RefreshMaterializedViewOptions.md)
 
 #### Returns
 
 `Promise`&lt;[`RefreshMaterializedViewResult`](../interfaces/RefreshMaterializedViewResult.md)&gt;
+
+#### Example
+
+```ts
+await view.refresh({
+  cpuMillis: 8000,
+  memoryBytes: 16 * 1024 ** 3,
+  gpuCount: 2,
+  gpuClass: "h100",
+});
+```
 
 ***
 

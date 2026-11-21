@@ -60,8 +60,8 @@ LanceDB Embedded it always matches `rows_written` from the most recent
 refresh.
 
 {/*
-Draft: publish this section after the Python/Rust resource-budget SDK support
-is released. TypeScript parity is tracked separately in issue #4903.
+Draft: publish this section after the Python/Rust/TypeScript resource-budget
+SDK support is released.
 
 ## Resource budgets {#resources}
 
@@ -76,6 +76,15 @@ job = view.refresh_async(
     gpu_class="h100",
 )
 job.wait()
+```
+
+```typescript TypeScript icon="typescript"
+await view.refresh({
+  cpuMillis: 8000,
+  memoryBytes: 16 * 1024 ** 3,
+  gpuCount: 2,
+  gpuClass: "h100",
+});
 ```
 
 ```rust Rust icon="rust"
@@ -96,11 +105,13 @@ async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
 ```
 </CodeGroup>
 
-The same options are available on `refresh`, asynchronous Python connections,
-and the Rust refresh builder (`cpu_millis`, `memory_bytes`, `gpu_count`, and
-`gpu_class`). CPU is in millicores (8000 means eight cores), memory is bytes,
-and GPU count is an aggregate concurrent cap. CPU or memory requires all three
-budget fields. Use zero GPUs for a CPU-only view, or specify a GPU cap alone.
+The same options are available on Python's `refresh`, asynchronous Python
+connections, and the Rust refresh builder (`cpu_millis`, `memory_bytes`,
+`gpu_count`, and `gpu_class`). TypeScript uses `cpuMillis`, `memoryBytes`,
+`gpuCount`, and `gpuClass` on `view.refresh()`. CPU is in millicores (8000 means
+eight cores), memory is bytes, and GPU count is an aggregate concurrent cap.
+CPU or memory requires all three budget fields. Use zero GPUs for a CPU-only
+view, or specify a GPU cap alone.
 
 The cap covers the refresh execution and its Function processes together.
 It does not allocate that budget separately to each Function. A GPU class
@@ -112,9 +123,6 @@ These controls require an Enterprise server with an isolated backend that can
 enforce them; Embedded and unsupported execution backends reject them. Earlier
 Enterprise servers reject the new SQL options. See the
 [SQL resource options](/sql/dml/refresh-materialized-view#resources).
-
-TypeScript does not expose these options yet; SDK parity is tracked in
-[issue #4903](https://github.com/lancedb/lancedb/issues/4903).
 
 */}
 

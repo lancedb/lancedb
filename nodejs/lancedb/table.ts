@@ -57,6 +57,7 @@ import {
   IndexConfig,
   IndexStatistics,
   JobFailureInfo,
+  MaterializedViewResourceOptions,
   Branches as NativeBranches,
   OptimizeStats,
   RTEStats,
@@ -1026,6 +1027,7 @@ export abstract class Table {
   abstract refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    resources?: MaterializedViewResourceOptions,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -1970,8 +1972,13 @@ export class LocalTable extends Table {
   async refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    resources?: MaterializedViewResourceOptions,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion, full);
+    return await this.inner.refreshMaterializedView(
+      sourceVersion,
+      full,
+      resources,
+    );
   }
 
   async materializedViewDefinition(): Promise<string> {
