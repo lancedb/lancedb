@@ -11907,27 +11907,9 @@ mod tests {
             .computed_options(crate::table::computed_columns::ComputedColumnOptions {
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                default_total_cpu_millis: Some(
-                    (
-                        crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-                            .with_total_gpu_count(2),
-                    )
-                        .total_cpu_millis,
-                ),
-                default_total_memory_bytes: Some(
-                    (
-                        crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-                            .with_total_gpu_count(2),
-                    )
-                        .total_memory_bytes,
-                ),
-                default_total_gpu_count: Some(
-                    (
-                        crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-                            .with_total_gpu_count(2),
-                    )
-                        .total_gpu_count,
-                ),
+                default_total_cpu_millis: Some(8000),
+                default_total_memory_bytes: Some(17179869184),
+                default_total_gpu_count: Some(2),
             })
             .execute()
             .await

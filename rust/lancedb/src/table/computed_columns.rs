@@ -2808,7 +2808,7 @@ mod tests {
                 .field_with_name("assignment")
                 .unwrap()
                 .metadata()
-                .contains_key(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
+                .contains_key("computed_column.default_total_cpu_millis")
         );
     }
 
