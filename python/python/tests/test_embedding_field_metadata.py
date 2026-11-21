@@ -82,3 +82,75 @@ def test_extra_metadata_preserves_schema_and_local_embedding(tmp_path, monkeypat
     reopened = lancedb.connect(tmp_path).open_table("rows")
     assert isinstance(reopened.embedding_functions["vector"].function, LocalEmbedding)
     assert reopened.search("alpha").limit(1).to_list()[0]["text"] == "alpha"
+
+
+@pytest.fixture
+def local_embedding(monkeypatch):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+    registry.register("test-embedding-field-pairs")(LocalEmbedding)
+
+
+def test_one_function_pairs_source_and_vector_columns_in_order(
+    tmp_path, local_embedding
+):
+    function = LocalEmbedding.create(max_retries=0)
+
+    class Doc(LanceModel):
+        title: str = function.SourceField()
+        title_vector: Vector(2) = function.VectorField()
+        body: str = function.SourceField()
+        body_vector: Vector(2) = function.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    db.create_table("docs", schema=Doc, data=[{"title": "alpha", "body": "beta"}])
+    table = db.open_table("docs")
+    table.add([{"title": "beta", "body": "alpha"}])
+    rows = table.to_arrow().to_pylist()
+    assert [row["title_vector"] for row in rows] == [[1.0, 0.0], [0.0, 1.0]]
+    assert [row["body_vector"] for row in rows] == [[0.0, 1.0], [1.0, 0.0]]
+
+
+def test_one_function_rejects_unpairable_source_columns(tmp_path, local_embedding):
+    function = LocalEmbedding.create(max_retries=0)
+
+    class Doc(LanceModel):
+        title: str = function.SourceField()
+        body: str = function.SourceField()
+        vector: Vector(2) = function.VectorField()
+
+    with pytest.raises(ValueError, match=r"\(title, body\).*\(vector\)"):
+        lancedb.connect(tmp_path).create_table("docs", schema=Doc)
+
+
+def test_separate_functions_embed_their_own_source_columns(tmp_path, local_embedding):
+    title_function = LocalEmbedding.create(max_retries=0)
+    body_function = LocalEmbedding.create(max_retries=0)
+
+    class Doc(LanceModel):
+        title: str = title_function.SourceField()
+        title_vector: Vector(2) = title_function.VectorField()
+        body: str = body_function.SourceField()
+        body_vector: Vector(2) = body_function.VectorField()
+
+    table = lancedb.connect(tmp_path).create_table(
+        "docs", schema=Doc, data=[{"title": "alpha", "body": "beta"}]
+    )
+    row = table.to_arrow().to_pylist()[0]
+    assert row["title_vector"] == [1.0, 0.0]
+    assert row["body_vector"] == [0.0, 1.0]
+
+
+def test_one_source_column_can_feed_several_vector_columns(tmp_path, local_embedding):
+    function = LocalEmbedding.create(max_retries=0)
+
+    class Doc(LanceModel):
+        text: str = function.SourceField()
+        vector: Vector(2) = function.VectorField()
+        vector_copy: Vector(2) = function.VectorField()
+
+    table = lancedb.connect(tmp_path).create_table(
+        "docs", schema=Doc, data=[{"text": "alpha"}]
+    )
+    row = table.to_arrow().to_pylist()[0]
+    assert row["vector"] == row["vector_copy"] == [1.0, 0.0]
