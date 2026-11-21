@@ -2312,7 +2312,7 @@ async def test_async_open_table_with_branch_version(tmp_path):
 def test_create_index_async_returns_done_job(mem_db: DBConnection):
     table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
     job = table.create_index_async("id", config=BTree())
-    assert job.id is None
+    assert job.id() is None
     assert job.wait() is None
     assert len(table.list_indices()) == 1
     job.cancel()
@@ -6646,7 +6646,7 @@ def test_refresh_column_async_returns_job(tmp_path, batch_size):
     table.add_columns(computed={"doubled": "x * 2"})
 
     job = table.refresh_column_async("doubled", batch_size=batch_size)
-    assert job.id is None  # in-process jobs have no server id
+    assert job.id() is None  # in-process jobs have no server id
     result = job.wait()
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.rows_assigned == 2

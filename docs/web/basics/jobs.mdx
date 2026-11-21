@@ -26,47 +26,85 @@ the method returns.
 <CodeGroup>
 ```python Python icon="python"
 job = tbl.create_index_async("vector", replace=True)
+job.checkout_latest()
 
-print(job.id)
-print(job.job_type)
-print(job.status())
+print(job.id())
+print(job.job_type())
+print(job.state())
 ```
 </CodeGroup>
 
-## Cached properties and live calls {#snapshots}
+## Cached reads and live calls {#snapshots}
 
-Python job properties describe the last observation; reading them does not
-contact the server. Submission need not fetch the full registry record, so
-some properties can initially be `None`.
+Python job handles expose data through methods. The cached read methods return
+the last observation without contacting the server. Submission need not fetch
+the full registry record, so some read methods can initially return `None`.
+
+Call `job.checkout_latest()` to update the handle's cached lifecycle state and
+complete registry record together. This updates the values returned by
+`state()`, `job_type()`, `creation_ms()`, `spec()`, `result()`, and `failure()`
+from one server observation.
+It updates the existing handle in place, returns `None`, and does not wait for
+the job to finish or restart it. For SQL-backed or in-process jobs, it updates
+the lifecycle state without registry details.
 
 | Surface | Contract |
 | --- | --- |
-| `state` | Last observed lifecycle state. It does not update on its own. |
-| `job_type`, `creation_ms` | Cached job kind and creation time in epoch milliseconds. |
-| `spec` | Complete, job-specific submitted specification. Read this separately from the bounded `repr(job)` display. |
-| `result` | Cached, job-specific reported data; it is not necessarily the typed object returned by `wait()`. |
-| `failure` | Cached `JobFailureInfo`, when the server reports a terminal failure. |
+| `id()` | Opaque operation ID, when available. |
+| `state()` | Last observed lifecycle state. It does not update on its own. |
+| `job_type()`, `creation_ms()` | Cached job kind and creation time in epoch milliseconds. |
+| `spec()` | Complete, job-specific submitted specification. Read this separately from the bounded `repr(job)` display. |
+| `result()` | Cached, job-specific reported data; it is not necessarily the typed object returned by `wait()`. |
+| `failure()` | Cached `JobFailureInfo`, when the server reports a terminal failure. |
+| `checkout_latest()` | Fetch and cache the latest lifecycle state and complete registry record together. Failed and cancelled states are cached without raising a job-failure exception; request errors can still raise. |
 | `status()` | Live lifecycle request. For registry jobs it also caches the full record. A failed state is returned without raising a job-failure exception; request errors can still raise. |
-| `refresh()` | Fetch and cache the current record without waiting for completion. |
-| `events(...)` | Separate live request returning a `pyarrow.Table` of recorded events; it does not refresh the properties. |
+| `refresh()` | Existing method with the same cache-update behavior as `checkout_latest()`. |
+| `events(...)` | Separate live request returning a `pyarrow.Table` of recorded events; it does not refresh the cached record. |
 | `wait(...)` | Poll until completion and return the operation's typed result, or raise on failure/cancellation. Refresh afterward when you need the complete final registry record. |
+
+`status()`, `refresh()`, and `events(...)` remain available. Read `job.state()`
+after `checkout_latest()` to poll using the same snapshot as `result()` and
+`failure()`. Event history is a separate live request through `events(...)`
+and does not refresh the cached record.
+
+<Note>
+These examples require a Python SDK release with `checkout_latest()` and the
+method-based read accessors. Cached reads such as `job.state()` and
+`job.result()` are synchronous on both `Job` and `AsyncJob`. Async handles use
+`await job.checkout_latest()` or `await job.refresh()` for the live update.
+</Note>
 
 For example, poll a registry handle and then retrieve its final details:
 
-```python
+<CodeGroup>
+```python Synchronous icon="python"
 import time
 
-state = job.status()
-while state == "running":
-    print(job.state)
+job.checkout_latest()
+while job.state() == "running":
+    print(job.state(), job.failure())
     time.sleep(2)
-    state = job.status()
+    job.checkout_latest()
 
 result = job.wait()
-job.refresh()
+job.checkout_latest()
 print(result)
-print(job.spec)
+print(job.spec())
 ```
+```python Asynchronous icon="python"
+import asyncio
+
+await job.checkout_latest()
+while job.state() == "running":
+    print(job.state(), job.failure())
+    await asyncio.sleep(2)
+    await job.checkout_latest()
+
+result = await job.wait()
+await job.checkout_latest()
+print(result, job.spec())
+```
+</CodeGroup>
 
 The four lifecycle strings below are the usual SDK contract; newer server
 states may pass through an older client. Do not infer execution progress from
@@ -110,12 +148,12 @@ from datetime import timedelta
 from lancedb.exceptions import JobFailedError, JobCancelledError
 
 job = tbl.create_index_async("vector", replace=True)
-job_id = job.id  # Save the ID to reopen an Enterprise registry job later.
+job_id = job.id()  # Save the ID to reopen an Enterprise registry job later.
 
 try:
     result = job.wait(timeout=timedelta(minutes=10))
 except JobFailedError:
-    print(f"job failed: {job.failure}")
+    print(f"job failed: {job.failure()}")
 except JobCancelledError:
     print("job was cancelled")
 except ConnectionError as exc:
@@ -179,8 +217,8 @@ work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API
 <CodeGroup>
 ```python Python icon="python"
 job = db.open_job(job_id)  # raises JobNotFoundError if unknown
-job.refresh()              # pull the latest status from the server
-print(job.status())
+job.checkout_latest()
+print(job.state(), job.result(), job.failure())
 
 events = job.events(limit=100)
 print(events.to_pylist())
@@ -263,8 +301,8 @@ For a Function refresh, `wait()` returns a `RefreshColumnResult` such as
 `rows_assigned`, `rows_failed`, `rows_remaining`, `source_version` and optional
 `published_version`. Other job types have different results. Do not parse the
 printed representation to recover a spec, result or progress measurement.
-For object-shaped registry data, `job.spec` and `job.result` are decoded Python
-dictionaries: access fields with keys, such as `job.result.get("summary")`
+For object-shaped registry data, `job.spec()` and `job.result()` are decoded Python
+dictionaries: access fields with keys, such as `job.result().get("summary")`
 after refreshing a successful Function job. The separate typed object from
 `wait()` uses attributes, such as `result.rows_assigned`.
 
@@ -414,8 +452,8 @@ SQL query engine rather than the job registry:
 | Secrets | Create, alter, list, describe, drop | Credential values are bound as SQL parameters, never embedded in SQL text or returned in results. `DESCRIBE SECRET` additionally exposes rotation history. |
 | Views | Create, describe, list, drop | Create returns the stored definition and schema. Drop confirms catalog removal while cleanup continues separately. |
 
-All of these report `job.job_type` as `"query"`, with `job.id` holding the
-connection-scoped SQL query UUID -- use `describe_query(job.id)` to inspect
+All of these report `job.job_type()` as `"query"`, with `job.id()` holding the
+connection-scoped SQL query UUID -- use `describe_query(job.id())` to inspect
 one. Unlike registry handles, they don't expose event history, can't be
 reopened through `open_job()` or reattached after a client restart, and
 cancellation depends on the SQL server's support for it.

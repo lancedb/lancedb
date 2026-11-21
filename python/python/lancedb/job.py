@@ -215,6 +215,11 @@ class AsyncJob(Generic[T]):
     The operation may already be complete when the handle is created. ``T``
     is the endpoint's terminal result type; unit-result jobs resolve to
     ``None``.
+
+    Methods such as ``state()``, ``result()``, ``failure()`` and ``spec()`` read
+    cached values without contacting the backend, including on async handles. Use
+    ``await job.checkout_latest()`` to refresh the cached state and registry
+    details together. ``events()`` makes a separate request for event history.
     """
 
     def __init__(
@@ -232,15 +237,18 @@ class AsyncJob(Generic[T]):
         self._last_progress_snapshot = enriched
         return enriched
 
-    @property
     def id(self) -> Optional[str]:
-        """The operation's opaque ID, interpreted according to :attr:`job_type`.
+        """Return the operation's opaque ID, interpreted according to ``job_type()``.
 
         Registry jobs expose a registry job ID; SQL-backed jobs expose a
         connection-scoped query ID as a string. Local operations return ``None``.
         Query IDs cannot be used with registry job APIs or to resume after a
         client restart.
         """
+        return self._id
+
+    @property
+    def _id(self) -> Optional[str]:
         return self._inner.id if self._inner is not None else None
 
     async def status(self) -> str:
@@ -272,9 +280,9 @@ class AsyncJob(Generic[T]):
         state = await self._inner.status()
         description = getattr(self._inner, "_description", None)
         if description is None or description.progress is None:
-            if self.job_type == "query":
+            if self.job_type() == "query":
                 return {
-                    "job_id": self.id,
+                    "job_id": self.id(),
                     "job_type": "query",
                     "state": state,
                     "client_elapsed_time_millis": int(
@@ -332,7 +340,9 @@ class AsyncJob(Generic[T]):
         if self._inner is None:
             return cast(T, None)
         query_progress = (
-            progress is not False and progress is not None and self.job_type == "query"
+            progress is not False
+            and progress is not None
+            and self.job_type() == "query"
         )
         progress_obj, owns = _normalize_job_progress(progress, query=query_progress)
         progress_callback = _job_progress_callback(progress_obj, self._enrich_progress)
@@ -406,15 +416,15 @@ class AsyncJob(Generic[T]):
                     if timeout is None:
                         raise
                     raise TimeoutError(
-                        _timeout_message(self.id, timeout, self.job_type)
+                        _timeout_message(self.id(), timeout, self.job_type())
                     ) from error
                 identity = (
-                    f"job {self.id!r}" if self.id is not None else "the operation"
+                    f"job {self.id()!r}" if self.id() is not None else "the operation"
                 )
-                if self.id is not None and self.job_type != "query":
+                if self.id() is not None and self.job_type() != "query":
                     reconnect = (
-                        f"Use db.open_job({self.id!r}) to reconnect, then call wait() "
-                        "on the returned job."
+                        f"Use db.open_job({self.id()!r}) to reconnect, "
+                        "then call wait() on the returned job."
                     )
                 else:
                     reconnect = "Call wait() on this job handle to reconnect."
@@ -438,7 +448,7 @@ class AsyncJob(Generic[T]):
 
     async def refresh(self) -> None:
         """Ask the backend for this job's current state, and for a server-side
-        job its full record, then cache it for the properties below.
+        job its full record, then cache it for the read methods below.
 
         Registry details are `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
@@ -450,49 +460,96 @@ class AsyncJob(Generic[T]):
             return
         await self._inner.refresh()
 
-    @property
-    def state(self) -> Optional[str]:
-        """The last observed lifecycle state, without contacting the backend.
+    async def checkout_latest(self) -> None:
+        """Refresh this handle's cached state and complete job record together.
 
-        `None` until the handle has talked to it. See :meth:`AsyncJob.refresh`.
+        For a registry job, each call fetches one current record and updates
+        the values returned by ``state()``, ``job_type()``, ``creation_ms()``,
+        ``spec()``, ``result()`` and ``failure()`` from that observation. Calling
+        those read methods afterward does not contact the backend. Query-backed
+        and in-process jobs update their lifecycle state without registry details.
+
+        Updates this handle in place and returns ``None``. It does not wait for
+        completion or restart the operation. Failed or cancelled states are
+        cached without raising a job-failure exception; request errors propagate
+        and leave the cached record unchanged. Event history remains a separate
+        live request through [events()][lancedb.job.AsyncJob.events].
+
+        [refresh()][lancedb.job.AsyncJob.refresh] remains available with the
+        same behavior.
+
+        Examples
+        --------
+        >>> await job.checkout_latest()  # doctest: +SKIP
+        >>> print(job.state(), job.result(), job.failure())  # doctest: +SKIP
         """
-        if self._inner is None:
-            return "finished"
-        return self._inner._state
+        await self.refresh()
+
+    def state(self) -> Optional[str]:
+        """Return the last observed lifecycle state without contacting the backend.
+
+        `None` until the handle has talked to it. Call
+        [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] to refresh
+        the state and registry details together.
+        """
+        return self._state
 
     @property
+    def _state(self) -> Optional[str]:
+        return self._inner._state if self._inner is not None else "finished"
+
     def job_type(self) -> Optional[str]:
-        """The job's kind of work, without contacting the backend.
+        """Return the job's kind of work without contacting the backend.
 
         SQL-backed handles report ``"query"`` immediately. Registry handles
         report the server's job type after :meth:`refresh` or :meth:`status`.
         In-process handles return ``None``.
         """
+        return self._job_type
+
+    @property
+    def _job_type(self) -> Optional[str]:
         return self._inner.job_type if self._inner is not None else None
 
-    @property
     def creation_ms(self) -> Optional[int]:
-        """When the job was created, in milliseconds since the epoch."""
+        """Return the cached creation time in epoch milliseconds; no backend call."""
+        return self._creation_ms
+
+    @property
+    def _creation_ms(self) -> Optional[int]:
         return self._field("creation_ms")
 
-    @property
     def spec(self) -> Optional[Any]:
-        """The job-type-specific specification it was submitted with."""
+        """Return the complete cached job specification without a backend call."""
+        return self._spec
+
+    @property
+    def _spec(self) -> Optional[Any]:
         return self._field("spec")
 
-    @property
     def result(self) -> Optional[Any]:
-        """The job-type-specific terminal result, as reported data rather than
-        the typed model :meth:`AsyncJob.wait` returns.
+        """Return the cached job-specific terminal result without a backend call.
 
-        `None` until the job succeeds, so a job that never terminates reports
-        its progress through :meth:`AsyncJob.events` instead.
+        This is reported data rather than the typed model
+        [wait()][lancedb.job.AsyncJob.wait] returns. It can remain `None` until
+        a successful registry record is fetched with
+        [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] or another
+        live status request. For ongoing progress, use
+        [progress()][lancedb.job.AsyncJob.progress] or
+        [events()][lancedb.job.AsyncJob.events].
         """
+        return self._result
+
+    @property
+    def _result(self) -> Optional[Any]:
         return self._field("result")
 
-    @property
     def failure(self) -> Optional[JobFailureInfo]:
-        """Why the job failed, when it failed and the server reports a reason."""
+        """Return cached failure details, when reported, without a backend call."""
+        return self._failure
+
+    @property
+    def _failure(self) -> Optional[JobFailureInfo]:
         return self._field("failure")
 
     @property
@@ -590,7 +647,11 @@ class AsyncJob(Generic[T]):
     ) -> "pa.Table":
         """This job's recorded lifecycle events.
 
-        Where the properties above report a terminal result only once the job
+        Each call requests event history without updating the cached record.
+        Use [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] to refresh
+        the job's state and registry details together.
+
+        Where the read methods above report a terminal result only once the job
         reaches one, events are written as the job runs and outlive the workers
         that produced them. A distributed job records a `claim`/`claim_complete`
         pair per unit of work, each carrying `rows_processed`, so a job that
@@ -642,45 +703,53 @@ def _repr_payload(value: Any) -> str:
 def _job_repr(kind: str, job: Any) -> str:
     """Show cached job identity and bounded previews without backend calls.
 
-    The complete payloads remain available through ``spec`` and ``result``.
+    The complete payloads remain available through ``spec()`` and ``result()``.
     """
-    state = job.state
+    state = job.state()
     if state is None:
         # Nothing has been fetched yet, so there is nothing to lay out.
-        known = f"id={_repr_payload(job.id)}, " if job.id is not None else ""
+        known = f"id={_repr_payload(job.id())}, " if job.id() is not None else ""
         return f"{kind}({known}not refreshed)"
 
     fields = []
-    if job.id is not None:
-        fields.append(f"id={_repr_payload(job.id)}")
+    if job.id() is not None:
+        fields.append(f"id={_repr_payload(job.id())}")
     fields.append(f"state={_repr_payload(state)}")
     for name in ("job_type", "creation_ms"):
-        value = getattr(job, name)
+        value = getattr(job, name)()
         if value is not None:
             fields.append(f"{name}={_repr_payload(value)}")
     for name in ("spec", "result"):
-        value = getattr(job, name)
+        value = getattr(job, name)()
         if value is not None:
             fields.append(f"{name}={_repr_payload(value)}")
-    if job.failure is not None:
-        fields.append(f"failure={_repr_payload(job.failure)}")
+    if job.failure() is not None:
+        fields.append(f"failure={_repr_payload(job.failure())}")
     body = "".join(f"\n{_REPR_INDENT}{field}," for field in fields)
     return f"{kind}({body}\n)"
 
 
 class Job(Generic[T]):
-    """Synchronous counterpart of `AsyncJob` with the same result type."""
+    """Synchronous counterpart of `AsyncJob` with the same result type.
+
+    Call ``state()``, ``result()``, ``failure()`` and ``spec()`` to read the
+    cached record after ``job.checkout_latest()`` refreshes it holistically.
+    ``events()`` makes a separate live request for event history.
+    """
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
         self._inner = inner
 
-    @property
     def id(self) -> Optional[str]:
-        """Identifies the operation on the server that is running it.
+        """Return the operation's opaque server ID without a backend call.
 
-        See :attr:`AsyncJob.id`.
+        See [AsyncJob.id()][lancedb.job.AsyncJob.id].
         """
-        return self._inner.id if self._inner is not None else None
+        return self._id
+
+    @property
+    def _id(self) -> Optional[str]:
+        return self._inner._id if self._inner is not None else None
 
     def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
@@ -740,35 +809,87 @@ class Job(Generic[T]):
             return
         LOOP.run(self._inner.refresh())
 
-    @property
+    def checkout_latest(self) -> None:
+        """Refresh this handle's cached state and complete job record together.
+
+        Updates this handle in place and returns ``None`` without waiting for
+        completion. See
+        [AsyncJob.checkout_latest()][lancedb.job.AsyncJob.checkout_latest]
+        for refreshed fields and availability. ``refresh()`` remains available
+        with the same behavior.
+
+        Examples
+        --------
+        >>> job.checkout_latest()  # doctest: +SKIP
+        >>> print(job.state(), job.result(), job.failure())  # doctest: +SKIP
+        """
+        self.refresh()
+
     def state(self) -> Optional[str]:
-        """The last observed lifecycle state. See :attr:`AsyncJob.state`."""
-        return self._inner.state if self._inner is not None else "finished"
+        """Return the cached lifecycle state without a backend call.
+
+        See [AsyncJob.state()][lancedb.job.AsyncJob.state].
+        """
+        return self._state
 
     @property
+    def _state(self) -> Optional[str]:
+        return self._inner._state if self._inner is not None else "finished"
+
     def job_type(self) -> Optional[str]:
-        """The job's type. See :attr:`AsyncJob.job_type`."""
-        return self._inner.job_type if self._inner is not None else None
+        """Return the cached job type without a backend call.
+
+        See [AsyncJob.job_type()][lancedb.job.AsyncJob.job_type].
+        """
+        return self._job_type
 
     @property
+    def _job_type(self) -> Optional[str]:
+        return self._inner._job_type if self._inner is not None else None
+
     def creation_ms(self) -> Optional[int]:
-        """When the job was created. See :attr:`AsyncJob.creation_ms`."""
-        return self._field("creation_ms")
+        """Return the cached creation time in epoch milliseconds.
+
+        See [AsyncJob.creation_ms()][lancedb.job.AsyncJob.creation_ms].
+        """
+        return self._creation_ms
 
     @property
+    def _creation_ms(self) -> Optional[int]:
+        return self._field("_creation_ms")
+
     def spec(self) -> Optional[Any]:
-        """The job's specification. See :attr:`AsyncJob.spec`."""
-        return self._field("spec")
+        """Return the complete cached specification without a backend call.
+
+        See [AsyncJob.spec()][lancedb.job.AsyncJob.spec].
+        """
+        return self._spec
 
     @property
+    def _spec(self) -> Optional[Any]:
+        return self._field("_spec")
+
     def result(self) -> Optional[Any]:
-        """The job's terminal result. See :attr:`AsyncJob.result`."""
-        return self._field("result")
+        """Return the cached terminal result without a backend call.
+
+        See [AsyncJob.result()][lancedb.job.AsyncJob.result].
+        """
+        return self._result
 
     @property
+    def _result(self) -> Optional[Any]:
+        return self._field("_result")
+
     def failure(self) -> Optional[JobFailureInfo]:
-        """Why the job failed. See :attr:`AsyncJob.failure`."""
-        return self._field("failure")
+        """Return cached failure details without a backend call.
+
+        See [AsyncJob.failure()][lancedb.job.AsyncJob.failure].
+        """
+        return self._failure
+
+    @property
+    def _failure(self) -> Optional[JobFailureInfo]:
+        return self._field("_failure")
 
     @property
     def _spec_json(self) -> Optional[str]:
