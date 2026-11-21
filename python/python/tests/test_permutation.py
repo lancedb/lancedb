@@ -1306,6 +1306,36 @@ def test_iter_skip_last_batch(some_permutation: Permutation):
         assert len(batch) == batch_size
 
 
+def test_iter_keeps_rows_from_short_reader_batches(some_table: Table):
+    """A filtered split read can yield short batches before the end."""
+    perm_tbl = (
+        permutation_builder(some_table)
+        .split_hash(["id"], [1, 1], discard_weight=0)
+        .execute()
+    )
+    permutation = Permutation.from_tables(some_table, perm_tbl, 0)
+    num_rows = permutation.num_rows
+    expected_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(num_rows)))
+    ]
+    batch_size = 37
+    assert num_rows % batch_size != 0
+
+    batches = list(permutation.iter(batch_size, skip_last_batch=False))
+    assert [len(batch) for batch in batches[:-1]] == [batch_size] * (len(batches) - 1)
+    assert [row["id"] for batch in batches for row in batch] == expected_ids
+
+    num_full = num_rows // batch_size
+    full_batches = list(permutation.iter(batch_size, skip_last_batch=True))
+    assert [len(batch) for batch in full_batches] == [batch_size] * num_full
+    assert [row["id"] for batch in full_batches for row in batch] == expected_ids[
+        : num_full * batch_size
+    ]
+
+    dunder_batches = list(permutation.with_batch_size(batch_size))
+    assert [len(batch) for batch in dunder_batches] == [batch_size] * num_full
+
+
 def test_iter_different_batch_sizes(some_permutation: Permutation):
     """Test iteration with different batch sizes."""
 
