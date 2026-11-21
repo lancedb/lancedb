@@ -22,6 +22,7 @@ from lancedb.functions import (
     SecretReference,
 )
 from lancedb.table import AsyncTable
+from lancedb.resources import _resource_options
 
 
 FIXTURES = (
@@ -614,7 +615,11 @@ class _FunctionDeclarationInner:
         output_name,
         auto_refresh_enabled,
         auto_refresh_interval_seconds,
-        auto_refresh_resource_budget,
+        total_cpu_millis,
+        total_memory_bytes,
+        total_gpu_count,
+        gpu_class=None,
+        gpu_count=None,
     ):
         self.calls.append(
             (
@@ -622,7 +627,9 @@ class _FunctionDeclarationInner:
                 output_name,
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
-                auto_refresh_resource_budget,
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
             )
         )
         return "declared"
@@ -648,18 +655,22 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
-    assert inner.calls[-1][2:] == (None, None, None)
+    assert inner.calls[-1][2:] == (None, None, None, None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
     )
     result = await table.add_columns(
-        bare, auto_refresh_enabled=False, auto_refresh_interval_seconds=300
+        bare,
+        auto_refresh_enabled=False,
+        auto_refresh_interval_seconds=300,
+        total_cpu_millis=8000,
+        total_gpu_count=0,
     )
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
-    assert inner.calls[-1][2:] == (False, 300, None)
+    assert inner.calls[-1][2:] == (False, 300, 8000, None, 0)
 
 
 @pytest.mark.asyncio
@@ -715,3 +726,20 @@ def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
     renamed = application.rename(columns={"normalized_text": "search_text"})
     assert dict(application.columns) == {}
     assert dict(renamed.columns) == {"normalized_text": "search_text"}
+
+
+@pytest.mark.parametrize("gpu_count", [0, -1, True, 1.5, 2**32])
+def test_gpu_worker_count_rejects_invalid_values(gpu_count):
+    with pytest.raises(ValueError, match="gpu_count"):
+        _resource_options(None, None, None, gpu_count=gpu_count)
+
+
+def test_gpu_worker_settings_are_separate_from_execution_totals():
+    assert _resource_options(8000, None, 8, gpu_class="any", gpu_count=2) == {
+        "total_cpu_millis": 8000,
+        "total_gpu_count": 8,
+        "gpu_class": "any",
+        "gpu_count": 2,
+    }
+    with pytest.raises(ValueError, match="cannot fit"):
+        _resource_options(None, None, 1, gpu_count=2)

@@ -65,39 +65,39 @@ use crate::{Error, Result};
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct FunctionWorkerResourceBudget {
-    pub cpu_millis: u64,
-    pub memory_bytes: u64,
+    pub total_cpu_millis: u64,
+    pub total_memory_bytes: u64,
     /// Aggregate GPU budget across the refresh. Zero is CPU-only.
     #[serde(default)]
-    pub gpu_count: u32,
+    pub total_gpu_count: u32,
 }
 
 impl FunctionWorkerResourceBudget {
     /// Create a CPU-only aggregate budget.
-    pub fn new(cpu_millis: u64, memory_bytes: u64) -> Self {
+    pub fn new(total_cpu_millis: u64, total_memory_bytes: u64) -> Self {
         Self {
-            cpu_millis,
-            memory_bytes,
-            gpu_count: 0,
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count: 0,
         }
     }
 
     /// Set the aggregate GPU budget.
-    pub fn with_gpu_count(mut self, gpu_count: u32) -> Self {
-        self.gpu_count = gpu_count;
+    pub fn with_total_gpu_count(mut self, total_gpu_count: u32) -> Self {
+        self.total_gpu_count = total_gpu_count;
         self
     }
 
     /// Require every per-tier resource limit to request at least one unit.
     pub fn validate(&self) -> Result<()> {
-        if self.cpu_millis == 0 {
+        if self.total_cpu_millis == 0 {
             return Err(Error::InvalidInput {
-                message: "resource_budget.cpu_millis must be greater than zero".into(),
+                message: "total_cpu_millis must be greater than zero".into(),
             });
         }
-        if self.memory_bytes == 0 {
+        if self.total_memory_bytes == 0 {
             return Err(Error::InvalidInput {
-                message: "resource_budget.memory_bytes must be greater than zero".into(),
+                message: "total_memory_bytes must be greater than zero".into(),
             });
         }
         Ok(())
@@ -270,7 +270,7 @@ pub struct RefreshColumnOptions {
     /// Override the registered Function's maximum concurrent user-code calls
     /// for this logical execution. Must be greater than zero. `None` uses the
     /// registration default, or disabled when the Function declares none.
-    /// This is not an account quota and does not change `resource_budget`.
+    /// This is not an account quota and does not change total resource limits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_concurrency: Option<u32>,
     /// Opt-in row-count threshold for publishing completed Function outputs.
@@ -281,10 +281,12 @@ pub struct RefreshColumnOptions {
     /// rejects this option.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publication_interval_rows: Option<u64>,
-    /// Complete aggregate CPU, memory, and GPU budget for a registered
-    /// Function refresh. Cannot be combined with `gpu_count`.
+    /// Total CPU budget for this execution, in millicores.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    pub total_cpu_millis: Option<u64>,
+    /// Total memory budget for this execution, in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_memory_bytes: Option<u64>,
     /// CPU, memory, and ephemeral-storage limits for the Function refresh
     /// supervisor pod. Enterprise only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,12 +301,14 @@ pub struct RefreshColumnOptions {
     /// when the Function does not declare one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_class: Option<String>,
-    /// Positive aggregate GPU budget for Function workers in LanceDB
-    /// Enterprise.
-    ///
-    /// `None` leaves the server's configured budget unchanged.
+    /// Positive number of GPUs allocated to each Function worker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_count: Option<u32>,
+    /// Nonnegative total GPU budget for Function workers in LanceDB Enterprise.
+    /// Omitted values inherit column defaults, then Function defaults, then
+    /// deployment defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_gpu_count: Option<u32>,
 }
 
 impl RefreshColumnOptions {
@@ -415,12 +419,15 @@ impl RefreshColumnOptions {
         self
     }
 
-    /// Set the aggregate worker resource budget for a Function refresh.
-    ///
-    /// Use [`FunctionWorkerResourceBudget::new`] for a CPU-only budget, or
-    /// [`FunctionWorkerResourceBudget::with_gpu_count`] to include GPUs.
-    pub fn resource_budget(mut self, budget: FunctionWorkerResourceBudget) -> Self {
-        self.resource_budget = Some(budget);
+    /// Override the total CPU budget for this refresh.
+    pub fn total_cpu_millis(mut self, value: u64) -> Self {
+        self.total_cpu_millis = Some(value);
+        self
+    }
+
+    /// Override the total memory budget for this refresh.
+    pub fn total_memory_bytes(mut self, value: u64) -> Self {
+        self.total_memory_bytes = Some(value);
         self
     }
 
@@ -442,9 +449,15 @@ impl RefreshColumnOptions {
         self
     }
 
-    /// Request an aggregate GPU budget of `gpu_count`.
+    /// Set the number of GPUs allocated to each Function worker.
     pub fn gpu_count(mut self, gpu_count: u32) -> Self {
         self.gpu_count = Some(gpu_count);
+        self
+    }
+
+    /// Request an aggregate GPU budget of `total_gpu_count`.
+    pub fn total_gpu_count(mut self, total_gpu_count: u32) -> Self {
+        self.total_gpu_count = Some(total_gpu_count);
         self
     }
 
@@ -474,7 +487,9 @@ impl RefreshColumnOptions {
                 "publication_interval_rows",
                 self.publication_interval_rows.is_some(),
             ),
-            ("resource_budget", self.resource_budget.is_some()),
+            ("gpu_count", self.gpu_count.is_some()),
+            ("total_cpu_millis", self.total_cpu_millis.is_some()),
+            ("total_memory_bytes", self.total_memory_bytes.is_some()),
             ("supervisor_resources", self.supervisor_resources.is_some()),
             ("planning_workers", self.planning_workers.is_some()),
         ]
@@ -564,14 +579,12 @@ impl RefreshColumnOptions {
                 message: "publication_interval_rows must be greater than zero".into(),
             });
         }
-        if self.resource_budget.is_some() && self.gpu_count.is_some() {
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
             return Err(Error::InvalidInput {
-                message: "gpu_count cannot be combined with resource_budget".into(),
+                message: "total_cpu_millis and total_memory_bytes must be positive integers".into(),
             });
         }
-        if let Some(budget) = &self.resource_budget {
-            budget.validate()?;
-        }
+
         if let Some(resources) = &self.supervisor_resources {
             resources.validate("supervisor_resources")?;
         }
@@ -583,9 +596,19 @@ impl RefreshColumnOptions {
         }
         if self.gpu_count == Some(0) {
             return Err(Error::InvalidInput {
-                message: "gpu_count must be greater than zero".into(),
+                message: "gpu_count must be positive".into(),
             });
         }
+        if self
+            .gpu_count
+            .zip(self.total_gpu_count)
+            .is_some_and(|(per_worker, total)| per_worker > total)
+        {
+            return Err(Error::InvalidInput {
+                message: "total_gpu_count cannot fit one Function worker".into(),
+            });
+        }
+
         Ok(())
     }
 }
@@ -2801,5 +2824,49 @@ mod tests {
             .values();
         let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
         assert_eq!(payloads.value(0), payload);
+    }
+}
+
+#[cfg(test)]
+mod resource_validation_tests {
+    use super::{FunctionRefreshPlanningConfig, FunctionRefreshPodResources, RefreshColumnOptions};
+
+    #[test]
+    fn independent_totals_preserve_placement_and_pod_validation() {
+        assert!(
+            RefreshColumnOptions::default()
+                .total_cpu_millis(1000)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .total_gpu_count(0)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .gpu_class("H100:2")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .supervisor_resources(FunctionRefreshPodResources::new(0, 1024, 1024))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .planning_workers(FunctionRefreshPlanningConfig::new(
+                    FunctionRefreshPodResources::new(1000, 1024, 1024),
+                    0,
+                    1,
+                    1
+                ))
+                .validate()
+                .is_err()
+        );
     }
 }

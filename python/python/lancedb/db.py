@@ -118,6 +118,7 @@ from .namespace_utils import (
     _normalize_drop_namespace_mode,
     _normalize_drop_namespace_behavior,
 )
+from .resources import _resource_options
 
 
 def _view_description(
@@ -764,6 +765,11 @@ class DBConnection(EnforceOverrides):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -807,6 +813,14 @@ class DBConnection(EnforceOverrides):
             Positive, finite refresh interval in seconds in LanceDB Enterprise.
             When omitted, the server determines when to refresh.
 
+        total_cpu_millis: int, optional
+            Default total CPU budget in millicores for initial population and
+            refreshes. Overrides Function defaults. LanceDB Enterprise only.
+        total_memory_bytes: int, optional
+            Default total memory budget in bytes. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Default total GPU budget across workers. LanceDB Enterprise only.
+
         Returns
         -------
         MaterializedView
@@ -818,6 +832,13 @@ class DBConnection(EnforceOverrides):
         ...     query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
         ... )
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         raise NotImplementedError(
             _append_doc_url(
                 "materialized views are not supported on this connection type",
@@ -838,6 +859,11 @@ class DBConnection(EnforceOverrides):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
@@ -854,6 +880,13 @@ class DBConnection(EnforceOverrides):
         Servers without early registry-handle support return a connection-scoped
         query job instead. Its ID cannot be reopened with :meth:`open_job`.
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         raise NotImplementedError(
             _append_doc_url(
                 "materialized views are not supported on this connection type",
@@ -2322,6 +2355,11 @@ class LanceDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -2349,6 +2387,13 @@ class LanceDBConnection(DBConnection):
         >>> view.table.count_rows()  # doctest: +SKIP
         1
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         LOOP.run(
             self._conn.create_materialized_view(
                 name,
@@ -2361,6 +2406,11 @@ class LanceDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -2379,7 +2429,19 @@ class LanceDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         job = LOOP.run(
             self._conn.create_materialized_view_async(
                 name,
@@ -2392,6 +2454,11 @@ class LanceDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return Job(job)
@@ -3711,6 +3778,11 @@ class AsyncConnection(object):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -3723,6 +3795,13 @@ class AsyncConnection(object):
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         _validate_create_materialized_view(source, query, select, where, limit)
         if source is not None:
             source, native_options = await self._materialized_view_source(
@@ -3742,7 +3821,12 @@ class AsyncConnection(object):
             exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             **native_options,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return AsyncMaterializedView(AsyncTable(inner))
 
@@ -3759,6 +3843,11 @@ class AsyncConnection(object):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
@@ -3769,6 +3858,13 @@ class AsyncConnection(object):
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         _validate_create_materialized_view(source, query, select, where, limit)
         if source is not None:
             source, native_options = await self._materialized_view_source(
@@ -3788,7 +3884,12 @@ class AsyncConnection(object):
             exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             **native_options,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return AsyncJob(inner)
 
