@@ -30,7 +30,7 @@ use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
     resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
     supported_fm_data_type, supported_label_list_data_type, supported_vector_data_type,
-    supported_zonemap_data_type, validate_fts_field,
+    supported_zonemap_data_type, validate_fts_field, validate_index_name,
 };
 
 use super::NativeTable;
@@ -116,6 +116,9 @@ impl NativeTable {
         &self,
         opts: &crate::index::IndexBuilder,
     ) -> Result<Option<PreparedIndex>> {
+        if let Some(name) = &opts.name {
+            validate_index_name(name)?;
+        }
         self.dataset.ensure_mutable()?;
         let dataset = self.dataset.get().await?;
         if opts.exist_ok
@@ -1426,6 +1429,86 @@ mod tests {
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn test_create_index_rejects_invalid_index_names(#[case] exist_ok: bool) {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("i", Int32, [1])).unwrap();
+        let table = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        for name in ["..", ".", "", "my/index", "my\\index", "%2e%2e"] {
+            let result = table
+                .create_index(&["i"], Index::Auto)
+                .name(name.to_string())
+                .exist_ok(exist_ok)
+                .execute()
+                .await;
+            assert!(
+                matches!(result, Err(crate::Error::InvalidInput { .. })),
+                "Expected invalid input for {name:?}, got {result:?}"
+            );
+            let result = table
+                .create_index(&["i"], Index::Auto)
+                .name(name.to_string())
+                .exist_ok(exist_ok)
+                .execute_async()
+                .await;
+            assert!(
+                matches!(result, Err(crate::Error::InvalidInput { .. })),
+                "Expected invalid input for {name:?}, got {result:?}"
+            );
+        }
+        assert!(table.list_indices().await.unwrap().is_empty());
+
+        for name in ["i_idx-1..v2", "..."] {
+            table
+                .create_index(&["i"], Index::Auto)
+                .name(name.to_string())
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(table.list_indices().await.unwrap()[0].name, name);
+            table.drop_index(name).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_index_with_legacy_index_names() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("i", Int32, [1])).unwrap();
+        let table = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+        let native = table.as_native().unwrap();
+        let params = lance_index::scalar::ScalarIndexParams::for_builtin(
+            lance_index::scalar::BuiltinIndexType::BTree,
+        );
+
+        for name in [".", "..", "old/index", "old\\index"] {
+            // Simulate an index written before LanceDB validated custom names.
+            let mut dataset = (*native.dataset.get().await.unwrap()).clone();
+            dataset
+                .create_index_builder(&["i"], lance_index::IndexType::Scalar, &params)
+                .name(name.to_string())
+                .await
+                .unwrap();
+            native.dataset.update(dataset);
+
+            assert_eq!(table.list_indices().await.unwrap()[0].name, name);
+            table.drop_index(name).await.unwrap();
+            assert!(table.list_indices().await.unwrap().is_empty());
+            assert_eq!(table.count_rows(None).await.unwrap(), 1);
+        }
     }
 
     #[tokio::test]
