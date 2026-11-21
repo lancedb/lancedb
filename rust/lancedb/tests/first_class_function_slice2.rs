@@ -85,6 +85,9 @@ fn execution_controls_require_their_positive_ranges() {
         ("max_concurrency", Value::from(4_294_967_296_u64)),
         ("max_concurrency", Value::from(-1)),
         ("max_concurrency", Value::from(1.5)),
+        ("default_total_cpu_millis", Value::from(0)),
+        ("default_total_memory_bytes", Value::from(0)),
+        ("default_total_gpu_count", Value::from(4_294_967_296_u64)),
         ("row_timeout_seconds", Value::from(0)),
         ("row_timeout_seconds", Value::from(-0.25)),
     ] {

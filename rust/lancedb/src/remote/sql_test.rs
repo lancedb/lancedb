@@ -3242,6 +3242,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
+        request_json["default_total_cpu_millis"] = serde_json::json!(8000);
+        request_json["default_total_memory_bytes"] = serde_json::json!(17179869184_u64);
+        request_json["default_total_gpu_count"] = serde_json::json!(0);
         request_json["row_timeout_seconds"] = serde_json::json!(0.75);
         request_json["secret_bindings"] = serde_json::json!([{
             "kind": "env",
@@ -3250,6 +3253,13 @@ async fn function_creation_and_description_use_sql_query_handles() {
         }]);
         let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
         version_json["batch_size"] = serde_json::json!(12);
+        for field in [
+            "default_total_cpu_millis",
+            "default_total_memory_bytes",
+            "default_total_gpu_count",
+        ] {
+            version_json[field] = request_json[field].clone();
+        }
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
@@ -3328,6 +3338,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.name(), "embed");
         assert_eq!(created.version(), "1");
         assert_eq!(created.batch_size(), Some(12));
+        assert_eq!(created.default_total_cpu_millis(), Some(8000));
+        assert_eq!(created.default_total_memory_bytes(), Some(17179869184));
+        assert_eq!(created.default_total_gpu_count(), Some(0));
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
