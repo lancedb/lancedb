@@ -76,6 +76,8 @@ Current supported type conversions:
 | `list`              | `pyarrow.List`    |
 | `BaseModel`         | `pyarrow.Struct`    |
 | `Vector(n)`         | `pyarrow.FixedSizeList(float32, n)` |
+| `Literal["a", "b"]` | the Arrow type of its values, here `pyarrow.utf8()`; every value must have the same type |
+| `Literal["a", None]` | the same type, nullable, like `Optional[Literal["a"]]` |
 
 LanceDB supports to create Apache Arrow Schema from a
 `pydantic.BaseModel`
