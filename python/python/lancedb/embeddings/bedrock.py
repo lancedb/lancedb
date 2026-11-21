@@ -110,11 +110,15 @@ class BedRockText(TextEmbeddingFunction):
 
         Returns
         -------
-        list[list[float]]
-            The embeddings for the given texts
+        list[list[float] | None]
+            The embeddings for the given texts. Empty or null texts are not sent
+            to Bedrock (which rejects empty ``inputText``); their entry is None.
         """
         results = []
         for text in texts:
+            if not text:
+                results.append(None)
+                continue
             response = self._generate_embedding(text, *args, **kwargs)
             results.append(response)
         return results
