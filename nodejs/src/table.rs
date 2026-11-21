@@ -11,8 +11,7 @@ use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, DeltaRef as LanceDbDeltaRef,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig as LanceFunctionRefreshPlanningConfig,
-    FunctionRefreshPodResources as LanceFunctionRefreshPodResources,
-    FunctionWorkerResourceBudget as LanceFunctionWorkerResourceBudget, NewColumnTransform, Ref,
+    FunctionRefreshPodResources as LanceFunctionRefreshPodResources, NewColumnTransform, Ref,
     Table as LanceDbTable, TableDelta as LanceDbTableDelta,
 };
 use napi::Env;
@@ -1916,18 +1915,6 @@ pub struct FunctionErrorsOptions {
     pub page_token: Option<String>,
 }
 
-/// Aggregate worker resources for one Enterprise Function refresh.
-#[napi(object)]
-#[derive(Clone, Debug)]
-pub struct FunctionWorkerResourceBudget {
-    /// Aggregate CPU budget in millicores; 1000 is one CPU.
-    pub total_cpu_millis: f64,
-    /// Aggregate memory budget in bytes.
-    pub total_memory_bytes: f64,
-    /// Aggregate GPU budget. Omitted means zero, a CPU-only refresh.
-    pub total_gpu_count: Option<f64>,
-}
-
 /// CPU, memory, and ephemeral-storage limits for one Function refresh
 /// control-plane pod.
 #[napi(object)]
@@ -1990,18 +1977,6 @@ fn positive_safe_integer(value: f64, name: &str) -> napi::Result<u64> {
     Ok(value as u64)
 }
 
-fn resource_budget_gpu_count(value: Option<f64>) -> napi::Result<u32> {
-    let Some(value) = value else {
-        return Ok(0);
-    };
-    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&value) {
-        return Err(napi::Error::from_reason(
-            "resourceBudget.totalGpuCount must be an integer between 0 and 4294967295",
-        ));
-    }
-    Ok(value as u32)
-}
-
 fn positive_u32(value: Option<f64>, name: &str) -> napi::Result<Option<u32>> {
     value
         .map(|value| {
@@ -2042,7 +2017,8 @@ pub struct RefreshColumnOptions {
     pub gpu_class: Option<String>,
     /// Complete aggregate CPU and memory budget for a registered Function
     /// refresh. `gpuCount` inside the budget defaults to zero.
-    pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    pub total_cpu_millis: Option<f64>,
+    pub total_memory_bytes: Option<f64>,
     /// CPU, memory, and ephemeral-storage limits for the refresh supervisor.
     pub supervisor_resources: Option<FunctionRefreshPodResources>,
     /// Resources and sizing for the refresh planning fleet.
@@ -2083,23 +2059,13 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
             .transpose()?;
         options.max_concurrency = positive_u32(value.max_concurrency, "maxConcurrency")?;
         options.gpu_class = value.gpu_class;
-        options.resource_budget = value
-            .resource_budget
-            .map(|budget| {
-                Ok::<_, napi::Error>(
-                    LanceFunctionWorkerResourceBudget::new(
-                        positive_safe_integer(
-                            budget.total_cpu_millis,
-                            "resourceBudget.totalCpuMillis",
-                        )?,
-                        positive_safe_integer(
-                            budget.total_memory_bytes,
-                            "resourceBudget.totalMemoryBytes",
-                        )?,
-                    )
-                    .with_total_gpu_count(resource_budget_gpu_count(budget.total_gpu_count)?),
-                )
-            })
+        options.total_cpu_millis = value
+            .total_cpu_millis
+            .map(|value| positive_safe_integer(value, "totalCpuMillis"))
+            .transpose()?;
+        options.total_memory_bytes = value
+            .total_memory_bytes
+            .map(|value| positive_safe_integer(value, "totalMemoryBytes"))
             .transpose()?;
         options.supervisor_resources = value
             .supervisor_resources

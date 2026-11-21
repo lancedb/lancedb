@@ -2364,7 +2364,7 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
     /// row-count publication threshold for completed Function outputs; unset
     /// keeps whole-fragment publication.
-    /// [`RefreshColumnOptions::resource_budget()`] sets the aggregate CPU,
+    /// [`RefreshColumnOptions::total_memory_bytes()`] sets the aggregate CPU,
     /// memory, and GPU budget for a Function refresh.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
     /// [`RefreshColumnOptions::total_gpu_count()`] sets the aggregate GPU budget
@@ -2432,7 +2432,7 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
     /// completed Function outputs at a row-count threshold; unset keeps
     /// whole-fragment publication. Set
-    /// [`RefreshColumnOptions::resource_budget()`] to pass a complete aggregate
+    /// [`RefreshColumnOptions::total_memory_bytes()`] to pass a complete aggregate
     /// CPU, memory, and GPU budget for a Function refresh. The standalone
     /// [`RefreshColumnOptions::total_gpu_count()`] shorthand and
     /// [`RefreshColumnOptions::gpu_class()`] placement remain available; a

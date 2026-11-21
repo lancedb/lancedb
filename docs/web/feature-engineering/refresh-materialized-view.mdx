@@ -99,8 +99,7 @@ async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
 The same options are available on `refresh`, asynchronous Python connections,
 and the Rust refresh builder (`total_cpu_millis`, `total_memory_bytes`, `total_gpu_count`, and
 `gpu_class`). CPU is in millicores (8000 means eight cores), memory is bytes,
-and GPU count is an aggregate concurrent cap. CPU or memory requires all three
-budget fields. Use zero GPUs for a CPU-only view, or specify a GPU cap alone.
+and GPU count is an aggregate concurrent cap. Each resource may be overridden independently. Use zero GPUs for a CPU-only view, or specify a GPU cap alone.
 
 The cap covers the refresh execution and its Function processes together.
 It does not allocate that budget separately to each Function. A GPU class

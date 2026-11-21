@@ -811,6 +811,27 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         if let Some(seconds) = request.auto_refresh_interval_seconds {
             options.push(format!("auto_refresh_interval_seconds = {seconds}"));
         }
+        if request.default_total_cpu_millis == Some(0)
+            || request.default_total_memory_bytes == Some(0)
+        {
+            return Err(Error::InvalidInput { message: "default_total_cpu_millis and default_total_memory_bytes must be positive integers".into() });
+        }
+        for (key, value) in [
+            ("default_total_cpu_millis", request.default_total_cpu_millis),
+            (
+                "default_total_memory_bytes",
+                request.default_total_memory_bytes,
+            ),
+            (
+                "default_total_gpu_count",
+                request.default_total_gpu_count.map(u64::from),
+            ),
+        ] {
+            if let Some(value) = value {
+                options.push(format!("{key} = {value}"));
+            }
+        }
+
         let name = request.name.replace('"', "\"\"");
         let options = if options.is_empty() {
             String::new()
@@ -5101,6 +5122,10 @@ mod tests {
         for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let result = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    default_total_cpu_millis: None,
+                    default_total_memory_bytes: None,
+                    default_total_gpu_count: None,
+
                     exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec![],

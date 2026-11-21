@@ -4453,8 +4453,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let Some(interval) = options.auto_refresh_interval_seconds {
             body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
         }
-        if let Some(budget) = options.auto_refresh_resource_budget {
-            body["auto_refresh_resource_budget"] = serde_json::json!(budget);
+        for (key, value) in [
+            ("default_total_cpu_millis", options.default_total_cpu_millis),
+            (
+                "default_total_memory_bytes",
+                options.default_total_memory_bytes,
+            ),
+            (
+                "default_total_gpu_count",
+                options.default_total_gpu_count.map(u64::from),
+            ),
+        ] {
+            if let Some(value) = value {
+                body[key] = serde_json::json!(value);
+            }
         }
         self.apply_branch_body(&mut body);
         let request = self
@@ -11273,7 +11285,9 @@ mod tests {
                 .computed_options(crate::table::computed_columns::ComputedColumnOptions {
                     auto_refresh_enabled: false,
                     auto_refresh_interval_seconds: interval,
-                    auto_refresh_resource_budget: None,
+                    default_total_cpu_millis: None,
+                    default_total_memory_bytes: None,
+                    default_total_gpu_count: None,
                 })
                 .execute()
                 .await
@@ -11860,11 +11874,9 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
-                expected["auto_refresh_resource_budget"] = serde_json::json!({
-                    "total_cpu_millis": 8_000,
-                    "total_memory_bytes": 17_179_869_184_u64,
-                    "total_gpu_count": 2,
-                });
+                expected["default_total_cpu_millis"] = serde_json::json!(8000);
+                expected["default_total_memory_bytes"] = serde_json::json!(17179869184_u64);
+                expected["default_total_gpu_count"] = serde_json::json!(2);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -11895,9 +11907,26 @@ mod tests {
             .computed_options(crate::table::computed_columns::ComputedColumnOptions {
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                auto_refresh_resource_budget: Some(
-                    crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-                        .with_total_gpu_count(2),
+                default_total_cpu_millis: Some(
+                    (
+                        crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+                            .with_total_gpu_count(2),
+                    )
+                        .total_cpu_millis,
+                ),
+                default_total_memory_bytes: Some(
+                    (
+                        crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+                            .with_total_gpu_count(2),
+                    )
+                        .total_memory_bytes,
+                ),
+                default_total_gpu_count: Some(
+                    (
+                        crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
+                            .with_total_gpu_count(2),
+                    )
+                        .total_gpu_count,
                 ),
             })
             .execute()
@@ -12137,11 +12166,9 @@ mod tests {
                 request_body_json(&request),
                 serde_json::json!({
                     "column": "quality",
-                    "resource_budget": {
-                        "total_cpu_millis": 8_000,
+                    "total_cpu_millis": 8_000,
                         "total_memory_bytes": 17_179_869_184_u64,
                         "total_gpu_count": expected_gpu_count,
-                    },
                 })
             );
             http::Response::builder()
@@ -12156,7 +12183,10 @@ mod tests {
         let job = table
             .refresh_column_async_with_options(
                 "quality",
-                RefreshColumnOptions::default().resource_budget(budget),
+                RefreshColumnOptions::default()
+                    .total_cpu_millis((budget).total_cpu_millis)
+                    .total_memory_bytes((budget).total_memory_bytes)
+                    .total_gpu_count((budget).total_gpu_count),
             )
             .await
             .unwrap();
@@ -12415,24 +12445,22 @@ mod tests {
                 "gpu_class",
             ),
             (
-                RefreshColumnOptions::default().total_gpu_count(0),
-                "total_gpu_count",
+                RefreshColumnOptions::default()
+                    .total_cpu_millis((FunctionWorkerResourceBudget::new(0, 1)).total_cpu_millis)
+                    .total_memory_bytes(
+                        (FunctionWorkerResourceBudget::new(0, 1)).total_memory_bytes,
+                    )
+                    .total_gpu_count((FunctionWorkerResourceBudget::new(0, 1)).total_gpu_count),
+                "total_cpu_millis",
             ),
             (
                 RefreshColumnOptions::default()
-                    .resource_budget(FunctionWorkerResourceBudget::new(0, 1)),
-                "resource_budget.total_cpu_millis",
-            ),
-            (
-                RefreshColumnOptions::default()
-                    .resource_budget(FunctionWorkerResourceBudget::new(1, 0)),
-                "resource_budget.total_memory_bytes",
-            ),
-            (
-                RefreshColumnOptions::default()
-                    .resource_budget(FunctionWorkerResourceBudget::new(1, 1))
-                    .total_gpu_count(1),
-                "total_gpu_count cannot be combined with resource_budget",
+                    .total_cpu_millis((FunctionWorkerResourceBudget::new(1, 0)).total_cpu_millis)
+                    .total_memory_bytes(
+                        (FunctionWorkerResourceBudget::new(1, 0)).total_memory_bytes,
+                    )
+                    .total_gpu_count((FunctionWorkerResourceBudget::new(1, 0)).total_gpu_count),
+                "total_memory_bytes",
             ),
         ] {
             let error = table

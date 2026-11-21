@@ -286,6 +286,9 @@ export abstract class Connection {
       where?: string;
       limit?: number;
       withNoData?: boolean;
+      defaultTotalCpuMillis?: number;
+      defaultTotalMemoryBytes?: number;
+      defaultTotalGpuCount?: number;
     },
   ): Promise<MaterializedView>;
 
@@ -674,9 +677,28 @@ export class LocalConnection extends Connection {
       where?: string;
       limit?: number;
       withNoData?: boolean;
+      defaultTotalCpuMillis?: number;
+      defaultTotalMemoryBytes?: number;
+      defaultTotalGpuCount?: number;
     },
   ): Promise<MaterializedView> {
     validateNonNegativeInteger(options?.limit, "limit");
+    for (const [name, value] of [
+      ["defaultTotalCpuMillis", options?.defaultTotalCpuMillis],
+      ["defaultTotalMemoryBytes", options?.defaultTotalMemoryBytes],
+      ["defaultTotalGpuCount", options?.defaultTotalGpuCount],
+    ] as const) {
+      validateNonNegativeInteger(value, name);
+      if (value === 0 && name !== "defaultTotalGpuCount") {
+        throw new Error(`${name} must be positive`);
+      }
+    }
+    if (
+      options?.defaultTotalGpuCount !== undefined &&
+      options.defaultTotalGpuCount > 4294967295
+    ) {
+      throw new Error("defaultTotalGpuCount exceeds 4294967295");
+    }
     const innerTable = await this.inner.createMaterializedView(
       name,
       source,
@@ -684,6 +706,9 @@ export class LocalConnection extends Connection {
       options?.where,
       options?.limit,
       options?.withNoData ?? false,
+      options?.defaultTotalCpuMillis,
+      options?.defaultTotalMemoryBytes,
+      options?.defaultTotalGpuCount,
     );
     return new MaterializedView(new LocalTable(innerTable));
   }

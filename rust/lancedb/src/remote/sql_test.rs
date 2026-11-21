@@ -1250,6 +1250,10 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    default_total_cpu_millis: None,
+                    default_total_memory_bytes: None,
+                    default_total_gpu_count: None,
+
                     exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec!["team".into(), "reports".into()],
@@ -1333,6 +1337,10 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            default_total_cpu_millis: None,
+            default_total_memory_bytes: None,
+            default_total_gpu_count: None,
+
             exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
@@ -1396,6 +1404,10 @@ async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry
         .with_sql_client(client);
         let job = db
             .create_materialized_view_async(CreateMaterializedViewRequest {
+                default_total_cpu_millis: None,
+                default_total_memory_bytes: None,
+                default_total_gpu_count: None,
+
                 exist_ok: true,
                 name: "adults".into(),
                 namespace_path: vec!["team".into()],
@@ -1483,6 +1495,10 @@ async fn remote_create_registry_handle_reopens_describes_and_cancels() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            default_total_cpu_millis: None,
+            default_total_memory_bytes: None,
+            default_total_gpu_count: None,
+
             exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
@@ -1727,7 +1743,6 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
     for invalid in [
-        view.refresh().total_cpu_millis(1),
         view.refresh().gpu_class("H200:8"),
         view.refresh().total_gpu_count(0).gpu_class("h100"),
     ] {

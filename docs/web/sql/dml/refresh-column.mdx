@@ -72,8 +72,9 @@ REFRESH COLUMN embedding ON documents
 
 The example allows up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the
 Function workers together. It does not reserve those resources per worker or
-guarantee a worker count. When setting CPU or memory, provide all three budget
-fields. A complete CPU-only budget uses `total_gpu_count = 0`.
+guarantee a worker count. Set each resource independently; omitted values inherit
+column `default_total_*` settings, then Function defaults, then deployment defaults.
+A CPU-only GPU budget uses `total_gpu_count = 0`.
 
 Set `error_policy` on the refresh, not on the Function definition. With `skip`,
 inspect failures with `SHOW ERRORS` or `table.function_errors()` and retry the

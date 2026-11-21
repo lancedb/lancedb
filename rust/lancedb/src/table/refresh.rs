@@ -92,12 +92,12 @@ impl FunctionWorkerResourceBudget {
     pub fn validate(&self) -> Result<()> {
         if self.total_cpu_millis == 0 {
             return Err(Error::InvalidInput {
-                message: "resource_budget.total_cpu_millis must be greater than zero".into(),
+                message: "total_cpu_millis must be greater than zero".into(),
             });
         }
         if self.total_memory_bytes == 0 {
             return Err(Error::InvalidInput {
-                message: "resource_budget.total_memory_bytes must be greater than zero".into(),
+                message: "total_memory_bytes must be greater than zero".into(),
             });
         }
         Ok(())
@@ -281,10 +281,12 @@ pub struct RefreshColumnOptions {
     /// rejects this option.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publication_interval_rows: Option<u64>,
-    /// Complete aggregate CPU, memory, and GPU budget for a registered
-    /// Function refresh. Cannot be combined with `total_gpu_count`.
+    /// Total CPU budget for this execution, in millicores.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource_budget: Option<FunctionWorkerResourceBudget>,
+    pub total_cpu_millis: Option<u64>,
+    /// Total memory budget for this execution, in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_memory_bytes: Option<u64>,
     /// CPU, memory, and ephemeral-storage limits for the Function refresh
     /// supervisor pod. Enterprise only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -415,12 +417,15 @@ impl RefreshColumnOptions {
         self
     }
 
-    /// Set the aggregate worker resource budget for a Function refresh.
-    ///
-    /// Use [`FunctionWorkerResourceBudget::new`] for a CPU-only budget, or
-    /// [`FunctionWorkerResourceBudget::with_total_gpu_count`] to include GPUs.
-    pub fn resource_budget(mut self, budget: FunctionWorkerResourceBudget) -> Self {
-        self.resource_budget = Some(budget);
+    /// Override the total CPU budget for this refresh.
+    pub fn total_cpu_millis(mut self, value: u64) -> Self {
+        self.total_cpu_millis = Some(value);
+        self
+    }
+
+    /// Override the total memory budget for this refresh.
+    pub fn total_memory_bytes(mut self, value: u64) -> Self {
+        self.total_memory_bytes = Some(value);
         self
     }
 
@@ -474,7 +479,8 @@ impl RefreshColumnOptions {
                 "publication_interval_rows",
                 self.publication_interval_rows.is_some(),
             ),
-            ("resource_budget", self.resource_budget.is_some()),
+            ("total_cpu_millis", self.total_cpu_millis.is_some()),
+            ("total_memory_bytes", self.total_memory_bytes.is_some()),
             ("supervisor_resources", self.supervisor_resources.is_some()),
             ("planning_workers", self.planning_workers.is_some()),
         ]
@@ -564,14 +570,12 @@ impl RefreshColumnOptions {
                 message: "publication_interval_rows must be greater than zero".into(),
             });
         }
-        if self.resource_budget.is_some() && self.total_gpu_count.is_some() {
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
             return Err(Error::InvalidInput {
-                message: "total_gpu_count cannot be combined with resource_budget".into(),
+                message: "total_cpu_millis and total_memory_bytes must be positive integers".into(),
             });
         }
-        if let Some(budget) = &self.resource_budget {
-            budget.validate()?;
-        }
+
         if let Some(resources) = &self.supervisor_resources {
             resources.validate("supervisor_resources")?;
         }
@@ -581,11 +585,7 @@ impl RefreshColumnOptions {
         if let Some(gpu_class) = &self.gpu_class {
             validate_gpu_class_name(gpu_class)?;
         }
-        if self.total_gpu_count == Some(0) {
-            return Err(Error::InvalidInput {
-                message: "total_gpu_count must be greater than zero".into(),
-            });
-        }
+
         Ok(())
     }
 }
@@ -2801,5 +2801,49 @@ mod tests {
             .values();
         let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
         assert_eq!(payloads.value(0), payload);
+    }
+}
+
+#[cfg(test)]
+mod resource_validation_tests {
+    use super::{FunctionRefreshPlanningConfig, FunctionRefreshPodResources, RefreshColumnOptions};
+
+    #[test]
+    fn independent_totals_preserve_placement_and_pod_validation() {
+        assert!(
+            RefreshColumnOptions::default()
+                .total_cpu_millis(1000)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .total_gpu_count(0)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .gpu_class("H100:2")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .supervisor_resources(FunctionRefreshPodResources::new(0, 1024, 1024))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .planning_workers(FunctionRefreshPlanningConfig::new(
+                    FunctionRefreshPodResources::new(1000, 1024, 1024),
+                    0,
+                    1,
+                    1
+                ))
+                .validate()
+                .is_err()
+        );
     }
 }

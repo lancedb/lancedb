@@ -301,6 +301,9 @@ pub struct CreateMaterializedViewRequest {
     pub auto_refresh_enabled: Option<bool>,
     /// Refresh interval in seconds. When absent, the server determines when to refresh.
     pub auto_refresh_interval_seconds: Option<f64>,
+    pub default_total_cpu_millis: Option<u64>,
+    pub default_total_memory_bytes: Option<u64>,
+    pub default_total_gpu_count: Option<u32>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -1591,6 +1594,9 @@ pub struct CreateMaterializedViewBuilder {
     exist_ok: bool,
     auto_refresh_enabled: Option<bool>,
     auto_refresh_interval_seconds: Option<f64>,
+    default_total_cpu_millis: Option<u64>,
+    default_total_memory_bytes: Option<u64>,
+    default_total_gpu_count: Option<u32>,
 }
 
 enum MaterializedViewInput {
@@ -1632,6 +1638,9 @@ impl CreateMaterializedViewBuilder {
             exist_ok: false,
             auto_refresh_enabled: None,
             auto_refresh_interval_seconds: None,
+            default_total_cpu_millis: None,
+            default_total_memory_bytes: None,
+            default_total_gpu_count: None,
         }
     }
 
@@ -1783,6 +1792,24 @@ impl CreateMaterializedViewBuilder {
         Ok(query)
     }
 
+    /// Set the default total cpu millis budget for this materialized view.
+    pub fn default_total_cpu_millis(mut self, value: u64) -> Self {
+        self.default_total_cpu_millis = Some(value);
+        self
+    }
+
+    /// Set the default total memory bytes budget for this materialized view.
+    pub fn default_total_memory_bytes(mut self, value: u64) -> Self {
+        self.default_total_memory_bytes = Some(value);
+        self
+    }
+
+    /// Set the default total gpu count budget for this materialized view.
+    pub fn default_total_gpu_count(mut self, value: u32) -> Self {
+        self.default_total_gpu_count = Some(value);
+        self
+    }
+
     /// Submit creation and initial population, returning a [`Job`] that
     /// settles when the view is ready. Remote creation submits SQL; the handle's
     /// [`Job::job_type`] is `"query"` and its ID identifies that query.
@@ -1799,6 +1826,9 @@ impl CreateMaterializedViewBuilder {
                     with_no_data: self.with_no_data,
                     auto_refresh_enabled: self.auto_refresh_enabled,
                     auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
+                    default_total_cpu_millis: self.default_total_cpu_millis,
+                    default_total_memory_bytes: self.default_total_memory_bytes,
+                    default_total_gpu_count: self.default_total_gpu_count,
                 })
                 .await;
         }
@@ -1832,7 +1862,12 @@ impl CreateMaterializedViewBuilder {
         {
             return Ok(view);
         }
-        if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
+        if self.auto_refresh_enabled == Some(true)
+            || self.auto_refresh_interval_seconds.is_some()
+            || self.default_total_cpu_millis.is_some()
+            || self.default_total_memory_bytes.is_some()
+            || self.default_total_gpu_count.is_some()
+        {
             return Err(Error::NotSupported {
                 message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
@@ -1961,8 +1996,9 @@ impl MaterializedView {
 /// Per-execution resource caps and GPU placement for Enterprise MV refreshes.
 ///
 /// CPU is in millicores (1000 = one core), memory is bytes, and GPUs are a
-/// simultaneous cap across the refresh, not a per-Function allocation. CPU or
-/// memory requires all three budget fields. Embedded refreshes reject options.
+/// simultaneous cap across the refresh. Each omitted resource inherits the
+/// view defaults, then Function defaults, then deployment defaults.
+/// Embedded refreshes reject these options.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RefreshMaterializedViewOptions {
@@ -1987,15 +2023,6 @@ impl RefreshMaterializedViewOptions {
         if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
             return Err(invalid(
                 "total_cpu_millis and total_memory_bytes must be positive integers",
-            ));
-        }
-        if (self.total_cpu_millis.is_some() || self.total_memory_bytes.is_some())
-            && !(self.total_cpu_millis.is_some()
-                && self.total_memory_bytes.is_some()
-                && self.total_gpu_count.is_some())
-        {
-            return Err(invalid(
-                "total_cpu_millis, total_memory_bytes, and total_gpu_count must be specified together",
             ));
         }
         if let Some(class) = &self.gpu_class {

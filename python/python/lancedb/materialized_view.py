@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from .functions import _validate_gpu_class_name
 from .background_loop import LOOP
 from .job import AsyncJob, Job, _typed_job
+from .resources import _resource_options
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -170,27 +171,7 @@ def normalize_select(select: SelectArg) -> Optional[List[Tuple[str, str]]]:
 def _refresh_execution_options(
     total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class
 ):
-    values = {
-        "total_cpu_millis": total_cpu_millis,
-        "total_memory_bytes": total_memory_bytes,
-        "total_gpu_count": total_gpu_count,
-    }
-    for name, value in values.items():
-        maximum = 2**32 - 1 if name == "total_gpu_count" else 2**64 - 1
-        minimum = 0 if name == "total_gpu_count" else 1
-        if value is not None and (
-            type(value) is not int or not minimum <= value <= maximum
-        ):
-            raise ValueError(
-                f"{name} must be an integer between {minimum} and {maximum}"
-            )
-    if (total_cpu_millis is not None or total_memory_bytes is not None) and any(
-        value is None for value in values.values()
-    ):
-        raise ValueError(
-            "total_cpu_millis, total_memory_bytes, and total_gpu_count "
-            "must be specified together"
-        )
+    values = _resource_options(total_cpu_millis, total_memory_bytes, total_gpu_count)
     if gpu_class is not None:
         values["gpu_class"] = _validate_gpu_class_name(gpu_class)
         if total_gpu_count == 0:
@@ -245,8 +226,10 @@ class AsyncMaterializedView:
 
         ``total_cpu_millis`` (1000 = one core), ``total_memory_bytes``, and
         ``total_gpu_count`` cap aggregate resources for this execution,
-        including its Function processes. CPU or memory requires all three
-        budget fields. GPU count may be zero for CPU-only views.
+        including its Function processes. Each resource may be overridden
+        independently. Unset values inherit the view defaults, then the sum
+        across distinct pinned Functions, then deployment defaults. GPU count
+        may be zero for CPU-only views.
         ``gpu_class`` selects an operator-defined GPU class for this execution
         only. Omitted options preserve defaults.
         These options require an Enterprise backend that enforces isolation;

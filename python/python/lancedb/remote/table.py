@@ -1200,7 +1200,9 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        default_total_cpu_millis: Optional[int] = None,
+        default_total_memory_bytes: Optional[int] = None,
+        default_total_gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1208,7 +1210,9 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                auto_refresh_resource_budget=auto_refresh_resource_budget,
+                default_total_cpu_millis=default_total_cpu_millis,
+                default_total_memory_bytes=default_total_memory_bytes,
+                default_total_gpu_count=default_total_gpu_count,
             )
         )
 
@@ -1220,7 +1224,8 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
@@ -1247,7 +1252,8 @@ class RemoteTable(Table):
                 batch_size=batch_size,
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
-                resource_budget=resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
                 supervisor_resources=supervisor_resources,
                 planning_workers=planning_workers,
                 gpu_class=gpu_class,
@@ -1277,7 +1283,8 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
@@ -1305,7 +1312,8 @@ class RemoteTable(Table):
                     batch_size=batch_size,
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
-                    resource_budget=resource_budget,
+                    total_cpu_millis=total_cpu_millis,
+                    total_memory_bytes=total_memory_bytes,
                     supervisor_resources=supervisor_resources,
                     planning_workers=planning_workers,
                     gpu_class=gpu_class,

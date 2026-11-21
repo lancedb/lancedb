@@ -1021,10 +1021,8 @@ describe("remote connection", () => {
           });
         }
         await table.refreshColumnAsync("embedding", {
-          resourceBudget: {
-            totalCpuMillis: 8_000,
-            totalMemoryBytes: 16 * 1024 ** 3,
-          },
+          totalCpuMillis: 8_000,
+          totalMemoryBytes: 16 * 1024 ** 3,
         });
         await expect(
           table.refreshColumnAsync("embedding", {
@@ -1069,73 +1067,51 @@ describe("remote connection", () => {
           [{ maxConcurrency: Number.NaN }, "maxConcurrency"],
           [{ maxConcurrency: Number.POSITIVE_INFINITY }, "maxConcurrency"],
           [{ numWorkers: 0 }, "num_workers"],
-          [{ totalGpuCount: 0 }, "total_gpu_count"],
+
           [
             {
-              resourceBudget: {
-                totalCpuMillis: 1_000,
-                totalMemoryBytes: 1_024,
-              },
-              totalGpuCount: 1,
+              totalCpuMillis: 0,
+              totalMemoryBytes: 1_024,
             },
-            "total_gpu_count cannot be combined with resource_budget",
+            "totalCpuMillis",
           ],
           [
             {
-              resourceBudget: {
-                totalCpuMillis: 0,
-                totalMemoryBytes: 1_024,
-              },
-            },
-            "resourceBudget.totalCpuMillis",
-          ],
-          [
-            {
-              resourceBudget: {
-                totalCpuMillis: 1_000,
-                totalMemoryBytes: 1_024,
-                totalGpuCount: 1.5,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: 1.5,
             },
             "resourceBudget.totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                totalCpuMillis: 1_000,
-                totalMemoryBytes: 1_024,
-                totalGpuCount: -1,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: -1,
             },
             "resourceBudget.totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                totalCpuMillis: 1_000,
-                totalMemoryBytes: 1_024,
-                totalGpuCount: 2 ** 32,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: 2 ** 32,
             },
             "resourceBudget.totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                totalCpuMillis: 1_000,
-                totalMemoryBytes: 1_024,
-                totalGpuCount: Number.NaN,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: Number.NaN,
             },
             "resourceBudget.totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                totalCpuMillis: 1_000,
-                totalMemoryBytes: 1_024,
-                totalGpuCount: Number.POSITIVE_INFINITY,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: Number.POSITIVE_INFINITY,
             },
             "resourceBudget.totalGpuCount",
           ],
@@ -1202,12 +1178,7 @@ describe("remote connection", () => {
         '{"column": "embedding", "publication_interval_rows": 9007199254740991}',
       ),
       JSON.parse(
-        `{"column": "embedding",
-          "resource_budget": {
-            "total_cpu_millis": 8000,
-            "total_memory_bytes": 17179869184,
-            "total_gpu_count": 0
-          }}`,
+        '{"column":"embedding","total_cpu_millis":8000,"total_memory_bytes":17179869184,"total_gpu_count":0}',
       ),
     ]);
   });
