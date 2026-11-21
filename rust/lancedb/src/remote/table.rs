@@ -8,6 +8,8 @@ mod ipc_stream;
 mod optimize;
 mod prewarm;
 #[cfg(test)]
+mod profile_tests;
+#[cfg(test)]
 mod write_tests;
 
 use self::insert::{RemoteWriteExec, WriteOp};
@@ -24,7 +26,7 @@ use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::scalar::{FtsQuery, Operator};
 use crate::index::waiter::{MAX_WAIT, wait_for_index};
-use crate::job::Job;
+use crate::job::{FunctionProfile, FunctionProfileOptions, Job};
 use crate::materialized_view::{MaterializedViewInfo, RefreshMaterializedViewResult};
 use crate::query::wal_fusion::PkFusionMemory; // WAL-PK-FUSION: delete.
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -330,6 +332,22 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::stack(&self.inner, worker_id).await
     }
 
+    async fn capture_profile(
+        &self,
+        worker_id: &str,
+        options: FunctionProfileOptions,
+    ) -> Result<FunctionProfile> {
+        crate::job::JobHandle::capture_profile(&self.inner, worker_id, options).await
+    }
+
+    async fn profile_status(&self, profile_id: &str) -> Result<FunctionProfile> {
+        crate::job::JobHandle::profile_status(&self.inner, profile_id).await
+    }
+
+    async fn profile_artifact(&self, profile_id: &str) -> Result<serde_json::Value> {
+        crate::job::JobHandle::profile_artifact(&self.inner, profile_id).await
+    }
+
     async fn events(
         &self,
         request: crate::job::JobEventsRequest,
@@ -431,6 +449,22 @@ impl<S: HttpSend> crate::job::JobHandle for MaterializedViewRefreshJob<S> {
 
     async fn stack(&self, worker_id: &str) -> Result<serde_json::Value> {
         crate::job::JobHandle::stack(&self.inner, worker_id).await
+    }
+
+    async fn capture_profile(
+        &self,
+        worker_id: &str,
+        options: FunctionProfileOptions,
+    ) -> Result<FunctionProfile> {
+        crate::job::JobHandle::capture_profile(&self.inner, worker_id, options).await
+    }
+
+    async fn profile_status(&self, profile_id: &str) -> Result<FunctionProfile> {
+        crate::job::JobHandle::profile_status(&self.inner, profile_id).await
+    }
+
+    async fn profile_artifact(&self, profile_id: &str) -> Result<serde_json::Value> {
+        crate::job::JobHandle::profile_artifact(&self.inner, profile_id).await
     }
 
     async fn events(

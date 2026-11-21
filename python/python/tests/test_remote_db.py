@@ -9083,8 +9083,9 @@ async def test_paged_function_errors_retain_history_and_expose_continuation(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync_api", [False, True])
 @pytest.mark.parametrize("kind", ["cpu", "memory", "gpu"])
+@pytest.mark.parametrize("submitted_job", [False, True])
 async def test_function_profile_capture_wait_and_retained_export(
-    sync_api, kind, tmp_path
+    sync_api, kind, submitted_job, tmp_path
 ):
     state = {"polls": 0, "finished": False}
     paths = []
@@ -9127,7 +9128,12 @@ async def test_function_profile_capture_wait_and_retained_export(
         assert request.headers["x-api-key"] == "fake"
         assert request.headers["x-lancedb-database"] == "dev"
         body = json.loads(request.rfile.read(int(request.headers["Content-Length"])))
-        if request.path == "/v1/jobs/describe":
+        if request.path == "/v1/table/test/describe/":
+            result = {"version": 1, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/backfill_column":
+            assert body["column"] == "result"
+            result = {"job_id": "job-1"}
+        elif request.path == "/v1/jobs/describe":
             result = {
                 "job_id": "job-1",
                 "job_type": "function_refresh",
@@ -9168,7 +9174,12 @@ async def test_function_profile_capture_wait_and_retained_export(
                 return await asyncio.to_thread(function, *args, **kwargs)
             return await function(*args, **kwargs)
 
-        job = await invoke(db.open_job, "job-1")
+        if submitted_job:
+            table = await invoke(db.open_table, "test")
+            job = await invoke(table.refresh_column_async, "result")
+            await invoke(job.refresh)
+        else:
+            job = await invoke(db.open_job, "job-1")
         capture = await invoke(
             job.capture_profile,
             "worker-1",

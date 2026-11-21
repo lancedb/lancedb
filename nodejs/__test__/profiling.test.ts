@@ -89,9 +89,13 @@ async function withProfileServer(
 }
 
 describe("Function worker profiles", () => {
-  it.each<FunctionProfileKind>(["cpu", "memory", "gpu"])(
-    "captures and exports retained %s evidence",
-    async (kind) => {
+  it.each(
+    (["cpu", "memory", "gpu"] as FunctionProfileKind[]).flatMap((kind) =>
+      [false, true].map((submitted) => [kind, submitted] as const),
+    ),
+  )(
+    "captures and exports retained %s evidence (submitted handle: %s)",
+    async (kind, submitted) => {
       let polls = 0;
       let finished = false;
       const paths: string[] = [];
@@ -102,6 +106,12 @@ describe("Function worker profiles", () => {
             paths.push(path);
             expect(headers["x-api-key"]).toBe("fake");
             expect(headers["x-lancedb-database"]).toBe("dev");
+            if (path === "/v1/table/test/describe/")
+              return { body: { version: 1, schema: { fields: [] } } };
+            if (path === "/v1/table/test/backfill_column") {
+              expect(body.column).toBe("result");
+              return { status: 202, body: { ["job_id"]: "job-1" } };
+            }
             if (path === "/v1/jobs/describe")
               return {
                 body: {
@@ -132,7 +142,10 @@ describe("Function worker profiles", () => {
             return { body: artifacts[kind] };
           },
           async (db) => {
-            const job = await db.openJob("job-1");
+            const job = submitted
+              ? await (await db.openTable("test")).refreshColumnAsync("result")
+              : await db.openJob("job-1");
+            if (submitted) await job.refresh();
             const capture = await job.captureProfile("worker-1", {
               kind,
               durationSeconds: 2,
