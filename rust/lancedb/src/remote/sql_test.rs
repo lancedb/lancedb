@@ -1239,20 +1239,35 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             panic!("CREATE must use SQL, not REST: {}", request.url().path());
         })
         .with_sql_client(sql_client.clone());
-        for (enabled, interval, expected) in [
-            (None, None, ""),
-            (Some(true), None, " WITH (auto_refresh_enabled = true)"),
+        for (enabled, interval, cpu, gpu, expected) in [
+            (None, None, None, None, ""),
+            (
+                Some(true),
+                None,
+                None,
+                None,
+                " WITH (auto_refresh_enabled = true)",
+            ),
             (
                 Some(false),
                 Some(0.5),
+                None,
+                None,
                 " WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 0.5)",
+            ),
+            (
+                None,
+                None,
+                Some(8000),
+                Some(0),
+                " WITH (default_total_cpu_millis = 8000, default_total_gpu_count = 0)",
             ),
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
-                    default_total_cpu_millis: None,
+                    default_total_cpu_millis: cpu,
                     default_total_memory_bytes: None,
-                    default_total_gpu_count: None,
+                    default_total_gpu_count: gpu,
 
                     exist_ok: false,
                     name: "adults".into(),
@@ -1282,7 +1297,7 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             );
         }
         assert_eq!(count.load(Ordering::SeqCst), 0);
-        assert_eq!(statements.lock().unwrap().len(), 3);
+        assert_eq!(statements.lock().unwrap().len(), 4);
         assert!(
             headers
                 .lock()
