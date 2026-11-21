@@ -111,6 +111,20 @@ def _arrow_from_table(data: pa.Table) -> pa.Table:
     return data
 
 
+def _table_from_dicts(data: list) -> pa.Table:
+    """Build a table from a list of dicts using the keys of *all* rows.
+
+    ``pa.Table.from_pylist`` takes its column names from the first row only,
+    which silently drops fields that first appear in a later row.
+    """
+    if all(isinstance(row, dict) for row in data):
+        names = list(dict.fromkeys(key for row in data for key in row))
+        return pa.Table.from_pydict(
+            {name: [row.get(name) for row in data] for name in names}
+        )
+    return pa.Table.from_pylist(data)
+
+
 @to_arrow.register(list)
 def _arrow_from_list(data: list) -> pa.Table:
     if not data:
@@ -121,4 +135,4 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
-    return pa.Table.from_pylist(data)
+    return _table_from_dicts(data)
