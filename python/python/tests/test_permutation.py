@@ -222,6 +222,40 @@ def test_base_branch_property_reads_plan_metadata(tmp_path):
     assert permutation.num_rows == 20
 
 
+def test_persist_embedded_plan_for_remote_base(tmp_path):
+    server = MockPermutationServer(num_rows=8)
+    db = connect(tmp_path)
+
+    with mock_remote_table(server) as remote:
+        plan = permutation_builder(remote).persist(db, "plan").execute()
+        permutation = Permutation.from_tables(remote, plan)
+
+        assert permutation.base_version == 1
+        assert permutation.base_branch is None
+        assert permutation._plan_version == 1
+        assert permutation.permutation_table.version == 1
+
+        sequential_ids = [
+            row["id"]
+            for batch in permutation.iter(3, skip_last_batch=False)
+            for row in batch
+        ]
+        assert sequential_ids == list(range(8))
+        assert [row["id"] for row in permutation.__getitems__([5, 1, 5, 3])] == [
+            5,
+            1,
+            5,
+            3,
+        ]
+
+        # The plan is local, but its build and gathers address the remote base
+        # at the recorded main/v1 snapshot.
+        assert server.scans
+        for body in [*server.scans, *server.takes]:
+            assert body.get("version") == 1
+            assert body.get("branch") is None
+
+
 def test_persisted_plan_pickle_reopens_same_snapshot_after_overwrite(tmp_path):
     from datetime import timedelta
     import pickle
