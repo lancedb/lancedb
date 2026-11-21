@@ -396,24 +396,9 @@ mod tests {
             .computed_options(ComputedColumnOptions {
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                default_total_cpu_millis: Some(
-                    (crate::table::FunctionWorkerResourceBudget::new(
-                        1_000, 1_024,
-                    ),)
-                        .total_cpu_millis,
-                ),
-                default_total_memory_bytes: Some(
-                    (crate::table::FunctionWorkerResourceBudget::new(
-                        1_000, 1_024,
-                    ),)
-                        .total_memory_bytes,
-                ),
-                default_total_gpu_count: Some(
-                    (crate::table::FunctionWorkerResourceBudget::new(
-                        1_000, 1_024,
-                    ),)
-                        .total_gpu_count,
-                ),
+                default_total_cpu_millis: Some(1000),
+                default_total_memory_bytes: Some(1024),
+                default_total_gpu_count: Some(0),
             })
             .execute()
             .await

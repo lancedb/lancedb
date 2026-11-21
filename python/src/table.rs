@@ -2698,6 +2698,7 @@ impl Table {
     }
 
     #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, default_total_cpu_millis=None, default_total_memory_bytes=None, default_total_gpu_count=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn add_function_columns<'py>(
         self_: PyRef<'py, Self>,
         application_json: String,
