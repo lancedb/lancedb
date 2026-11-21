@@ -206,6 +206,8 @@ def test_sync_remote_create_uses_public_async_connection(query):
             total_cpu_millis=None,
             total_memory_bytes=None,
             total_gpu_count=None,
+            gpu_class=None,
+            gpu_count=None,
         ):
             calls.append(
                 (
@@ -717,6 +719,9 @@ class CapturingCreateConnection:
         {"auto_refresh_enabled": False, "auto_refresh_interval_seconds": 0.5},
         {"total_cpu_millis": 8000, "total_gpu_count": 0},
         {"total_memory_bytes": 16 * 1024**3},
+        {"gpu_class": "any"},
+        {"gpu_count": 2},
+        {"gpu_class": "h100", "gpu_count": 2, "total_gpu_count": 4},
     ],
 )
 def test_remote_create_forwards_refresh_options_without_interval_default(options):
@@ -742,6 +747,8 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
                 "total_cpu_millis": options.get("total_cpu_millis"),
                 "total_memory_bytes": options.get("total_memory_bytes"),
                 "total_gpu_count": options.get("total_gpu_count"),
+                "gpu_class": options.get("gpu_class"),
+                "gpu_count": options.get("gpu_count"),
                 "auto_refresh_enabled": options.get("auto_refresh_enabled"),
                 "auto_refresh_interval_seconds": options.get(
                     "auto_refresh_interval_seconds"
