@@ -3,6 +3,8 @@
 
 //! Tracking for server-side jobs through the `/v1/jobs` API.
 
+mod profile;
+
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
@@ -13,7 +15,10 @@ use serde::Deserialize;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
-use crate::job::{JobEventsRequest, JobHandle, JobProgressCallback, TerminalResult};
+use crate::job::{
+    FunctionProfile, FunctionProfileOptions, JobEventsRequest, JobHandle, JobProgressCallback,
+    TerminalResult,
+};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
 /// Delay before the second job-state poll; doubles up to [`MAX_POLL_INTERVAL`].
@@ -354,6 +359,22 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             });
         }
         Ok(evidence)
+    }
+
+    async fn capture_profile(
+        &self,
+        worker_id: &str,
+        options: FunctionProfileOptions,
+    ) -> Result<FunctionProfile> {
+        self.capture_profile_inner(worker_id, options).await
+    }
+
+    async fn profile_status(&self, profile_id: &str) -> Result<FunctionProfile> {
+        self.profile_status_inner(profile_id).await
+    }
+
+    async fn profile_artifact(&self, profile_id: &str) -> Result<serde_json::Value> {
+        self.profile_artifact_inner(profile_id).await
     }
 
     async fn stats(&self) -> Result<Option<String>> {

@@ -1353,3 +1353,66 @@ async def test_prewarm_progress_bar_preserves_unknown_and_zero_totals(
     assert bar.n == 0
     assert bar.total == (0 if known_empty else None)
     assert bar.unit == " executors"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_profile_wait_preserves_timeout_and_never_waits_or_cancels_parent(sync):
+    error = TimeoutError("capture and refresh continue")
+    inner = SimpleNamespace(
+        wait_for_profile=AsyncMock(side_effect=error),
+        wait=AsyncMock(),
+        cancel=AsyncMock(),
+    )
+    job = AsyncJob(inner)
+    kwargs = {
+        "timeout": timedelta(milliseconds=50),
+        "poll_interval": timedelta(seconds=5),
+    }
+    with pytest.raises(TimeoutError) as caught:
+        if sync:
+            await asyncio.to_thread(Job(job).wait_for_profile, "profile-1", **kwargs)
+        else:
+            await job.wait_for_profile("profile-1", **kwargs)
+    assert caught.value is error
+    inner.wait_for_profile.assert_awaited_once_with(
+        "profile-1", timeout_seconds=0.05, poll_interval_seconds=5.0
+    )
+    inner.wait.assert_not_awaited()
+    inner.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+async def test_profile_export_failure_preserves_destination_and_server_error(
+    sync, tmp_path
+):
+    error = HttpError("403: System Operate required", "request-1", 403)
+    inner = SimpleNamespace(profile_artifact=AsyncMock(side_effect=error))
+    job = AsyncJob(inner)
+    path = tmp_path / "profile.json"
+    path.write_text("previous capture")
+    with pytest.raises(HttpError) as caught:
+        if sync:
+            await asyncio.to_thread(Job(job).export_profile, "profile-1", path)
+        else:
+            await job.export_profile("profile-1", path)
+    assert caught.value is error
+    assert path.read_text() == "previous capture"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,args",
+    [
+        ("capture_profile", ("worker-1",)),
+        ("profile_status", ("profile-1",)),
+        ("wait_for_profile", ("profile-1",)),
+        ("profile_artifact", ("profile-1",)),
+    ],
+)
+async def test_function_profiles_reject_embedded_handles(method, args):
+    with pytest.raises(NotImplementedError, match="Enterprise Function refresh job"):
+        await getattr(AsyncJob(None), method)(*args)
+    with pytest.raises(NotImplementedError, match="Enterprise Function refresh job"):
+        getattr(Job(None), method)(*args)

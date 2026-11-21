@@ -35,6 +35,7 @@ from .functions import RefreshColumnResult
 from .compaction import CompactionResult
 from .cleanup import CleanupResult
 from .prewarm import PrewarmDataResult
+from .profiling import FunctionProfile, FunctionProfileKind, FunctionProfileStatus
 from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
@@ -46,6 +47,9 @@ __all__ = [
     "JobFailureInfo",
     "JobInfo",
     "JobState",
+    "FunctionProfile",
+    "FunctionProfileKind",
+    "FunctionProfileStatus",
 ]
 
 
@@ -86,6 +90,14 @@ class JobState(str, Enum):
 
     def __str__(self) -> str:
         return self.value
+
+
+def _profile_seconds(value: Optional[timedelta], name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if not isinstance(value, timedelta):
+        raise TypeError(f"{name} must be a datetime.timedelta")
+    return value.total_seconds()
 
 
 def _timeout_message(
@@ -700,6 +712,122 @@ class AsyncJob(Generic[T]):
             )
         return json.loads(await self._inner.stack(worker_id))
 
+    async def capture_profile(
+        self,
+        worker_id: str,
+        *,
+        kind: FunctionProfileKind = "cpu",
+        duration: Optional[timedelta] = None,
+        session_slot: int = 0,
+    ) -> FunctionProfile:
+        """Request a profile of one running Enterprise Function worker session.
+
+        Return an accepted capture identity without waiting for recording to
+        finish. The capture belongs to this existing refresh job. The server
+        pins its worker, Python session and execution epoch. System Operate
+        permission and server profiling support are required.
+
+        ``kind`` is ``"cpu"`` for Python CPU samples, ``"memory"`` for Python
+        allocations retained at the end of capture, or ``"gpu"`` for PyTorch
+        CUDA activities. CPU and memory allow 1–30 seconds, defaulting to 10;
+        GPU allows 1–5 seconds, defaulting to 5. Slot zero is the first Python
+        session. GPU tracing requires initialized PyTorch CUDA/CUPTI. CPU
+        sampling requires readable per-thread procfs and is unavailable in
+        dedicated sandboxes. Captures add workload-dependent overhead.
+
+        Examples
+        --------
+        >>> from datetime import timedelta
+        >>> profile = await job.capture_profile(  # doctest: +SKIP
+        ...     "worker-id", kind="gpu", duration=timedelta(seconds=2)
+        ... )
+        >>> print(profile.profile_id)  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return FunctionProfile._from_json(
+            await self._inner.capture_profile(
+                worker_id,
+                kind=kind,
+                duration_seconds=_profile_seconds(duration, "duration"),
+                session_slot=session_slot,
+            )
+        )
+
+    async def profile_status(self, profile_id: str) -> FunctionProfile:
+        """Fetch capture status and identity without waiting.
+
+        A failed capture returns ``status="failed"`` and the server's ``error``.
+        This does not change the parent job's status. Keep the profile ID to
+        retrieve retained evidence after the refresh finishes.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return FunctionProfile._from_json(await self._inner.profile_status(profile_id))
+
+    async def wait_for_profile(
+        self,
+        profile_id: str,
+        *,
+        timeout: Optional[timedelta] = None,
+        poll_interval: Optional[timedelta] = None,
+    ) -> FunctionProfile:
+        """Wait for a capture independently of the parent Function refresh.
+
+        Defaults to a 60-second timeout and two seconds between status requests.
+        Set ``poll_interval`` to change the polling cadence. The timeout includes
+        HTTP requests and sleeps. It raises ``TimeoutError`` without cancelling
+        either the capture or the refresh; keep the ID to wait again. A failed
+        capture raises ``RuntimeError`` with the server's reason. Use
+        ``profile_status`` to inspect a failed capture's typed metadata.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return FunctionProfile._from_json(
+            await self._inner.wait_for_profile(
+                profile_id,
+                timeout_seconds=_profile_seconds(timeout, "timeout"),
+                poll_interval_seconds=_profile_seconds(poll_interval, "poll_interval"),
+            )
+        )
+
+    async def profile_artifact(self, profile_id: str) -> dict[str, Any]:
+        """Retrieve the actual JSON for a completed capture.
+
+        CPU artifacts use speedscope, Python allocations use tracemalloc, and
+        GPU artifacts use Chrome Trace Event JSON. Truncation metadata is
+        preserved. The server retains up to eight captures per job for at most
+        an hour, or until job scratch is reclaimed or archived. Permission,
+        expired-artifact and unsupported-server errors propagate to the caller.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return json.loads(await self._inner.profile_artifact(profile_id))
+
+    async def export_profile(self, profile_id: str, path: str | PathLike[str]) -> None:
+        """Write a completed capture's actual JSON to a file.
+
+        The destination is overwritten only after retrieval succeeds. Export a
+        CPU capture to a speedscope file, or a GPU capture to a trace file for
+        Perfetto. GPU kernel/transfer durations may overlap and are not GPU
+        utilization. Python operator attribution and GPU allocation stacks are
+        outside the GPU trace format.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        artifact = await self._inner.profile_artifact(profile_id)
+        await asyncio.to_thread(Path(path).write_text, artifact, encoding="utf-8")
+
     async def stats(self) -> Optional[str]:
         """Return a printable run report for this Function job.
 
@@ -1111,6 +1239,93 @@ class Job(Generic[T]):
                 "worker stacks require a server-side Function job"
             )
         return LOOP.run(self._inner.stack(worker_id))
+
+    def capture_profile(
+        self,
+        worker_id: str,
+        *,
+        kind: FunctionProfileKind = "cpu",
+        duration: Optional[timedelta] = None,
+        session_slot: int = 0,
+    ) -> FunctionProfile:
+        """Request a profile of a running Enterprise Function worker session.
+
+        See [AsyncJob.capture_profile][lancedb.job.AsyncJob.capture_profile] for
+        kinds, recording windows, permissions and runtime requirements.
+
+        >>> from datetime import timedelta
+        >>> profile = job.capture_profile(  # doctest: +SKIP
+        ...     "worker-id", kind="cpu", duration=timedelta(seconds=10)
+        ... )
+        >>> job.wait_for_profile(profile.profile_id)  # doctest: +SKIP
+        >>> job.export_profile(  # doctest: +SKIP
+        ...     profile.profile_id, "cpu.speedscope.json"
+        ... )
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(
+            self._inner.capture_profile(
+                worker_id, kind=kind, duration=duration, session_slot=session_slot
+            )
+        )
+
+    def profile_status(self, profile_id: str) -> FunctionProfile:
+        """Fetch capture status, including retained captures after refresh.
+
+        See [AsyncJob.profile_status][lancedb.job.AsyncJob.profile_status].
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(self._inner.profile_status(profile_id))
+
+    def wait_for_profile(
+        self,
+        profile_id: str,
+        *,
+        timeout: Optional[timedelta] = None,
+        poll_interval: Optional[timedelta] = None,
+    ) -> FunctionProfile:
+        """Wait for a capture with a configurable timeout and polling cadence.
+
+        See [AsyncJob.wait_for_profile][lancedb.job.AsyncJob.wait_for_profile].
+        A client timeout never cancels the capture or parent refresh job.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(
+            self._inner.wait_for_profile(
+                profile_id, timeout=timeout, poll_interval=poll_interval
+            )
+        )
+
+    def profile_artifact(self, profile_id: str) -> dict[str, Any]:
+        """Retrieve a completed capture's actual JSON, preserving its format.
+
+        See [AsyncJob.profile_artifact][lancedb.job.AsyncJob.profile_artifact].
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(self._inner.profile_artifact(profile_id))
+
+    def export_profile(self, profile_id: str, path: str | PathLike[str]) -> None:
+        """Write a retained capture's JSON after successful retrieval.
+
+        See [AsyncJob.export_profile][lancedb.job.AsyncJob.export_profile].
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(self._inner.export_profile(profile_id, path))
 
     def stats(self) -> Optional[str]:
         """Return a printable Function job run report.

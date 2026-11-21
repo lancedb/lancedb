@@ -124,6 +124,13 @@ export type {
   JobState,
   JobWaitOptions,
 } from "./job";
+export type {
+  FunctionProfile,
+  FunctionProfileKind,
+  FunctionProfileOptions,
+  FunctionProfileStatus,
+  FunctionProfileWaitOptions,
+} from "./profiling";
 
 export {
   AutoQuery,

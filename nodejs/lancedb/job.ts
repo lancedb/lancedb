@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { writeFile } from "node:fs/promises";
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import { decodeCleanupResult } from "./cleanup";
 import { decodeCompactionResult } from "./compaction";
 import type { JobFailureInfo, Job as NativeJob } from "./native";
 import { decodePrewarmDataResult } from "./prewarm";
+import {
+  type FunctionProfile,
+  type FunctionProfileOptions,
+  type FunctionProfileWaitOptions,
+  decodeFunctionProfile,
+  validateProfileOptions,
+} from "./profiling";
 
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
@@ -392,6 +400,95 @@ export class Job<T = void> {
         throw new Error("Job history repeated its page token");
       pageToken = next;
     }
+  }
+
+  /**
+   * Request a profile of a running Enterprise Function worker session.
+   * Returns the accepted identity without waiting for recording to finish.
+   * Requires System Operate permission and server profiling support. The server
+   * pins the worker, Python session and execution epoch. One capture per job
+   * can be active. Captures add workload-dependent overhead.
+   *
+   * GPU tracing requires initialized PyTorch CUDA/CUPTI. CPU sampling requires
+   * readable per-thread procfs and is unavailable in dedicated sandboxes.
+   *
+   * @example
+   * ```ts
+   * const profile = await job.captureProfile("worker-id", {
+   *   kind: "gpu", durationSeconds: 2,
+   * });
+   * await job.waitForProfile(profile.profileId, { timeoutMs: 60_000 });
+   * await job.exportProfile(profile.profileId, "gpu.trace.json");
+   * ```
+   */
+  async captureProfile(
+    workerId: string,
+    options: FunctionProfileOptions = {},
+  ): Promise<FunctionProfile> {
+    validateProfileOptions(options, ["kind", "durationSeconds", "sessionSlot"]);
+    const kind = options.kind ?? "cpu";
+    if (!["cpu", "gpu", "memory"].includes(kind)) {
+      throw new TypeError("kind must be cpu, memory or gpu");
+    }
+    return decodeFunctionProfile(
+      await this.inner.captureProfile(
+        workerId,
+        kind,
+        options.durationSeconds,
+        options.sessionSlot,
+      ),
+    );
+  }
+
+  /**
+   * Fetch capture identity and status, including retained lookup after refresh.
+   * Failed captures return status "failed" with the server's error reason.
+   * This never changes the parent job's cached state.
+   */
+  async profileStatus(profileId: string): Promise<FunctionProfile> {
+    return decodeFunctionProfile(await this.inner.profileStatus(profileId));
+  }
+
+  /**
+   * Wait for a capture with a configurable timeout and polling cadence.
+   * Defaults to 60 seconds with two seconds between requests. A timeout stops
+   * only this wait; the capture and Function refresh continue. A failed capture
+   * rejects with its server-reported reason. Keep its ID to wait again.
+   */
+  async waitForProfile(
+    profileId: string,
+    options: FunctionProfileWaitOptions = {},
+  ): Promise<FunctionProfile> {
+    validateProfileOptions(options, ["timeoutMs", "pollIntervalMs"]);
+    return decodeFunctionProfile(
+      await this.inner.waitForProfile(
+        profileId,
+        options.timeoutMs,
+        options.pollIntervalMs,
+      ),
+    );
+  }
+
+  /**
+   * Retrieve a completed capture's actual JSON: speedscope for CPU,
+   * tracemalloc for Python allocations, or Chrome Trace Event JSON for GPU.
+   * Truncation flags are preserved. Retention is at most one hour and eight
+   * captures per job, until earlier scratch reclamation or archival.
+   * Permission, expired-artifact and unsupported-server errors propagate.
+   */
+  async profileArtifact(profileId: string): Promise<Record<string, unknown>> {
+    return JSON.parse(await this.inner.profileArtifact(profileId));
+  }
+
+  /**
+   * Write a completed capture's JSON after successful retrieval. Open CPU
+   * exports in speedscope and GPU exports in Perfetto. GPU activity durations
+   * can overlap and are not utilization; Python operator attribution and GPU
+   * allocation stacks are excluded. Filesystem errors propagate to the caller.
+   */
+  async exportProfile(profileId: string, path: string): Promise<void> {
+    const artifact = await this.inner.profileArtifact(profileId);
+    await writeFile(path, artifact, "utf8");
   }
 
   private lastProgress: JobProgress | null = null;

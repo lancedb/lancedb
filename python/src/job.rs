@@ -2,16 +2,20 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::runtime::future_into_py;
 use arrow::{
     datatypes::Schema,
     pyarrow::{IntoPyArrow, Table as PyArrowTable},
 };
-use lancedb::job::JobEventsRequest;
+use lancedb::job::{
+    FunctionProfile, FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions,
+    JobEventsRequest,
+};
 use pyo3::{
     Bound, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::PyValueError,
+    exceptions::{PyTimeoutError, PyValueError},
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods},
 };
@@ -20,6 +24,17 @@ use serde::Serialize;
 use crate::error::PythonErrorExt;
 
 const REPR_INDENT: &str = "    ";
+
+fn profile_json(result: lancedb::Result<FunctionProfile>) -> PyResult<String> {
+    let profile = result.infer_error()?;
+    serde_json::to_string(&profile)
+        .map_err(|error| PyValueError::new_err(format!("invalid profile metadata: {error}")))
+}
+
+fn profile_duration(seconds: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| PyValueError::new_err("profile durations must be finite and nonnegative"))
+}
 
 /// Parse a stored JSON payload into Python data. The bindings carry these as
 /// strings because that is what crosses the boundary cheaply; the public
@@ -209,6 +224,73 @@ impl Job {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             Ok(inner.stack(worker_id).await.infer_error()?.to_string())
+        })
+    }
+
+    #[pyo3(signature = (worker_id, *, kind="cpu", duration_seconds=None, session_slot=0))]
+    pub fn capture_profile<'py>(
+        self_: PyRef<'py, Self>,
+        worker_id: String,
+        kind: &str,
+        duration_seconds: Option<f64>,
+        session_slot: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let kind: FunctionProfileKind = serde_json::from_value(serde_json::json!(kind))
+            .map_err(|_| PyValueError::new_err("kind must be 'cpu', 'memory' or 'gpu'"))?;
+        let mut options = FunctionProfileOptions::new(kind).session_slot(session_slot);
+        if let Some(seconds) = duration_seconds {
+            options = options.duration(profile_duration(seconds)?);
+        }
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            profile_json(inner.capture_profile(worker_id, options).await)
+        })
+    }
+
+    pub fn profile_status(
+        self_: PyRef<'_, Self>,
+        profile_id: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            profile_json(inner.profile_status(profile_id).await)
+        })
+    }
+
+    #[pyo3(signature = (profile_id, *, timeout_seconds=None, poll_interval_seconds=None))]
+    pub fn wait_for_profile(
+        self_: PyRef<'_, Self>,
+        profile_id: String,
+        timeout_seconds: Option<f64>,
+        poll_interval_seconds: Option<f64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let mut options = FunctionProfileWaitOptions::new();
+        if let Some(seconds) = timeout_seconds {
+            options = options.timeout(profile_duration(seconds)?);
+        }
+        if let Some(seconds) = poll_interval_seconds {
+            options = options.poll_interval(profile_duration(seconds)?);
+        }
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            match inner.wait_for_profile(profile_id, options).await {
+                Err(lancedb::Error::Timeout { message }) => Err(PyTimeoutError::new_err(message)),
+                result => profile_json(result),
+            }
+        })
+    }
+
+    pub fn profile_artifact(
+        self_: PyRef<'_, Self>,
+        profile_id: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner
+                .profile_artifact(profile_id)
+                .await
+                .infer_error()?
+                .to_string())
         })
     }
 
