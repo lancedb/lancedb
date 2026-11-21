@@ -121,4 +121,9 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
-    return pa.Table.from_pylist(data)
+    all_keys = dict.fromkeys(k for row in data if isinstance(row, dict) for k in row)
+    normalized = [
+        {**{k: None for k in all_keys}, **row} if isinstance(row, dict) else row
+        for row in data
+    ]
+    return pa.Table.from_pylist(normalized)
