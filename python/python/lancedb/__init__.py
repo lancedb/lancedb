@@ -38,9 +38,9 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import blob, vector
+from .schema import BasePath, blob, blob_uri_array, vector
 from ._blob_reader import BlobReader as BlobReader
-from .job import AsyncJob, Job
+from .job import AsyncJob, Job, JobState
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
@@ -79,6 +79,7 @@ from .materialized_view import (
 from .view import ViewDescription as ViewDescription
 from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
+from .query import ColumnOrdering as ColumnOrdering
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -695,9 +696,12 @@ __all__ = [
     "sanitize_uri",
     "blob",
     "BlobType",
+    "BasePath",
+    "blob_uri_array",
     "vector",
     "DBConnection",
     "Job",
+    "JobState",
     "QueryDescription",
     "SqlQuery",
     "LanceDBConnection",

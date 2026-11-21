@@ -1176,6 +1176,7 @@ class _FunctionErrors:
         self.records = raw.records
         self.fragments = raw.fragments
         self.truncated = raw.truncated
+        self.page_token = getattr(raw, "page_token", None)
 
     def __repr__(self) -> str:
         return repr(self._raw)
@@ -3182,6 +3183,12 @@ class FunctionDefinition:
     remote application or build the declared remote runtime, and it does not
     need the private implementation attribute.
 
+    Arguments to this call are Python and Arrow values. An
+    [Expr][lancedb.expr.Expr] argument, such as ``col("value")``, is a column
+    binding that only a registered
+    [FunctionVersion][lancedb.functions.FunctionVersion] can carry, so this
+    call rejects it with ``TypeError`` instead of running the callable.
+
     Remote execution adapts the callable to the internal Arrow batch ABI
     described by the registration artifact. By default it invokes the callable
     once per row. A callable whose parameters are all annotated as
@@ -3451,6 +3458,16 @@ class FunctionDefinition:
         return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
+        from lancedb.expr import Expr
+
+        if any(isinstance(value, Expr) for value in (*args, *kwargs.values())):
+            raise TypeError(
+                "a FunctionDefinition runs locally on Python and Arrow values; "
+                "an Expr input binds only on a registered FunctionVersion. "
+                "Register the definition with create_function or "
+                "create_function_async, then bind col(...) on the returned "
+                "version."
+            )
         return self._function(*args, **kwargs)
 
 
@@ -3541,7 +3558,12 @@ def function(
     it takes one ``pyarrow.RecordBatch``. These batch annotations require both
     ``input_schema`` and ``output_schema`` explicitly: the annotations do not
     specify Arrow element types or fields. This also applies to a class's
-    ``__call__`` method. A decorated class is the same callable with state:
+    ``__call__`` method. Each ``input_schema`` field names one parameter, so
+    several input columns take one ``pyarrow.Array`` parameter each, while a
+    single ``pyarrow.RecordBatch`` parameter binds one input column and
+    receives it as a batch. The
+    [Function authoring guide](https://lancedb.com/docs/curation/create-function#batch)
+    has the worked examples. A decorated class is the same callable with state:
     each remote instance calls ``__init__`` once, calls
     ``__call__`` for every row or batch of every input it processes, and calls
     ``close()``, if defined, once when it retires. Load models, open clients,
@@ -3703,7 +3725,11 @@ def function(
         Positive, finite deadline in seconds for each Python call: one row for
         scalar Functions and one batch for vectorized Functions. This does not
         govern class initialization. When omitted, the service applies its
-        default per-call budget.
+        default per-call budget, currently 300 seconds on Enterprise builds.
+        Set it for a GPU Function whose longest call can exceed that budget.
+        Enterprise builds that require an explicit GPU deadline reject a
+        refresh when neither the definition nor the refresh request sets one;
+        a refresh value overrides the definition.
     retry_policy : FunctionRetryPolicy, optional
         Retry selected failed calls inside the Function, with bounded attempts
         and backoff. A refresh may override this default. Retrying a partial
@@ -3803,7 +3829,10 @@ def function(
     remote environment, resolve Secrets, or run the remote Arrow adapter or
     sandbox. A registered ``FunctionVersion`` call is different: it binds
     ``col(...)`` inputs and returns a remote
-    [FunctionApplication][lancedb.functions.FunctionApplication].
+    [FunctionApplication][lancedb.functions.FunctionApplication]. Passing an
+    [Expr][lancedb.expr.Expr] to a definition raises ``TypeError`` before the
+    callable runs, because a column reference binds only on a registered
+    version.
 
     ```python
     scaled = scale(factor=2.0)
@@ -3894,7 +3923,11 @@ __all__ = [
 
 
 def udf(*args: Any, **kwargs: Any) -> Any:
-    """Deprecated alias of :func:`function`."""
+    """Deprecated alias of :func:`function`.
+
+    Accepts the same options, including ``row_timeout_seconds``. See
+    :func:`function` for GPU deadline guidance.
+    """
     warnings.warn(
         "lancedb.udf is deprecated; use lancedb.function",
         DeprecationWarning,

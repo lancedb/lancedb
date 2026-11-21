@@ -90,6 +90,75 @@ fn set_storage_options_provider(
     store_params.storage_options_accessor = Some(Arc::new(accessor));
 }
 
+/// Preserve caller-supplied options across provider refreshes.
+///
+/// Namespace providers return a fresh credential map and replace the accessor
+/// cache, so a plain initial-options accessor would drop caller-only settings
+/// after the first refresh. This wrapper merges the caller options into every
+/// provider result, with provider values winning overlapping keys.
+#[derive(Debug)]
+pub(crate) struct LayeredStorageOptionsProvider {
+    caller_options: HashMap<String, String>,
+    inner: Arc<dyn StorageOptionsProvider>,
+}
+
+impl LayeredStorageOptionsProvider {
+    pub(crate) fn new(
+        caller_options: HashMap<String, String>,
+        inner: Arc<dyn StorageOptionsProvider>,
+    ) -> Self {
+        Self {
+            caller_options,
+            inner,
+        }
+    }
+
+    fn layer(
+        &self,
+        mut options: Option<HashMap<String, String>>,
+    ) -> Option<HashMap<String, String>> {
+        let mut merged = self.caller_options.clone();
+        match options.take() {
+            Some(options) => {
+                merged.extend(options);
+                Some(merged)
+            }
+            None if merged.is_empty() => None,
+            None => Some(merged),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageOptionsProvider for LayeredStorageOptionsProvider {
+    async fn fetch_storage_options(&self) -> lance_core::Result<Option<HashMap<String, String>>> {
+        Ok(self.layer(self.inner.fetch_storage_options().await?))
+    }
+
+    async fn force_fetch_storage_options(
+        &self,
+    ) -> lance_core::Result<Option<HashMap<String, String>>> {
+        Ok(self.layer(self.inner.force_fetch_storage_options().await?))
+    }
+
+    fn provider_id(&self) -> String {
+        use std::hash::{Hash, Hasher};
+
+        let mut entries: Vec<_> = self.caller_options.iter().collect();
+        entries.sort_by_key(|(key, _)| *key);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (key, value) in entries {
+            key.hash(&mut hasher);
+            value.hash(&mut hasher);
+        }
+        format!(
+            "layered(caller_options={:x},{})",
+            hasher.finish(),
+            self.inner.provider_id()
+        )
+    }
+}
+
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
     parent: Arc<dyn Database>,
@@ -381,7 +450,10 @@ impl ExecuteQueryAsyncBuilder {
     ///
     /// Every placeholder needs a value and every parameter must be used by a
     /// placeholder. Parameters are supported in queries (`SELECT`, and
-    /// `EXPLAIN` of one), not in DDL or DML, nor in table-function arguments.
+    /// `EXPLAIN` of one) and, on compatible Enterprise servers, filter values in
+    /// `PREWARM` and `EXPLAIN PREWARM`. Prewarm bindings must be scalars.
+    /// Support for other statements depends on the server; table-function
+    /// arguments do not accept parameters.
     /// Do not follow a named placeholder directly with `$`: `$a$` starts a
     /// dollar-quoted string.
     ///
@@ -2066,6 +2138,9 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NamespaceClientPushdownOperation {
     /// Execute queries on the namespace server via `query_table()` instead of locally.
+    ///
+    /// Queries with a nonempty `order_by` execute locally and require client access
+    /// to the table storage.
     QueryTable,
     /// Execute table creation on the namespace server via `create_table()`
     /// instead of using `declare_table` + local write.
@@ -2180,6 +2255,10 @@ impl ConnectNamespaceBuilder {
     /// Available operations:
     /// - [`NamespaceClientPushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
     /// - [`NamespaceClientPushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
+    ///
+    /// Some query options cannot be represented in the namespace request. A query
+    /// with a nonempty `order_by` executes locally and requires client access to
+    /// the table storage.
     ///
     /// By default, no operations are pushed down (all executed locally).
     pub fn pushdown_operation(mut self, operation: NamespaceClientPushdownOperation) -> Self {

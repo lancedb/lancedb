@@ -6,7 +6,7 @@
 
 # Interface: PrewarmDataOptions
 
-Settings for submitting a durable remote data-cache prewarm job.
+Settings for data-cache prewarm submissions and metadata previews.
 
 ## Properties
 
@@ -37,3 +37,13 @@ optional filter: string;
 ```
 
 A single SQL predicate for conservative metadata pruning.
+
+***
+
+### parameters?
+
+```ts
+optional parameters: QueryParameters;
+```
+
+Typed positional or named filter values, sent separately from SQL.

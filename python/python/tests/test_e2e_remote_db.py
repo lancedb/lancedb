@@ -106,7 +106,7 @@ async def test_maintenance_job_result_and_reopen_against_server(
                 filter="id >= 8",
                 concurrency=2,
             )
-        assert job.id
+        assert job.id()
         progress = []
         result = await call(job.wait, timeout=timeout, progress=progress.append)
         assert any(snapshot["state"] == "finished" for snapshot in progress)
@@ -114,22 +114,22 @@ async def test_maintenance_job_result_and_reopen_against_server(
         assert await call(job.status) == "finished"
         if operation == "compact":
             assert isinstance(result, CompactionResult)
-            assert job.job_type == "compact"
+            assert job.job_type() == "compact"
             assert not result.partial_commit and result.rows_failed == 0
             assert result.completion_percentage == 100
             assert 0 <= result.rows_succeeded <= len(expected)
             assert result.files_added is not None and result.files_removed is not None
         else:
             assert isinstance(result, PrewarmDataResult)
-            assert job.job_type == "prewarm_page_cache"
-            assert result.table_version == version == job.spec["table_version"]
-            assert job.spec["columns"] == ["payload"]
-            assert job.spec["concurrency"] == 2
+            assert job.job_type() == "prewarm_page_cache"
+            assert result.table_version == version == job.spec()["table_version"]
+            assert job.spec()["columns"] == ["payload"]
+            assert job.spec()["concurrency"] == 2
             assert result.fragments_selected > 0
             assert result.executors_completed == result.executors_targeted
             assert result.executors_partial == 0
             assert result.bytes_read is None and result.ranges_completed is None
-        reopened = await call(connection.open_job, job.id)
+        reopened = await call(connection.open_job, job.id())
         assert await call(reopened.wait, timeout=timeout) == result
         query = table.query() if asynchronous else table.search()
         actual = await call(
@@ -308,3 +308,65 @@ def test_against_local_server():
     table = conn.open_table("sift1m_ivf1024_pq16")
     df = table.search(np.random.rand(128)).to_pandas()
     assert len(df) == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_prewarm_preview_against_server(
+    maintenance_connection_options, asynchronous
+):
+    """Preview is typed, source-versioned, and creates no maintenance jobs."""
+    from lancedb.prewarm import PrewarmDataPlan
+
+    connection = (
+        await lancedb.connect_async(**maintenance_connection_options)
+        if asynchronous
+        else lancedb.connect(**maintenance_connection_options)
+    )
+
+    async def call(method, *args, **kwargs):
+        result = method(*args, **kwargs)
+        return await result if asynchronous else result
+
+    async def jobs():
+        reader = await call(connection.execute_query, f'SHOW JOBS FOR TABLE "{name}"')
+        result = await call(reader.read_all)
+        if asynchronous:
+            return [row for batch in result for row in batch.to_pylist()]
+        return result.to_pylist()
+
+    name = f"preview_{uuid4().hex}"
+    created = False
+    try:
+        table = await call(connection.create_table, name, [{"id": 1, "payload": "one"}])
+        created = True
+        version = await table.version() if asynchronous else table.version
+        before = await jobs()
+        for predicate, mode, selected in [
+            (None, "unfiltered", 1),
+            ("TRUE", "full_warm_fallback", 1),
+            ("FALSE", "constant", 0),
+            ("id > 10", "full_warm_fallback", 1),
+        ]:
+            preview = await call(
+                table.explain_prewarm_data, ["payload"], filter=predicate, concurrency=2
+            )
+            assert isinstance(preview, PrewarmDataPlan)
+            assert preview.table_version == version
+            assert preview.pruning.mode == mode
+            assert preview.pruning.input_fragments == 1
+            assert preview.pruning.selected_fragments == selected
+            if mode == "full_warm_fallback":
+                assert preview.pruning.fallback_reason
+        assert await jobs() == before
+        assert (await table.version() if asynchronous else table.version) == version
+        # A preview does not reserve the source snapshot for a later request.
+        await call(table.add, [{"id": 2, "payload": "two"}])
+        newer = await call(table.explain_prewarm_data)
+        assert newer.table_version > version
+        assert newer.pruning.input_fragments == 2
+        assert await jobs() == before
+    finally:
+        if created:
+            await call(connection.drop_table, name)
+        connection.close()

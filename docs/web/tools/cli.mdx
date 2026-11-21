@@ -18,6 +18,21 @@ statements supported by your deployment.
 
 ## Install
 
+From a repository checkout, use the shell installer to select the archive for
+your machine. For example, to install a specific published beta:
+
+```sh
+LANCEDB_VERSION=v0.42.0-beta.19 sh scripts/install.sh
+```
+
+Omit `LANCEDB_VERSION` to select the latest stable GitHub release. The selected
+release must include CLI archives. The installer verifies the archive checksum
+and installs to `$HOME/.local/bin/lancedb`. If you already use an Enterprise CLI,
+set `LANCEDB_INSTALL_DIR` to a separate absolute directory and invoke the public
+client by its full path. To upgrade, move the existing executable first.
+
+### Manual download
+
 Download a CLI archive and `SHA256SUMS` from the
 [LanceDB releases page](https://github.com/lancedb/lancedb/releases). The CLI
 shares the SDK release version, including beta versions.

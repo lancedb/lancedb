@@ -309,6 +309,9 @@ describe("remote connection", () => {
       },
       async (db) => {
         const table = (await db.openTable("test")) as LocalTable;
+        await expect(table.delta(1)).rejects.toThrow(
+          "table.delta is only supported on LanceDB Embedded tables",
+        );
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
@@ -1382,6 +1385,111 @@ describe("remote connection", () => {
     );
   });
 
+  it("forks Enterprise branches from tags and defaults tag versions", async () => {
+    const requests: { path: string; body: Record<string, unknown> }[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/branches/list/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            }),
+          );
+          return;
+        }
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 2,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw ? JSON.parse(raw) : {};
+          requests.push({ path, body });
+          if (path.endsWith("/tags/version/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: 3, branch: "base" }));
+            return;
+          }
+          if (path.endsWith("/tags/create/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          if (path.endsWith("/branches/create/")) {
+            if (body["name"] === "missing") {
+              res
+                .writeHead(404, { "Content-Type": "application/json" })
+                .end(JSON.stringify({ message: "not found" }));
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          res.writeHead(404).end();
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("t", undefined, { branch: "exp" });
+        await (await table.tags()).create("baseline");
+
+        const branches = await table.branches();
+        const fromTag = await branches.create("from-tag", {
+          fromTag: "baseline",
+        });
+        expect(fromTag.currentBranch()).toBe("from-tag");
+
+        // An Enterprise 404 is an ambiguous table-or-source failure, so the
+        // Embedded branch hint must not be appended based on its message.
+        const missing = await branches
+          .create("missing", { fromTag: "baseline" })
+          .then(
+            () => undefined,
+            (error: Error) => error,
+          );
+        expect(missing).toBeDefined();
+        expect(missing?.message).not.toContain("fromTag");
+      },
+    );
+
+    // Omitting the tag version resolves the handle's visible branch version.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/create/",
+      body: {
+        tag: "baseline",
+        version: 2,
+        branch: "exp",
+      },
+    });
+    // A tag source uses the existing coordinate lookup and the normal
+    // branches/create body; there is no from_tag field on the wire.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/version/",
+      body: { tag: "baseline" },
+    });
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/branches/create/",
+      // biome-ignore lint/style/useNamingConvention: snake_case is the server wire format
+      body: { name: "from-tag", from_branch: "base", from_version: 3 },
+    });
+  });
+
   it("sends FTS options to remote tables", async () => {
     let createIndexBody: Record<string, unknown> | undefined;
 
@@ -1433,6 +1541,87 @@ describe("remote connection", () => {
     expect(createIndexBody?.["index_type"]).toBe("FTS");
     expect(createIndexBody?.["block_size"]).toBe(256);
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
+  });
+
+  it("sends RTree options to remote tables", async () => {
+    const createIndexBodies: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "geom",
+                    type: {
+                      type: "struct",
+                      fields: [
+                        {
+                          name: "x",
+                          type: { type: "double" },
+                          nullable: false,
+                        },
+                        {
+                          name: "y",
+                          type: { type: "double" },
+                          nullable: false,
+                        },
+                      ],
+                    },
+                    nullable: true,
+                    metadata: { "ARROW:extension:name": "geoarrow.point" },
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBodies.push(JSON.parse(raw));
+            res.writeHead(200).end();
+          });
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("geom", { config: Index.rtree() });
+        await table.createIndex("geom", {
+          config: Index.rtree({ pageSize: 1024 }),
+          name: "geom_rtree",
+        });
+      },
+    );
+
+    expect(createIndexBodies).toEqual([
+      {
+        column: "geom",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        index_type: "RTREE",
+      },
+      {
+        column: "geom",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        index_type: "RTREE",
+        name: "geom_rtree",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        page_size: 1024,
+      },
+    ]);
   });
 
   it("diffs and cherry-picks remote branches", async () => {
@@ -2098,7 +2287,13 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-2", "table": "t2", ' +
                     '"job_type": "create_index", "state": "succeeded", ' +
-                    '"created_at_millis": 2000}]}',
+                    '"created_at_millis": 2000, "completed_at_millis": 2000, ' +
+                    '"duration_millis": 0, "columns": ["embedding"], ' +
+                    '"function_name": "features$embed", "function_version": "7"}, ' +
+                    '{"job_id": "job-3", "table": "t2", "job_type": "function_refresh", ' +
+                    '"state": "failed", "created_at_millis": 3000, "duration_millis": 200, ' +
+                    '"completed_at_millis": 3200, "failure": {"phase": "execute", ' +
+                    '"message": "worker failed", "retryable": false}}]}',
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
@@ -2167,9 +2362,31 @@ describe("remote connection jobs surface", () => {
       },
       async (db) => {
         const jobs = await collect(db.listJobs());
-        expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
+        expect(jobs.map((job) => job.jobId)).toEqual([
+          "job-1",
+          "job-2",
+          "job-3",
+        ]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].completedAtMillis).toBeUndefined();
+        expect(jobs[0].durationMillis).toBeUndefined();
+        expect(jobs[0].columns).toEqual([]);
+        expect(jobs[0].functionName).toBeUndefined();
+        expect(jobs[0].functionVersion).toBeUndefined();
+        expect(jobs[0].failure).toBeUndefined();
+        expect(jobs[1].completedAtMillis).toBe(2000);
+        expect(jobs[1].durationMillis).toBe(0);
+        expect(jobs[1].columns).toEqual(["embedding"]);
+        expect(jobs[1].functionName).toBe("features$embed");
+        expect(jobs[1].functionVersion).toBe("7");
+        expect(jobs[1].failure).toBeUndefined();
+        expect(jobs[2].state).toBe("failed");
+        expect(jobs[2].durationMillis).toBe(200);
+        expect(jobs[2].failure?.phase).toBe("execute");
+        expect(jobs[2].failure?.message).toBe("worker failed");
+        expect(jobs[2].failure?.retryable).toBe(false);
+        expect(jobs[2].failure?.traceback).toBeUndefined();
         expect(jobs[0].progress).toEqual({
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
@@ -2212,6 +2429,8 @@ describe("remote connection jobs surface", () => {
         expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
         expect(await job.progress()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_id: "job-1",
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
           state: "failed",
@@ -2924,6 +3143,275 @@ describe("job wait deadlines", () => {
           await expect(job.wait({ timeoutMs: 1000 })).rejects.toThrow(
             state === "FAILED" ? /failed/i : /cancelled/i,
           );
+        },
+      );
+    },
+  );
+});
+
+describe("table overrides", () => {
+  it.each([[], ["analytics", "features"]])(
+    "reads, recursively merges, and resets in namespace %j",
+    async (...namespacePath: string[]) => {
+      const requests: { method?: string; url: string; body?: unknown }[] = [];
+      const current = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: {
+          compaction: {
+            enabled: true,
+            // biome-ignore lint/style/useNamingConvention: server wire format
+            target_rows_per_fragment: 1000,
+          },
+          cleanup: { enabled: false },
+        },
+        custom: { keep: true, replace: [1, 2], clear: "value" },
+      };
+      const patch = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: { compaction: { enabled: false } },
+        custom: { replace: [3], clear: null, label: "測試" },
+      };
+      const merged = {
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        job_types: {
+          compaction: {
+            enabled: false,
+            // biome-ignore lint/style/useNamingConvention: server wire format
+            target_rows_per_fragment: 1000,
+          },
+          cleanup: { enabled: false },
+        },
+        custom: { keep: true, replace: [3], clear: null, label: "測試" },
+      };
+      await withMockDatabase(
+        (req, res) => {
+          const url = req.url ?? "";
+          if (url.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => {
+            const body = chunks.length
+              ? JSON.parse(Buffer.concat(chunks).toString())
+              : undefined;
+            requests.push({ method: req.method, url, body });
+            res
+              .writeHead(200)
+              .end(
+                JSON.stringify(
+                  req.method === "GET"
+                    ? current
+                    : req.method === "PUT"
+                      ? body.overrides
+                      : {},
+                ),
+              );
+          });
+        },
+        async (db) => {
+          const table = await db.openTable("test", namespacePath);
+          await expect(table.getTableOverrides()).resolves.toEqual(current);
+          await expect(table.updateTableOverrides(patch)).resolves.toEqual(
+            merged,
+          );
+          // The native conversion and merge must not mutate the caller's object.
+          expect(patch.job_types.compaction).toEqual({ enabled: false });
+          expect(patch.custom.replace).toEqual([3]);
+          await expect(table.resetTableOverrides()).resolves.toEqual({});
+        },
+      );
+      expect(requests.map((request) => request.method)).toEqual([
+        "GET",
+        "GET",
+        "PUT",
+        "POST",
+      ]);
+      for (const request of requests) {
+        const url = new URL(request.url, "http://localhost");
+        expect(url.pathname).toBe(
+          request.method === "POST"
+            ? "/admin/table/overrides/reset"
+            : "/admin/table/overrides",
+        );
+        if (request.method === "PUT") {
+          expect(request.body).toEqual({
+            db: "dev",
+            namespace: namespacePath,
+            table: "test",
+            overrides: merged,
+          });
+        } else {
+          expect(url.searchParams.get("db")).toBe("dev");
+          expect(url.searchParams.get("table")).toBe("test");
+          expect(url.searchParams.getAll("namespace")).toEqual(namespacePath);
+        }
+      }
+    },
+  );
+
+  it.each([{}, { custom: { keep: true } }])(
+    "only reads the snapshot %j for an empty update",
+    async (current) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+            return;
+          }
+          methods.push(req.method ?? "");
+          res
+            .writeHead(req.method === "GET" ? 200 : 400)
+            .end(JSON.stringify(current));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(table.updateTableOverrides({})).resolves.toEqual(
+            current,
+          );
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
+  it.each([null, [], true, 1, "bad"])(
+    "rejects a non-object update %j before reading overrides",
+    async (value) => {
+      const requests: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          requests.push(req.url ?? "");
+          res
+            .writeHead(200)
+            .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(
+            table.updateTableOverrides(
+              value as unknown as Record<string, unknown>,
+            ),
+          ).rejects.toThrow(/must be a JSON object/);
+        },
+      );
+      expect(requests).toEqual(["/v1/table/test/describe/"]);
+    },
+  );
+
+  it.each([403, 404])(
+    "propagates GET failure %i without a PUT",
+    async (status) => {
+      const methods: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200)
+              .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+          } else {
+            methods.push(req.method ?? "");
+            res.writeHead(status).end("overrides unavailable");
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          await expect(
+            table.updateTableOverrides({ custom: true }),
+          ).rejects.toThrow(/overrides unavailable/);
+        },
+      );
+      expect(methods).toEqual(["GET"]);
+    },
+  );
+
+  it("rejects writes on historical and closed handles before HTTP", async () => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        res
+          .writeHead(200)
+          .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+      },
+      async (db) => {
+        const table = await db.openTable("test");
+        await table.checkout(1);
+        requests.length = 0;
+        await expect(
+          table.updateTableOverrides({ custom: true }),
+        ).rejects.toThrow(/fixed at version 1/);
+        await expect(table.resetTableOverrides()).rejects.toThrow(
+          /fixed at version 1/,
+        );
+        table.close();
+        await expect(table.getTableOverrides()).rejects.toThrow(/closed/);
+        await expect(
+          table.updateTableOverrides({ custom: true }),
+        ).rejects.toThrow(/closed/);
+        await expect(table.resetTableOverrides()).rejects.toThrow(/closed/);
+      },
+    );
+    expect(requests).toEqual([]);
+  });
+});
+
+describe("cleanup typed results", () => {
+  test.each(["counts", "no_op", "unknown", "missing", "FAILED", "CANCELLED"])(
+    "reopens and waits for cleanup (%s)",
+    async (outcome) => {
+      const known = outcome !== "unknown";
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "cleanup-job",
+              ["job_type"]: "cleanup",
+              ["job_state"]: ["FAILED", "CANCELLED"].includes(outcome)
+                ? outcome
+                : "DONE",
+              result:
+                outcome === "missing"
+                  ? null
+                  : {
+                      ["format_version"]: 1,
+                      ["min_age_seconds"]: 0,
+                      ["statistics_complete"]: known,
+                      ["old_versions"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 2
+                        : null,
+                      ["bytes_removed"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 123
+                        : null,
+                    },
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CleanupResult>("cleanup-job");
+          if (["missing", "FAILED", "CANCELLED"].includes(outcome)) {
+            await expect(job.wait()).rejects.toThrow();
+          } else {
+            const result = await job.wait();
+            expect(result.statisticsComplete).toBe(known);
+            expect(result.oldVersions).toBe(
+              known ? (outcome === "no_op" ? 0 : 2) : null,
+            );
+            expect(result.minAgeSeconds).toBe(0);
+          }
         },
       );
     },

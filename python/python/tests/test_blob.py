@@ -1017,6 +1017,11 @@ def test_take_queries_honor_blob_mode():
         1: b"one",
         2: b"two",
     }
+    ordered = table.take_offsets([1, 0], preserve_order=True).to_arrow(
+        blob_mode="bytes"
+    )
+    assert ordered["id"].to_pylist() == [2, 1]
+    assert ordered["image"].to_pylist() == [b"two", b"one"]
     assert [
         row["image"] for row in table.take_row_ids([0]).to_list(blob_mode="bytes")
     ] == [b"one"]
@@ -1958,6 +1963,18 @@ def test_fetch_blob_apis_reject_missing_fragment_row_addr():
     _assert_fetch_apis_reject_missing_row_ids(table, [1 << 32, live])
 
 
+def test_fetch_blobs_missing_row_ids_suggest_take_offsets():
+    table = _blob_table(
+        "position_hint",
+        [{"id": i, "image": b"x"} for i in range(3)],
+    )
+    with pytest.raises(ValueError, match="take_offsets") as exc:
+        table.fetch_blobs("image", [10])
+    message = str(exc.value)
+    assert "first missing row ids: [10]" in message
+    assert "with_row_id=True" in message
+
+
 def test_fetch_blob_apis_reject_deleted_row_ids():
     table = _blob_table(
         "deleted_rows",
@@ -2216,8 +2233,11 @@ def test_fetch_blobs_from_query_result_without_row_id_raises():
     table = _blob_table("no_rowid", [{"id": 1, "image": b"x"}])
     hits = table.search().select(["id"]).to_arrow()
     assert "_rowid" not in hits.column_names
-    with pytest.raises(ValueError, match="_rowid"):
+    with pytest.raises(ValueError, match="take_offsets") as exc:
         table.fetch_blobs("image", hits)
+    message = str(exc.value)
+    assert "with_row_id=True" in message
+    assert "list of row ids" in message
 
 
 _HYBRID_BLOB_SCHEMA = pa.schema(
@@ -2382,6 +2402,77 @@ class _KeepAllScoresReranker(Reranker):
         combined = self._merge_and_keep_scores(vector_results, fts_results)
         scores = pa.array([1.0] * len(combined), type=pa.float32())
         return combined.append_column("_relevance_score", scores)
+
+
+class _RecordingVectorReranker(Reranker):
+    def __init__(self):
+        super().__init__(return_score="all")
+        self.calls = []
+
+    def rerank_hybrid(self, query, vector_results, fts_results):
+        raise AssertionError("vector queries must not call rerank_hybrid")
+
+    def rerank_vector(self, query, vector_results):
+        self.calls.append((query, vector_results))
+        return vector_results.append_column(
+            "_relevance_score",
+            pa.array([1.0] * len(vector_results), type=pa.float32()),
+        )
+
+
+@pytest.mark.parametrize("blob_mode", ["descriptions", "bytes"])
+def test_vector_to_arrow_reranks_before_blob_conversion(blob_mode, monkeypatch):
+    db = lancedb.connect("memory:///")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("image"),
+        ]
+    )
+    table = db.create_table(f"vector_rerank_{blob_mode}", schema=schema)
+    rows = 1100
+    table.add(
+        [
+            {
+                "id": row_id,
+                "vector": [1.0, float(row_id % 2)],
+                "image": f"image-{row_id}".encode(),
+            }
+            for row_id in range(rows)
+        ]
+    )
+    fetched = []
+    fetch_blobs = table.fetch_blobs
+
+    def fetch(column, row_ids):
+        fetched.append((column, len(row_ids)))
+        return fetch_blobs(column, row_ids)
+
+    monkeypatch.setattr(table, "fetch_blobs", fetch)
+    reranker = _RecordingVectorReranker()
+    hits = (
+        table.search([1.0, 0.0])
+        .limit(rows)
+        .select(["id", "image"])
+        .rerank(reranker, "hello")
+        .to_arrow(blob_mode=blob_mode)
+    )
+
+    assert len(reranker.calls) == 1
+    query, source = reranker.calls[0]
+    assert query == "hello"
+    # The reranker sees descriptors, not already-converted payload bytes.
+    assert not pa.types.is_large_binary(source.schema.field("image").type)
+    assert "_relevance_score" in hits.column_names
+    assert len(hits) == rows
+    if blob_mode == "bytes":
+        # The whole lazy result is materialized before one aggregate conversion.
+        assert fetched == [("image", rows)]
+        assert pa.types.is_large_binary(hits.schema.field("image").type)
+    else:
+        assert fetched == []
+        assert not pa.types.is_large_binary(hits.schema.field("image").type)
 
 
 def test_bytes_mode_rejects_legacy_blob_after_reranker_drops_metadata(tmp_path):
@@ -3176,3 +3267,393 @@ async def test_open_blob_files_async_iterates_snapshot_handles(tmp_path):
             with file:
                 actual.append(await file.aread())
     assert actual == [None, b"alpha", b"alpha"]
+
+
+def _initial_base_payloads(tmp_path):
+    base_dir = tmp_path / "videos"
+    base_dir.mkdir(exist_ok=True)
+    payload = b"0123456789abcdef"
+    clip = base_dir / "clip.mp4"
+    clip.write_bytes(payload)
+    return base_dir, clip, payload
+
+
+@pytest.mark.parametrize("base_spec", ["lightweight", "dict", "dataset_base_path"])
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.asyncio
+async def test_create_table_initial_bases_store_relative_blob_ranges(
+    tmp_path, base_spec, use_async
+):
+    lance = None
+    if base_spec == "dataset_base_path":
+        lance = pytest.importorskip("lance")
+    base_dir, clip, payload = _initial_base_payloads(tmp_path)
+    field = lancedb.blob("video").with_metadata({"lancedb:logical_type": "mp4"})
+    schema = pa.schema([pa.field("id", pa.int64()), field])
+    videos = lancedb.blob_uri_array([clip.as_uri()], positions=[0], sizes=[6])
+    batch = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    base_kwargs = {"path": base_dir.as_uri(), "name": "source", "id": 1}
+    if base_spec == "lightweight":
+        bases = [lancedb.BasePath(**base_kwargs)]
+    elif base_spec == "dict":
+        bases = [base_kwargs]
+    else:
+        bases = [lance.DatasetBasePath(**base_kwargs)]
+
+    if use_async:
+        db = await lancedb.connect_async(tmp_path / "db")
+        table = await db.create_table("videos", data=batch, initial_bases=bases)
+        assert await table.version() == 1
+        created_schema = await table.schema()
+        reopened = await db.open_table("videos")
+        hits = await reopened.query().with_row_id().to_arrow()
+        row_id = hits["_rowid"][0].as_py()
+        assert (await reopened.fetch_blobs("video", hits)).to_pylist() == [payload[:6]]
+        assert (
+            await reopened.fetch_blob_ranges("video", [(row_id, 1, 3)])
+        ).to_pylist() == [payload[1:4]]
+    else:
+        db = lancedb.connect(tmp_path / "db")
+        table = db.create_table("videos", data=batch, initial_bases=bases)
+        assert table.version == 1
+        created_schema = table.schema
+        # Manifest introspection needs pylance; the lightweight and dict
+        # variants must still prove registration through the reopen and bytes.
+        if lance is not None:
+            registered = table.to_lance().base_paths()[1]
+            assert registered.path == base_dir.as_uri()
+            assert registered.is_dataset_root is False
+        reopened = db.open_table("videos")
+        hits = reopened.search().with_row_id(True).to_arrow()
+        row_id = hits["_rowid"][0].as_py()
+        assert reopened.fetch_blobs("video", hits).to_pylist() == [payload[:6]]
+        assert reopened.fetch_blob_ranges("video", [(row_id, 1, 3)]).to_pylist() == [
+            payload[1:4]
+        ]
+    assert created_schema.field("video").metadata[b"lancedb:logical_type"] == b"mp4"
+
+
+def test_create_table_initial_bases_bootstrap_empty_table_with_auto_id(tmp_path):
+    pytest.importorskip("lance")
+    base_dir, clip, payload = _initial_base_payloads(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    db = lancedb.connect(tmp_path / "db")
+
+    table = db.create_table(
+        "videos",
+        schema=schema,
+        initial_bases=[lancedb.BasePath(path=base_dir.as_uri(), name="source")],
+    )
+    assert table.version == 1
+    registered = list(table.to_lance().base_paths().values())
+    assert len(registered) == 1
+    assert registered[0].id > 0
+    assert registered[0].path == base_dir.as_uri()
+    assert registered[0].is_dataset_root is False
+
+    videos = lancedb.blob_uri_array([clip.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    table.add(rows)
+    reopened = db.open_table("videos")
+    by_id = _row_ids_by_id(reopened)
+    assert reopened.fetch_blobs("video", [by_id[1]]).to_pylist() == [payload]
+
+
+def test_create_table_initial_bases_reject_bad_input(tmp_path):
+    base_dir, _, _ = _initial_base_payloads(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    db = lancedb.connect("memory:///")
+    path = base_dir.as_uri()
+
+    with pytest.raises(ValueError, match="id=0"):
+        lancedb.BasePath(path=path, id=0)
+    with pytest.raises(ValueError, match="id=0"):
+        db.create_table("zero", schema=schema, initial_bases=[{"path": path, "id": 0}])
+    with pytest.raises(ValueError, match="unique"):
+        db.create_table(
+            "duplicates",
+            schema=schema,
+            initial_bases=[
+                lancedb.BasePath(path=path, id=1),
+                lancedb.BasePath(path=f"{path}/other", id=1),
+            ],
+        )
+    with pytest.raises(ValueError, match="missing 'path'"):
+        db.create_table("missing_path", schema=schema, initial_bases=[{"id": 1}])
+    with pytest.raises(TypeError, match="must be a BasePath, dict, or DatasetBasePath"):
+        db.create_table("not_a_base", schema=schema, initial_bases=[object()])
+
+
+def test_create_table_allow_external_blob_outside_bases_is_atomic(tmp_path):
+    payload = b"0123456789abcdef"
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(payload)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()], positions=[0], sizes=[6])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect(tmp_path / "db")
+
+    with pytest.raises(ValueError, match="allow_external_blob_outside_bases"):
+        db.create_table("rejected", data=rows, schema=schema)
+    with pytest.raises(ValueError, match="requires initial data"):
+        db.create_table(
+            "empty_opt_in", schema=schema, allow_external_blob_outside_bases=True
+        )
+
+    table = db.create_table(
+        "videos", data=rows, schema=schema, allow_external_blob_outside_bases=True
+    )
+    assert table.version == 1
+    reopened = db.open_table("videos")
+    hits = reopened.search().with_row_id(True).to_arrow()
+    assert reopened.fetch_blobs("video", hits).to_pylist() == [payload[:6]]
+    row_id = hits["_rowid"][0].as_py()
+    assert reopened.fetch_blob_ranges("video", [(row_id, 0, 6)]).to_pylist() == [
+        payload[:6]
+    ]
+
+
+def test_create_table_initial_bases_keep_scoped_options_on_reopen(tmp_path):
+    pytest.importorskip("lance")
+    payload = b"scoped-payload"
+    dir_a = tmp_path / "base-a"
+    dir_b = tmp_path / "base-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    clip_a = dir_a / "clip.mp4"
+    clip_b = dir_b / "clip.mp4"
+    clip_a.write_bytes(payload)
+    clip_b.write_bytes(payload)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip_a.as_uri(), clip_b.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1, 2], pa.int64()), videos], schema=schema
+    )
+    storage_options = {
+        "timeout": "7s",
+        "base_1.region": "base-one",
+        "base_2.region": "base-two",
+    }
+    db = lancedb.connect(tmp_path / "db")
+
+    table = db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[
+            lancedb.BasePath(path=dir_a.as_uri(), name="a", id=1),
+            lancedb.BasePath(path=dir_b.as_uri(), name="b", id=2),
+        ],
+        storage_options=storage_options,
+    )
+    assert table.version == 1
+    assert {base.id for base in table.to_lance().base_paths().values()} == {1, 2}
+
+    reopened = db.open_table("videos", storage_options=storage_options)
+    by_id = _row_ids_by_id(reopened)
+    assert reopened.fetch_blobs("video", [by_id[1], by_id[2]]).to_pylist() == [
+        payload,
+        payload,
+    ]
+
+
+def test_create_table_initial_bases_through_namespace(tmp_path):
+    pytest.importorskip("lance")
+    base_dir, clip, payload = _initial_base_payloads(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()], positions=[0], sizes=[6])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "ns")})
+
+    table = db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[lancedb.BasePath(path=base_dir.as_uri(), name="source", id=1)],
+    )
+    assert table.version == 1
+    reopened = db.open_table("videos")
+    hits = reopened.search().with_row_id(True).to_arrow()
+    row_id = hits["_rowid"][0].as_py()
+    assert reopened.fetch_blobs("video", hits).to_pylist() == [payload[:6]]
+    assert reopened.fetch_blob_ranges("video", [(row_id, 1, 3)]).to_pylist() == [
+        payload[1:4]
+    ]
+
+
+def test_namespace_create_keeps_scoped_options_over_connection_defaults(tmp_path):
+    pytest.importorskip("lance")
+    base_dir, clip, _ = _initial_base_payloads(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect_namespace(
+        "dir",
+        {"root": str(tmp_path / "ns")},
+        storage_options={"timeout": "7s"},
+    )
+
+    # The invalid scoped option belongs to base 1. It must survive the merge
+    # with connection defaults instead of being replaced by them.
+    with pytest.raises(ValueError, match="scheduler_error_mode"):
+        db.create_table(
+            "videos",
+            data=rows,
+            schema=schema,
+            initial_bases=[
+                lancedb.BasePath(path=base_dir.as_uri(), name="source", id=1)
+            ],
+            storage_options={"base_1.scheduler_error_mode": "invalid"},
+        )
+
+
+def test_namespace_reopen_applies_scoped_options_per_base(tmp_path):
+    pytest.importorskip("lance")
+    payload_a = b"namespace-base-a"
+    payload_b = b"namespace-base-b"
+    dir_a = tmp_path / "base-a"
+    dir_b = tmp_path / "base-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    clip_a = dir_a / "clip.mp4"
+    clip_b = dir_b / "clip.mp4"
+    clip_a.write_bytes(payload_a)
+    clip_b.write_bytes(payload_b)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip_a.as_uri(), clip_b.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1, 2], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect_namespace(
+        "dir",
+        {"root": str(tmp_path / "ns")},
+        storage_options={"timeout": "7s"},
+    )
+
+    table = db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[
+            lancedb.BasePath(path=dir_a.as_uri(), name="a", id=1),
+            lancedb.BasePath(path=dir_b.as_uri(), name="b", id=2),
+        ],
+    )
+    assert table.version == 1
+
+    reopened = db.open_table(
+        "videos", storage_options={"base_1.scheduler_error_mode": "invalid"}
+    )
+    by_id = _row_ids_by_id(reopened)
+    with pytest.raises(ValueError, match="scheduler_error_mode"):
+        reopened.fetch_blobs("video", [by_id[1]])
+    assert reopened.fetch_blobs("video", [by_id[2]]).to_pylist() == [payload_b]
+
+
+@pytest.mark.asyncio
+async def test_create_table_initial_bases_through_async_namespace(tmp_path):
+    pytest.importorskip("lance")
+    base_dir, clip, payload = _initial_base_payloads(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path / "ns")})
+
+    table = await db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[lancedb.BasePath(path=base_dir.as_uri(), name="source", id=1)],
+    )
+    assert await table.version() == 1
+    reopened = await db.open_table("videos")
+    hits = await reopened.query().with_row_id().to_arrow()
+    assert (await reopened.fetch_blobs("video", hits)).to_pylist() == [payload]
+
+
+def test_namespace_refresh_layers_caller_scoped_options(tmp_path):
+    from lance_namespace import (
+        DeclareTableResponse,
+        DescribeTableResponse,
+        LanceNamespace,
+    )
+    from lancedb.namespace import LanceNamespaceDBConnection
+
+    class RefreshingNamespace(LanceNamespace):
+        def __init__(self, location):
+            self.location = location
+            self.refreshes = 0
+
+        def namespace_id(self):
+            return self.location
+
+        def declare_table(self, request):
+            return DeclareTableResponse(
+                location=self.location,
+                storage_options={
+                    "timeout": "7s",
+                    # Expired immediately so the next read must refresh.
+                    "expires_at_millis": "1",
+                },
+            )
+
+        def describe_table(self, request):
+            self.refreshes += 1
+            return DescribeTableResponse(
+                location=self.location,
+                storage_options={"timeout": "8s", "namespace_vended": "fresh"},
+            )
+
+    payload = b"0123456789abcdef"
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+    clip = base_dir / "clip.mp4"
+    clip.write_bytes(payload)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("video")])
+    videos = lancedb.blob_uri_array([clip.as_uri()])
+    rows = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), videos], schema=schema
+    )
+    namespace = RefreshingNamespace((tmp_path / "table.lance").as_uri())
+    db = LanceNamespaceDBConnection(namespace)
+
+    table = db.create_table(
+        "videos",
+        data=rows,
+        schema=schema,
+        initial_bases=[lancedb.BasePath(base_dir.as_uri(), name="base", id=1)],
+        storage_options={"base_1.caller_scoped": "keep-me"},
+    )
+    initial = table.initial_storage_options()
+    assert initial["base_1.caller_scoped"] == "keep-me"
+    assert initial["timeout"] == "7s"
+
+    latest = table.latest_storage_options()
+    assert namespace.refreshes > 0, "expired seed did not trigger a refresh"
+    assert latest["base_1.caller_scoped"] == "keep-me"
+    assert latest["timeout"] == "8s"
+    assert latest["namespace_vended"] == "fresh"
+    assert table.version == 1
+
+    reopened = db.open_table(
+        "videos", storage_options={"base_1.caller_scoped": "keep-me"}
+    )
+    assert reopened.latest_storage_options()["base_1.caller_scoped"] == "keep-me"
+    hits = reopened.search().with_row_id(True).to_arrow()
+    row_id = hits["_rowid"][0].as_py()
+    assert reopened.fetch_blobs("video", [row_id]).to_pylist() == [payload]
+    assert reopened.fetch_blob_ranges("video", [(row_id, 4, 6)]).to_pylist() == [
+        payload[4:10]
+    ]

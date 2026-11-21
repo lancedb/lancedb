@@ -269,21 +269,21 @@ def test_create_and_refresh_jobs(tmp_path):
     create_job = db.create_materialized_view_async(
         "adults", "people", where="age >= 18", with_no_data=True
     )
-    assert create_job.id is None
-    assert create_job.job_type is None
+    assert create_job.id() is None
+    assert create_job.job_type() is None
     assert create_job.wait() is None
 
     view = db.open_materialized_view("adults")
     refresh_job = view.refresh_async()
-    assert refresh_job.id is None
-    assert refresh_job.job_type is None
+    assert refresh_job.id() is None
+    assert refresh_job.job_type() is None
     result = refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 2
     assert view.table.count_rows() == 2
 
     drop_job = db.drop_materialized_view_async("adults")
-    assert drop_job.id is None
+    assert drop_job.id() is None
     assert drop_job.wait() is None
     assert "adults" not in list(db.list_materialized_views())
 
@@ -442,20 +442,20 @@ async def test_async_create_and_refresh_jobs(tmp_path):
     create_job = await db.create_materialized_view_async(
         "adults", "people", with_no_data=True
     )
-    assert create_job.id is None
-    assert create_job.job_type is None
+    assert create_job.id() is None
+    assert create_job.job_type() is None
     assert await create_job.wait() is None
 
     view = await db.open_materialized_view("adults")
     refresh_job = await view.refresh_async()
-    assert refresh_job.id is None
-    assert refresh_job.job_type is None
+    assert refresh_job.id() is None
+    assert refresh_job.job_type() is None
     result = await refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 1
 
     drop_job = await db.drop_materialized_view_async("adults")
-    assert drop_job.id is None
+    assert drop_job.id() is None
     assert await drop_job.wait() is None
     assert "adults" not in [item async for item in db.list_materialized_views()]
 
@@ -716,8 +716,8 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
     db = RemoteDBConnection.__new__(RemoteDBConnection)
     db._conn = AsyncConnection(native)
     job = db.create_materialized_view_async("adults", "people", **options)
-    assert job.id == QueryBackedCreateJob.id
-    assert job.job_type == "query"
+    assert job.id() == QueryBackedCreateJob.id
+    assert job.job_type() == "query"
     assert not hasattr(job, "query_id")
     assert job.wait() is None
     assert job.status() == "finished"
@@ -747,8 +747,8 @@ async def test_async_remote_create_keeps_interval_unspecified():
     job = await db.create_materialized_view_async(
         "adults", "people", auto_refresh_enabled=True
     )
-    assert job.id == QueryBackedCreateJob.id
-    assert job.job_type == "query"
+    assert job.id() == QueryBackedCreateJob.id
+    assert job.job_type() == "query"
     assert not hasattr(job, "query_id")
     assert await job.wait() is None
     assert await job.status() == "finished"

@@ -2,6 +2,7 @@
 title: "Handle Function failures"
 sidebarTitle: "Function Failures"
 description: "Keep usable outputs, inspect row errors, retry by stable identity and isolate inputs that need attention."
+icon: triangle-exclamation
 tag: "Early access"
 availability:
   embedded: unavailable
@@ -10,18 +11,16 @@ availability:
 
 A Function refresh can encounter a bad row, fail to initialize a model, lose
 a worker, or fail while publishing results. These need different remedies.
-The native workflow below is draft guidance for an unreleased SDK and a
-matching Enterprise server. The recipes that follow it remain available for
-older deployments.
+The native workflow below needs a recent SDK and a matching Enterprise server.
+The recipes that follow it remain available for older deployments.
 
-## Draft native workflow: server contract version 1 {#native}
+## Native workflow: server contract version 1 {#native}
 
-This section requires the SDK changes in [PR #5048](https://github.com/lancedb/lancedb/pull/5048)
-and an Enterprise deployment advertising `workflow_version >= 1` in its
-Function error response. No released SDK or Enterprise version is implied by
-this draft. The SDK checks this capability before submitting native retry,
-upgrade, quarantine, history or provenance requests, and rejects unsupported
-servers before changing the column.
+This section requires Python SDK 0.42.0b19 or later and an Enterprise
+deployment advertising `workflow_version >= 1` in its Function error response.
+The SDK checks this capability before submitting native retry, upgrade,
+quarantine, history or provenance requests, and rejects unsupported servers
+before changing the column.
 
 New Function refreshes default to `error_policy="skip"` with a 5% failed-row
 ceiling. Successful outputs are published before a threshold failure is
@@ -144,8 +143,9 @@ remain unchanged.
 
 ## Choose a row-error policy {#policy}
 
-The default `fail` stops the job on a row error. `skip` writes null outputs for
-failed rows and records errors, subject to the refresh's failure limits:
+On these deployments, the default `fail` stops the job on a row error. `skip`
+retains a failed row's existing output, leaves an unassigned output unassigned
+and records errors, subject to the refresh's failure limits:
 
 ```python
 job = table.refresh_column_async(
@@ -161,7 +161,7 @@ print(result.rows_assigned, result.rows_failed, result.rows_remaining)
 Choose limits for your workload; these example limits stop work when more
 than 100 rows or more than 10% fail. `skip` does not make initialization,
 infrastructure or publication failures successful. If `wait()` raises,
-[refresh the job record](/basics/jobs#snapshots), inspect `job.failure`, and
+[refresh the job record](/basics/jobs#snapshots), inspect `job.failure()`, and
 inspect any recorded row errors. A failed/cancelled job can have committed
 some output, but retention of every successful call is not guaranteed.
 External effects are not rolled back and can be repeated during recovery.
@@ -173,7 +173,7 @@ Scope diagnostics to the job you are investigating:
 ```python
 from collections import Counter
 
-errors = table.function_errors(job_id=job.id, column="embedding", limit=10000)
+errors = table.function_errors(job_id=job.id(), column="embedding", limit=10000)
 groups = Counter((r.error_type, r.error_message) for r in errors.records)
 for cause, count in groups.most_common():
     print(count, cause)

@@ -518,7 +518,8 @@ impl FlightService for TestSqlService {
             {
                 return Err(error.clone());
             }
-            if command.query.starts_with("PREWARM")
+            if (command.query.starts_with("PREWARM")
+                || command.query.starts_with("EXPLAIN (FORMAT JSON) PREWARM"))
                 && let Some(error) = &self.prewarm_error
             {
                 return Err(error.clone());
@@ -4671,7 +4672,16 @@ async fn remote_prewarm_errors_preserve_diagnostics_and_never_fall_back() {
             unsupported,
             "{error}"
         );
-        assert_eq!(statements.lock().unwrap().len(), 1);
+        let preview_error = table
+            .explain_prewarm_data(Default::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            matches!(preview_error, Error::NotSupported { .. }),
+            unsupported,
+            "{preview_error}"
+        );
+        assert_eq!(statements.lock().unwrap().len(), 2);
         shutdown.send(()).unwrap();
     }
 }
@@ -4782,8 +4792,92 @@ async fn remote_prewarm_rejects_historical_checkout_without_submitting() {
     let error = table.prewarm_data(None).await.unwrap_err();
     assert!(matches!(error, Error::NotSupported { .. }));
     assert!(error.to_string().contains("historical version 7"));
+    let error = table
+        .explain_prewarm_data(Default::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::NotSupported { .. }));
+    assert!(error.to_string().contains("historical version 7"));
     assert!(statements.lock().unwrap().is_empty());
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_cleanup_tracks_registry_job_and_real_result() {
+    use crate::table::CleanupOptions;
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([(
+            "job_id",
+            Arc::new(StringArray::from(vec!["cleanup-job"])) as ArrayRef,
+        )])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let polls = Arc::new(AtomicUsize::new(0));
+    let observed = polls.clone();
+    let client = client_with_handler(move |request| {
+        assert_eq!(request.url().path(), "/v1/jobs/describe");
+        observed.fetch_add(1, Ordering::SeqCst);
+        http::Response::builder()
+            .status(200)
+            .body(
+                serde_json::json!({
+                    "job_id":"cleanup-job","job_type":"cleanup","job_state":"DONE",
+                    "result":{"format_version":1,"min_age_seconds":0,"statistics_complete":true,
+                        "old_versions":2,"bytes_removed":123}
+                })
+                .to_string(),
+            )
+            .unwrap()
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into(), "inner".into()],
+        "team$inner$events".into(),
+        Default::default(),
+        Some(sql),
+    )
+    .with_branch(Some("o'brien".into()));
+    let job = table
+        .cleanup_async(CleanupOptions::new().min_age_seconds(0))
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("cleanup-job"));
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    let result = job.wait().await.unwrap();
+    assert_eq!(result.old_versions, Some(2));
+    assert_eq!(result.bytes_removed, Some(123));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["VACUUM \"events\" WITH (branch = 'o''brien', min_age_seconds = 0)"]
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_cleanup_rejects_historical_checkout_without_submitting() {
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/events/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version":7,"schema":{"fields":[]}}"#.to_string())
+                .unwrap()
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec![],
+        "events".into(),
+        Default::default(),
+        None,
+    );
+    table.checkout(7).await.unwrap();
+    assert!(table.cleanup_async(Default::default()).await.is_err());
 }
 
 #[tokio::test]
@@ -4848,6 +4942,127 @@ async fn remote_compaction_tracks_registry_job_and_real_result() {
         [
             "OPTIMIZE \"events\" REWRITE DATA WITH (branch = 'experiment', target_rows_per_fragment = 100)"
         ]
+    );
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn remote_prewarm_preview_uses_sql_without_any_http_jobs() {
+    use crate::table::PrewarmDataOptions;
+    for azure in [false, true] {
+        let preview = serde_json::json!({
+            "format_version":1,"table_version":42,"plan":"metadata preview",
+            "pruning":{"mode":"zonemap_ranges","input_fragments":4,
+                "selected_fragments":1,"pruned_fragments":3,"selected_row_ranges":2}
+        });
+        let service = TestSqlService {
+            adaptive: true,
+            result: RecordBatch::try_from_iter([
+                (
+                    "plan_type",
+                    Arc::new(StringArray::from(vec!["logical_plan"])) as ArrayRef,
+                ),
+                (
+                    "plan",
+                    Arc::new(StringArray::from(vec![preview.to_string()])) as ArrayRef,
+                ),
+            ])
+            .unwrap(),
+            prewarm_azure_supported: true,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let mut config = ClientConfig::default();
+        if azure {
+            config.extra_headers.insert(
+                "x-azure-storage-account-name".into(),
+                "sourceaccount".into(),
+            );
+        }
+        let (sql, shutdown) = start_sql_service(service, config).await;
+        let client = client_with_handler(|_| -> http::Response<String> {
+            panic!("preview must not use HTTP job APIs or REST fallback")
+        });
+        let table = RemoteTable::new_with_sql_client(
+            client,
+            "analytics".into(),
+            "clips".into(),
+            vec!["team".into()],
+            "team$clips".into(),
+            Default::default(),
+            Some(sql),
+        )
+        .with_branch(Some("experiment".into()));
+        let plan = table
+            .explain_prewarm_data(
+                PrewarmDataOptions::new()
+                    .columns(["attrs.score"])
+                    .filter("id > 0")
+                    .concurrency(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.table_version, 42);
+        assert_eq!(plan.pruning.selected_row_ranges, Some(2));
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "EXPLAIN (FORMAT JSON) PREWARM WITH (branch = 'experiment', concurrency = 4) AS SELECT \"attrs\".\"score\" FROM \"clips\" WHERE id > 0"
+            ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.namespace_path == "team" && h.database == "analytics")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_cleanup_preview_uses_sql_without_job_calls() {
+    let payload = serde_json::json!({"format_version":1,"source_version":42,"min_age_seconds":0,
+        "cutoff_millis":123,"versions_to_remove":2,"bytes_to_remove":100});
+    let service = TestSqlService {
+        adaptive: true,
+        result: RecordBatch::try_from_iter([
+            (
+                "plan_type",
+                Arc::new(StringArray::from(vec!["logical_plan"])) as ArrayRef,
+            ),
+            (
+                "plan",
+                Arc::new(StringArray::from(vec![payload.to_string()])) as ArrayRef,
+            ),
+        ])
+        .unwrap(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|_| -> http::Response<String> {
+            panic!("preview must not use HTTP jobs or execution fallback")
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into()],
+        "team$events".into(),
+        Default::default(),
+        Some(sql),
+    );
+    let plan = table
+        .explain_cleanup(crate::table::CleanupOptions::new().min_age_seconds(0))
+        .await
+        .unwrap();
+    assert_eq!(plan.source_version, 42);
+    assert_eq!(plan.versions_to_remove, 2);
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["EXPLAIN (FORMAT JSON) VACUUM \"events\" WITH (min_age_seconds = 0)"]
     );
     shutdown.send(()).unwrap();
 }

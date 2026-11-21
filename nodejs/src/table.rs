@@ -2,17 +2,18 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, DeltaRef as LanceDbDeltaRef,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     FunctionRefreshPlanningConfig as LanceFunctionRefreshPlanningConfig,
     FunctionRefreshPodResources as LanceFunctionRefreshPodResources,
     FunctionWorkerResourceBudget as LanceFunctionWorkerResourceBudget, NewColumnTransform, Ref,
-    Table as LanceDbTable,
+    Table as LanceDbTable, TableDelta as LanceDbTableDelta,
 };
 use napi::Env;
 use napi::bindgen_prelude::*;
@@ -20,8 +21,9 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
-use crate::error::NapiErrorExt;
+use crate::error::{NapiErrorExt, convert_error};
 use crate::index::Index;
+use crate::iterator::RecordBatchIterator;
 use crate::job::JobFailureInfo;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
@@ -33,6 +35,7 @@ pub struct PrewarmDataOptions {
     pub columns: Option<Vec<String>>,
     pub filter: Option<String>,
     pub concurrency: Option<f64>,
+    pub parameters: Option<Buffer>,
 }
 
 impl PrewarmDataOptions {
@@ -40,6 +43,21 @@ impl PrewarmDataOptions {
         let mut options =
             lancedb::table::PrewarmDataOptions::new().columns(self.columns.unwrap_or_default());
         options.filter = self.filter;
+        if let Some(parameters) = self.parameters {
+            let mut batches = ipc_file_to_batches(parameters.to_vec())
+                .and_then(|reader| {
+                    reader
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(Into::into)
+                })
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            if batches.len() != 1 || batches[0].num_rows() != 1 {
+                return Err(napi::Error::from_reason(
+                    "prewarm parameters must contain one row in one batch",
+                ));
+            }
+            options.parameters = Some(batches.remove(0));
+        }
         if let Some(value) = self.concurrency {
             if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > u32::MAX as f64
             {
@@ -108,6 +126,57 @@ impl CompactionOptions {
             integer(self.batch_size, "batchSize", u32::MAX as u64, false)?.map(|v| v as usize);
         Ok(options)
     }
+}
+
+/// One endpoint of a table delta: a positive version or a same-branch tag.
+#[napi(object)]
+pub struct DeltaRef {
+    /// A persisted version, expressed as a positive lossless u64 bigint.
+    pub version: Option<BigInt>,
+    /// A tag on the table handle's current branch.
+    pub tag: Option<String>,
+}
+
+impl DeltaRef {
+    fn into_delta_ref(self) -> napi::Result<LanceDbDeltaRef> {
+        match (self.version, self.tag) {
+            (Some(version), None) => {
+                let (negative, value, lossless) = version.get_u64();
+                if negative || !lossless {
+                    return Err(napi::Error::from_reason(
+                        "delta version must be a positive lossless u64 bigint",
+                    ));
+                }
+                if value == 0 {
+                    return Err(napi::Error::from_reason(
+                        "delta version must be greater than zero",
+                    ));
+                }
+                Ok(LanceDbDeltaRef::Version(value))
+            }
+            (None, Some(tag)) => {
+                if tag.is_empty() {
+                    return Err(napi::Error::from_reason(
+                        "delta tag must be a non-empty string",
+                    ));
+                }
+                Ok(LanceDbDeltaRef::Tag(tag))
+            }
+            _ => Err(napi::Error::from_reason(
+                "delta reference must contain exactly one of version or tag",
+            )),
+        }
+    }
+}
+
+/// A committed transaction in a table delta range.
+#[napi(object)]
+pub struct TableDeltaTransaction {
+    pub read_version: BigInt,
+    pub uuid: String,
+    pub operation: String,
+    pub tag: Option<String>,
+    pub transaction_properties: Option<HashMap<String, String>>,
 }
 
 #[napi]
@@ -339,6 +408,23 @@ impl Table {
             .await
             .default_error()?;
         Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn explain_prewarm_data(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let plan = self
+            .inner_ref()?
+            .explain_prewarm_data(options)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
     }
 
     #[napi(catch_unwind)]
@@ -628,6 +714,7 @@ impl Table {
             job_id: options.job_id,
             column: options.column,
             limit,
+            page_token: options.page_token,
         };
         let errors = self
             .inner_ref()?
@@ -821,6 +908,37 @@ impl Table {
         Ok(spec.map(RTEWriteSpec::from))
     }
 
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn get_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .get_table_overrides()
+            .await
+            .default_error()
+    }
+
+    #[napi(
+        catch_unwind,
+        ts_args_type = "overrides: Record<string, unknown>",
+        ts_return_type = "Promise<Record<string, unknown>>"
+    )]
+    pub async fn update_table_overrides(
+        &self,
+        overrides: serde_json::Value,
+    ) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .update_table_overrides(overrides)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn reset_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .reset_table_overrides()
+            .await
+            .default_error()
+    }
+
     #[napi(catch_unwind, js_name = "closeRTEWriters")]
     pub async fn close_rte_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_rte_writers().await.default_error()
@@ -890,6 +1008,19 @@ impl Table {
         self.inner_ref()?.checkout_latest().await.default_error()
     }
 
+    /// Compare two persisted versions or same-branch tags.
+    #[napi(catch_unwind)]
+    pub async fn delta(
+        &self,
+        from_version: DeltaRef,
+        to_version: Option<DeltaRef>,
+    ) -> napi::Result<TableDelta> {
+        let from = from_version.into_delta_ref()?;
+        let to = to_version.map(DeltaRef::into_delta_ref).transpose()?;
+        let delta = self.inner_ref()?.delta(from, to).await.default_error()?;
+        Ok(TableDelta::new(delta))
+    }
+
     #[napi(catch_unwind)]
     pub async fn list_versions(&self) -> napi::Result<Vec<Version>> {
         self.inner_ref()?
@@ -935,6 +1066,33 @@ impl Table {
     #[napi]
     pub fn current_branch(&self) -> napi::Result<Option<String>> {
         Ok(self.inner_ref()?.current_branch())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn explain_cleanup(
+        &self,
+        min_age_seconds: Option<f64>,
+    ) -> napi::Result<serde_json::Value> {
+        let plan = self
+            .inner_ref()?
+            .explain_cleanup(parse_cleanup_options(min_age_seconds)?)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn cleanup_async(
+        &self,
+        min_age_seconds: Option<f64>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = parse_cleanup_options(min_age_seconds)?;
+        let job = self
+            .inner_ref()?
+            .cleanup_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
     }
 
     #[napi(catch_unwind)]
@@ -1754,6 +1912,8 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
+    /// Empty starts retained history, including repaired rows, for an exact jobId; otherwise continue that page.
+    pub page_token: Option<String>,
 }
 
 /// Aggregate worker resources for one Enterprise Function refresh.
@@ -2113,6 +2273,8 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     pub truncated: bool,
+    /// Continue the same job/filter. Absent for complete pages and older servers.
+    pub page_token: Option<String>,
 }
 
 /// One exact immutable Function revision attached to a table output.
@@ -2231,6 +2393,7 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
             records: errors.records.into_iter().map(Into::into).collect(),
             fragments: errors.fragments.into_iter().map(Into::into).collect(),
             truncated: errors.truncated,
+            page_token: errors.page_token,
         }
     }
 }
@@ -2329,6 +2492,84 @@ pub struct BranchContents {
     pub manifest_size: i64,
 }
 
+fn from_tag_hint(name: &str, tag: &str) -> String {
+    let name_literal = serde_json::Value::String(name.to_string()).to_string();
+    let tag_literal = serde_json::Value::String(tag.to_string()).to_string();
+    format!(
+        "If {tag_literal} is a tag, use branches.create({name_literal}, {{ fromTag: {tag_literal} }}) instead of fromRef."
+    )
+}
+
+/// A pinned version range with streaming row changes.
+#[napi]
+pub struct TableDelta {
+    inner: Arc<LanceDbTableDelta>,
+}
+
+impl TableDelta {
+    fn new(inner: LanceDbTableDelta) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[napi]
+impl TableDelta {
+    #[napi]
+    pub fn begin_version(&self) -> BigInt {
+        BigInt::from(self.inner.begin_version())
+    }
+
+    #[napi]
+    pub fn end_version(&self) -> BigInt {
+        BigInt::from(self.inner.end_version())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn inserted_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.inserted_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn updated_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.updated_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn upserted_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.upserted_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn deleted_row_ids(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.deleted_row_ids().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_transactions(&self) -> napi::Result<Vec<TableDeltaTransaction>> {
+        let transactions = self.inner.list_transactions().await.default_error()?;
+        Ok(transactions
+            .into_iter()
+            .map(|transaction| TableDeltaTransaction {
+                read_version: BigInt::from(transaction.read_version),
+                uuid: transaction.uuid,
+                operation: transaction.operation.name().to_string(),
+                tag: transaction.tag,
+                transaction_properties: transaction
+                    .transaction_properties
+                    .as_ref()
+                    .map(|properties| (**properties).clone()),
+            })
+            .collect())
+    }
+}
+
+/// Tags label table versions with human-readable names.
 #[napi]
 pub struct Tags {
     inner: LanceDbTable,
@@ -2367,12 +2608,20 @@ impl Tags {
             .default_error()
     }
 
+    /// Create a tag for a table version.
+    ///
+    /// Omit `version` to tag the version this handle currently shows,
+    /// including a checked-out version.
     #[napi]
-    pub async unsafe fn create(&mut self, tag: String, version: i64) -> napi::Result<()> {
+    pub async unsafe fn create(&mut self, tag: String, version: Option<i64>) -> napi::Result<()> {
+        let version = match version {
+            Some(version) => version as u64,
+            None => self.inner.version().await.default_error()?,
+        };
         let mut rust_tags = self.inner.tags().await.default_error()?;
         rust_tags
             .as_mut()
-            .create(tag.as_str(), version as u64)
+            .create(tag.as_str(), version)
             .await
             .default_error()
     }
@@ -2430,7 +2679,18 @@ impl Branches {
         name: String,
         from_ref: Option<String>,
         from_version: Option<i64>,
+        from_tag: Option<String>,
     ) -> napi::Result<Table> {
+        if from_tag.is_some() && (from_ref.is_some() || from_version.is_some()) {
+            return Err(napi::Error::from_reason(
+                "fromTag cannot be combined with fromRef or fromVersion; pass only one source",
+            ));
+        }
+        let from_branch = if from_tag.is_none() {
+            from_ref.clone()
+        } else {
+            None
+        };
         let from_ref = from_ref.filter(|b| b != "main");
         let from_version = from_version
             .map(|v| {
@@ -2439,13 +2699,27 @@ impl Branches {
                 })
             })
             .transpose()?;
-        let from = Ref::Version(from_ref, from_version);
-        let table = self
-            .inner
-            .create_branch(&name, from)
-            .await
-            .default_error()?;
-        Ok(Table::new(table))
+        let from = match from_tag {
+            Some(tag) => Ref::Tag(tag),
+            None => Ref::Version(from_ref, from_version),
+        };
+        match self.inner.create_branch(&name, from).await {
+            Ok(table) => Ok(Table::new(table)),
+            Err(error) => {
+                // A missing branch is a native NotFound. A missing version is
+                // VersionNotFound, and an Enterprise 404 is an ambiguous
+                // TableNotFound, so only the native branch case gets the hint.
+                let missing_branch = matches!(
+                    &error,
+                    lancedb::Error::Lance { source } if source.is_not_found()
+                );
+                let mut error = convert_error(&error);
+                if missing_branch && let Some(branch) = from_branch.as_deref() {
+                    error.reason = format!("{}\n{}", error.reason, from_tag_hint(&name, branch));
+                }
+                Err(error)
+            }
+        }
     }
 
     #[napi]
@@ -2491,5 +2765,38 @@ impl Branches {
         serde_json::to_value(result).map_err(|err| {
             napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
         })
+    }
+}
+
+fn parse_cleanup_options(
+    min_age_seconds: Option<f64>,
+) -> napi::Result<lancedb::table::CleanupOptions> {
+    let mut options = lancedb::table::CleanupOptions::new();
+    if let Some(age) = min_age_seconds {
+        if !age.is_finite() || age.fract() != 0.0 || !(0.0..=9_007_199_254_740_991.0).contains(&age)
+        {
+            return Err(napi::Error::from_reason(
+                "minAgeSeconds must be a nonnegative safe integer",
+            ));
+        }
+        options.min_age_seconds = Some(age as u64);
+    }
+    Ok(options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_tag_hint;
+
+    #[test]
+    fn from_tag_hint_uses_escaped_javascript_string_literals() {
+        assert_eq!(
+            from_tag_hint("exp", "baseline"),
+            r#"If "baseline" is a tag, use branches.create("exp", { fromTag: "baseline" }) instead of fromRef."#
+        );
+        assert_eq!(
+            from_tag_hint("branch\"name\\path", "tag\"name\\path"),
+            r#"If "tag\"name\\path" is a tag, use branches.create("branch\"name\\path", { fromTag: "tag\"name\\path" }) instead of fromRef."#
+        );
     }
 }

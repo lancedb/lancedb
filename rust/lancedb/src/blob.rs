@@ -656,7 +656,9 @@ fn missing_blob_row_ids_error(column: &str, requested: usize, missing: &[u64]) -
     Error::InvalidInput {
         message: format!(
             "blob read for column '{column}' requested {requested} row ids but some \
-             do not exist in the table{detail}; pass row ids collected from this table"
+             do not exist in the table{detail}; pass row ids collected from this table. \
+             If these were row positions, call take_offsets(offsets, with_row_id=True) \
+             first and pass the resulting row ids"
         ),
     }
 }

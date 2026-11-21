@@ -125,14 +125,19 @@ for the fields, precedence, source-budget planning failures, and compatible-vers
 they referenced. In LanceDB Embedded, that always happens because you asked
 for it, through a call to `optimize()`. In LanceDB Enterprise, a
 [manual `optimize()` call](/maintenance/compaction#enterprise-manual-compaction)
-submits compaction only. Cleanup remains this planner's own decision, off by
-default unless the deployment sets a minimum version age:
+submits compaction only. This planner controls automatic cleanup, which is
+disabled by default unless the deployment sets a minimum version age:
 with no minimum age configured, nothing is ever old enough to clean up
-automatically, and old versions simply accumulate until an operator enables
-it. A table can also disable it individually even when the deployment allows
-it, overriding the deployment-wide setting for just that table.
+automatically. A table can also disable automatic cleanup individually even
+when the deployment allows it, overriding the deployment-wide setting for
+just that table.
 
-Once enabled, a table becomes due for cleanup when any one of these is true:
+You can [submit manual cleanup](/maintenance/cleanup#enterprise-manual-cleanup)
+even when automatic cleanup is disabled. Follow the coordination requirements
+in that guide before submitting a manual run.
+
+Once automatic cleanup is enabled, a table becomes due when any one of these
+is true:
 
 | Trigger | Condition |
 | --- | --- |

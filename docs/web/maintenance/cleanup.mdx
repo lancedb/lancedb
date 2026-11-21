@@ -17,11 +17,14 @@ those versions referenced.
 <Note>
 **Enterprise job type:** `cleanup`. Distinct from `compact`: compaction
 merges files, cleanup removes them. `optimize()` in LanceDB Embedded runs both in one call;
-Enterprise schedules them as separate jobs, and runs cleanup only when the
-deployment's configuration enables it.
+Enterprise schedules them as separate jobs. Automatic cleanup follows deployment
+and table policy; authorized manual cleanup can run while automatic cleanup is disabled.
 </Note>
 
 ## Retention {#retention}
+
+The Embedded examples below keep their existing behavior. For an explicit
+Enterprise job, use [manual cleanup](#enterprise-manual-cleanup).
 
 <CodeGroup>
 ```python Python icon="python"
@@ -77,6 +80,114 @@ to cover the range you
 need before running this, not after.
 </Warning>
 
+## Enterprise manual cleanup {#enterprise-manual-cleanup}
+
+Requires compatible SDK and Enterprise query-node, agent and worker releases
+with SQL `VACUUM` and cleanup result format version 1. Submission requires table
+Ownership and database/namespace Usage. SDK methods use the table handle's
+namespace and branch; historical-version handles and LanceDB Embedded are unsupported.
+
+<Warning>
+Before submission, disable automatic cleanup for the table and its branches,
+drain existing cleanup workers, and prevent other cleanup, tag creation/update,
+branch creation and restore until completion, including direct storage clients.
+The server does not enforce this coordination. Restore prior scheduling settings
+afterward. Disabling scheduling or cancelling a job does not prove outstanding
+storage requests stopped. Concurrent restore can make the current table unreadable.
+These restrictions apply to every retention value, including zero.
+</Warning>
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+job = table.cleanup_async(min_age_seconds=604800)
+print(job.id())  # Save this durable ID.
+result = job.wait(timeout=timedelta(minutes=10), progress=print)
+print(result.old_versions, result.bytes_removed)
+reopened = db.open_job(job.id())
+```
+
+```python Python async icon="python"
+job = await table.cleanup_async(min_age_seconds=604800)
+result = await job.wait()
+reopened = await db.open_job(job.id())
+```
+
+```typescript TypeScript icon="js"
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000, onProgress: console.log });
+console.log(result.oldVersions, result.bytesRemoved);
+const reopened = await db.openJob(job.id!);
+```
+
+```rust Rust icon="rust"
+use lancedb::table::{CleanupOptions, CleanupResult};
+
+let job = table.cleanup_async(CleanupOptions::new().min_age_seconds(604800)).await?;
+let result = job.wait().await?;
+println!("{:?} {:?}", result.old_versions, result.bytes_removed);
+let reopened = db.open_job(job.id().unwrap()).await?.into_typed::<CleanupResult>()?;
+```
+</CodeGroup>
+
+Submission returns after durable acceptance, before deletion finishes. Omit the
+retention option to inherit selected table/branch `job_types.cleanup.ttl_seconds`,
+then deployment retention. Zero is explicit; invalid/missing effective retention
+fails. The resolved age stays with the job and does not change table policy.
+The worker calculates its cutoff against latest state at execution; the observed
+submission version is not a reserved deletion snapshot.
+
+Status, progress, events, waiting, cancellation and reopening reuse the shared
+[Job APIs](/basics/jobs) and their existing REST permissions. Describe supports
+scoped database/namespace Usage; events require system Usage and cancellation
+requires system Operate. Waiting timeout leaves the job running. Failure or
+cancellation may follow partial deletion and cannot roll it back.
+
+`CleanupResult` reports effective retention, `statistics_complete` and optional
+`old_versions` / `bytes_removed` (`statisticsComplete`, `oldVersions` and
+`bytesRemoved` in TypeScript). Counts cover version deletion, not best-effort
+auxiliary sweeps. Unknown totals after retry/recovery remain None/null; measured
+zero stays zero. `failed_deletes` / `failedDeletes` reports nonfatal object deletion failures
+when measured; successful removals are retained. Missing or incompatible typed results raise an error rather
+than inventing counts. Completion does not guarantee every orphaned file was reclaimed.
+
+Preview deletion using the same options, without creating a job:
+
+<CodeGroup>
+```python Python icon="python"
+plan = table.explain_cleanup(min_age_seconds=604800)
+print(plan.source_version, plan.versions_to_remove, plan.bytes_to_remove)
+# AsyncTable: plan = await table.explain_cleanup(min_age_seconds=604800)
+```
+
+```typescript TypeScript icon="js"
+const plan = await table.explainCleanup({ minAgeSeconds: 604800 });
+console.log(plan.sourceVersion, plan.versionsToRemove, plan.bytesToRemove);
+```
+
+```rust Rust icon="rust"
+let plan = table.explain_cleanup(CleanupOptions::new().min_age_seconds(604800)).await?;
+println!("{} {}", plan.versions_to_remove, plan.bytes_to_remove);
+```
+</CodeGroup>
+
+`CleanupPlan` is a versioned SQL `EXPLAIN (FORMAT JSON) VACUUM` response. It
+reports observed source version, effective retention, cutoff milliseconds and
+version/byte deletion estimates. It can list metadata/storage objects but does
+not delete, submit or monitor a job, expose file paths, or reserve the preview
+snapshot. Auxiliary sweeps are excluded. Execution re-evaluates latest state;
+actual removals can differ. `EXPLAIN ANALYZE` is rejected. Read-only preview does
+not require draining automatic work; actual cleanup still requires coordination.
+
+The SDK does not fall back to execution/REST or silently drop unsupported
+options. If acceptance is ambiguous, inspect jobs before retrying; an independent
+submission can create another job.
+
+Python's existing Enterprise `cleanup_old_versions()` remains a warning-only
+no-op for compatibility. Use `cleanup_async()` explicitly to submit a job.
+Embedded cleanup and Enterprise `optimize()` retain their existing behavior.
+
 ## Managed blob objects {#managed-blobs}
 
 [Managed blobs](/management/table#managed-blobs) store out-of-line payloads
@@ -98,8 +209,8 @@ them, and reopen handles created before that upgrade.
 For LanceDB Embedded tables, `optimize()` performs compaction and cleanup.
 Enterprise schedules them as separate background jobs. With compatible releases,
 remote `optimize()` also submits [manual compaction](/maintenance/compaction#enterprise-manual-compaction),
-but does not prune versions or remove their files. Cleanup remains governed by
-the deployment's separate policy.
+but does not prune versions or remove their files. Automatic cleanup remains governed by
+the deployment's separate policy; explicit manual cleanup uses the retention rules above.
 See [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance#cleanup) for the Enterprise path.
 
 ## Disk usage does not drop immediately {#disk}

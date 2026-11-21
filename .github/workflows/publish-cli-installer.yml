@@ -1,0 +1,48 @@
+name: Publish CLI installer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/install.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.repository == 'lancedb/lancedb' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-cli-installer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Queued jobs and retries publish the installer currently on main.
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-west-2
+          role-to-assume: ${{ vars.CLI_INSTALLER_AWS_ROLE_ARN }}
+
+      - name: Publish and verify the installer
+        shell: bash
+        env:
+          DISTRIBUTION_ID: ${{ vars.CLI_INSTALLER_DISTRIBUTION_ID }}
+        run: |
+          : "${DISTRIBUTION_ID:?Set CLI_INSTALLER_DISTRIBUTION_ID before publishing}"
+          key=cli/install.sh
+          aws s3api put-object --bucket lancedb-downloads --key "$key" \
+            --body scripts/install.sh --content-type 'text/plain; charset=utf-8' \
+            --cache-control 'public, max-age=0, must-revalidate' > /dev/null
+          invalidation=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
+            --paths "/$key" --query Invalidation.Id --output text)
+          aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$invalidation"
+          curl --fail --silent --show-error --retry 3 "https://downloads.lancedb.com/$key" \
+            --output "$RUNNER_TEMP/published-installer.sh"
+          cmp scripts/install.sh "$RUNNER_TEMP/published-installer.sh"

@@ -268,6 +268,38 @@ const after = await table.getRTEStats();
 
 ***
 
+### cleanupAsync()
+
+```ts
+cleanupAsync(_options?): Promise<Job<CleanupResult>>
+```
+
+Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+Requires table Ownership and parent Usage. Retention inherits from the table
+then deployment when omitted. Local/historical handles are unsupported.
+Before submission, disable/drain automatic cleanup and prevent other cleanup,
+tag/branch publication and restore until completion, including direct clients.
+Coordination is not enforced by the server. Cancellation cannot undo deletion
+or prove storage I/O stopped. Preview is available without deletion.
+Wait timeout leaves work running; save the ID and reopen with db.openJob().
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CleanupResult`](../interfaces/CleanupResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000 });
+```
+
+***
+
 ### close()
 
 ```ts
@@ -520,6 +552,53 @@ containing the new version number of the table
 
 ***
 
+### delta()
+
+```ts
+delta(fromVersion, toVersion?): Promise<TableDelta>
+```
+
+Compare two persisted versions or same-branch tags on an Embedded table.
+
+`fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+`toVersion` uses the version currently visible through this handle,
+including a checked-out version. The endpoints are fixed when the delta is
+created.
+
+Row readers require stable row IDs at both endpoints. Create the table with
+`storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+them. `listTransactions()` works without stable row IDs.
+
+Row readers reject ranges containing a Restore, or ranges whose transaction
+history cannot prove they are restore-free. Recompute the checkpoint with a
+full rescan and reinitialize it at the range end version.
+
+LanceDB Enterprise tables reject this operation.
+
+#### Parameters
+
+* **fromVersion**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+* **toVersion?**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+#### Returns
+
+`Promise`&lt;[`TableDelta`](TableDelta.md)&gt;
+
+#### Example
+
+```ts
+const delta = await table.delta("baseline");
+const reader = delta.insertedRows();
+console.log((await reader.schema()).fields.map((field) => field.name));
+for await (const batch of reader) {
+  console.log(batch.getChild("id")?.toJSON());
+}
+console.log(await delta.listTransactions());
+```
+
+***
+
 ### disableRTE()
 
 ```ts
@@ -649,6 +728,58 @@ await table.enableRTE({
   numBuckets: 16,
   maintainedIndexes: ["id_idx"],
 });
+```
+
+***
+
+### explainCleanup()
+
+```ts
+explainCleanup(_options?): Promise<CleanupPlan>
+```
+
+Preview version deletion without creating a job. Execution re-evaluates current state.
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`CleanupPlan`](../interfaces/CleanupPlan.md)&gt;
+
+***
+
+### explainPrewarmData()
+
+```ts
+explainPrewarmData(_options?): Promise<PrewarmDataPlan>
+```
+
+Preview prewarm with the same options as [prewarmDataAsync](Table.md#prewarmdataasync), without
+submitting a warming job. Requires LanceDB Enterprise with structured SQL
+previews, table Select and database/namespace Usage. Reads metadata and
+returns the source version, readable plan, and conservative pruning summary.
+A later submission plans its own snapshot. Historical and Embedded handles
+are unsupported. Unknown measurements remain null.
+Custom table implementations can override this method; its default rejects
+with an unsupported-operation error.
+
+#### Parameters
+
+* **\_options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`PrewarmDataPlan`](../interfaces/PrewarmDataPlan.md)&gt;
+
+#### Example
+
+```ts
+const plan = await table.explainPrewarmData({
+  columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+});
+console.log(plan.pruning.selectedFragments);
 ```
 
 ***
@@ -898,6 +1029,26 @@ Resolves to `undefined` only when the RTE write path is not enabled.
 #### Returns
 
 `Promise`&lt;`undefined` \| [`RTEStats`](../interfaces/RTEStats.md)&gt;
+
+***
+
+### getTableOverrides()
+
+```ts
+getTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Read the stored overrides for a remote Enterprise table.
+
+Overrides configure background behavior such as automatic compaction,
+cleanup, and reindex execution. Keys use the server's snake_case names.
+Returns an empty object when no overrides are set. Local tables are unsupported.
+Custom table implementations inherit a default rejection unless they override
+this method.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
 
 ***
 
@@ -1169,7 +1320,8 @@ the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
 
 ```ts
 const job = await table.prewarmDataAsync({
-  columns: ["video"], filter: "quality > 0.7", concurrency: 4,
+  columns: ["video"], filter: "quality > $minimum",
+  parameters: { minimum: 0.7 }, concurrency: 4,
 });
 await job.wait();
 ```
@@ -1376,6 +1528,22 @@ const job = await table.refreshColumnAsync("embedding", {
 await job.wait();
 console.log(await job.status()); // "finished"
 ```
+
+***
+
+### resetTableOverrides()
+
+```ts
+resetTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Clear a remote Enterprise table's overrides and return an empty object.
+Local tables and custom table implementations without override support reject
+this operation.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
 
 ***
 
@@ -1733,6 +1901,44 @@ used when appropriate:
 `Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
 
 resolves to the new table version.
+
+***
+
+### updateTableOverrides()
+
+```ts
+updateTableOverrides(overrides): Promise<Record<string, unknown>>
+```
+
+Recursively merge overrides into a remote Enterprise table's stored overrides.
+
+Fetches the current overrides, merges nested objects locally, then sends the
+complete replacement using REST PUT. Other values replace existing values;
+unrelated fields from the read snapshot are preserved. This read-modify-write
+is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+Coordinate writers when concurrent edits must be preserved. An empty update
+only reads and returns the current overrides.
+
+Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+without merging. Use [Table.resetTableOverrides](Table.md#resettableoverrides) to clear all overrides.
+Local tables and custom table implementations without override support reject
+this operation.
+
+#### Parameters
+
+* **overrides**: `Record`&lt;`string`, `unknown`&gt;
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+#### Example
+
+```ts
+await table.updateTableOverrides({
+  job_types: { compaction: { enabled: false } },
+});
+```
 
 ***
 
