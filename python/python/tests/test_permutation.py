@@ -223,13 +223,26 @@ def test_base_branch_property_reads_plan_metadata(tmp_path):
 
 
 def test_persist_embedded_plan_for_remote_base(tmp_path):
+    from lancedb import deserialize_conn
+
     server = MockPermutationServer(num_rows=8)
     db = connect(tmp_path)
 
     with mock_remote_table(server) as remote:
-        plan = permutation_builder(remote).persist(db, "plan").execute()
-        permutation = Permutation.from_tables(remote, plan)
+        permutation_builder(remote).shuffle(seed=7).persist(db, "plan").execute()
+        plan = db.open_table("plan")
+        expected_ids = plan.to_arrow().to_pydict()["row_id"]
+        assert expected_ids != list(range(8))
 
+        # Advance the mock's latest version. A fresh handle must see v2, while
+        # the plan's recorded v1 still pins every read to the old snapshot.
+        server.publish_version(2, list(range(100, 108)))
+        fresh_remote = deserialize_conn(
+            remote._serialized_connection_state()
+        ).open_table(server.name)
+        assert fresh_remote.version == 2
+
+        permutation = Permutation.from_tables(fresh_remote, plan)
         assert permutation.base_version == 1
         assert permutation.base_branch is None
         assert permutation._plan_version == 1
@@ -240,20 +253,22 @@ def test_persist_embedded_plan_for_remote_base(tmp_path):
             for batch in permutation.iter(3, skip_last_batch=False)
             for row in batch
         ]
-        assert sequential_ids == list(range(8))
+        assert sequential_ids == expected_ids
         assert [row["id"] for row in permutation.__getitems__([5, 1, 5, 3])] == [
-            5,
-            1,
-            5,
-            3,
+            expected_ids[i] for i in [5, 1, 5, 3]
         ]
 
         # The plan is local, but its build and gathers address the remote base
-        # at the recorded main/v1 snapshot.
+        # at the recorded main/v1 snapshot. Latest describes carry no version.
         assert server.scans
+        assert server.takes
         for body in [*server.scans, *server.takes]:
             assert body.get("version") == 1
             assert body.get("branch") is None
+        describe_versions = [body.get("version") for body in server.describe_bodies]
+        assert None in describe_versions
+        assert 1 in describe_versions
+        assert all(body.get("branch") is None for body in server.describe_bodies)
 
 
 def test_persisted_plan_pickle_reopens_same_snapshot_after_overwrite(tmp_path):
