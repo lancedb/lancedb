@@ -3,6 +3,7 @@
 
 
 from typing import List
+from urllib.parse import unquote, urlparse
 
 import numpy as np
 
@@ -124,9 +125,20 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     @weak_lru(maxsize=1)
     def get_model(self):
-        instructor_embedding = attempt_import_or_raise(
-            "InstructorEmbedding", "InstructorEmbedding"
-        )
+        huggingface_hub = attempt_import_or_raise("huggingface_hub", "huggingface-hub")
+        missing = object()
+        original_cached_download = getattr(huggingface_hub, "cached_download", missing)
+        if original_cached_download is missing:
+            huggingface_hub.cached_download = _cached_download(huggingface_hub)
+
+        try:
+            instructor_embedding = attempt_import_or_raise(
+                "InstructorEmbedding", "InstructorEmbedding"
+            )
+        finally:
+            if original_cached_download is missing:
+                del huggingface_hub.cached_download
+
         torch = attempt_import_or_raise("torch", "torch")
 
         model = instructor_embedding.INSTRUCTOR(self.name)
@@ -139,3 +151,44 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
                 model, {torch.nn.Linear}, dtype=torch.qint8
             )
         return model
+
+
+def _cached_download(huggingface_hub):
+    """Provide the legacy download API used by sentence-transformers 2.2.x."""
+
+    def cached_download(
+        *,
+        url,
+        cache_dir=None,
+        force_filename=None,
+        library_name=None,
+        library_version=None,
+        user_agent=None,
+        use_auth_token=None,
+        **_,
+    ):
+        path = urlparse(url).path.lstrip("/")
+        try:
+            repo_id, resolved_path = path.split("/resolve/", maxsplit=1)
+            revision, filename = resolved_path.split("/", maxsplit=1)
+        except ValueError as err:
+            raise ValueError(f"Unsupported Hugging Face Hub URL: {url}") from err
+
+        repo_id = unquote(repo_id)
+        revision = unquote(revision)
+        filename = unquote(filename)
+        # sentence-transformers derives force_filename from this Hub path with
+        # os.path.join. Using the URL path beneath local_dir produces the same
+        # local destination without sending Windows separators to the Hub.
+        return huggingface_hub.hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            local_dir=cache_dir,
+            library_name=library_name,
+            library_version=library_version,
+            user_agent=user_agent,
+            token=use_auth_token,
+        )
+
+    return cached_download
