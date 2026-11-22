@@ -2090,7 +2090,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let current = inner.checkout_current().await.infer_error()?;
-            Ok(Table::new(current))
+            Ok(Self::new(current))
         })
     }
 
@@ -3256,8 +3256,8 @@ pub enum LanceVersion {
 impl From<LanceVersion> for DeltaRef {
     fn from(version: LanceVersion) -> Self {
         match version {
-            LanceVersion::Version(version) => DeltaRef::Version(version),
-            LanceVersion::Tag(tag) => DeltaRef::Tag(tag),
+            LanceVersion::Version(version) => Self::Version(version),
+            LanceVersion::Tag(tag) => Self::Tag(tag),
         }
     }
 }
