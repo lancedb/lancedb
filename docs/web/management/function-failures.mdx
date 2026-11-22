@@ -47,19 +47,6 @@ Historical records cannot be joined to current inputs through `rows()`.
 Stable row IDs survive compaction; older physical-only records are rejected
 for exact retry if their fragments have been rewritten.
 
-A failed Function refresh can resume on its original table and branch.
-Use the failed job ID to obtain the successor handle. The server reuses
-confirmed outputs. If it reports that an external call may already have run,
-check the external result before starting another refresh.
-
-```python
-resumed = table.resume_refresh(failed_job_id)
-result = resumed.wait()
-```
-
-Set `max_job_attempts` when submitting a refresh to bound automatic recovery.
-The limit includes the initial job. A value of `1` disables automatic job retries.
-
 Select retry rows on the server, optionally by exception class or job:
 
 ```python
@@ -147,6 +134,36 @@ The native contract also applies skip/5% defaults to newly created materialized
 views, with errors identified by Function invocation and source input. Column
 retry and upgrade helpers apply to Function columns; use the materialized-view
 refresh reference for view refresh options.
+
+## Resume a failed refresh job {#resume-refresh}
+
+Job recovery requires a Python or Rust SDK that exposes `resume_refresh` and
+an Enterprise deployment that supports `POST /v1/table/{id}/resume_refresh`.
+The `workflow_version` reported by `function_errors` covers row-error
+operations. Check your server release for job recovery support separately.
+
+Open the original table on the branch where the refresh failed. Pass the
+failed job ID to get a handle for the successor attempt and wait for its result.
+
+```python
+resumed = table.resume_refresh(failed_job_id)
+result = resumed.wait()
+```
+
+```rust
+async fn resume(table: &lancedb::Table, failed_job_id: &str) -> lancedb::Result<()> {
+    let resumed = table.resume_refresh(failed_job_id).await?;
+    let result = resumed.wait().await?;
+    println!("Assigned {} rows", result.rows_assigned);
+    Ok(())
+}
+```
+
+The server reuses confirmed outputs. If it reports that an external call may
+already have run, check the external result before starting another refresh.
+For a Function with external effects, set `max_job_attempts=1` when submitting
+the refresh until you have verified replay safety on your deployment. A limit
+of `1` counts the initial attempt and disables automatic job retries.
 
 ## Older-deployment recipes {#older-deployments}
 
