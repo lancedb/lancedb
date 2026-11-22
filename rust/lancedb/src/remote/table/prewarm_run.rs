@@ -33,8 +33,10 @@ const OPEN_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis
 /// Marks a query as cache-only.
 pub(super) const CACHE_ONLY_HEADER: &str = "x-lancedb-cache-only";
 
-/// Turn a cache-only query's `412 not_resident` into [`Error::NotResident`].
-/// Any other response passes through for the usual handling.
+/// Turn a cache-only query's `412 not_resident` into [`Error::NotResident`]
+/// and its `412 plan_executor_unavailable` into
+/// [`Error::PlanExecutorUnavailable`]. Any other response passes through for
+/// the usual handling.
 pub(super) async fn reject_not_resident(
     request_id: &str,
     response: reqwest::Response,
@@ -52,6 +54,15 @@ pub(super) async fn reject_not_resident(
             message: error.unwrap_or(text),
             request_id: request_id.to_string(),
         }),
+        Ok(ErrorBody {
+            error,
+            error_code: Some(code),
+        }) if code == error_codes::PLAN_EXECUTOR_UNAVAILABLE => {
+            Err(Error::PlanExecutorUnavailable {
+                message: error.unwrap_or(text),
+                request_id: request_id.to_string(),
+            })
+        }
         _ => Err(Error::Http {
             source: format!("{status}: {text}").into(),
             request_id: request_id.to_string(),
@@ -696,6 +707,14 @@ mod tests {
     /// A table whose queries answer 412 `not_resident` when cache-only and
     /// 400 otherwise, recording each query's cache-only header.
     fn cache_only_table(headers: Arc<Mutex<Vec<Option<String>>>>) -> Table {
+        cache_only_table_refusing(headers, error_codes::NOT_RESIDENT)
+    }
+
+    /// Like [`cache_only_table`], with `code` as the 412's error code.
+    fn cache_only_table_refusing(
+        headers: Arc<Mutex<Vec<Option<String>>>>,
+        code: &'static str,
+    ) -> Table {
         Table::new_with_handler("my_table", move |request| match request.url().path() {
             "/v1/table/my_table/describe/" => {
                 let describe = json!({
@@ -715,7 +734,7 @@ mod tests {
                     .get(CACHE_ONLY_HEADER)
                     .map(|value| value.to_str().unwrap().to_string());
                 let (status, body) = if header.is_some() {
-                    (412, error(error_codes::NOT_RESIDENT))
+                    (412, error(code))
                 } else {
                     (400, json!({ "error": "not a cache-only test" }))
                 };
@@ -773,6 +792,26 @@ mod tests {
         // The form the Python bindings send for a plain column.
         let dynamic = Select::Dynamic(vec![("v".to_string(), "v".to_string())]);
         assert_eq!(names(reader.output_schema(dynamic).await.unwrap()), ["v"]);
+    }
+
+    #[tokio::test]
+    async fn a_read_no_plan_executor_can_serve_is_not_reported_as_a_miss() {
+        use crate::query::ExecutableQuery;
+
+        let table = cache_only_table_refusing(
+            Arc::new(Mutex::new(Vec::new())),
+            error_codes::PLAN_EXECUTOR_UNAVAILABLE,
+        );
+        table.checkout(42).await.unwrap();
+        let cache_only = table.cache_only().await.unwrap();
+
+        let error = cache_only.query().execute().await.err().unwrap();
+        match error {
+            Error::PlanExecutorUnavailable { message, .. } => {
+                assert_eq!(message, "server says plan_executor_unavailable")
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]

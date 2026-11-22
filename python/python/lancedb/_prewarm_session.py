@@ -30,7 +30,11 @@ import pyarrow as pa
 
 from ._prewarm_waves import WavePlan
 from .background_loop import LOOP
-from .exceptions import NotResidentError, PrewarmRunError
+from .exceptions import (
+    NotResidentError,
+    PlanExecutorUnavailableError,
+    PrewarmRunError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,10 @@ _ANNOUNCER_JOIN_TIMEOUT_S = 30.0
 
 # How often a waiting read checks whether its iteration has ended.
 _CLOSE_POLL_S = 0.2
+# The wait before a read that no plan executor could serve is sent again,
+# and the value it doubles up to. A restart takes tens of seconds.
+_UNAVAILABLE_BACKOFF_S = 0.25
+_UNAVAILABLE_BACKOFF_MAX_S = 2.0
 
 # Slot value of a split with nothing left to fetch.
 SPLIT_DONE = 2**62
@@ -449,6 +457,10 @@ class WaveReader:
 
         There is no retry limit here: the run fails itself when re-warming
         stops making progress, and that failure raises from the wait.
+
+        A fetch that no plan executor can serve is sent again without a
+        re-warm. The executor that holds the rows is restarting, so a re-warm
+        would only spend the run's re-warm budget on a wave it cannot fix.
         """
         wave = self._plan.wave_of(start)
         self._wait(wave)
@@ -474,33 +486,78 @@ class WaveReader:
         its timeout."""
         self._closed.set()
 
+    def _stop_reason(self) -> Optional[Exception]:
+        """Why this reader must stop waiting, if it must."""
+        if self._closed.is_set():
+            return ReaderClosed(f"prewarm run {self._run_id}: the iteration ended")
+        if self._announcer_stopped.value:
+            return PrewarmRunError(
+                f"prewarm run {self._run_id}: rank 0 stopped announcing "
+                "waves, so the rows still to read will not be warmed; its "
+                "log has the cause",
+                self._run_id,
+                ANNOUNCER_STOPPED,
+            )
+        return None
+
     def _call(self, call) -> None:
-        """Run a run call to its end, or until this reader is closed."""
+        """Run a run call to its end, or until this reader must stop."""
         future = asyncio.run_coroutine_threadsafe(call, LOOP.loop)
         while True:
-            if self._closed.is_set():
+            stop = self._stop_reason()
+            if stop is not None:
                 future.cancel()
-                raise ReaderClosed(f"prewarm run {self._run_id}: the iteration ended")
-            if self._announcer_stopped.value:
-                future.cancel()
-                raise PrewarmRunError(
-                    f"prewarm run {self._run_id}: rank 0 stopped announcing "
-                    "waves, so the rows still to read will not be warmed; its "
-                    "log has the cause",
-                    self._run_id,
-                    ANNOUNCER_STOPPED,
-                )
+                raise stop
             done, _ = concurrent.futures.wait([future], timeout=_CLOSE_POLL_S)
             if done:
                 return future.result()
 
-    @staticmethod
-    def _attempt(fetch: Callable[[], T]) -> tuple[bool, Optional[T]]:
-        """Run ``fetch``; ``(False, None)`` when the cache lacked its rows."""
-        try:
-            return True, fetch()
-        except NotResidentError:
-            return False, None
+    def _attempt(self, fetch: Callable[[], T]) -> tuple[bool, Optional[T]]:
+        """Run ``fetch``; ``(False, None)`` when the cache lacked its rows.
+
+        While no plan executor can serve the fetch, send it again after a
+        growing wait, until the reader's timeout.
+        """
+        started: Optional[float] = None
+        backoff = _UNAVAILABLE_BACKOFF_S
+        while True:
+            try:
+                result = fetch()
+            except PlanExecutorUnavailableError:
+                now = time.monotonic()
+                if started is None:
+                    started = now
+                    logger.warning(
+                        "prewarm run %s: no plan executor can serve a read now; "
+                        "retrying it until one can",
+                        self._run_id,
+                    )
+                if now - started >= self._timeout:
+                    raise
+                # Wake early when the iteration closes; the announcer flag is
+                # shared memory with no event, so it is polled.
+                waited = 0.0
+                while waited < backoff:
+                    stop = self._stop_reason()
+                    if stop is not None:
+                        raise stop
+                    step = min(_CLOSE_POLL_S, backoff - waited)
+                    self._closed.wait(step)
+                    waited += step
+                backoff = min(backoff * 2, _UNAVAILABLE_BACKOFF_MAX_S)
+                continue
+            except NotResidentError:
+                hit = False
+                result = None
+            else:
+                hit = True
+            if started is not None:
+                logger.info(
+                    "prewarm run %s: a plan executor served the read again after %.1fs",
+                    self._run_id,
+                    time.monotonic() - started,
+                )
+            return hit, result
 
     def _wait(self, wave: int) -> None:
         # Every split's fetches reach a wave together; one of them polls and

@@ -119,3 +119,16 @@ class NotResidentError(RuntimeError):
     def __init__(self, message: str, request_id: str):
         super().__init__(message)
         self.request_id = request_id
+
+
+class PlanExecutorUnavailableError(NotResidentError):
+    """Exception raised when no plan executor can serve a cache-only query now.
+
+    This happens while the plan executor that holds the data restarts, and
+    for a few seconds after it is back. Wait and retry the query. Do not
+    re-warm: no plan executor can serve the rows right now, and warming
+    cannot change that.
+
+    It subclasses ``NotResidentError`` because the rows could not be served
+    from the cache either way.
+    """

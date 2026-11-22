@@ -14,7 +14,11 @@ import pyarrow as pa
 import pytest
 from lancedb import _prewarm_session
 from lancedb._prewarm_waves import WavePlan
-from lancedb.exceptions import NotResidentError, PrewarmRunError
+from lancedb.exceptions import (
+    NotResidentError,
+    PlanExecutorUnavailableError,
+    PrewarmRunError,
+)
 
 torch = pytest.importorskip("torch")
 streaming = pytest.importorskip("lancedb.streaming")
@@ -178,6 +182,8 @@ def run(table, monkeypatch):
     monkeypatch.setattr(_prewarm_session, "_POLL_INTERVAL_S", 0.005)
     monkeypatch.setattr(_prewarm_session, "_REPORT_INTERVAL_S", 0.005)
     monkeypatch.setattr(_prewarm_session, "_VIEW_CHECK_INTERVAL_S", 0.002)
+    monkeypatch.setattr(_prewarm_session, "_UNAVAILABLE_BACKOFF_S", 0.005)
+    monkeypatch.setattr(_prewarm_session, "_UNAVAILABLE_BACKOFF_MAX_S", 0.02)
     return run
 
 
@@ -238,6 +244,8 @@ def test_a_table_with_stable_row_ids_is_warmed_by_row_address(tmp_path, monkeypa
     monkeypatch.setattr(_prewarm_session, "_POLL_INTERVAL_S", 0.005)
     monkeypatch.setattr(_prewarm_session, "_REPORT_INTERVAL_S", 0.005)
     monkeypatch.setattr(_prewarm_session, "_VIEW_CHECK_INTERVAL_S", 0.002)
+    monkeypatch.setattr(_prewarm_session, "_UNAVAILABLE_BACKOFF_S", 0.005)
+    monkeypatch.setattr(_prewarm_session, "_UNAVAILABLE_BACKOFF_MAX_S", 0.02)
 
     ds = dataset(table)
     perm = ds._perm_table.to_arrow()
@@ -309,6 +317,75 @@ def test_a_missed_read_is_rewarmed_and_retried(table, run, monkeypatch):
         }
         rows = {(r[0], offset) for r in ranges for offset in range(r[1], r[2])}
         assert rows and rows <= wave_rows
+
+
+def unavailable(message="no plan executor can serve this read now"):
+    return PlanExecutorUnavailableError(message, "request-1")
+
+
+def test_a_read_no_plan_executor_can_serve_is_retried_without_a_rewarm(
+    table, run, monkeypatch
+):
+    expected = ids(dataset(table, _prewarm=False))
+    getitems = streaming.Permutation.__getitems__
+    refusals = {}
+
+    def restarting_getitems(self, indices):
+        # Every fetch is refused three times before an executor serves it.
+        key = (id(self), tuple(indices))
+        refusals[key] = refusals.get(key, 0) + 1
+        if refusals[key] <= 3:
+            raise unavailable()
+        return getitems(self, indices)
+
+    ds = dataset(table)
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", restarting_getitems)
+    assert ids(ds) == expected
+    assert refusals and all(count == 4 for count in refusals.values())
+    assert run.rewarms == []
+
+
+def test_a_read_no_plan_executor_ever_serves_fails_at_the_timeout(
+    table, run, monkeypatch
+):
+    def down_getitems(self, indices):
+        raise unavailable()
+
+    ds = dataset(table, _wait_ready_timeout_s=0.3)
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", down_getitems)
+    started = time.monotonic()
+    with pytest.raises(PlanExecutorUnavailableError):
+        ids(ds)
+    assert 0.3 <= time.monotonic() - started < 10
+    assert run.rewarms == []
+    assert run.closed == [0]
+
+
+def test_closing_the_iteration_ends_a_read_waiting_for_a_plan_executor(
+    table, run, monkeypatch
+):
+    getitems = streaming.Permutation.__getitems__
+    served = set()
+    refused = threading.Event()
+
+    def getitems_once(self, indices):
+        # Each split's first fetch is served; the executor is down after it.
+        if id(self) in served:
+            refused.set()
+            raise unavailable()
+        served.add(id(self))
+        return getitems(self, indices)
+
+    ds = dataset(table, _wait_ready_timeout_s=60)
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", getitems_once)
+    iterator = iter(ds)
+    next(iterator)
+    assert refused.wait(5)
+    started = time.monotonic()
+    iterator.close()
+    assert time.monotonic() - started < 5
+    assert run.rewarms == []
+    assert run.closed == [0]
 
 
 def test_a_resumed_iteration_starts_at_its_wave(table, run):

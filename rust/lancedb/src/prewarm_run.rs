@@ -58,6 +58,8 @@ pub mod error_codes {
     pub const NOT_READY: &str = "not_ready";
     /// A cache-only query needed data the cache does not hold.
     pub const NOT_RESIDENT: &str = "not_resident";
+    /// No plan executor can serve a cache-only query right now.
+    pub const PLAN_EXECUTOR_UNAVAILABLE: &str = "plan_executor_unavailable";
     /// A run call's body is over the run API's limit.
     pub const CALL_TOO_LARGE: &str = "call_too_large";
     /// Client-side: the rank asked about a wave every live rank has passed,

@@ -470,6 +470,14 @@ pub enum Error {
     /// A cache-only query needed data the server's cache does not hold.
     #[snafu(display("Data is not in the cache: {message} (request_id={request_id})"))]
     NotResident { message: String, request_id: String },
+    /// A cache-only query that no plan executor can serve right now, for
+    /// example while the one that holds the data restarts. Warming cannot
+    /// change that; the same query succeeds or reports a miss once an
+    /// executor serves it again.
+    #[snafu(display(
+        "No plan executor can serve this cache-only read now: {message} (request_id={request_id})"
+    ))]
+    PlanExecutorUnavailable { message: String, request_id: String },
     /// A prewarm run call the server refused, or a run that ended. `code`
     /// is one of [`crate::prewarm_run::error_codes`]. `run_id` is empty when
     /// the run could not be opened.

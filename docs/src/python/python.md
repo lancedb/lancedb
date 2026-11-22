@@ -1251,6 +1251,8 @@ generic HTTP/SQL exceptions with their transport status and current request ID.
 
 ::: lancedb.exceptions.NotResidentError
 
+::: lancedb.exceptions.PlanExecutorUnavailableError
+
 ## Integrations
 
 ## Pydantic
