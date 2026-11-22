@@ -57,7 +57,7 @@ def prepare(dataset, state, workers_per_rank, slices_per_worker):
         workers_per_rank=workers_per_rank,
         slices_per_worker=slices_per_worker,
         shuffle=dataset._shuffle,
-        shuffle_seed=dataset._shuffle_seed,
+        shuffle_seed=dataset._shuffle_seed if dataset._shuffle else 0,
         epoch=dataset._epoch,
         shuffle_clump_size=dataset._shuffle_clump_size if dataset._shuffle else None,
     )

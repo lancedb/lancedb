@@ -2096,6 +2096,7 @@ class StreamingDataLoader(DataLoader):
             failure = None
             try:
                 owner_token = dataset._acquire_consumer_iterator()
+                self._prewarm_job_id = None
                 state = self._validated_start_state()
                 if self._prewarm:
                     prepared = _streaming_prewarm.prepare(

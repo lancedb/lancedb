@@ -6,6 +6,7 @@
 /// Built-in streaming sampler and worker layout for a snapshot-pinned PREWARM.
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct OrderedPrewarmOptions {
     /// Source table version recorded by the permutation builder.
     pub table_version: u64,
@@ -27,6 +28,30 @@ pub struct OrderedPrewarmOptions {
     pub shuffle_clump_size: Option<u64>,
     /// Absolute next unread permutation position for each global split.
     pub split_start_positions: Option<Vec<u64>>,
+}
+
+impl OrderedPrewarmOptions {
+    /// Configure the first epoch of a fixed, shuffled streaming permutation.
+    /// Set the optional slice count or resume vector when the loader supplies them.
+    pub fn new(
+        table_version: u64,
+        num_splits: u64,
+        world_size: u64,
+        workers_per_rank: u64,
+    ) -> Self {
+        Self {
+            table_version,
+            num_splits,
+            world_size,
+            workers_per_rank,
+            slices_per_worker: None,
+            shuffle: true,
+            shuffle_seed: 0,
+            epoch: 0,
+            shuffle_clump_size: None,
+            split_start_positions: None,
+        }
+    }
 }
 
 /// Data prewarm settings for [`super::Table::prewarm_data_async`] and

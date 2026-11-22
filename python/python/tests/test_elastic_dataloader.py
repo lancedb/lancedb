@@ -3907,3 +3907,29 @@ def test_prewarm_shares_one_receipt_and_rank_owned_positions(monkeypatch, rank):
         monkeypatch.setattr(streaming.DataLoader, "__iter__", lambda _: iter(()))
         assert list(iter(loader)) == []
         assert loader.prewarm_job_id == "group-job"
+
+
+def test_prewarm_rejects_disagreeing_snapshots_before_submission(monkeypatch):
+    server = MockPermutationServer()
+    group = streaming._streaming_prewarm.dist
+    with mock_remote_table(server) as table:
+        dataset = StreamingDataset(table, num_splits=2, world_size=2, rank=0)
+        loader = StreamingDataLoader(dataset, prewarm=True)
+        monkeypatch.setattr(group, "is_available", lambda: True)
+        monkeypatch.setattr(group, "is_initialized", lambda: True)
+        monkeypatch.setattr(group, "get_rank", lambda: 0)
+        monkeypatch.setattr(group, "get_world_size", lambda: 2)
+
+        def gather(reports, local):
+            _, (recipe, positions) = local
+            other = dataclasses.replace(
+                recipe, settings={**recipe.settings, "table_version": 5}
+            )
+            reports[:] = [local, (None, (other, positions))]
+
+        monkeypatch.setattr(group, "all_gather_object", gather)
+        with pytest.raises(ValueError, match="Ranks disagree"):
+            iter(loader)
+        assert loader.prewarm_job_id is None
+        assert not dataset._consumer_iterator_active
+        assert not server.takes
