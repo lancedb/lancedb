@@ -54,6 +54,8 @@ Python's built-in `torch.utils.data.DataLoader` produces a safe checkpoint when 
 alongside every internal batch and commits it to the parent `StreamingDataset` only when that batch is returned to the
 trainer. The trainer receives the same collated batch it would receive from a standard `DataLoader`.
 
+With `num_workers > 0` and `multiprocessing_context` omitted or `None`, `StreamingDataLoader` uses `forkserver` where the platform provides it and falls back to `spawn`. Callback functions and worker state must be picklable under that start method. Multi-worker scripts should keep their entry point behind the standard `if __name__ == "__main__":` guard so spawned workers can import the module safely.
+
 <CodeGroup>
 ```py Python icon=Python
 from lancedb.streaming import StreamingDataset, StreamingDataLoader

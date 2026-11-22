@@ -155,3 +155,23 @@ same underlying job as dropping any table, `drop_table` or `drop_object`.
     How a refresh works, in LanceDB Enterprise.
   </Card>
 </CardGroup>
+
+
+### Resource settings
+
+Creation accepts `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count`
+as execution-wide defaults, plus `gpu_class` and positive `gpu_count` for each
+worker. Refresh accepts the same names and overrides each supplied field.
+Unspecified fields inherit creation settings, then Function settings, then
+deployment defaults. A materialized view sums total budgets across distinct
+pinned Function versions; per-worker counts use the largest Function default
+unless overridden.
+
+```sql
+CREATE MATERIALIZED VIEW embeddings
+WITH (gpu_class = 'any', gpu_count = 2, total_gpu_count = 8)
+AS SELECT embed(text) AS embedding FROM documents;
+
+REFRESH MATERIALIZED VIEW embeddings
+WITH (gpu_class = 'h100', gpu_count = 4, total_gpu_count = 8);
+```

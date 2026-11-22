@@ -17,6 +17,14 @@ different counters. A missing counter is unknown; it is not zero.
 
 ## Properties
 
+### bytes\_read?
+
+```ts
+optional bytes_read: null | number;
+```
+
+***
+
 ### estimated\_remaining\_time\_millis?
 
 ```ts
@@ -37,6 +45,72 @@ Execution identity and sample time used for client-side ETA derivation.
 
 ***
 
+### executors\_active?
+
+```ts
+optional executors_active: null | number;
+```
+
+***
+
+### executors\_completed?
+
+```ts
+optional executors_completed: null | number;
+```
+
+***
+
+### executors\_failed?
+
+```ts
+optional executors_failed: null | number;
+```
+
+***
+
+### executors\_partial?
+
+```ts
+optional executors_partial: null | number;
+```
+
+***
+
+### executors\_targeted?
+
+```ts
+optional executors_targeted: null | number;
+```
+
+***
+
+### fragments\_selected?
+
+```ts
+optional fragments_selected: null | number;
+```
+
+***
+
+### groups\_completed?
+
+```ts
+optional groups_completed: null | number;
+```
+
+***
+
+### groups\_planned?
+
+```ts
+optional groups_planned: null | number;
+```
+
+Maintenance work observations; rewritten rows are not committed rows.
+
+***
+
 ### paused?
 
 ```ts
@@ -54,6 +128,22 @@ optional phase: null | string;
 ```
 
 Coarse server-derived phase, including phases from newer servers.
+
+***
+
+### ranges\_completed?
+
+```ts
+optional ranges_completed: null | number;
+```
+
+***
+
+### ranges\_planned?
+
+```ts
+optional ranges_planned: null | number;
+```
 
 ***
 
@@ -88,6 +178,14 @@ server reports them.
 
 ```ts
 optional rows_remaining: null | number;
+```
+
+***
+
+### rows\_rewritten?
+
+```ts
+optional rows_rewritten: null | number;
 ```
 
 ***

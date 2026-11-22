@@ -635,7 +635,9 @@ dependencies are part of its definition:
 | `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
 | `env` | environment variables |
 | `python_version` | Python major/minor for the execution environment, defaulting to yours |
-| `gpu` | whether every execution requires a GPU |
+| `gpu` | Enable GPU execution with `True` (Python) or `true` (SQL); defaults to CPU execution |
+| `gpu_class` | Operator-configured GPU class, such as `h100`; requires GPU execution |
+| `gpu_count` | GPUs allocated together per Function worker; positive integer, defaults to one; requires GPU execution |
 
 <CodeGroup>
 ```python Python icon="python"
@@ -696,23 +698,25 @@ full worked example.
 For the full skip, inspect, grouped-error, stable-row-ID retry and quarantine
 workflow, see [Handle Function failures](/management/function-failures).
 
-By default, a Function that raises fails the refresh job. Choose how the
-refresh handles row errors with its error policy:
+By default, a refresh skips rows where the Function raises, up to a 5%
+failed-row ceiling. Choose how the refresh handles row errors with its error
+policy:
 
 <CodeGroup>
 ```sql SQL icon="database"
-REFRESH COLUMN embedding ON documents WITH (error_policy = 'skip')
+REFRESH COLUMN embedding ON documents WITH (error_policy = 'fail')
 ```
 </CodeGroup>
 
-`skip` writes null outputs for failing rows and records their errors. Inspect
+`skip` retains a failing row's existing output, leaves an unassigned output
+unassigned and records the error. Inspect
 them with `SHOW ERRORS` or `table.function_errors()`. Failure limits still
 apply, and initialization or infrastructure failures can still fail the job.
 See the [SQL refresh options](/sql/dml/refresh-column#options). A Function
 that calls a transiently failing external service can handle bounded retries
 inside its body.
 
-Letting the job fail is the other option: fix the cause and refresh again. The
+`fail` is the opt-in alternative: fix the cause and refresh again. The
 next unfiltered refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
 but how much of the failed job's work was kept is not guaranteed, so do not
 count on the retry costing only the rows that did not complete. A refresh with
@@ -766,6 +770,25 @@ Code that reaches the module namespace another way is rejected where it can be
 seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
 `builtins`. Closures and a non-standard `__builtins__` are rejected outright.
 </Warning>
+
+Three statically recognizable diagnostic operations are supported: `sys.stderr`,
+`sys.version_info`, and `importlib.metadata.version`. Direct imports, `from`
+imports, and aliases work the same way. Any other use of `sys`, `builtins`,
+`importlib`, `inspect`, `gc`, `ctypes`, or `types` is rejected; move it into an
+importable helper module.
+
+```python
+import importlib.metadata
+import sys
+
+from lancedb import function
+
+
+@function(pip=["numpy"])
+def report(value: int) -> str:
+    print("diagnostic", file=sys.stderr)
+    return f"numpy {importlib.metadata.version('numpy')} on {sys.version_info}"
+```
 
 In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from

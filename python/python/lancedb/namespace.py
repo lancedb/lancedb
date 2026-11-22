@@ -509,7 +509,9 @@ class LanceNamespaceDBConnection(DBConnection):
             Supported values:
 
             - "QueryTable": Execute queries on the namespace server via
-              namespace.query_table() instead of locally.
+              namespace.query_table() instead of locally. Queries with a
+              nonempty ``order_by`` or an explicit ``scan_in_order(True)``
+              execute on the client and require access to the table storage.
             - "CreateTable": Execute table creation on the namespace server via
               namespace.create_table() instead of using declare_table + local write.
 
@@ -584,7 +586,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 "storage_options": self.storage_options or None,
                 "read_consistency_interval_seconds": (
                     self.read_consistency_interval.total_seconds()
-                    if self.read_consistency_interval
+                    if self.read_consistency_interval is not None
                     else None
                 ),
             }
@@ -640,6 +642,8 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table:
         if namespace_path is None:
             namespace_path = []
@@ -661,6 +665,8 @@ class LanceNamespaceDBConnection(DBConnection):
                 embedding_functions=embedding_functions,
                 namespace_path=namespace_path,
                 storage_options=storage_options,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         )
 
@@ -668,6 +674,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -706,6 +713,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -730,6 +738,11 @@ class LanceNamespaceDBConnection(DBConnection):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> "MaterializedView":
         """Define a materialized view over a table in the root namespace.
@@ -749,7 +762,12 @@ class LanceNamespaceDBConnection(DBConnection):
                         with_no_data=with_no_data,
                         auto_refresh_enabled=auto_refresh_enabled,
                         auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                        total_cpu_millis=total_cpu_millis,
+                        total_memory_bytes=total_memory_bytes,
+                        total_gpu_count=total_gpu_count,
                         exist_ok=exist_ok,
+                        gpu_class=gpu_class,
+                        gpu_count=gpu_count,
                     )
                 ).name
             )
@@ -768,6 +786,11 @@ class LanceNamespaceDBConnection(DBConnection):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> Job[None]:
         job = LOOP.run(
@@ -781,7 +804,12 @@ class LanceNamespaceDBConnection(DBConnection):
                 with_no_data=with_no_data,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
                 exist_ok=exist_ok,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return Job(job)
@@ -1132,6 +1160,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             location=table_uri,
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
@@ -1205,7 +1234,9 @@ class AsyncLanceNamespaceDBConnection:
             Supported values:
 
             - "QueryTable": Execute queries on the namespace server via
-              namespace.query_table() instead of locally.
+              namespace.query_table() instead of locally. Queries with a
+              nonempty ``order_by`` or an explicit ``scan_in_order(True)``
+              execute on the client and require access to the table storage.
             - "CreateTable": Execute table creation on the namespace server via
               namespace.create_table() instead of using declare_table + local write.
 
@@ -1302,6 +1333,8 @@ class AsyncLanceNamespaceDBConnection:
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AsyncTable:
         """Create a new table in the namespace."""
         if namespace_path is None:
@@ -1323,6 +1356,8 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path,
             embedding_functions=embedding_functions,
             storage_options=storage_options,
+            initial_bases=initial_bases,
+            allow_external_blob_outside_bases=allow_external_blob_outside_bases,
         )
         return table._set_namespace_context(
             namespace_path=namespace_path,
@@ -1381,6 +1416,11 @@ class AsyncLanceNamespaceDBConnection:
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> "AsyncMaterializedView":
         """Define a materialized view over a table in the root namespace."""
@@ -1394,7 +1434,12 @@ class AsyncLanceNamespaceDBConnection:
             with_no_data=with_no_data,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             exist_ok=exist_ok,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         # Reopen through the namespace so the view's table carries the
         # namespace client and pushdown configuration a bare inner table lacks.
@@ -1412,6 +1457,11 @@ class AsyncLanceNamespaceDBConnection:
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         exist_ok: bool = False,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job."""
@@ -1425,7 +1475,12 @@ class AsyncLanceNamespaceDBConnection:
             with_no_data=with_no_data,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             exist_ok=exist_ok,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
 
     async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":
@@ -1717,12 +1772,18 @@ class AsyncLanceNamespaceDBConnection:
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncRecordBatchReader:
         """Execute SQL when supported by the underlying connection."""
         return await self._inner.execute_query(
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
 
     async def execute_query_async(
@@ -1731,6 +1792,9 @@ class AsyncLanceNamespaceDBConnection:
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncSqlQuery:
         """Start executing SQL when supported by the underlying connection.
 
@@ -1740,6 +1804,9 @@ class AsyncLanceNamespaceDBConnection:
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
 
     async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
@@ -1808,7 +1875,9 @@ def connect_namespace(
         Supported values:
 
         - "QueryTable": Execute queries on the namespace server via
-          namespace.query_table() instead of locally.
+          namespace.query_table() instead of locally. Queries with a nonempty
+          ``order_by`` or an explicit ``scan_in_order(True)`` execute on the
+          client and require access to the table storage.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 
@@ -1899,7 +1968,9 @@ def connect_namespace_async(
         Supported values:
 
         - "QueryTable": Execute queries on the namespace server via
-          namespace.query_table() instead of locally.
+          namespace.query_table() instead of locally. Queries with a nonempty
+          ``order_by`` or an explicit ``scan_in_order(True)`` execute on the
+          client and require access to the table storage.
         - "CreateTable": Execute table creation on the namespace server via
           namespace.create_table() instead of using declare_table + local write.
 

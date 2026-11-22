@@ -13,22 +13,51 @@ class BackgroundEventLoop:
     A background event loop that can run futures.
 
     Used to bridge sync and async code, without messing with users event loops.
+
+    The loop and its thread are created by the first call to :meth:`run`, not
+    by constructing this object, so importing lancedb does not leave an idle
+    background thread behind.
     """
 
     def __init__(self):
-        self._start()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
 
-    def _start(self):
-        self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(
-            target=self.loop.run_forever,
-            name="LanceDBBackgroundEventLoop",
-            daemon=True,
-        )
-        self.thread.start()
+    def _start(self) -> asyncio.AbstractEventLoop:
+        loop = self.loop
+        if loop is not None:
+            return loop
+        with self._start_lock:
+            loop = self.loop
+            if loop is not None:
+                return loop
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=loop.run_forever,
+                name="LanceDBBackgroundEventLoop",
+                daemon=True,
+            )
+            thread.start()
+            # Publish the loop first and the thread last. Callers that reach
+            # _start while this is in progress wait on _start_lock, so they
+            # cannot observe a half-initialized loop/thread pair.
+            self.loop = loop
+            self.thread = thread
+            return loop
+
+    def _reset_after_fork(self):
+        # Threads do not survive fork(). Reset to the unstarted state without
+        # calling into the inherited loop or thread: the thread is gone, and
+        # it may have held _start_lock when the fork happened. A fresh lock
+        # lets the child start a new loop on its first run().
+        self.loop = None
+        self.thread = None
+        self._start_lock = threading.Lock()
 
     def run(self, future):
-        concurrent_future = asyncio.run_coroutine_threadsafe(future, self.loop)
+        loop = self._start()
+        concurrent_future = asyncio.run_coroutine_threadsafe(future, loop)
         try:
             return concurrent_future.result()
         except BaseException:
@@ -60,12 +89,15 @@ _FORK_WARNED = False
 
 
 def _reset_after_fork():
-    # Threads do not survive fork(), so the asyncio loop in LOOP.thread is
-    # dead in the child. Re-initialize the singleton in place so existing
+    # Threads do not survive fork(), so the loop in LOOP.thread is dead in
+    # the child. Reset the singleton in place so existing
     # `from .background_loop import LOOP` references in other modules see
-    # the new state. The Rust-side tokio runtime is reset analogously by a
-    # pthread_atfork hook installed in the _lancedb extension.
-    LOOP._start()
+    # the unstarted state and create a fresh loop on their first run(). Do
+    # not restart it here: the child may never use LanceDB, and the at-fork
+    # handler must not touch the vanished thread or acquire inherited locks.
+    # The Rust-side tokio runtime is reset analogously by a pthread_atfork
+    # hook installed in the _lancedb extension.
+    LOOP._reset_after_fork()
     # The embedding executor's worker threads are dead in the child as well.
     # Replace it with a fresh pool (threads are spawned lazily, so this is
     # cheap); we don't shut down the old one, since joining its dead workers

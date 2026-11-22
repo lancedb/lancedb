@@ -24,6 +24,7 @@ from typing import (
 import warnings
 
 from lancedb import __version__
+from lancedb.sql import QueryParameters
 from lancedb._blob import BlobFile
 
 from lancedb._lancedb import (
@@ -48,8 +49,11 @@ from lancedb.index import (
     Bitmap,
     LabelList,
 )
+from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.cleanup import CleanupPlan, CleanupResult
 from lancedb.job import Job
 from lancedb.functions import (
+    FunctionProvenance,
     FunctionApplication,
     FunctionRetryPolicy,
     RefreshColumnResult,
@@ -77,9 +81,11 @@ from ..table import (
     BlobMode,
     Branches,
     CompactionOptions,
+    CompactionResult,
     IndexStatistics,
     Query,
     Table,
+    TableDelta,
     Tags,
 )
 from ..types import BaseTokenizerType, ScalarIndexType
@@ -281,6 +287,19 @@ class RemoteTable(Table):
     def list_versions(self):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> TableDelta:
+        """Compare two versions or tags.
+
+        Streamed version deltas are not supported by LanceDB Enterprise tables;
+        this raises ``NotImplementedError``.
+        """
+        async_delta = LOOP.run(self._table.delta(from_version, to_version))
+        return TableDelta(async_delta._inner)
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported in LanceDB Enterprise."""
@@ -600,7 +619,7 @@ class RemoteTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -923,6 +942,14 @@ class RemoteTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
+    def _execute_arrow(
+        self,
+        query: Query,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.Table:
+        return LOOP.run(self._table._execute_arrow(query, timeout=timeout))
+
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
@@ -1089,7 +1116,8 @@ class RemoteTable(Table):
         cleanup_old_versions() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op in LanceDB Enterprise.",
+            "cleanup_old_versions() is a no-op in LanceDB Enterprise. "
+            "Use cleanup_async() to submit durable cleanup explicitly.",
             stacklevel=2,
         )
         pass
@@ -1103,6 +1131,26 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         pass
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview cleanup without submitting a job or deleting files."""
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
+
+    def compact_async(
+        self, *, compaction_options: Optional[CompactionOptions] = None
+    ) -> Job[CompactionResult]:
+        return Job(
+            LOOP.run(self._table.compact_async(compaction_options=compaction_options))
+        )
 
     def optimize(
         self,
@@ -1152,7 +1200,9 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1160,7 +1210,9 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                auto_refresh_resource_budget=auto_refresh_resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
             )
         )
 
@@ -1172,11 +1224,12 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -1184,7 +1237,14 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ):
         return LOOP.run(
             self._table.refresh_column(
@@ -1193,11 +1253,12 @@ class RemoteTable(Table):
                 batch_size=batch_size,
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
-                resource_budget=resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
                 supervisor_resources=supervisor_resources,
                 planning_workers=planning_workers,
                 gpu_class=gpu_class,
-                gpu_count=gpu_count,
+                total_gpu_count=total_gpu_count,
                 retry_policy=retry_policy,
                 error_policy=error_policy,
                 max_failed_fraction=max_failed_fraction,
@@ -1205,7 +1266,14 @@ class RemoteTable(Table):
                 row_timeout_seconds=row_timeout_seconds,
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
+                max_job_attempts=max_job_attempts,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
+                retry_errors=retry_errors,
+                retry_job_id=retry_job_id,
+                retry_error_type=retry_error_type,
+                include_quarantined=include_quarantined,
+                function_version=function_version,
+                recompute=recompute,
             )
         )
 
@@ -1217,11 +1285,12 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -1229,7 +1298,14 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
+        retry_errors: bool = False,
+        retry_job_id: Optional[str] = None,
+        retry_error_type: Optional[str] = None,
+        include_quarantined: bool = False,
+        function_version: Optional[str] = None,
+        recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job[RefreshColumnResult]:
         return Job(
             LOOP.run(
@@ -1239,11 +1315,12 @@ class RemoteTable(Table):
                     batch_size=batch_size,
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
-                    resource_budget=resource_budget,
+                    total_cpu_millis=total_cpu_millis,
+                    total_memory_bytes=total_memory_bytes,
                     supervisor_resources=supervisor_resources,
                     planning_workers=planning_workers,
                     gpu_class=gpu_class,
-                    gpu_count=gpu_count,
+                    total_gpu_count=total_gpu_count,
                     retry_policy=retry_policy,
                     error_policy=error_policy,
                     max_failed_fraction=max_failed_fraction,
@@ -1251,19 +1328,67 @@ class RemoteTable(Table):
                     row_timeout_seconds=row_timeout_seconds,
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
+                    max_job_attempts=max_job_attempts,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
+                    retry_errors=retry_errors,
+                    retry_job_id=retry_job_id,
+                    retry_error_type=retry_error_type,
+                    include_quarantined=include_quarantined,
+                    function_version=function_version,
+                    recompute=recompute,
                 )
             )
         )
+
+    def resume_refresh(self, job_id: str) -> Job[RefreshColumnResult]:
+        return Job(LOOP.run(self._table.resume_refresh(job_id)))
 
     def function_errors(
         self,
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
+        history: bool = False,
+        page_token: Optional[str] = None,
     ):
         return LOOP.run(
-            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+            self._table.function_errors(
+                job_id=job_id,
+                column=column,
+                limit=limit,
+                history=history,
+                page_token=page_token,
+            )
+        ).as_sync(self)
+
+    def quarantine_failed(
+        self,
+        column: str,
+        *,
+        error_type: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_attempts: Optional[int] = None,
+        quarantined: bool = True,
+    ) -> int:
+        return LOOP.run(
+            self._table.quarantine_failed(
+                column,
+                error_type=error_type,
+                job_id=job_id,
+                after_attempts=after_attempts,
+                quarantined=quarantined,
+            )
+        )
+
+    def function_provenance(
+        self,
+        column: str,
+        *,
+        limit: Optional[int] = None,
+        version: Optional[int] = None,
+    ) -> FunctionProvenance:
+        return LOOP.run(
+            self._table.function_provenance(column, limit=limit, version=version)
         )
 
     def column_statuses(
@@ -1313,7 +1438,11 @@ class RemoteTable(Table):
         return LOOP.run(self._table.get_table_overrides())
 
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
-        """Merge Enterprise table overrides into the current table overrides."""
+        """Merge Enterprise table overrides using a non-atomic read-modify-write.
+
+        See [the async method][lancedb.AsyncTable.update_table_overrides]
+        for merge behavior and concurrency limitations.
+        """
         return LOOP.run(self._table.update_table_overrides(**overrides))
 
     def reset_table_overrides(self) -> dict[str, Any]:
@@ -1375,7 +1504,14 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+    def prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> None:
         """Prewarm data for the table.
 
         This is a hint to the database that the given columns will be accessed
@@ -1383,7 +1519,8 @@ class RemoteTable(Table):
         Currently only supported in LanceDB Enterprise.
 
         This call initiates prewarming and returns once the request is accepted.
-        It is idempotent and safe to call from multiple clients concurrently.
+        Uses SQL PREWARM and requires Flight SQL connectivity. To track the
+        durable warming job, use ``prewarm_data_async()``.
 
         This operation has a large upfront cost but can speed up future queries
         that need to fetch the given columns.  Large columns such as embeddings
@@ -1394,8 +1531,62 @@ class RemoteTable(Table):
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
+        filter: str, optional
+            A single SQL predicate for conservative metadata pruning.
+        parameters: sequence, mapping, or one-row Arrow batch/table, optional
+            Scalar values for ``$1``/``$name`` placeholders in ``filter``.
+            Values are sent separately from SQL; requires server support.
+        concurrency: int, optional
+            Positive per-executor warming concurrency; omitted uses the server default.
+
+        Examples
+        --------
+        >>> table.prewarm_data(  # doctest: +SKIP
+        ...     ["payload"], filter="quality > 0.7", concurrency=4)
         """
-        return LOOP.run(self._table.prewarm_data(columns))
+        return LOOP.run(
+            self._table.prewarm_data(
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
+        )
+
+    def explain_prewarm_data(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> PrewarmDataPlan:
+        """Preview prewarm without submitting a warming job.
+
+        See [Table.explain_prewarm_data][lancedb.table.Table.explain_prewarm_data]
+        for options, permissions, snapshot semantics, and limitations.
+        """
+        return LOOP.run(
+            self._table.explain_prewarm_data(
+                columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
+        )
+
+    def prewarm_data_async(
+        self,
+        columns: Optional[List[str]] = None,
+        *,
+        filter: Optional[str] = None,
+        concurrency: Optional[int] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> Job[PrewarmDataResult]:
+        return Job(
+            LOOP.run(
+                self._table.prewarm_data_async(
+                    columns,
+                    filter=filter,
+                    concurrency=concurrency,
+                    parameters=parameters,
+                )
+            )
+        )
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -1414,9 +1605,15 @@ class RemoteTable(Table):
         return LOOP.run(self._table.uri())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder

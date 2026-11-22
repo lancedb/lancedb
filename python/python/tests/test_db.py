@@ -4,6 +4,7 @@
 
 import contextlib
 import inspect
+import pickle
 import re
 import sys
 from datetime import timedelta
@@ -67,6 +68,29 @@ def test_basic(tmp_path):
     assert len(db) == 1
 
     assert db.open_table("test").name == db["test"].name
+
+
+def test_lance_db_connection_pickle_roundtrip(tmp_path):
+    interval = timedelta(seconds=2)
+    db = lancedb.connect(tmp_path, read_consistency_interval=interval)
+    db.create_table("pickle_conn", pa.table({"id": [1, 2]}))
+
+    restored = pickle.loads(pickle.dumps(db))
+
+    assert restored.uri == str(tmp_path)
+    assert restored.read_consistency_interval == interval
+    assert restored.open_table("pickle_conn").to_arrow()["id"].to_pylist() == [1, 2]
+
+
+def test_lance_db_connection_pickle_preserves_zero_read_consistency(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("pickle_zero", pa.table({"id": [1]}))
+
+    restored_db, restored_table = pickle.loads(pickle.dumps((db, table)))
+    lancedb.connect(tmp_path).open_table("pickle_zero").add(pa.table({"id": [2]}))
+
+    assert restored_db.read_consistency_interval == timedelta(0)
+    assert restored_table.to_arrow()["id"].to_pylist() == [1, 2]
 
 
 def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeypatch):
@@ -845,6 +869,35 @@ def test_open_table_sync(tmp_db: lancedb.DBConnection):
         tmp_db.open_table("does_not_exist")
 
 
+def test_open_table_sync_with_location(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    db.create_table("test", data=[{"id": 0}])
+    dataset_path = tmp_path / "db" / "test.lance"
+
+    other_db = lancedb.connect(tmp_path / "other")
+    opened = other_db.open_table("test", location=str(dataset_path))
+    assert opened.name == "test"
+    assert opened.count_rows() == 1
+
+
+def test_open_table_sync_lance_dataset_path_hint(tmp_path):
+    data_dir = tmp_path / "data"
+    lancedb.connect(data_dir).create_table("embeddings", data=[{"id": 0}])
+    dataset_db = lancedb.connect(data_dir / "embeddings.lance")
+
+    with pytest.raises(ValueError) as exc_info:
+        dataset_db.open_table("embeddings")
+    message = str(exc_info.value)
+    assert "Table 'embeddings' was not found" in message
+    assert "points to a Lance dataset rather than a database directory" in message
+    assert f"parent directory '{data_dir}'" in message
+    assert "open table 'embeddings' instead" in message
+
+    with pytest.raises(ValueError) as exc_info:
+        dataset_db.open_table("missing", location=str(tmp_path / "missing.lance"))
+    assert "points to a Lance dataset" not in str(exc_info.value)
+
+
 @pytest.mark.asyncio
 async def test_open_table(tmp_path):
     from conftest import pandas_string_type
@@ -932,7 +985,7 @@ def test_drop_table_async(tmp_db: lancedb.DBConnection):
     assert tmp_db.table_names() == ["test"]
 
     job = tmp_db.drop_table_async("test")
-    assert job.id is None
+    assert job.id() is None
     assert job.status() == "finished"
     assert job.wait() is None
     assert tmp_db.table_names() == []
@@ -948,7 +1001,7 @@ async def test_drop_table_async_connection(tmp_db_async: lancedb.AsyncConnection
     await tmp_db_async.create_table("test", data=pa.table({"id": [1, 2]}))
 
     job = await tmp_db_async.drop_table_async("test")
-    assert job.id is None
+    assert job.id() is None
     assert await job.status() == "finished"
     assert await job.wait() is None
     assert await tmp_db_async.table_names() == []

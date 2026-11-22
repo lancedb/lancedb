@@ -54,6 +54,7 @@ impl SqlClient {
                 query: statement,
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         let reader = query.reader().await?;

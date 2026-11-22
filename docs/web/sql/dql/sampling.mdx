@@ -22,6 +22,9 @@ SELECT * FROM documents TABLESAMPLE (500 ROWS)  -- 500 rows
 
 A bare number is a **percentage**. Add `ROWS` for a count instead.
 
+To sample rows independently from every partition of an IVF vector index,
+use [`TABLESAMPLE IVF`](/curation/semantic-sampling).
+
 ## Rows or fragments {#methods}
 
 The standard calls these two methods of one clause. They are different

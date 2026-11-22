@@ -1,6 +1,6 @@
 extends: existence
 message: "'%s' talks about the writing, not the subject. State the point directly."
-link: https://github.com/lancedb/docs/blob/main/STYLE.md#say-it-directly
+link: https://github.com/lancedb/lancedb/blob/main/docs/STYLE.md#say-it-directly
 level: suggestion
 ignorecase: false
 scope: sentence
