@@ -106,10 +106,10 @@ print(result, job.spec())
 ```
 </CodeGroup>
 
-The four lifecycle strings below are the usual SDK contract; newer server
-states may pass through an older client. Do not infer execution progress from
-`state` alone. Structured progress methods and queue fields require matching
-SDK/server support; see [refresh admission](/feature-engineering/refresh-column#admission).
+`job.state()` reports the last observed lifecycle state, usually `running`,
+`finished`, `failed`, or `cancelled`. Newer server states may pass through an
+older client. For execution progress and queue details, use `job.progress()`
+with a supporting SDK and server. See [refresh admission](/feature-engineering/refresh-column#admission).
 
 ## Submit and wait for a job {#waiting}
 
@@ -120,11 +120,12 @@ SDK/server support; see [refresh admission](/feature-engineering/refresh-column#
     result. If it failed or was cancelled, inspect the failure details and any
     results it committed before stopping.
 
-In Python, `job.status()` returns the current state:
+In Python, `job.status()` reports the current status.
 
-| State | Meaning |
+| Status | Meaning |
 | --- | --- |
 | `running` | The operation is in progress. |
+| `waiting_for_capacity` | An Enterprise Function refresh is waiting for execution workers. This status is nonterminal. It returns to `running` when execution resumes. |
 | `finished` | The operation completed successfully. |
 | `failed` | The operation failed. |
 | `cancelled` | The operation was cancelled. |
