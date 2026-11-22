@@ -5127,6 +5127,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn function_refresh_status_tracks_capacity_without_ending_wait() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let count = polls.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            // Open, status while waiting, status after admission, another wait
+            // observed inside wait(), and finally a successful completion.
+            let (state, phase) = match count.fetch_add(1, Ordering::SeqCst) {
+                0 | 1 | 3 => ("IN_PROGRESS", "waiting_for_capacity"),
+                2 => ("IN_PROGRESS", "running"),
+                _ => ("SUCCEEDED", "waiting_for_capacity"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "job_id": "job-1", "job_type": "function_refresh",
+                        "job_state": state, "phase": phase, "creation_ms": 1
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let job = conn.open_job("job-1").await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "waiting_for_capacity");
+        assert_eq!(job.state().as_deref(), Some("running"));
+        assert_eq!(job.status().await.unwrap(), "running");
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert!(polls.load(Ordering::SeqCst) >= 6);
+    }
+
+    #[tokio::test]
+    async fn capacity_status_requires_an_active_function_refresh() {
+        for (job_type, lifecycle, phase, paused_at) in [
+            (
+                "create_index",
+                "in_progress",
+                Some("waiting_for_capacity"),
+                None,
+            ),
+            (
+                "function_refresh",
+                "in_progress",
+                Some("waiting_for_capacity"),
+                Some(42),
+            ),
+            (
+                "function_refresh",
+                "queued",
+                Some("waiting_for_capacity"),
+                None,
+            ),
+            ("function_refresh", "in_progress", None, None),
+        ] {
+            let conn = Connection::new_with_handler(move |_| {
+                http::Response::builder().status(200).body(
+                    serde_json::json!({
+                        "job_id": "job-1", "job_type": job_type, "job_state": "IN_PROGRESS",
+                        "lifecycle_state": lifecycle, "phase": phase, "paused_at_millis": paused_at
+                    }).to_string()
+                ).unwrap()
+            });
+            let job = conn.open_job("job-1").await.unwrap();
+            assert_eq!(job.status().await.unwrap(), "running");
+        }
+    }
+
+    #[tokio::test]
     async fn test_conn_job_waits_to_done() {
         let polls = Arc::new(AtomicUsize::new(0));
         let polls_ref = polls.clone();
