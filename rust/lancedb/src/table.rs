@@ -1021,6 +1021,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         }
         self.refresh_column_async(column).await
     }
+    /// Resume a failed Function refresh on this table and branch.
+    async fn resume_refresh(
+        &self,
+        _job_id: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "resuming a Function refresh requires LanceDB Enterprise".into(),
+        })
+    }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
     async fn function_errors(
@@ -2422,6 +2431,25 @@ impl Table {
         column: impl AsRef<str>,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// Resume a failed Function refresh on this table and its current branch.
+    /// Returns the successor attempt. Its result includes the published table version.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn resume(table: &Table, failed_job_id: &str) -> lancedb::Result<()> {
+    /// let job = table.resume_refresh(failed_job_id).await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn resume_refresh(
+        &self,
+        job_id: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.resume_refresh(job_id.as_ref()).await
     }
 
     /// Like [`Table::refresh_column_async`], with explicit refresh options.

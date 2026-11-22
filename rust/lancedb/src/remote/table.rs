@@ -920,6 +920,45 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(job_id)
     }
 
+    async fn submit_refresh(
+        &self,
+        operation: &str,
+        mut body: serde_json::Value,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/{operation}", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        // Preserve dependency errors: a deleted bound Function also returns 404.
+        let response = self
+            .client
+            .check_response(&request_id, response)
+            .await
+            .inspect_err(|error| self.handle_error_invalidation(error))?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        #[derive(serde::Deserialize)]
+        struct RefreshJobResponse {
+            job_id: String,
+        }
+        let response: RefreshJobResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse {operation} response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        Ok(Job::new_typed(Box::new(FreshnessJob {
+            inner: RemoteJob::new(self.client.clone(), response.job_id),
+            freshness: self.freshness.clone(),
+            version: self.version.clone(),
+            tracked_result: TrackedJobResult::RefreshColumn,
+            freshness_request: self.snapshot_freshness_headers(),
+        })))
+    }
+
     fn index_job(&self, job_id: String) -> Job {
         Job::new(Box::new(FreshnessJob {
             inner: RemoteJob::new(self.client.clone(), job_id),
@@ -4569,37 +4608,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: format!("failed to serialize refresh options: {e}"),
         })?;
         body["column"] = serde_json::json!(column);
-        self.apply_branch_body(&mut body);
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/backfill_column", self.identifier))
-            .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
-        // Preserve dependency errors: a deleted bound Function also returns 404.
-        let response = self
-            .client
-            .check_response(&request_id, response)
+        self.submit_refresh("backfill_column", body).await
+    }
+
+    async fn resume_refresh(
+        &self,
+        job_id: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.check_mutable().await?;
+        self.submit_refresh("resume_refresh", serde_json::json!({ "job_id": job_id }))
             .await
-            .inspect_err(|error| self.handle_error_invalidation(error))?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        #[derive(serde::Deserialize)]
-        struct BackfillResponse {
-            job_id: String,
-        }
-        let response: BackfillResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse backfill_column response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })?;
-
-        Ok(Job::new_typed(Box::new(FreshnessJob {
-            inner: RemoteJob::new(self.client.clone(), response.job_id),
-            freshness: self.freshness.clone(),
-            version: self.version.clone(),
-            tracked_result: TrackedJobResult::RefreshColumn,
-            freshness_request: self.snapshot_freshness_headers(),
-        })))
     }
 
     async fn function_errors(
@@ -12387,6 +12405,10 @@ mod tests {
                 "max_concurrency",
             ),
             (
+                RefreshColumnOptions::default().max_job_attempts(0),
+                "max_job_attempts",
+            ),
+            (
                 RefreshColumnOptions::default().max_executor_processes_per_worker(0),
                 "max_executor_processes_per_worker",
             ),
@@ -18800,6 +18822,33 @@ mod tests {
         });
         let branch = table.checkout_branch("exp", None).await.unwrap();
         assert_eq!(branch.current_branch(), Some("exp".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resume_refresh_preserves_the_branch_and_server_rejection() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/branches/list/" => http::Response::builder()
+                .status(200)
+                .body(r#"{"branches":{"exp":{"parentBranch":null,"parentVersion":1,"createAt":1,"manifestSize":1}}}"#)
+                .unwrap(),
+            "/v1/table/my_table/resume_refresh" => {
+                let payload: serde_json::Value = serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(payload, json!({"job_id":"failed","branch":"exp"}));
+                http::Response::builder()
+                    .status(400)
+                    .body("Check the external result before issuing another refresh")
+                    .unwrap()
+            }
+            path => panic!("unexpected path {path}"),
+        }
+        });
+        let branch = table.checkout_branch("exp", None).await.unwrap();
+        let error = branch.resume_refresh("failed").await.unwrap_err();
+        assert!(
+            error.to_string().contains("Check the external result"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

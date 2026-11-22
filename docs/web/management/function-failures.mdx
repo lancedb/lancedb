@@ -135,6 +135,36 @@ views, with errors identified by Function invocation and source input. Column
 retry and upgrade helpers apply to Function columns; use the materialized-view
 refresh reference for view refresh options.
 
+## Resume a failed refresh job {#resume-refresh}
+
+Job recovery requires a Python or Rust SDK that exposes `resume_refresh` and
+an Enterprise deployment that supports `POST /v1/table/{id}/resume_refresh`.
+The `workflow_version` reported by `function_errors` covers row-error
+operations. Check your server release for job recovery support separately.
+
+Open the original table on the branch where the refresh failed. Pass the
+failed job ID to get a handle for the successor attempt and wait for its result.
+
+```python
+resumed = table.resume_refresh(failed_job_id)
+result = resumed.wait()
+```
+
+```rust
+async fn resume(table: &lancedb::Table, failed_job_id: &str) -> lancedb::Result<()> {
+    let resumed = table.resume_refresh(failed_job_id).await?;
+    let result = resumed.wait().await?;
+    println!("Assigned {} rows", result.rows_assigned);
+    Ok(())
+}
+```
+
+The server reuses confirmed outputs. If it reports that an external call may
+already have run, check the external result before starting another refresh.
+For a Function with external effects, set `max_job_attempts=1` when submitting
+the refresh until you have verified replay safety on your deployment. A limit
+of `1` counts the initial attempt and disables automatic job retries.
+
 ## Older-deployment recipes {#older-deployments}
 
 The following sections describe deployments without workflow version 1. Their

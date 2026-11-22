@@ -57,6 +57,7 @@ struct RefreshColumnArgs {
     where_clause: Option<String>,
     batch_size: Option<i64>,
     max_concurrency: Option<u32>,
+    max_job_attempts: Option<u32>,
     publication_interval_rows: Option<i64>,
     total_cpu_millis: Option<u64>,
     total_memory_bytes: Option<u64>,
@@ -217,6 +218,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         where_clause,
         batch_size,
         max_concurrency,
+        max_job_attempts,
         publication_interval_rows,
         total_cpu_millis,
         total_memory_bytes,
@@ -254,6 +256,7 @@ fn refresh_column_options(args: RefreshColumnArgs) -> PyResult<RefreshColumnOpti
         .map_err(|_| PyValueError::new_err("max_failed_rows must be a non-negative integer"))?;
     options.row_timeout_seconds = row_timeout_seconds;
     options.init_timeout_seconds = init_timeout_seconds;
+    options.max_job_attempts = max_job_attempts;
     options.num_workers = positive_count(num_workers, "num_workers")?;
     options.max_executor_processes_per_worker = positive_count(
         max_executor_processes_per_worker,
@@ -2746,7 +2749,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, max_job_attempts=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column<'py>(
         self_: PyRef<'py, Self>,
@@ -2770,6 +2773,7 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
+        max_job_attempts: Option<Bound<'py, PyAny>>,
         retry_errors: bool,
         retry_job_id: Option<String>,
         retry_error_type: Option<String>,
@@ -2803,6 +2807,7 @@ impl Table {
             init_timeout_seconds,
             num_workers,
             max_executor_processes_per_worker,
+            max_job_attempts: positive_u32_integer(max_job_attempts.as_ref(), "max_job_attempts")?,
         })?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2814,7 +2819,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
+    #[pyo3(signature = (column, *, r#where=None, batch_size=None, max_concurrency=None, publication_interval_rows=None, total_cpu_millis=None, total_memory_bytes=None, supervisor_resources=None, planning_workers=None, gpu_class=None, gpu_count=None, total_gpu_count=None, retry_policy=None, error_policy=None, max_failed_fraction=None, max_failed_rows=None, row_timeout_seconds=None, init_timeout_seconds=None, num_workers=None, max_executor_processes_per_worker=None, max_job_attempts=None, retry_errors=false, retry_job_id=None, retry_error_type=None, include_quarantined=false, function_version=None, recompute=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn refresh_column_async<'py>(
         self_: PyRef<'py, Self>,
@@ -2838,6 +2843,7 @@ impl Table {
         init_timeout_seconds: Option<f64>,
         num_workers: Option<i64>,
         max_executor_processes_per_worker: Option<i64>,
+        max_job_attempts: Option<Bound<'py, PyAny>>,
         retry_errors: bool,
         retry_job_id: Option<String>,
         retry_error_type: Option<String>,
@@ -2871,6 +2877,7 @@ impl Table {
             init_timeout_seconds,
             num_workers,
             max_executor_processes_per_worker,
+            max_job_attempts: positive_u32_integer(max_job_attempts.as_ref(), "max_job_attempts")?,
         })?;
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -2878,6 +2885,14 @@ impl Table {
                 .refresh_column_async_with_options(column, options)
                 .await
                 .infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    pub fn resume_refresh(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner.resume_refresh(job_id).await.infer_error()?;
             Ok(crate::job::Job::new_typed(job))
         })
     }
