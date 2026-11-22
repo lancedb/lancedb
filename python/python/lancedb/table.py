@@ -3591,6 +3591,7 @@ class Table(ABC):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -3686,6 +3687,9 @@ class Table(ABC):
             Worker count for an expression column; registered Function
             columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
+        max_job_attempts: int, optional
+            Total automatic Function refresh attempts, including the initial job.
+            Set to 1 to disable automatic job recovery.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -3737,6 +3741,7 @@ class Table(ABC):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -3831,6 +3836,9 @@ class Table(ABC):
             Worker count for an expression column; registered Function
             columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
+        max_job_attempts: int, optional
+            Total automatic Function refresh attempts, including the initial job.
+            Set to 1 to disable automatic job recovery.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -3872,6 +3880,16 @@ class Table(ABC):
         >>> job.status()  # doctest: +SKIP
         'finished'
         """
+
+    def resume_refresh(self, job_id: str) -> Job[RefreshColumnJobResult]:
+        """Resume a failed Function refresh on this table's current branch.
+
+        Returns the successor job. Call its ``wait()`` method for the refresh
+        result. Requires LanceDB Enterprise.
+        """
+        raise NotImplementedError(
+            "resuming a Function refresh requires LanceDB Enterprise"
+        )
 
     def retry_failed(
         self,
@@ -6541,6 +6559,7 @@ class LanceTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -6572,6 +6591,7 @@ class LanceTable(Table):
                 row_timeout_seconds=row_timeout_seconds,
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
+                max_job_attempts=max_job_attempts,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
                 retry_errors=retry_errors,
                 retry_job_id=retry_job_id,
@@ -6605,6 +6625,7 @@ class LanceTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -6638,6 +6659,7 @@ class LanceTable(Table):
                     row_timeout_seconds=row_timeout_seconds,
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
+                    max_job_attempts=max_job_attempts,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
                     retry_errors=retry_errors,
                     retry_job_id=retry_job_id,
@@ -9274,6 +9296,7 @@ class AsyncTable:
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -9369,6 +9392,9 @@ class AsyncTable:
             Worker count for an expression column; registered Function
             columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
+        max_job_attempts: int, optional
+            Total automatic Function refresh attempts, including the initial job.
+            Set to 1 to disable automatic job recovery.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -9423,6 +9449,7 @@ class AsyncTable:
             row_timeout_seconds=row_timeout_seconds,
             init_timeout_seconds=init_timeout_seconds,
             num_workers=num_workers,
+            max_job_attempts=max_job_attempts,
             max_executor_processes_per_worker=max_executor_processes_per_worker,
             retry_errors=retry_errors,
             retry_job_id=retry_job_id,
@@ -9431,6 +9458,13 @@ class AsyncTable:
             function_version=function_version,
             recompute=recompute,
             gpu_count=gpu_count,
+        )
+
+    async def resume_refresh(self, job_id: str) -> AsyncJob[RefreshColumnJobResult]:
+        """Resume a failed Enterprise Function refresh on this table and branch."""
+        return _typed_job(
+            await self._inner.resume_refresh(job_id),
+            RefreshColumnJobResult.from_json,
         )
 
     async def retry_failed(
@@ -9652,6 +9686,7 @@ class AsyncTable:
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -9746,6 +9781,9 @@ class AsyncTable:
             Worker count for an expression column; registered Function
             columns reject it and set the corresponding ``total_*`` options. LanceDB
             Enterprise only.
+        max_job_attempts: int, optional
+            Total automatic Function refresh attempts, including the initial job.
+            Set to 1 to disable automatic job recovery.
         max_executor_processes_per_worker: int, optional
             Cap on executor processes per Function worker. LanceDB
             Enterprise only.
@@ -9817,6 +9855,7 @@ class AsyncTable:
                 row_timeout_seconds=row_timeout_seconds,
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
+                max_job_attempts=max_job_attempts,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
                 retry_errors=retry_errors,
                 retry_job_id=retry_job_id,

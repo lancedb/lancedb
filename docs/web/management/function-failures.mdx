@@ -47,6 +47,19 @@ Historical records cannot be joined to current inputs through `rows()`.
 Stable row IDs survive compaction; older physical-only records are rejected
 for exact retry if their fragments have been rewritten.
 
+A failed Function refresh can resume on its original table and branch.
+Use the failed job ID to obtain the successor handle. The server reuses
+confirmed outputs. If it reports that an external call may already have run,
+check the external result before starting another refresh.
+
+```python
+resumed = table.resume_refresh(failed_job_id)
+result = resumed.wait()
+```
+
+Set `max_job_attempts` when submitting a refresh to bound automatic recovery.
+The limit includes the initial job. A value of `1` disables automatic job retries.
+
 Select retry rows on the server, optionally by exception class or job:
 
 ```python
