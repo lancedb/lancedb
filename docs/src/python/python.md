@@ -1309,6 +1309,21 @@ and sample positions.
 
 ::: lancedb.streaming.StreamingDataLoader
 
+On a LanceDB Enterprise server with snapshot-pinned ordered PREWARM support,
+enable submission at iterator startup. Each rank uses its actual worker count.
+In distributed training, construct the dataset with the rank and world size of
+the initialized PyTorch group and call `iter(loader)` on every rank.
+
+```python
+dataset = StreamingDataset(table, num_splits=6, columns=["video"], filter="quality > 70")
+loader = StreamingDataLoader(dataset, num_workers=3, prewarm=True)
+batches = iter(loader)
+job = db.open_job(loader.prewarm_job_id)
+```
+
+The job ID confirms that the server accepted the command. Workers can start
+reading while the job warms data. Older servers return an error on submission.
+
 ::: lancedb.permutation.permutation_builder
 
 ::: lancedb.permutation.PermutationBuilder

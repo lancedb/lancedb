@@ -4971,13 +4971,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         options: crate::table::PrewarmDataOptions,
     ) -> Result<Job<crate::table::PrewarmDataResult>> {
-        if let Some(version) = *self.version.read().await {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "SQL PREWARM does not support historical version {version}; use checkout_latest() to prewarm the current branch"
-                ),
-            });
-        }
+        prewarm::validate_pin(*self.version.read().await, &options)?;
         let statement = prewarm::statement(&self.name, self.branch.as_deref(), &options)?;
         let client = self
             .sql_client
@@ -5000,7 +4994,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         while let Some(batch) = reader.try_next().await.map_err(prewarm::map_error)? {
             batches.push(batch);
         }
-        let (job_id, _table_version) = prewarm::receipt(&batches)?;
+        let (job_id, table_version) = prewarm::receipt(&batches)?;
+        if let Some(ordered) = &options.ordered
+            && ordered.table_version != table_version
+        {
+            return Err(Error::Runtime {
+                message: format!(
+                    "PREWARM job {job_id} acknowledged snapshot {table_version}, expected {}. Inspect the job before retrying.",
+                    ordered.table_version
+                ),
+            });
+        }
         // Construct lazily: submission must not require an HTTP status round trip.
         Ok(Job::new_typed(Box::new(RemoteJob::new(
             self.client.clone(),
@@ -5012,13 +5016,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         options: crate::table::PrewarmDataOptions,
     ) -> Result<crate::table::PrewarmDataPlan> {
-        if let Some(version) = *self.version.read().await {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "SQL PREWARM does not support historical version {version}; use checkout_latest() to preview the current branch"
-                ),
-            });
-        }
+        prewarm::validate_pin(*self.version.read().await, &options)?;
         let statement = format!(
             "EXPLAIN (FORMAT JSON) {}",
             prewarm::statement(&self.name, self.branch.as_deref(), &options)?
@@ -5044,7 +5042,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         {
             batches.push(batch);
         }
-        prewarm::plan(&batches)
+        let plan = prewarm::plan(&batches)?;
+        if let Some(ordered) = &options.ordered
+            && ordered.table_version != plan.table_version
+        {
+            return Err(Error::Runtime {
+                message: format!(
+                    "PREWARM preview selected snapshot {}, expected {}",
+                    plan.table_version, ordered.table_version
+                ),
+            });
+        }
+        Ok(plan)
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {

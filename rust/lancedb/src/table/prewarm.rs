@@ -3,6 +3,32 @@
 
 //! Options, previews, and results for data-cache prewarm.
 
+/// Built-in streaming sampler and worker layout for a snapshot-pinned PREWARM.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderedPrewarmOptions {
+    /// Source table version recorded by the permutation builder.
+    pub table_version: u64,
+    /// Number of equal-sized logical splits.
+    pub num_splits: u64,
+    /// Number of training ranks.
+    pub world_size: u64,
+    /// Effective number of DataLoader workers on each rank.
+    pub workers_per_rank: u64,
+    /// Horizontal slices per worker. Defaults to the number of splits it owns.
+    pub slices_per_worker: Option<u64>,
+    /// Use the built-in shuffled or sequential permutation.
+    pub shuffle: bool,
+    /// Base shuffle seed before adding the epoch offset.
+    pub shuffle_seed: u64,
+    /// Training epoch of the permutation.
+    pub epoch: u64,
+    /// Number of contiguous inputs in each shuffle clump.
+    pub shuffle_clump_size: Option<u64>,
+    /// Absolute next unread permutation position for each global split.
+    pub split_start_positions: Option<Vec<u64>>,
+}
+
 /// Data prewarm settings for [`super::Table::prewarm_data_async`] and
 /// [`super::Table::explain_prewarm_data`].
 ///
@@ -21,6 +47,8 @@ pub struct PrewarmDataOptions {
     pub parameters: Option<arrow_array::RecordBatch>,
     /// Positive per-executor warming concurrency. Omit for the server default.
     pub concurrency: Option<u32>,
+    /// Schedule warming in the consumption order of a streaming dataset.
+    pub ordered: Option<OrderedPrewarmOptions>,
 }
 
 impl std::fmt::Debug for PrewarmDataOptions {
@@ -29,6 +57,7 @@ impl std::fmt::Debug for PrewarmDataOptions {
             .field("columns", &self.columns)
             .field("filter", &self.filter)
             .field("concurrency", &self.concurrency)
+            .field("ordered", &self.ordered)
             .field(
                 "parameter_count",
                 &self.parameters.as_ref().map(|batch| batch.num_columns()),
