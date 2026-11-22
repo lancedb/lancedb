@@ -1210,8 +1210,9 @@ class Permutation:
         """
         Iterate over the permutation in batches
 
-        If skip_last_batch is True, the last batch will be skipped if it is not a
-        multiple of batch_size.
+        Every batch except the last one has exactly batch_size rows. If
+        skip_last_batch is True, the last batch will be skipped if it has fewer
+        than batch_size rows.
         """
         self._ensure_open()
 
@@ -1223,13 +1224,16 @@ class Permutation:
         async def get_next():
             return await async_iter.__anext__()
 
-        try:
-            while True:
-                batch = LOOP.run(get_next())
-                if batch.num_rows == batch_size or not skip_last_batch:
-                    yield self.transform_fn(batch)
-        except StopAsyncIteration:
-            return
+        def reader_batches():
+            try:
+                while True:
+                    yield LOOP.run(get_next())
+            except StopAsyncIteration:
+                return
+
+        for batch in _rebatch(reader_batches(), batch_size):
+            if batch.num_rows == batch_size or not skip_last_batch:
+                yield self.transform_fn(batch)
 
     def with_format(
         self,
@@ -1438,3 +1442,39 @@ class Permutation:
         Repeat the permutation `times` times
         """
         raise Exception("with_repeat is not yet implemented")
+
+
+def _rebatch(
+    batches: Iterator[pa.RecordBatch], batch_size: int
+) -> Iterator[pa.RecordBatch]:
+    """Regroup batches so every batch except the last has batch_size rows.
+
+    The permutation reader only bounds batches by batch_size; a filtered
+    split read can yield short batches before the end of the stream.
+    """
+    pending: list[pa.RecordBatch] = []
+    pending_rows = 0
+    for batch in batches:
+        if batch.num_rows == 0:
+            continue
+        if not pending and batch.num_rows == batch_size:
+            yield batch
+            continue
+        pending.append(batch)
+        pending_rows += batch.num_rows
+        if pending_rows < batch_size:
+            continue
+        table = pa.Table.from_batches(pending)
+        offset = 0
+        while pending_rows - offset >= batch_size:
+            yield _single_batch(table.slice(offset, batch_size))
+            offset += batch_size
+        rest = table.slice(offset)
+        pending = rest.to_batches() if rest.num_rows else []
+        pending_rows = rest.num_rows
+    if pending_rows:
+        yield _single_batch(pa.Table.from_batches(pending))
+
+
+def _single_batch(table: pa.Table) -> pa.RecordBatch:
+    return table.combine_chunks().to_batches()[0]

@@ -1886,3 +1886,28 @@ def test_from_tables_split_without_permutation_table(mem_db):
 
     with pytest.raises(ValueError, match="permutation on split `train` because no"):
         Permutation.from_tables(tbl, split="train")
+
+
+def test_rebatch_regroups_short_and_empty_batches():
+    """_rebatch fills batches from short, empty and oversized input batches."""
+    from lancedb.permutation import _rebatch
+
+    def make(start, n):
+        return pa.record_batch({"id": pa.array(range(start, start + n), pa.int64())})
+
+    sizes = [3, 0, 4, 10, 1, 2, 4, 0]
+    batches, start = [], 0
+    for n in sizes:
+        batches.append(make(start, n))
+        start += n
+
+    out = list(_rebatch(iter(batches), 4))
+    assert [b.num_rows for b in out] == [4, 4, 4, 4, 4, 4]
+    assert [v for b in out for v in b.column("id").to_pylist()] == list(range(24))
+    assert all(b.schema == batches[0].schema for b in out)
+
+    out = list(_rebatch(iter(batches[:3]), 4))
+    assert [b.num_rows for b in out] == [4, 3]
+
+    assert list(_rebatch(iter([make(0, 0)]), 4)) == []
+    assert list(_rebatch(iter([]), 4)) == []
