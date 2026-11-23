@@ -9,10 +9,12 @@ mod optimize;
 mod prewarm;
 #[cfg(test)]
 mod profile_tests;
+mod receipt;
 #[cfg(test)]
 mod write_tests;
 
 use self::insert::{RemoteWriteExec, WriteOp};
+use self::receipt::JobReceipt;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
@@ -4301,25 +4303,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 message: "manual cleanup requires a Flight SQL endpoint and SQL VACUUM support"
                     .into(),
             })?;
-        let query = client
+        let submission = client
             .execute(crate::database::ExecuteQueryRequest {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: None,
                 options: Default::default(),
             })
-            .await
-            .map_err(cleanup::map_error)?;
-        let mut reader = query.reader().await.map_err(cleanup::map_error)?;
-        let mut batches = Vec::new();
-        while let Some(batch) = reader.try_next().await.map_err(cleanup::map_error)? {
-            batches.push(batch);
-        }
-        let job_id = cleanup::receipt(&batches)?;
-        Ok(Job::new_typed(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+            .await;
+        JobReceipt::Cleanup.accept(submission, &self.client).await
     }
 
     async fn compact_async(
@@ -4334,29 +4326,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .ok_or_else(|| Error::NotSupported {
                 message: "compaction jobs require a Flight SQL endpoint".into(),
             })?;
-        let query = client
+        let submission = client
             .execute(crate::database::ExecuteQueryRequest {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: None,
                 options: Default::default(),
             })
-            .await
-            .map_err(optimize::map_optimize_error)?;
-        let mut reader = query.reader().await.map_err(optimize::map_optimize_error)?;
-        let mut batches = Vec::new();
-        while let Some(batch) = reader
-            .try_next()
-            .await
-            .map_err(optimize::map_optimize_error)?
-        {
-            batches.push(batch);
-        }
-        let job_id = optimize::receipt(&batches)?;
-        Ok(Job::new_typed(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+            .await;
+        JobReceipt::Compact.accept(submission, &self.client).await
     }
 
     async fn add_columns(
@@ -4986,26 +4964,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 message: "data prewarm requires a Flight SQL endpoint and SQL PREWARM support"
                     .into(),
             })?;
-        let query = client
+        let submission = client
             .execute_prewarm(crate::database::ExecuteQueryRequest {
                 query: statement,
                 default_namespace_path: self.namespace.clone(),
                 parameters: options.parameters,
                 options: Default::default(),
             })
-            .await
-            .map_err(prewarm::map_error)?;
-        let mut reader = query.reader().await.map_err(prewarm::map_error)?;
-        let mut batches = Vec::new();
-        while let Some(batch) = reader.try_next().await.map_err(prewarm::map_error)? {
-            batches.push(batch);
-        }
-        let (job_id, _table_version) = prewarm::receipt(&batches)?;
-        // Construct lazily: submission must not require an HTTP status round trip.
-        Ok(Job::new_typed(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+            .await;
+        JobReceipt::Prewarm.accept(submission, &self.client).await
     }
 
     async fn explain_prewarm_data(
