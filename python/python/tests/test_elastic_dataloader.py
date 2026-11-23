@@ -3802,8 +3802,28 @@ def test_default_checkpoint_resumes_after_compaction(lance_table):
 
 @pytest.mark.parametrize("num_workers", [0, 2])
 def test_enterprise_prewarm_is_submitted_before_workers_start(monkeypatch, num_workers):
+    flight = pytest.importorskip("pyarrow.flight")
     server = MockPermutationServer(num_rows=24)
-    with mock_remote_table(server) as table:
+    calls = []
+
+    class PrewarmServer(flight.FlightServerBase):
+        def do_get(self, context, ticket):
+            calls.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table(
+                    {
+                        "job_id": ["training-job"],
+                        "table_version": pa.array([1], pa.uint64()),
+                    }
+                )
+            )
+
+    with (
+        PrewarmServer("grpc://127.0.0.1:0") as sql,
+        mock_remote_table(
+            server, sql_host_override=f"grpc://127.0.0.1:{sql.port}"
+        ) as table,
+    ):
         dataset = StreamingDataset(
             table,
             num_splits=6,
@@ -3822,34 +3842,24 @@ def test_enterprise_prewarm_is_submitted_before_workers_start(monkeypatch, num_w
         loader = StreamingDataLoader(
             dataset, num_workers=num_workers, prewarm=True, slices_per_worker=3
         )
-        calls = []
-
-        def submit(columns, predicate, settings):
-            calls.append("submit")
-            assert columns == ["id"] and predicate == "id >= 0"
-            assert settings == dict(
-                table_version=1,
-                num_splits=6,
-                world_size=1,
-                workers_per_rank=max(1, num_workers),
-                slices_per_worker=3,
-                shuffle=True,
-                shuffle_seed=7,
-                epoch=3,
-                shuffle_clump_size=2,
-                split_start_positions=[2] * 6,
-            )
-            return "training-job"
 
         def start_workers(_):
             calls.append("workers")
             return iter(())
 
-        monkeypatch.setattr(table, "_submit_streaming_prewarm", submit)
         monkeypatch.setattr(streaming.DataLoader, "__iter__", start_workers)
         assert loader.prewarm_job_id is None
         assert list(iter(loader)) == []
-        assert calls == ["submit", "workers"]
+        ticket, started = calls
+        assert started == "workers"
+        expected_sql = (
+            "PREWARM WITH (permutation_version = 1, num_splits = 6, world_size = 1, "
+            f"workers_per_rank = {max(1, num_workers)}, slices_per_worker = 3, "
+            "shuffle = true, shuffle_seed = 7, epoch = 3, shuffle_clump_size = 2, "
+            "split_start_positions = ARRAY[2, 2, 2, 2, 2, 2]) "
+            'AS SELECT "id" FROM "remote_data" AS OF VERSION 1 WHERE id >= 0'
+        )
+        assert expected_sql.encode() in ticket
         assert loader.prewarm_job_id == "training-job"
 
 

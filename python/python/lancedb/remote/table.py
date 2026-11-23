@@ -1590,11 +1590,14 @@ class RemoteTable(Table):
         )
 
     def _submit_streaming_prewarm(self, columns, predicate, settings) -> str:
-        job = LOOP.run(
-            self._table._inner.prewarm_data_async(
+        table = self._table
+
+        async def submit():
+            return await table._inner.prewarm_data_async(
                 columns, filter=predicate, ordered_json=json.dumps(settings)
             )
-        )
+
+        job = LOOP.run(submit())
         if job.id is None:
             raise RuntimeError("Enterprise PREWARM returned no durable job ID")
         return job.id

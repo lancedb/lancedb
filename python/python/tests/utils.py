@@ -203,7 +203,7 @@ def _make_handler(serve):
 
 
 @contextlib.contextmanager
-def mock_remote_table(server):
+def mock_remote_table(server, *, sql_host_override=None):
     """Run ``server`` on a local port and yield an open remote table against it.
 
     Threading: the loader fans out fetch threads a single-threaded server would
@@ -218,6 +218,7 @@ def mock_remote_table(server):
                 "db://dev",
                 api_key="fake",
                 host_override=f"http://127.0.0.1:{srv.server_address[1]}",
+                sql_host_override=sql_host_override,
                 client_config={"timeout_config": {"connect_timeout": 5}},
             )
             yield db.open_table(server.name)
