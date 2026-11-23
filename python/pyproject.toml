@@ -16,7 +16,7 @@ description = "Embedded database for vector, full-text and hybrid search on Lanc
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = [
     "lance",
     "vector-search",
@@ -73,18 +73,17 @@ dev = [
     "ruff>=0.3.0",
     "pre-commit>=3.5.0",
     "pyright>=1.1.350",
-    'typing-extensions>=4.0.0; python_version < "3.11"',
     "maturin>=1.10",
 ]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
-clip = ["torch", "pillow>=12.1.1", "open-clip-torch"]
-siglip = ["torch", "pillow>=12.1.1", "transformers>=4.41.0","sentencepiece"]
+clip = ["torch", "pillow>=13.0.0", "open-clip-torch"]
+siglip = ["torch", "pillow>=13.0.0", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
     "requests>=2.31.0",
     "openai>=1.6.1",
     "sentence-transformers>=2.2.0",
     "torch>=2.0.0",
-    "pillow>=12.1.1",
+    "pillow>=13.0.0",
     "open-clip-torch>=2.20.0",
     "cohere>=4.0",
     "colpali-engine>=0.3.10",
