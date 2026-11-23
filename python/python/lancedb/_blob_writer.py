@@ -16,9 +16,11 @@ _REFRESH_REQUIRED = (
 
 
 def _mark_blob_writer(field: pa.Field) -> pa.Field:
-    return field.with_metadata(
-        {**(field.metadata or {}), _BLOB_WRITER_METADATA_KEY: b"true"}
-    )
+    metadata: dict[bytes | str, bytes | str] = {
+        key: value for key, value in (field.metadata or {}).items()
+    }
+    metadata[_BLOB_WRITER_METADATA_KEY] = b"true"
+    return field.with_metadata(metadata)
 
 
 class BlobWriter:

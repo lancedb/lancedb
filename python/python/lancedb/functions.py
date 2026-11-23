@@ -2839,7 +2839,6 @@ class _SourcePackager:
         }
         if not readers and not signature.output.blob_writer_paths:
             return {}
-        call = definition
         if isinstance(definition, ast.ClassDef):
             call = next(
                 (
@@ -2849,8 +2848,10 @@ class _SourcePackager:
                 ),
                 None,
             )
-        if call is None:
-            return {}
+            if call is None:
+                return {}
+        else:
+            call = definition
 
         def alias(name: str) -> str:
             # Avoid shadowing globals used by the body or other definitions.
