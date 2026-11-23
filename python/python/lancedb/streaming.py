@@ -142,12 +142,12 @@ class _TwoPhaseSplitReader:
 
     def __init__(
         self,
-        block_ids: list[int],
+        block_ids: list[Any],
         block_live_counts: list[int],
         shuffle: bool,
         max_shuffle_distance: int,
         seed: int,
-        read_block_fn: Callable[[int], pa.Table],
+        read_block_fn: Callable[[Any], pa.Table],
         columns: Optional[list[str]],
         skip: int = 0,
         prefetch_depth: int = 1,
@@ -246,7 +246,7 @@ class _TwoPhaseSplitReader:
         self._served = np.zeros(self.num_rows, dtype=bool)
         self._served_prefix = 0
 
-    def _load_block(self, block_id: int) -> pa.Table:
+    def _load_block(self, block_id: Any) -> pa.Table:
         # A block read can arrive as several record batches. Table.take on a
         # multi-chunk column concatenates the whole column first, so every
         # later gather from this block would copy all of it; combining once
@@ -351,6 +351,14 @@ def _default_worker_start_method() -> str:
     if "forkserver" in get_all_start_methods():
         return "forkserver"
     return "spawn"
+
+
+class _BlockSlice(NamedTuple):
+    """Rows ``[start, stop)`` of one 2-phase block, by position within the block."""
+
+    block_id: int
+    start: int
+    stop: int
 
 
 class _WorkerSample(NamedTuple):
@@ -607,12 +615,10 @@ class StreamingDataset(IterableDataset):
         throughput was flat from 128 to 65,536.  Throughput comes from
         reading many splits in parallel, so use DataLoader workers (and
         ``num_splits`` of at least the worker count); with no workers,
-        2-phase can be slower than 1-phase.  If
-        ``block_size`` doesn't evenly divide the (live) row count, the
-        trailing partial block is discarded rather than read as an
-        undersized final block; likewise, if the block count doesn't evenly
-        divide ``num_splits``, the surplus blocks are dropped so every split
-        gets the same number of blocks.
+        2-phase can be slower than 1-phase.  Each split serves the same
+        number of (live) rows, so a split may start or end partway through
+        a block; as in 1-phase, fewer than ``num_splits`` rows are dropped
+        per epoch.
     window_blocks:
         Number of blocks kept in RAM per split at once in 2-phase mode.
         Larger windows shuffle across more rows at the cost of more memory;
@@ -1075,12 +1081,7 @@ class StreamingDataset(IterableDataset):
             block_live_offsets: Optional[list[np.ndarray]] = None
             self._all_columns: Optional[list[str]] = None
             if filter is None:
-                total_rows = self._open_pinned_table().count_rows()
-                # Discard the trailing runt block (the remainder rows left
-                # over when block_size doesn't evenly divide the row count)
-                # rather than reading it as an undersized final block.
-                num_blocks = total_rows // block_size
-                num_rows = num_blocks * block_size
+                num_rows = self._open_pinned_table().count_rows()
             else:
                 # One pass, computed once here and never repeated at read
                 # time: a filtered scan over the whole table asks Lance to
@@ -1124,27 +1125,23 @@ class StreamingDataset(IterableDataset):
                 ):
                     live_offsets = np.sort(live_offsets)
 
-                # Whatever live rows remain after the last full block is
-                # the trailing runt block (block_size doesn't evenly
-                # divide the live row count) -- discard it rather than
-                # reading an undersized final block.
-                num_blocks = live_offsets.size // block_size
+                num_rows = int(live_offsets.size)
                 block_live_offsets = [
-                    live_offsets[i * block_size : (i + 1) * block_size]
-                    for i in range(num_blocks)
+                    live_offsets[start : start + block_size]
+                    for start in range(0, num_rows, block_size)
                 ]
-                num_rows = num_blocks * block_size
 
-            # Every block holds exactly block_size live rows (runts are
-            # discarded above), so no per-block range or count list is kept:
+            # Every block holds exactly block_size live rows except a
+            # trailing runt, so no per-block range or count list is kept:
             # anything sized by the block count also inflates the pickle
             # shipped to each DataLoader worker (see __getstate__).
             self._num_rows = num_rows
-            self._num_blocks = num_blocks
+            self._num_blocks = -(-num_rows // block_size)
             self._block_live_offsets: Optional[list[np.ndarray]] = block_live_offsets
-            if self._num_blocks < num_splits:
+            full_blocks = num_rows // block_size
+            if full_blocks < num_splits:
                 raise ValueError(
-                    f"block_size={block_size} yields only {self._num_blocks} "
+                    f"block_size={block_size} yields only {full_blocks} "
                     f"block(s) from {num_rows} row(s), fewer than num_splits "
                     f"({num_splits}); use a smaller block_size or fewer splits"
                 )
@@ -1333,15 +1330,16 @@ class StreamingDataset(IterableDataset):
         return self._pinned_lance_ds_cache
 
     def _read_block(
-        self, pinned_table, block_id: int, columns: Optional[list[str]]
+        self, pinned_table, block: _BlockSlice, columns: Optional[list[str]]
     ) -> pa.Table:
-        """Read one 2-phase block's live rows, in natural (ascending) order."""
+        """Read one 2-phase block slice's live rows, in natural (ascending) order."""
         lance_ds = self._pinned_lance_dataset(pinned_table)
         if self._filter is None:
             # offset/limit is a positional, sequential read, so its output
             # order is exactly storage order -- no restoration needed.
-            row_start = block_id * self._block_size
-            row_end = row_start + self._block_size
+            block_start = block.block_id * self._block_size
+            row_start = block_start + block.start
+            row_end = block_start + block.stop
             if lance_ds is not None:
                 # Local table: pylance's native scanner is a direct,
                 # purpose-built positional range read -- substantially
@@ -1360,7 +1358,7 @@ class StreamingDataset(IterableDataset):
         # already computed once, up front (from the "_rowoffset" system
         # column -- see __init__), so a sparse take fetches just the live
         # rows themselves, skipping any dead-row gaps entirely.
-        offsets = self._block_live_offsets[block_id]
+        offsets = self._block_live_offsets[block.block_id][block.start : block.stop]
         if lance_ds is not None:
             # Local table: pylance's native take() preserves the requested
             # offset order already, unlike the generic take_offsets() path
@@ -1389,16 +1387,37 @@ class StreamingDataset(IterableDataset):
             random.Random(block_seed).shuffle(block_order)
         return block_order
 
-    def _split_block_ids(self, split_idx: int) -> list[int]:
-        """Block ids assigned to one split, in the split's read order.
+    def _split_blocks(self, split_idx: int) -> list[_BlockSlice]:
+        """Block slices assigned to one split, in the split's read order.
 
-        Split k owns the k-th contiguous chunk of ``_block_perm``; the
-        surplus ``num_blocks % num_splits`` blocks are dropped so every
-        split is the same length.
+        The epoch's shuffled blocks, laid end to end, form one row stream;
+        split k owns rows ``[k * n, (k + 1) * n)`` of it, where
+        ``n = num_rows // num_splits``. Cutting by rows rather than whole
+        blocks drops fewer than ``num_splits`` rows per epoch, like 1-phase,
+        so a split's first and last blocks may be partial.
         """
-        blocks_per_split = self._num_blocks // self._num_splits
-        start = split_idx * blocks_per_split
-        return self._block_perm[start : start + blocks_per_split]
+        block_perm = np.asarray(self._block_perm, dtype=np.int64)
+        block_rows = np.full(len(block_perm), self._block_size, dtype=np.int64)
+        runt = self._num_rows - (self._num_blocks - 1) * self._block_size
+        block_rows[block_perm == self._num_blocks - 1] = runt
+        block_ends = np.cumsum(block_rows)
+
+        rows_per_split = self._num_rows // self._num_splits
+        split_start = split_idx * rows_per_split
+        split_end = split_start + rows_per_split
+        first = int(np.searchsorted(block_ends, split_start, side="right"))
+        last = int(np.searchsorted(block_ends, split_end, side="left"))
+        blocks = []
+        for pos in range(first, last + 1):
+            block_start = int(block_ends[pos] - block_rows[pos])
+            blocks.append(
+                _BlockSlice(
+                    block_id=int(block_perm[pos]),
+                    start=max(split_start, block_start) - block_start,
+                    stop=min(split_end, int(block_ends[pos])) - block_start,
+                )
+            )
+        return blocks
 
     def _make_two_phase_reader(
         self,
@@ -1412,8 +1431,7 @@ class StreamingDataset(IterableDataset):
         ``skip`` resumes from a saved absolute position within the split's
         own deterministic read order (see ``_TwoPhaseSplitReader``).
         """
-        block_ids = self._split_block_ids(split_idx)
-        live_counts = [self._block_size] * len(block_ids)
+        blocks = self._split_blocks(split_idx)
         sigma_seed = (
             self._shuffle_seed
             + self._epoch * _EPOCH_PRIME
@@ -1421,14 +1439,12 @@ class StreamingDataset(IterableDataset):
             + split_idx * _SIGMA_SPLIT_PRIME
         )
         return _TwoPhaseSplitReader(
-            block_ids=block_ids,
-            block_live_counts=live_counts,
+            block_ids=blocks,
+            block_live_counts=[block.stop - block.start for block in blocks],
             shuffle=self._shuffle,
             max_shuffle_distance=self._max_shuffle_distance,
             seed=sigma_seed,
-            read_block_fn=lambda block_id: self._read_block(
-                pinned_table, block_id, columns
-            ),
+            read_block_fn=lambda block: self._read_block(pinned_table, block, columns),
             columns=columns,
             skip=skip,
             prefetch_depth=self._io_queue_depth,
@@ -1473,22 +1489,22 @@ class StreamingDataset(IterableDataset):
         if self._block_size is not None:
             # Sample whole blocks rather than scattered rows: a row sample
             # spread over a split touches nearly every block, so it would
-            # read the entire token column just to estimate it.  Every
-            # block holds exactly block_size live rows, so a uniform
-            # sample of the split's own blocks still gives an unbiased
+            # read the entire token column just to estimate it.  Only a
+            # split's first and last blocks can be partial, so a uniform
+            # sample of the split's own blocks still gives a near-unbiased
             # per-row mean over exactly the rows that split will serve.
             pinned_table = self._open_pinned_table()
             for split in range(self._num_splits):
-                split_blocks = self._split_block_ids(split)
-                split_rows = len(split_blocks) * self._block_size
+                split_blocks = self._split_blocks(split)
+                split_rows = sum(block.stop - block.start for block in split_blocks)
                 num_sample_blocks = min(
                     len(split_blocks),
                     -(-_sample_size(split_rows) // self._block_size),
                 )
-                for block_id in rng.sample(split_blocks, num_sample_blocks):
-                    block = self._read_block(pinned_table, block_id, [token_column])
-                    sampled_tokens += _sampled_token_count(block.column(0))
-                total_sampled += num_sample_blocks * self._block_size
+                for block in rng.sample(split_blocks, num_sample_blocks):
+                    table = self._read_block(pinned_table, block, [token_column])
+                    sampled_tokens += _sampled_token_count(table.column(0))
+                    total_sampled += table.num_rows
                 total_rows += split_rows
         else:
             for split in range(self._num_splits):
@@ -1631,12 +1647,9 @@ class StreamingDataset(IterableDataset):
             n = len(permutations)
             split_sizes = [perm.num_rows for perm in permutations]
         else:
-            # 2-phase: assign contiguous chunks of the block permutation to
-            # each split.  With b = self._num_blocks blocks and num_splits
-            # splits, split k owns
-            # self._block_perm[k * (b // num_splits) : (k + 1) * (b // num_splits)]
-            # -- the surplus b % num_splits blocks are dropped, mirroring how
-            # 1-phase drops surplus rows to keep all splits the same length.
+            # 2-phase: each split owns an equal, contiguous run of rows from
+            # the epoch's shuffled block order (see _split_blocks); the
+            # fewer than num_splits leftover rows are dropped, as in 1-phase.
             #
             # Each split's blocks are wrapped in a _TwoPhaseSplitReader,
             # which duck-types Permutation.__getitems__ -- so from here on,

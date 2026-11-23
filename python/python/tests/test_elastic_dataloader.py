@@ -3732,8 +3732,8 @@ def test_two_phase_over_remote_table_does_not_pin_callers_handle():
 # 2-phase (block-granularity shuffle + a row-level shuffle bounded by
 # max_shuffle_distance).  NUM_ROWS=120 with block_size=10 gives 12 blocks,
 # which divides NUM_SPLITS=12 evenly, so most tests below reuse lance_table
-# and those constants without triggering the runt-block/surplus-block
-# discarding covered explicitly by their own tests.
+# and those constants without the runt blocks and mid-block split boundaries
+# covered explicitly by their own tests.
 
 
 def test_two_phase_full_coverage_no_duplicates(lance_table):
@@ -3749,38 +3749,58 @@ def test_two_phase_full_coverage_no_duplicates(lance_table):
     assert sorted(ids) == list(range(NUM_ROWS)), "every row must appear exactly once"
 
 
-def test_two_phase_discards_runt_block(lance_table):
-    """A trailing partial block (block_size doesn't evenly divide row count)
-    is dropped rather than read as an undersized final block."""
-    block_size = 13  # NUM_ROWS=120 -> 9 full blocks (117 rows); 3 rows dropped
+def test_two_phase_reads_runt_block(lance_table):
+    """A trailing partial block (block_size doesn't evenly divide the row
+    count) is read like any other block."""
     ds = StreamingDataset(
         lance_table,
         num_splits=1,
         shuffle_seed=SHUFFLE_SEED,
-        block_size=block_size,
+        block_size=13,  # NUM_ROWS=120 -> 9 full blocks and a 3-row runt
         shuffle=False,
     )
     ids = [s["id"] for s in ds]
-    assert len(ids) == 117
-    assert sorted(ids) == list(range(117))
+    assert ids == list(range(NUM_ROWS))
 
 
-def test_two_phase_drops_surplus_blocks_across_splits(lance_table):
-    """Blocks beyond num_splits * (num_blocks // num_splits) are dropped so
-    every split gets the same number of blocks."""
-    block_size = 10  # NUM_ROWS=120 -> 12 blocks
-    num_splits = 5  # 12 // 5 = 2 blocks/split -> 10 blocks used, 2 dropped
-    ds = StreamingDataset(
-        lance_table,
-        num_splits=num_splits,
-        shuffle_seed=SHUFFLE_SEED,
-        block_size=block_size,
-        shuffle=False,
-    )
-    ids = [s["id"] for s in ds]
-    assert len(ids) == 100, (
-        "2 surplus blocks (20 rows) must be dropped so every split gets 2 blocks"
-    )
+@pytest.mark.parametrize("reshuffle_blocks_per_epoch", [True, False])
+@pytest.mark.parametrize(
+    "block_size,num_splits,filter",
+    [
+        # 12 blocks over 5 splits: split boundaries fall mid-block.
+        pytest.param(10, 5, None, id="whole_blocks_uneven_splits"),
+        # 9 full blocks plus a 3-row runt over 7 splits: 120 // 7 = 17 rows
+        # per split, so exactly 1 row is dropped.
+        pytest.param(13, 7, None, id="runt_and_uneven_splits"),
+        # 60 live rows in 9 blocks of 7 (the last a 4-row runt) over 4 splits.
+        pytest.param(7, 4, "id % 2 = 0", id="filtered"),
+    ],
+)
+def test_two_phase_drops_fewer_rows_than_splits(
+    lance_table, block_size, num_splits, filter, reshuffle_blocks_per_epoch
+):
+    """Splits are cut by rows, not whole blocks, so each epoch drops fewer than
+    num_splits rows (as 1-phase does) and every split serves the same count."""
+    live_ids = set(range(NUM_ROWS)) if filter is None else set(range(0, NUM_ROWS, 2))
+    rows_per_split = len(live_ids) // num_splits
+    for epoch in range(2):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=num_splits,
+            shuffle_seed=SHUFFLE_SEED,
+            epoch=epoch,
+            block_size=block_size,
+            filter=filter,
+            reshuffle_blocks_per_epoch=reshuffle_blocks_per_epoch,
+        )
+        for split in range(num_splits):
+            assert sum(b.stop - b.start for b in ds._split_blocks(split)) == (
+                rows_per_split
+            )
+        ids = [s["id"] for s in ds]
+        assert len(ids) == len(set(ids)) == rows_per_split * num_splits
+        assert set(ids) <= live_ids
+        assert len(live_ids) - len(ids) < num_splits
 
 
 def test_two_phase_no_shuffle_preserves_order(lance_table):
@@ -3978,7 +3998,7 @@ def test_two_phase_reader_plan_arrays_are_int32(lance_table):
     # Values must still be correct, not just narrower -- e.g. a block index
     # silently wrapping around int32 would be a far worse regression than
     # the memory this dtype choice saves.
-    assert reader._plan_block_pos.max() < ds._num_blocks // ds._num_splits
+    assert reader._plan_block_pos.max() < len(ds._split_blocks(0))
     assert reader._plan_local_offset.max() < 10  # block_size
 
 
@@ -4087,9 +4107,9 @@ def test_two_phase_auto_blocks_per_epoch_reads_only_sampled_blocks(
     reads = []
     read_block = StreamingDataset._read_block
 
-    def counting_read_block(self, pinned_table, block_id, columns):
-        reads.append(block_id)
-        return read_block(self, pinned_table, block_id, columns)
+    def counting_read_block(self, pinned_table, block, columns):
+        reads.append(block)
+        return read_block(self, pinned_table, block, columns)
 
     monkeypatch.setattr(StreamingDataset, "_read_block", counting_read_block)
     with pytest.warns(UserWarning, match="approximate token-count sample"):
@@ -4099,8 +4119,8 @@ def test_two_phase_auto_blocks_per_epoch_reads_only_sampled_blocks(
 
     # 1% of each 500-row split rounds up to a single 10-row block per split.
     assert len(reads) == 2
-    assert reads[0] in dataset._split_block_ids(0)
-    assert reads[1] in dataset._split_block_ids(1)
+    assert reads[0] in dataset._split_blocks(0)
+    assert reads[1] in dataset._split_blocks(1)
     # Every document is 3 tokens plus EOS, so the sample is exact: 4000 / 4.
     assert dataset.state_dict()["blocks_per_epoch"] == 1000
 
