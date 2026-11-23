@@ -4091,6 +4091,42 @@ describe("when dealing with branches", () => {
     expect(await positional.countRows("i = 100")).toBe(0);
   });
 
+  it("rejects a fractional source version when creating a branch", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    await table.add([{ i: 1 }]);
+    const branches = await table.branches();
+
+    await expect(branches.create("invalid", undefined, 1.5)).rejects.toThrow(
+      "fromVersion must be a non-negative integer",
+    );
+    expect(await branches.list()).not.toHaveProperty("invalid");
+  });
+
+  it("rejects a fractional branch version on checkout and open", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+    const branch = await branches.create("exp");
+    await branch.add([{ i: 1 }]);
+    await branch.add([{ i: 2 }]);
+
+    const results = await Promise.allSettled([
+      branches.checkout("exp", 2.5),
+      conn.openTable("my_table", undefined, { branch: "exp", version: 2.5 }),
+    ]);
+    expect(results).toEqual([
+      {
+        status: "rejected",
+        reason: new Error("version must be a non-negative integer"),
+      },
+      {
+        status: "rejected",
+        reason: new Error("version must be a non-negative integer"),
+      },
+    ]);
+  });
+
   it("rejects fromTag combined with another source before main normalization", async () => {
     const conn = await connect(tmpDir.name);
     const table = await conn.createTable("my_table", [{ i: 0 }]);
