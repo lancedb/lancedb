@@ -63,13 +63,20 @@ pub(crate) async fn execute_delete(
 
 #[cfg(test)]
 mod tests {
-    use crate::connect;
-    use arrow_array::{Int32Array, RecordBatch, record_batch};
-    use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
-    use crate::query::ExecutableQuery;
+    use arrow_array::{
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, record_batch,
+    };
+    use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
+    use lance_index::scalar::FullTextSearchQuery;
+
+    use crate::Table;
+    use crate::connect;
+    use crate::index::vector::IvfFlatIndexBuilder;
+    use crate::index::{Index, IndexType};
+    use crate::query::{ExecutableQuery, QueryBase};
     #[tokio::test]
     async fn test_delete_simple() {
         let conn = connect("memory://").execute().await.unwrap();
@@ -298,5 +305,133 @@ mod tests {
             current_version > initial_version,
             "Table version must increment after delete_expr operation"
         );
+    }
+
+    async fn listed(table: &Table) -> Vec<(String, IndexType)> {
+        let mut indices = table.list_indices().await.unwrap();
+        indices.sort_by(|left, right| left.name.cmp(&right.name));
+        indices
+            .into_iter()
+            .map(|index| (index.name, index.index_type))
+            .collect()
+    }
+
+    async fn add_index(table: &Table, column: &str, index: Index, name: &str) {
+        table
+            .create_index(&[column], index)
+            .name(name.to_string())
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    async fn ids(stream: crate::arrow::SendableRecordBatchStream) -> Vec<i32> {
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let mut values = Vec::new();
+        for batch in batches {
+            let column = batch.column_by_name("id").unwrap();
+            let array = column.as_any().downcast_ref::<Int32Array>().unwrap();
+            values.extend(array.values().iter().copied());
+        }
+        values.sort_unstable();
+        values
+    }
+
+    async fn filtered(table: &Table, predicate: &str) -> Vec<i32> {
+        let query = table.query().only_if(predicate).limit(100);
+        ids(query.execute().await.unwrap()).await
+    }
+
+    async fn matched(table: &Table, text: &str) -> Vec<i32> {
+        let query = FullTextSearchQuery::new(text.into());
+        let query = query.with_column("text".into()).unwrap();
+        let search = table.query().full_text_search(query).limit(100);
+        ids(search.execute().await.unwrap()).await
+    }
+
+    async fn nearest(table: &Table, id: i32) -> Vec<i32> {
+        let vector = vec![id as f32, 0.0, 0.0, 0.0];
+        let query = table.query().nearest_to(vector).unwrap().limit(1);
+        ids(query.execute().await.unwrap()).await
+    }
+
+    fn rows(ids: &[i32], category_of: impl Fn(i32) -> &'static str) -> RecordBatch {
+        let flat = ids
+            .iter()
+            .flat_map(|id| [*id as f32, 0.0, 0.0, 0.0])
+            .collect::<Vec<_>>();
+        let vector_values = FixedSizeListArray::try_new(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            4,
+            Arc::new(Float32Array::from(flat)),
+            None,
+        )
+        .unwrap();
+        let categories: Vec<&str> = ids.iter().copied().map(category_of).collect();
+        let texts: Vec<String> = ids.iter().map(|id| format!("row{id}")).collect();
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("category", DataType::Utf8, false),
+                Field::new("text", DataType::Utf8, false),
+                Field::new("vector", vector_values.data_type().clone(), false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(ids.to_vec())),
+                Arc::new(StringArray::from(categories)),
+                Arc::new(StringArray::from(texts)),
+                Arc::new(vector_values),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_keeps_vector_scalar_and_fts_indices() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let ids: Vec<i32> = (0..16).collect();
+        let batch = rows(&ids, |id| if id < 8 { "keep" } else { "drop" });
+        let table = conn
+            .create_table("indexed_delete", batch)
+            .execute()
+            .await
+            .unwrap();
+        let ivf = Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1));
+        let btree = Index::BTree(Default::default());
+        let fts = Index::FTS(Default::default());
+        add_index(&table, "vector", ivf, "vector_idx").await;
+        add_index(&table, "category", btree, "category_idx").await;
+        add_index(&table, "text", fts, "text_idx").await;
+        let expected = vec![
+            ("category_idx".to_string(), IndexType::BTree),
+            ("text_idx".to_string(), IndexType::FTS),
+            ("vector_idx".to_string(), IndexType::IvfFlat),
+        ];
+
+        let deleted = table.delete("category = 'drop'").await.unwrap();
+        assert_eq!(deleted.num_deleted_rows, 8);
+        assert_eq!(listed(&table).await, expected);
+        for index in table.list_indices().await.unwrap() {
+            assert!(index.num_indexed_rows.unwrap_or(0) > 0);
+            let stats = table.index_stats(&index.name).await.unwrap().unwrap();
+            assert!(stats.num_indexed_rows > 0);
+        }
+        let kept = (0..8).collect::<Vec<_>>();
+        assert_eq!(filtered(&table, "category = 'keep'").await, kept);
+        assert_eq!(matched(&table, "row0").await, vec![0]);
+        assert!(matched(&table, "row8").await.is_empty());
+        assert_eq!(nearest(&table, 0).await, vec![0]);
+
+        let deleted = table.delete("true").await.unwrap();
+        assert_eq!(deleted.num_deleted_rows, 8);
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(listed(&table).await, expected);
+
+        table.add(rows(&[20], |_| "fresh")).execute().await.unwrap();
+        assert_eq!(listed(&table).await, expected);
+        assert_eq!(filtered(&table, "category = 'fresh'").await, vec![20]);
+        assert_eq!(matched(&table, "row20").await, vec![20]);
+        assert!(matched(&table, "row0").await.is_empty());
+        assert_eq!(nearest(&table, 20).await, vec![20]);
     }
 }
