@@ -273,13 +273,11 @@ pub async fn create_plan(
                 Some(query.query_vector[0].len() as i32),
             )?);
         }
-        let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
-        let (_, element_type) =
+        let (vector_type, element_type) =
             lance::index::vector::utils::get_vector_type(schema, column.as_ref().unwrap())?;
+        let is_list_vector = matches!(&vector_type, DataType::List(_));
         let is_binary = matches!(element_type, DataType::UInt8);
-        if matches!(vector_field.data_type(), DataType::List(_))
-            || (query.base.offset.unwrap_or(0) == 0 && !is_binary)
-        {
+        if is_list_vector || (query.base.offset.unwrap_or(0) == 0 && !is_binary) {
             // Lance distinguishes these cases from the vector column type: a
             // list-like query against a List column is one multivector query,
             // while the same query against a FixedSizeList column is a batch of
@@ -315,7 +313,7 @@ pub async fn create_plan(
                 fsl_builder.append(true);
             }
             query_vector = Some(Arc::new(fsl_builder.finish()));
-            is_batch_query = !matches!(vector_field.data_type(), DataType::List(_));
+            is_batch_query = !is_list_vector;
         } else {
             // Lance's batch path has no per-query offset, and its binary path
             // requires primitive UInt8 queries rather than a fixed-size list.
@@ -2091,6 +2089,59 @@ mod tests {
             "plan should add query_index column, got:\n{display}"
         );
     }
+
+    #[tokio::test]
+    async fn test_create_plan_batch_vector_missing_column_returns_sdk_error() {
+        use crate::connect;
+        use crate::table::query::create_plan;
+        use arrow_array::{Float32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::new_empty(schema);
+        let table = conn
+            .create_table("test_batch_vector_missing_column", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let native_table = table.as_native().unwrap();
+
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(1),
+                ..Default::default()
+            },
+            column: Some("missing_vector".to_string()),
+            query_vector: vec![
+                Arc::new(Float32Array::from(vec![1.0, 2.0])),
+                Arc::new(Float32Array::from(vec![3.0, 4.0])),
+            ],
+            ..Default::default()
+        });
+
+        let error = create_plan(native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                Error::Lance {
+                    source: lance::Error::Index { message, .. }
+                } if message.contains("column missing_vector does not exist in schema")
+            ),
+            "expected ordinary vector column validation error, got: {error:?}"
+        );
+    }
+
     #[rstest::rstest]
     #[case::modern(false)]
     #[case::legacy(true)]
