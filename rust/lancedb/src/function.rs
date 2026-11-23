@@ -305,6 +305,7 @@ pub enum PythonRuntimeSpec {
     ///     },
     ///     env: BTreeMap::new(),
     ///     gpu_class: Some("a10g".to_string()),
+    ///     gpus_per_worker: std::num::NonZeroU32::new(2),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -312,8 +313,10 @@ pub enum PythonRuntimeSpec {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
-        /// Operator-defined GPU class; absent uses the deployment default.
+        /// Operator-defined GPU class; absent accepts any eligible configured class.
         gpu_class: Option<String>,
+        /// GPUs allocated together to each worker.
+        gpus_per_worker: Option<std::num::NonZeroU32>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -365,17 +368,30 @@ impl PythonRuntimeSpec {
         matches!(self, Self::PythonV2 { .. })
     }
 
-    /// Operator-defined GPU class, or `None` to use the deployment default.
+    /// Requested GPU class; `None` and `"any"` both accept any eligible class.
+    /// This does not identify the hardware selected for execution.
     pub fn gpu_class(&self) -> Option<&str> {
         match self {
             Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
             _ => None,
         }
     }
+
+    /// GPUs allocated to one worker; zero for CPU runtimes.
+    pub fn gpus_per_worker(&self) -> u32 {
+        match self {
+            Self::PythonV2 {
+                gpus_per_worker, ..
+            } => gpus_per_worker.map_or(1, std::num::NonZeroU32::get),
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct PythonRuntimeV1Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<Value>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -388,6 +404,8 @@ struct PythonRuntimeV1Wire {
 
 #[derive(Deserialize)]
 struct PythonRuntimeV2Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<std::num::NonZeroU32>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -420,6 +438,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu_class requires kind='python_v2'",
                     ));
                 }
+                if wire.gpus_per_worker.is_some() {
+                    return Err(de::Error::custom(
+                        "gpus_per_worker requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -440,6 +463,7 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                     environment: wire.environment,
                     env: wire.env,
                     gpu_class: wire.gpu_class,
+                    gpus_per_worker: wire.gpus_per_worker,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -460,6 +484,8 @@ impl Serialize for PythonRuntimeSpec {
             gpu: Option<bool>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu_class: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpus_per_worker: Option<std::num::NonZeroU32>,
         }
 
         #[derive(Serialize)]
@@ -479,6 +505,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: None,
                 gpu_class: None,
+                gpus_per_worker: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
@@ -486,6 +513,7 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu_class,
+                gpus_per_worker,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
@@ -493,6 +521,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: Some(true),
                 gpu_class: gpu_class.as_deref(),
+                gpus_per_worker: *gpus_per_worker,
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -675,6 +704,24 @@ pub struct FunctionVersion {
         deserialize_with = "deserialize_max_concurrency"
     )]
     max_concurrency: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_cpu_millis"
+    )]
+    total_cpu_millis: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_memory_bytes"
+    )]
+    total_memory_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_gpu_count"
+    )]
+    total_gpu_count: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     row_timeout_seconds: Option<RowTimeoutSeconds>,
@@ -771,6 +818,21 @@ impl FunctionVersion {
     /// Operator-defined GPU class declared at registration.
     pub fn gpu_class(&self) -> Option<&str> {
         self.gpu_class.as_deref()
+    }
+
+    /// Default total CPU budget for executions of this pinned Function.
+    pub fn total_cpu_millis(&self) -> Option<u64> {
+        self.total_cpu_millis
+    }
+
+    /// Default total memory budget for executions of this pinned Function.
+    pub fn total_memory_bytes(&self) -> Option<u64> {
+        self.total_memory_bytes
+    }
+
+    /// Default aggregate GPU budget, independent of the per-worker device count.
+    pub fn total_gpu_count(&self) -> Option<u32> {
+        self.total_gpu_count
     }
 
     /// Default maximum rows in one callable batch, when declared.
@@ -900,6 +962,44 @@ where
     Ok(value)
 }
 
+fn deserialize_total_cpu_millis<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_cpu_millis: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom("total_cpu_millis must be positive"));
+    }
+    Ok(value)
+}
+
+fn deserialize_total_memory_bytes<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_memory_bytes: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom("total_memory_bytes must be positive"));
+    }
+    Ok(value)
+}
+
+fn deserialize_total_gpu_count<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_gpu_count: {error}")))
+}
+
 fn deserialize_max_concurrency<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u32>, D::Error>
@@ -970,6 +1070,27 @@ pub struct FunctionRegistrationRequest {
         deserialize_with = "deserialize_max_concurrency"
     )]
     pub max_concurrency: Option<u32>,
+    /// Default total CPU capacity for one execution, in millicores.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_cpu_millis"
+    )]
+    pub total_cpu_millis: Option<u64>,
+    /// Default total memory for one execution, in bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_memory_bytes"
+    )]
+    pub total_memory_bytes: Option<u64>,
+    /// Default total GPUs across one execution's workers.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_gpu_count"
+    )]
+    pub total_gpu_count: Option<u32>,
     /// Deadline for each Python call, in seconds: one row for scalar Functions
     /// and one batch for vectorized Functions. It does not govern Function
     /// initialization.
@@ -1010,6 +1131,11 @@ impl FunctionRegistrationRequest {
         let invalid_input = |message: &'static str| Error::InvalidInput {
             message: message.to_string(),
         };
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
+            return Err(invalid_input(
+                "total_cpu_millis and total_memory_bytes must be positive integers",
+            ));
+        }
         validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
         validate_max_concurrency_value(self.max_concurrency).map_err(invalid_input)?;
         validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
@@ -1261,6 +1387,46 @@ impl FunctionBinding {
     }
 }
 
+/// One byte-bounded size tier of a Function refresh plan.
+///
+/// A row belongs to the first tier whose `max_row_bytes` admits its total
+/// descriptor payload size. The final tier has no upper bound and carries the
+/// largest configured worker class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRefreshTier {
+    /// Inclusive upper bound of the rows this tier admits. `None` on the last
+    /// tier, which also serves rows larger than every configured class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_row_bytes: Option<u64>,
+    /// Worker resource class selected for this tier.
+    pub worker_class: String,
+    /// Worker container memory limit for `worker_class`.
+    pub worker_memory_bytes: u64,
+    /// Logical UDF executor budget derived from the worker limit.
+    pub executor_budget_bytes: u64,
+    /// Byte target for one materialized Blob input batch on this tier.
+    pub batch_bytes: u64,
+    /// Rows assigned to this tier.
+    pub rows: u64,
+    /// Byte-bounded batches the assigned rows form at `batch_bytes`.
+    pub batches: u64,
+}
+
+/// Descriptor-derived tier plan for one Function refresh.
+///
+/// The plan is computed from Blob descriptor sizes before any payload read. It
+/// names the same worker classes the refresh supervisor uses for routing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRefreshPlan {
+    /// Worker class the supervisor starts ordinary work on.
+    pub default_worker_class: String,
+    /// Row cap supplied through the `batch_size` override, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<u32>,
+    /// Tiers ordered from the smallest to the largest worker class.
+    pub tiers: Vec<FunctionRefreshTier>,
+}
+
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
 ///
@@ -1268,6 +1434,12 @@ impl FunctionBinding {
 /// Enterprise decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
+    /// Grouped row failures, when the server reports them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_groups: Vec<FunctionErrorGroup>,
+    /// Whether the grouped counts omit any failures.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error_groups_truncated: bool,
     /// Rows assigned a value by this refresh.
     pub rows_assigned: u64,
     /// Rows whose computation failed.
@@ -1279,6 +1451,10 @@ pub struct RefreshColumnResult {
     /// Table version made visible by the refresh, when one was published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_version: Option<u64>,
+    /// Descriptor-derived tier plan, when the refresh is Function-backed and
+    /// its inputs expose Blob descriptor sizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<FunctionRefreshPlan>,
 }
 
 /// Which per-row errors [`crate::Table::function_errors`] lists. Every
@@ -1286,6 +1462,8 @@ pub struct RefreshColumnResult {
 /// covers every refresh of every column.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FunctionErrorsRequest {
+    /// Include retained historical errors, including repaired rows.
+    pub history: bool,
     /// Only errors recorded by this job.
     pub job_id: Option<String>,
     /// Only errors on this column.
@@ -1293,9 +1471,17 @@ pub struct FunctionErrorsRequest {
     /// At most this many records; the server default is 10000 and its cap
     /// 100000. [`FunctionErrors::truncated`] says whether the cap was hit.
     pub limit: Option<usize>,
+    /// Empty starts retained history for an exact job_id, including repaired rows.
+    /// A returned token continues that history regardless of `history`.
+    pub page_token: Option<String>,
 }
 
 impl FunctionErrorsRequest {
+    /// Include retained historical records instead of current failures.
+    pub fn history(mut self, history: bool) -> Self {
+        self.history = history;
+        self
+    }
     /// A request with no filter.
     pub fn new() -> Self {
         Self::default()
@@ -1318,6 +1504,13 @@ impl FunctionErrorsRequest {
         self.limit = Some(limit);
         self
     }
+
+    /// Start with an empty token, then continue using the response's token.
+    /// Paging requires an exact job_id and a supporting backend.
+    pub fn page_token(mut self, token: impl Into<String>) -> Self {
+        self.page_token = Some(token.into());
+        self
+    }
 }
 
 /// One row a Function refresh skipped, as the server recorded it. The
@@ -1325,6 +1518,18 @@ impl FunctionErrorsRequest {
 /// read access to the table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrorRecord {
+    /// Earliest retained failure time for this current failure.
+    #[serde(default)]
+    pub first_seen_at_millis: Option<i64>,
+    /// Most recent failure time.
+    #[serde(default)]
+    pub last_seen_at_millis: Option<i64>,
+    /// Whether normal refreshes skip this row until explicitly retried.
+    #[serde(default)]
+    pub quarantined: bool,
+    /// Source identities for a materialized-view Function invocation.
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
     /// Number of user-code calls for this failed invocation, when recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempts: Option<u32>,
@@ -1385,6 +1590,12 @@ pub struct FunctionErrorFragment {
 /// A table's per-row Function errors; see [`crate::Table::function_errors`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrors {
+    /// Version of the server's current-failure, retry, upgrade, and quarantine contract.
+    #[serde(default)]
+    pub workflow_version: Option<u16>,
+    /// Grouped causes for the returned records. Counts are bounded by the listing.
+    #[serde(default)]
+    pub error_groups: Vec<FunctionErrorGroup>,
     /// The recorded rows, newest job first.
     pub records: Vec<FunctionErrorRecord>,
     /// Fragments whose detail was capped.
@@ -1392,6 +1603,83 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     #[serde(default)]
+    pub truncated: bool,
+    /// Continue this exact job/filter, or `None` when a paged read is complete.
+    /// Older servers and legacy non-paged reads omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_token: Option<String>,
+}
+
+/// Which existing rows to recompute when upgrading a Function column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionRecompute {
+    /// Recompute exactly the current failures.
+    Failed,
+    /// Recompute all live rows.
+    All,
+    /// Preserve existing values; new and changed rows use the new Function.
+    None,
+}
+
+/// One cause in a Function failure listing or refresh result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorGroup {
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub rows_failed: u64,
+}
+
+/// Selection and state for explicitly quarantining or releasing failed rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionQuarantineOptions {
+    pub quarantined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_attempts: Option<u32>,
+}
+
+impl Default for FunctionQuarantineOptions {
+    fn default() -> Self {
+        Self {
+            quarantined: true,
+            job_id: None,
+            error_type: None,
+            after_attempts: None,
+        }
+    }
+}
+
+/// Which snapshot and how much producing-version metadata to read.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FunctionProvenanceOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// The Function and job that produced one stored value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionValueProvenance {
+    pub job_id: String,
+    pub column: String,
+    pub function_name: String,
+    pub function_version: String,
+    pub row_id: Option<u64>,
+    pub row_address: Option<u64>,
+    pub source_version: u64,
+    pub published_version: u64,
+}
+
+/// A bounded set of per-row producing-version records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionProvenance {
+    pub records: Vec<FunctionValueProvenance>,
     pub truncated: bool,
 }
 
@@ -1410,8 +1698,53 @@ impl RefreshColumnResult {
 impl_json!(RefreshColumnResult);
 
 #[cfg(test)]
+mod refresh_result_tests {
+    use super::{FunctionRefreshPlan, FunctionRefreshTier, RefreshColumnResult};
+
+    fn result(plan: Option<FunctionRefreshPlan>) -> RefreshColumnResult {
+        RefreshColumnResult {
+            rows_assigned: 3,
+            rows_failed: 0,
+            rows_remaining: 0,
+            source_version: 7,
+            published_version: Some(8),
+            plan,
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
+        }
+    }
+
+    #[test]
+    fn absent_plan_stays_out_of_the_terminal_payload() {
+        let encoded = serde_json::to_value(result(None)).unwrap();
+        assert!(encoded.get("plan").is_none());
+    }
+
+    #[test]
+    fn descriptor_plan_round_trips_through_the_terminal_payload() {
+        let plan = FunctionRefreshPlan {
+            default_worker_class: "medium".to_string(),
+            batch_size: Some(1),
+            tiers: vec![FunctionRefreshTier {
+                max_row_bytes: None,
+                worker_class: "large".to_string(),
+                worker_memory_bytes: 16 << 30,
+                executor_budget_bytes: 11 << 30,
+                batch_bytes: 1 << 20,
+                rows: 3,
+                batches: 2,
+            }],
+        };
+        let encoded = serde_json::to_value(result(Some(plan.clone()))).unwrap();
+        let decoded: RefreshColumnResult = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.plan, Some(plan));
+    }
+}
+
+#[cfg(test)]
 mod conda_environment_tests {
     use super::{PythonEnvironmentSpec, PythonRuntimeSpec};
+    use serde_json::Value;
 
     #[test]
     fn conda_channels_round_trip_and_pip_stays_bare() {
@@ -1473,6 +1806,28 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"any","gpus_per_worker":2}"#,
+        ).unwrap();
+        assert_eq!(runtime.gpus_per_worker(), 2);
+        assert_eq!(runtime.gpu_class(), Some("any"));
+        let encoded = super::canonical_json(&runtime).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).unwrap()["gpus_per_worker"],
+            2
+        );
+        for count in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(true),
+            serde_json::json!("2"),
+            serde_json::json!(1.5),
+            serde_json::json!(4294967296_u64),
+        ] {
+            let mut value: Value = serde_json::from_str(&encoded).unwrap();
+            value["gpus_per_worker"] = count;
+            assert!(serde_json::from_value::<PythonRuntimeSpec>(value).is_err());
+        }
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,

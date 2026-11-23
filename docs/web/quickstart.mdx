@@ -268,7 +268,8 @@ at the data:
     </CodeBlock>
 </CodeGroup>
 
-See [SQL](/basics/sql) for the Flight SQL client and CLI alternatives to `execute_query()`.
+To run SQL from your terminal, [install the LanceDB CLI](/tools/cli#install).
+See [SQL](/basics/sql) for other Flight SQL clients.
 
 Now add a near-duplicate frame -- frame 5 is one video frame after frame 2, with
 an almost identical embedding -- and build the vector index that `dedupe` reads:
@@ -367,7 +368,11 @@ Store images, audio, or other binary data alongside vectors and metadata, in a c
     </CodeBlock>
 </CodeGroup>
 
-See [Multimodal data types](/management/table#multimodal) for larger payloads and the Blob v2 column type, which avoids loading binary data on every scan.
+For image files and larger payloads, follow the
+[Blob photo tutorial](/management/table#photo-tutorial) to create an ordinary
+Blob table, filter its metadata, save and check an image, and copy matching rows.
+The tutorial covers LanceDB Embedded and Enterprise SQL. Blob v2 is generally
+available on ordinary tables starting with LanceDB Enterprise 1.15.0.
 
 ## 8\. Train on your data {#8-train}
 

@@ -6,6 +6,8 @@
 
 # Class: Tags
 
+Tags label table versions with human-readable names.
+
 ## Constructors
 
 ### new Tags()
@@ -23,14 +25,19 @@ new Tags(): Tags
 ### create()
 
 ```ts
-create(tag, version): Promise<void>
+create(tag, version?): Promise<void>
 ```
+
+Create a tag for a table version.
+
+Omit `version` to tag the version this handle currently shows,
+including a checked-out version.
 
 #### Parameters
 
 * **tag**: `string`
 
-* **version**: `number`
+* **version?**: `null` \| `number`
 
 #### Returns
 

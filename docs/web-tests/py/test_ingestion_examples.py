@@ -420,13 +420,13 @@ def test_update_using_sql():
 
 
 def test_merge_matched_update_only():
+    # --8<-- [start:merge_matched_update_only]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:merge_matched_update_only]
         import pyarrow as pa
 
         table = db.create_table(
@@ -457,13 +457,13 @@ def test_merge_matched_update_only():
 
 
 def test_insert_if_not_exists():
+    # --8<-- [start:insert_if_not_exists]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:insert_if_not_exists]
         import pyarrow as pa
 
         table = db.create_table(
@@ -494,13 +494,13 @@ def test_insert_if_not_exists():
 
 
 def test_merge_update_insert():
+    # --8<-- [start:merge_update_insert]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:merge_update_insert]
         import pyarrow as pa
 
         table = db.create_table(
@@ -537,13 +537,13 @@ def test_merge_update_insert():
 
 
 def test_merge_delete_missing_by_source():
+    # --8<-- [start:merge_delete_missing_by_source]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:merge_delete_missing_by_source]
         import pyarrow as pa
 
         table = db.create_table(
@@ -581,13 +581,13 @@ def test_merge_delete_missing_by_source():
 
 
 def test_merge_partial_columns():
+    # --8<-- [start:merge_partial_columns]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:merge_partial_columns]
         import pyarrow as pa
 
         table = db.create_table(
@@ -665,13 +665,13 @@ def test_write_workflow():
 
 
 def test_append_rows():
+    # --8<-- [start:append_rows]
     from tempfile import TemporaryDirectory
 
     import lancedb
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:append_rows]
         table = db.create_table("users", [{"id": 1, "name": "Alice"}])
         table.add([{"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}])
         rows = sorted(table.search().to_list(), key=lambda row: row["id"])
@@ -708,6 +708,7 @@ def test_delete_rows():
 
 
 def test_add_progress():
+    # --8<-- [start:add_progress]
     from tempfile import TemporaryDirectory
 
     import lancedb
@@ -717,7 +718,6 @@ def test_add_progress():
 
     with TemporaryDirectory(prefix="lancedb-ingestion-") as uri:
         db = lancedb.connect(uri)
-        # --8<-- [start:add_progress]
         table = db.create_table("users", [{"id": 1, "name": "Alice"}])
         table.add(
             [{"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}],

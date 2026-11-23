@@ -407,6 +407,33 @@ def test_value_to_sql_nan_and_infinity(tmp_path):
     assert rows[4]["f64"] == 4.0 and rows[4]["f32"] == 4.0
 
 
+def test_value_to_sql_enum_members(tmp_path):
+    # str() of an int- or float-valued Enum member is its name, which SQL reads
+    # as a field access, and a plain Enum member raised NotImplementedError.
+    import enum
+
+    class Priority(int, enum.Enum):
+        LOW = 1
+        HIGH = 2
+
+    class Weight(float, enum.Enum):
+        HALF = 0.5
+
+    class Color(enum.Enum):
+        RED = "red"
+
+    assert value_to_sql(Priority.HIGH) == "2"
+    assert value_to_sql(Weight.HALF) == "0.5"
+    assert value_to_sql(Color.RED) == "'red'"
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test", pa.table({"id": [1], "p": [1], "w": [1.0], "c": ["blue"]})
+    )
+    table.update(values={"p": Priority.HIGH, "w": Weight.HALF, "c": Color.RED})
+    assert table.to_arrow().to_pylist() == [{"id": 1, "p": 2, "w": 0.5, "c": "red"}]
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)

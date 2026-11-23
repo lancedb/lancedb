@@ -60,21 +60,42 @@ class MockPermutationServer:
     the server, which is the part that has to stay compatible.
     """
 
-    def __init__(self, name="remote_data", num_rows=8, vary_scan_order=False):
+    def __init__(
+        self, name="remote_data", num_rows=8, vary_scan_order=False, latest_version=1
+    ):
         self.name = name
         self.num_rows = num_rows
+        self.latest_version = latest_version
+        self.version_rows = {1: list(range(num_rows))}
+        self.describe_bodies = []
         self.query_bodies = []
         # Stand in for a distributed scan that answers in no fixed order.
         self.vary_scan_order = vary_scan_order
         self.scan_calls = 0
 
+    def publish_version(self, version, row_ids):
+        """Advance the mock's latest version without changing its schema."""
+        self.latest_version = version
+        self.version_rows[version] = list(row_ids)
+
+    def _rows_for_version(self, requested_version):
+        version = (
+            self.latest_version if requested_version is None else requested_version
+        )
+        return self.version_rows.get(version, self.version_rows[1])
+
     def __call__(self, request):
         path = request.path
         if path == f"/v1/table/{self.name}/describe/":
+            body = self._read_body(request)
+            self.describe_bodies.append(body)
+            version = (
+                self.latest_version if body.get("version") is None else body["version"]
+            )
             return self._json(
                 request,
                 {
-                    "version": 1,
+                    "version": version,
                     "schema": {
                         "fields": [
                             {"name": "id", "type": {"type": "int64"}, "nullable": False}
@@ -87,8 +108,8 @@ class MockPermutationServer:
             # Null spec: this table has no RTE write path.
             return self._json(request, {"rte_spec": None})
         if path == f"/v1/table/{self.name}/count_rows/":
-            self._read_body(request)
-            return self._json(request, self.num_rows)
+            body = self._read_body(request)
+            return self._json(request, len(self._rows_for_version(body.get("version"))))
         if path == f"/v1/table/{self.name}/query/":
             return self._query(request, self._read_body(request))
 
@@ -133,10 +154,15 @@ class MockPermutationServer:
 
     def _query(self, request, body):
         self.query_bodies.append(body)
+        version_rows = self._rows_for_version(body.get("version"))
 
         if is_row_id_take(body):
             # A row-id take. Answer ascending, so tests prove the client reorders.
-            row_ids = sorted(parse_in_list(body["filter"]))
+            row_ids = sorted(
+                row_id
+                for row_id in parse_in_list(body["filter"])
+                if row_id in version_rows
+            )
             return self._arrow(
                 request,
                 pa.table(
@@ -149,7 +175,7 @@ class MockPermutationServer:
 
         if body.get("columns") == ["_rowid"]:
             # The permutation build scan: row ids and nothing else.
-            row_ids = list(range(self.num_rows))
+            row_ids = list(version_rows)
             if self.vary_scan_order and self.scan_calls % 2:
                 row_ids.reverse()
             self.scan_calls += 1

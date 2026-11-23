@@ -9,6 +9,7 @@ import base64
 import importlib
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -17,7 +18,9 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Optional, get_type_hints
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from lancedb import col
@@ -234,10 +237,15 @@ def test_function_can_return_a_list_from_a_generator_expression():
 @pytest.mark.parametrize(
     ("global_value", "value_type"),
     [
-        ("pa.struct([('label', pa.string())])", "StructType"),
-        ("(1, (pa.int64(),))", "DataType"),
-        ("{'label': 1}", "dict"),
         ("float('inf')", "float"),
+        ("{'label': float('nan')}", "float"),
+        ("[1, (2, object())]", "object"),
+        ("{'labels': range(2)}", "range"),
+        ("pa.array([1])", "Int64Array"),
+        ("np.array(['label'])", "ndarray with dtype <U5"),
+        ("np.array([1.0], dtype=np.longdouble)", "ndarray with dtype"),
+        ("np.datetime64('2026-01-01')", "datetime64 with dtype datetime64[D]"),
+        ("np.ma.masked_array([1.0])", "MaskedArray"),
     ],
 )
 def test_unsupported_global_names_value_and_remedy(
@@ -254,8 +262,8 @@ def test_unsupported_global_names_value_and_remedy(
     module = helper_package(
         "fx_unsupported_global",
         {
-            "__init__.py": f"import pyarrow as pa\nCAPTURED_VALUE = {global_value}\n"
-            + definition
+            "__init__.py": "import numpy as np\nimport pyarrow as pa\n"
+            f"CAPTURED_VALUE = {global_value}\n" + definition
         },
     )
     with pytest.raises(TypeError) as error:
@@ -282,6 +290,256 @@ def test_supported_nested_literal_global_still_packages(helper_package):
     exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
     assert namespace["uses_global"](3) == 4
     assert namespace["CAPTURED_VALUE"] == module.CAPTURED_VALUE
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_arrow_and_structured_globals_are_captured(helper_package, kind):
+    body = (
+        "    if x is None:\n"
+        "        return (LABELS, EMPTY, ARROW, WEIGHTS, NUMPY)\n"
+        "    rows = [{'label': 'pick', 'score': LABELS['pick']}] * len(x)\n"
+        "    return pa.array(rows, type=OUT_TYPE)\n"
+    )
+    definition = (
+        "class judge:\n    def __call__(self, x: pa.Array) -> pa.Array:\n"
+        + textwrap.indent(body, "    ")
+        if kind == "class"
+        else "def judge(x: pa.Array) -> pa.Array:\n" + body
+    )
+    module = helper_package(
+        "fx_structured_global",
+        {
+            "__init__.py": textwrap.dedent("""
+                import numpy as np
+                import pyarrow as pa
+
+                OUT_TYPE = pa.struct(
+                    [pa.field("label", pa.string()), pa.field("score", pa.int32())]
+                )
+                LABELS = {
+                    "pick": 0,
+                    "place": 1,
+                    "nested": [None, (1.5, b"x"), {"deep": frozenset({"b", "a"})}],
+                }
+                EMPTY = ([], {}, set(), frozenset(), ())
+                ARROW = {
+                    "field": pa.field(
+                        "score", pa.int32(), nullable=False, metadata={"unit": "pts"}
+                    ),
+                    "schema": pa.schema(
+                        [pa.field("label", pa.dictionary(pa.int8(), pa.utf8(), True))],
+                        metadata={"version": "1"},
+                    ),
+                    "tensor": pa.fixed_shape_tensor(pa.float32(), [2, 2]),
+                }
+                WEIGHTS = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+                NUMPY = (
+                    np.float32(0.5),
+                    np.True_,
+                    np.uint64(2**64 - 1),
+                    np.array(1.5),
+                    np.zeros((0, 3), dtype=np.int16),
+                    np.array([1.0, -0.0], dtype=">f8"),
+                )
+            """)
+            + definition
+        },
+    )
+    out_type = module.OUT_TYPE
+    packaged = function(
+        input_schema=pa.schema([pa.field("x", pa.int64(), nullable=False)]),
+        output_schema=pa.field("out", out_type, nullable=False),
+    )(module.judge)
+    source = artifact(packaged).decode()
+    assert "import numpy as _lancedb_numpy" in source
+    assert "import pyarrow as _lancedb_pyarrow" in source
+
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    call = namespace["judge"]() if kind == "class" else namespace["judge"]
+    result = call(pa.array([1, 2]))
+    assert result.type == out_type
+    assert result.to_pylist() == [{"label": "pick", "score": 0}] * 2
+    assert namespace["OUT_TYPE"] == out_type
+
+    assert namespace["LABELS"] == module.LABELS
+    assert list(namespace["LABELS"]) == list(module.LABELS)
+    assert namespace["EMPTY"] == module.EMPTY
+    assert [type(value) for value in namespace["EMPTY"]] == [
+        type(value) for value in module.EMPTY
+    ]
+    for key, value in module.ARROW.items():
+        assert namespace["ARROW"][key].equals(value, check_metadata=True)
+        assert type(namespace["ARROW"][key]) is type(value)
+
+    weights = namespace["WEIGHTS"]
+    assert weights.dtype == module.WEIGHTS.dtype
+    assert np.array_equal(weights, module.WEIGHTS)
+    for captured, original in zip(namespace["NUMPY"], module.NUMPY, strict=True):
+        assert type(captured) is type(original)
+        assert captured.dtype == original.dtype
+        assert np.shape(captured) == np.shape(original)
+        assert np.array_equal(captured, original)
+    assert np.signbit(namespace["NUMPY"][-1][1])
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+@pytest.mark.parametrize("shape", [(0,), (0, 3), (2, 0, 3), (500_000, 0)])
+def test_empty_numpy_captures_preserve_shape_without_expanding(
+    helper_package, kind, shape
+):
+    definition = (
+        "class empty_size:\n    def __call__(self, value: int) -> int:\n"
+        "        return value + EMPTY.size\n"
+        if kind == "class"
+        else "def empty_size(value: int) -> int:\n    return value + EMPTY.size\n"
+    )
+    module = helper_package(
+        "fx_empty_numpy_global",
+        {
+            "__init__.py": "import numpy as np\n"
+            f"EMPTY = np.empty({shape!r}, dtype='>i2')\n" + definition
+        },
+    )
+    source = artifact(function(module.empty_size))
+    assert len(source) < 1024
+    namespace = {}
+    exec(compile(source, "user_function.py", "exec"), namespace)
+    captured = namespace["EMPTY"]
+    assert captured.shape == shape
+    assert captured.dtype == module.EMPTY.dtype
+    assert captured.size == 0
+    call = namespace["empty_size"]() if kind == "class" else namespace["empty_size"]
+    assert call(7) == 7
+
+
+def test_captured_containers_are_copied_when_decorated(helper_package):
+    module = helper_package(
+        "fx_captured_copy",
+        {
+            "__init__.py": """
+                SHARED = [1, 2]
+                CONFIG = {"shared": SHARED, "again": SHARED}
+
+                def uses_config(value: int) -> int:
+                    return value + len(CONFIG["shared"]) + len(SHARED)
+            """
+        },
+    )
+    definition = function(module.uses_config)
+    module.SHARED.append(3)
+
+    namespace = {}
+    exec(compile(artifact(definition), "user_function.py", "exec"), namespace)
+    assert namespace["SHARED"] == [1, 2]
+    assert namespace["CONFIG"] == {"shared": [1, 2], "again": [1, 2]}
+    assert namespace["CONFIG"]["shared"] is not namespace["CONFIG"]["again"]
+    assert namespace["CONFIG"]["shared"] is not namespace["SHARED"]
+    assert namespace["uses_config"](1) == 5
+
+
+def test_captured_sets_package_deterministically(tmp_path):
+    script = tmp_path / "sets.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+
+            from lancedb import function
+
+            WORDS = {f"word{index}" for index in range(20)}
+            MIXED = frozenset({("pair", 1), b"bytes", None, 2.5, "text"})
+
+            @function
+            def known(word: str) -> bool:
+                return word in WORDS or word in MIXED
+
+            print(json.dumps([
+                known.registration_request.artifact.digest,
+                list(WORDS),
+            ]))
+            """
+        )
+    )
+    runs = []
+    for seed in ("0", "1", "2", "3"):
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert result.returncode == 0, result.stderr
+        runs.append(json.loads(result.stdout))
+    # Hash randomization reorders the client's set; the artifact must not change.
+    assert len({tuple(order) for _, order in runs}) > 1
+    assert len({digest for digest, _ in runs}) == 1
+
+
+@pytest.mark.parametrize(
+    ("global_value", "message"),
+    [
+        ("list(range(300_000))", "too large to capture"),
+        ("np.zeros(2_000_000)", "too large to capture"),
+        ("'x' * (1024 * 1024)", "too large to capture"),
+        ("functools.reduce(lambda inner, _: [inner], range(40), [])", "32 levels"),
+        ("_cycle()", "contains itself"),
+        ("pa.schema([pa.field('x', pa.list_(_Extension()))])", "defined in Python"),
+    ],
+)
+def test_captured_value_limits_name_the_global(helper_package, global_value, message):
+    module = helper_package(
+        "fx_captured_limits",
+        {
+            "__init__.py": textwrap.dedent("""
+                import functools
+
+                import numpy as np
+                import pyarrow as pa
+
+                class _Extension(pa.ExtensionType):
+                    def __init__(self):
+                        super().__init__(pa.int64(), "fx.extension")
+
+                    def __arrow_ext_serialize__(self):
+                        return b""
+
+                    @classmethod
+                    def __arrow_ext_deserialize__(cls, storage_type, serialized):
+                        return cls()
+
+                def _cycle():
+                    value = []
+                    value.append(value)
+                    return value
+            """)
+            + f"CAPTURED_VALUE = {global_value}\n"
+            "def uses_global(value: int) -> int:\n"
+            "    return value if CAPTURED_VALUE else 0\n"
+        },
+    )
+    with pytest.raises((TypeError, ValueError)) as error:
+        function(module.uses_global)
+    assert "CAPTURED_VALUE" in str(error.value)
+    assert message in str(error.value)
+    assert "inside the function or class body" in str(error.value)
+
+
+def test_captured_sets_keep_their_builtins(helper_package):
+    module = helper_package(
+        "fx_captured_builtins",
+        {
+            "__init__.py": """
+                STOP = frozenset({"a"})
+                frozenset = ("shadowed",)
+
+                def uses_sets(word: str) -> bool:
+                    return word in STOP or word in frozenset
+            """
+        },
+    )
+    with pytest.raises(ValueError, match="cannot package 'frozenset'"):
+        function(module.uses_sets)
 
 
 @pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
@@ -323,6 +581,48 @@ def test_array_batch_annotations_accept_explicit_schemas():
     assert signature.output.nullable is False
     values = pa.array([1, 2, 3])
     assert identity(values).equals(values)
+
+
+def test_batch_functions_take_one_array_parameter_per_input_column():
+    @function(
+        input_schema=pa.schema(
+            [
+                pa.field("value", pa.float64(), nullable=False),
+                pa.field("weight", pa.float64(), nullable=False),
+            ]
+        ),
+        output_schema=pa.float64(),
+    )
+    def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+        return pc.multiply(value, weight)
+
+    signature = weighted_score.registration_request.signature
+    assert [parameter.name for parameter in signature.inputs] == ["value", "weight"]
+    result = weighted_score(pa.array([1.0, 2.0]), pa.array([3.0, 4.0]))
+    assert result.to_pylist() == [3.0, 8.0]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda definition: definition(col("value")),
+        lambda definition: definition(value=col("value")),
+        lambda definition: definition(value=col("value") * 2),
+    ],
+    ids=["positional", "keyword", "derived"],
+)
+def test_definition_calls_reject_expr_inputs_before_user_code(invoke):
+    @function
+    def double(value: float) -> float:
+        raise AssertionError("user code ran")
+
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        invoke(double)
+
+
+def test_class_definition_binds_initialization_only_on_a_version():
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        scale(factor=col("factor"), label="x")
 
 
 @pytest.mark.parametrize("class_function", [False, True])
@@ -470,7 +770,6 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
 @pytest.mark.parametrize(
     "module_name",
     [
-        "sys",
         "builtins",
         "importlib",
         "inspect",
@@ -478,7 +777,6 @@ def test_nested_class_and_closure_are_rejected_with_the_reason():
         "ctypes",
         "types",
         "ctypes.util",
-        "importlib.metadata",
     ],
 )
 @pytest.mark.parametrize("import_style", ["import", "from", "global"])
@@ -513,6 +811,146 @@ def test_namespace_module_errors_explain_the_rule_and_remedy(
     assert "importable helper module" in message
     assert "code=, pip=, or conda=" in message
     assert "dynamic namespace access" not in message
+
+
+@pytest.mark.parametrize("module_level", [False, True], ids=["body", "module"])
+@pytest.mark.parametrize(
+    ("import_statement", "expression"),
+    [
+        ("import sys", "sys.stderr"),
+        ("import sys as diagnostic", "diagnostic.stderr"),
+        ("from sys import stderr", "stderr"),
+        ("from sys import stderr as error_stream", "error_stream"),
+        ("import sys", "sys.version_info"),
+        ("import sys as diagnostic", "diagnostic.version_info"),
+        ("from sys import version_info", "version_info"),
+        ("from sys import version_info as python_version", "python_version"),
+        ("import importlib.metadata", "importlib.metadata.version('pytest')"),
+        ("import importlib.metadata as diagnostic", "diagnostic.version('pytest')"),
+        ("from importlib import metadata", "metadata.version('pytest')"),
+        (
+            "from importlib import metadata as diagnostic",
+            "diagnostic.version('pytest')",
+        ),
+        ("from importlib.metadata import version", "version('pytest')"),
+        (
+            "from importlib.metadata import version as diagnostic",
+            "diagnostic('pytest')",
+        ),
+    ],
+)
+def test_diagnostic_namespace_operations_package_and_run(
+    helper_package, module_level, import_statement, expression
+):
+    if module_level:
+        source = (
+            f"{import_statement}\n\n"
+            "def probe(value: str) -> str:\n"
+            f"    return str({expression}) + value\n"
+        )
+    else:
+        source = (
+            "def probe(value: str) -> str:\n"
+            f"    {import_statement}\n"
+            f"    return str({expression}) + value\n"
+        )
+    module = helper_package("fx_diagnostic_operation", {"__init__.py": source})
+
+    packaged = artifact(function(module.probe)).decode()
+    namespace = {}
+    exec(compile(packaged, "user_function.py", "exec"), namespace)
+    assert namespace["probe"]("!").endswith("!")
+
+
+@pytest.mark.parametrize(
+    ("body", "operation"),
+    [
+        ("import sys\nreturn str(sys.modules)", "sys.modules"),
+        ("import sys as s\nreturn str(s.path)", "s.path"),
+        ("import sys\nreturn str(sys.version)", "sys.version"),
+        ("import sys\nreturn str(sys.stdout)", "sys.stdout"),
+        ("import sys\nreturn str(getattr(sys, 'stderr'))", "sys"),
+        ("import sys\nstream = sys\nreturn str(stream)", "sys"),
+        ("import sys\nsys = object()\nreturn str(sys)", "sys"),
+        ("from sys import path\nreturn str(path)", "sys.path"),
+        (
+            "import importlib.metadata\n"
+            "return importlib.metadata.distribution('pytest').version",
+            "importlib.metadata.distribution",
+        ),
+        (
+            "import importlib.metadata as m\nreturn m.distribution('pytest').version",
+            "m.distribution",
+        ),
+        (
+            "from importlib.metadata import distribution\n"
+            "return distribution('pytest').version",
+            "importlib.metadata.distribution",
+        ),
+        (
+            "from importlib.metadata import version\nreturn str(version.__globals__)",
+            "version.__globals__",
+        ),
+        (
+            "import importlib\nreturn str(importlib.import_module('os'))",
+            "importlib",
+        ),
+        (
+            "from importlib import import_module\nreturn str(import_module('os'))",
+            "importlib",
+        ),
+        (
+            "import importlib.resources\nreturn str(importlib.resources.files('x'))",
+            "importlib.resources",
+        ),
+        ("import inspect\nreturn str(inspect.currentframe())", "inspect"),
+        (
+            "from ctypes import util\nreturn str(util.find_library('c'))",
+            "ctypes",
+        ),
+        ("import gc\nreturn str(gc.get_objects())", "gc"),
+        ("import builtins\nreturn str(builtins)", "builtins"),
+        ("import types\nreturn str(types.SimpleNamespace())", "types"),
+    ],
+)
+def test_unsupported_namespace_operations_are_rejected(helper_package, body, operation):
+    source = "def blocked(value: str) -> str:\n" + textwrap.indent(body, "    ")
+    module = helper_package(
+        "fx_unsupported_namespace_operation", {"__init__.py": source}
+    )
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    message = str(error.value)
+    assert repr(operation) in message
+    assert "supported diagnostic operations" in message
+
+
+@pytest.mark.parametrize(
+    ("preamble", "body", "operation"),
+    [
+        (
+            "import sys as diagnostic",
+            "return str(diagnostic.modules)",
+            "diagnostic.modules",
+        ),
+        (
+            "import importlib.metadata as diagnostic",
+            "return diagnostic.distribution('pytest').version",
+            "diagnostic.distribution",
+        ),
+        ("from sys import stderr", "return str(stderr.__class__)", "stderr.__class__"),
+    ],
+)
+def test_module_level_diagnostic_alias_rejects_unsupported_use(
+    helper_package, preamble, body, operation
+):
+    source = f"{preamble}\n\ndef blocked(value: str) -> str:\n    {body}\n"
+    module = helper_package("fx_diagnostic_alias", {"__init__.py": source})
+
+    with pytest.raises(ValueError) as error:
+        function(module.blocked)
+    assert repr(operation) in str(error.value)
 
 
 @pytest.mark.filterwarnings("ignore:lancedb.udf is deprecated:DeprecationWarning")

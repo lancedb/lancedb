@@ -68,8 +68,12 @@ def mock_remote_materialized_view_refresh():
     "resources",
     [
         {},
-        {"gpu_count": 2, "gpu_class": "h100"},
-        {"cpu_millis": 8000, "memory_bytes": 16 * 1024**3, "gpu_count": 0},
+        {"total_gpu_count": 2, "gpu_class": "h100"},
+        {
+            "total_cpu_millis": 8000,
+            "total_memory_bytes": 16 * 1024**3,
+            "total_gpu_count": 0,
+        },
     ],
 )
 async def test_remote_refresh_reports_unknown_metrics(
@@ -159,13 +163,12 @@ async def test_remote_refresh_reports_unknown_metrics(
             assert expected.encode() in refresh
         previous = len(server.commands)
         for invalid in [
-            {"cpu_millis": 0},
-            {"memory_bytes": 1},
-            {"gpu_count": -1},
-            {"gpu_count": True},
-            {"gpu_count": 2**32},
+            {"total_cpu_millis": 0},
+            {"total_gpu_count": -1},
+            {"total_gpu_count": True},
+            {"total_gpu_count": 2**32},
             {"gpu_class": "H200:8"},
-            {"gpu_count": 0, "gpu_class": "h100"},
+            {"total_gpu_count": 0, "gpu_class": "h100"},
         ]:
             with pytest.raises(ValueError):
                 if sync:
@@ -200,6 +203,11 @@ def test_sync_remote_create_uses_public_async_connection(query):
             exist_ok=False,
             auto_refresh_enabled=None,
             auto_refresh_interval_seconds=None,
+            total_cpu_millis=None,
+            total_memory_bytes=None,
+            total_gpu_count=None,
+            gpu_class=None,
+            gpu_count=None,
         ):
             calls.append(
                 (
@@ -269,21 +277,21 @@ def test_create_and_refresh_jobs(tmp_path):
     create_job = db.create_materialized_view_async(
         "adults", "people", where="age >= 18", with_no_data=True
     )
-    assert create_job.id is None
-    assert create_job.job_type is None
+    assert create_job.id() is None
+    assert create_job.job_type() is None
     assert create_job.wait() is None
 
     view = db.open_materialized_view("adults")
     refresh_job = view.refresh_async()
-    assert refresh_job.id is None
-    assert refresh_job.job_type is None
+    assert refresh_job.id() is None
+    assert refresh_job.job_type() is None
     result = refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 2
     assert view.table.count_rows() == 2
 
     drop_job = db.drop_materialized_view_async("adults")
-    assert drop_job.id is None
+    assert drop_job.id() is None
     assert drop_job.wait() is None
     assert "adults" not in list(db.list_materialized_views())
 
@@ -442,20 +450,20 @@ async def test_async_create_and_refresh_jobs(tmp_path):
     create_job = await db.create_materialized_view_async(
         "adults", "people", with_no_data=True
     )
-    assert create_job.id is None
-    assert create_job.job_type is None
+    assert create_job.id() is None
+    assert create_job.job_type() is None
     assert await create_job.wait() is None
 
     view = await db.open_materialized_view("adults")
     refresh_job = await view.refresh_async()
-    assert refresh_job.id is None
-    assert refresh_job.job_type is None
+    assert refresh_job.id() is None
+    assert refresh_job.job_type() is None
     result = await refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 1
 
     drop_job = await db.drop_materialized_view_async("adults")
-    assert drop_job.id is None
+    assert drop_job.id() is None
     assert await drop_job.wait() is None
     assert "adults" not in [item async for item in db.list_materialized_views()]
 
@@ -709,6 +717,11 @@ class CapturingCreateConnection:
         {},
         {"auto_refresh_enabled": True},
         {"auto_refresh_enabled": False, "auto_refresh_interval_seconds": 0.5},
+        {"total_cpu_millis": 8000, "total_gpu_count": 0},
+        {"total_memory_bytes": 16 * 1024**3},
+        {"gpu_class": "any"},
+        {"gpu_count": 2},
+        {"gpu_class": "h100", "gpu_count": 2, "total_gpu_count": 4},
     ],
 )
 def test_remote_create_forwards_refresh_options_without_interval_default(options):
@@ -716,8 +729,8 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
     db = RemoteDBConnection.__new__(RemoteDBConnection)
     db._conn = AsyncConnection(native)
     job = db.create_materialized_view_async("adults", "people", **options)
-    assert job.id == QueryBackedCreateJob.id
-    assert job.job_type == "query"
+    assert job.id() == QueryBackedCreateJob.id
+    assert job.job_type() == "query"
     assert not hasattr(job, "query_id")
     assert job.wait() is None
     assert job.status() == "finished"
@@ -731,6 +744,11 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
                 "limit": None,
                 "with_no_data": False,
                 "exist_ok": False,
+                "total_cpu_millis": options.get("total_cpu_millis"),
+                "total_memory_bytes": options.get("total_memory_bytes"),
+                "total_gpu_count": options.get("total_gpu_count"),
+                "gpu_class": options.get("gpu_class"),
+                "gpu_count": options.get("gpu_count"),
                 "auto_refresh_enabled": options.get("auto_refresh_enabled"),
                 "auto_refresh_interval_seconds": options.get(
                     "auto_refresh_interval_seconds"
@@ -747,8 +765,8 @@ async def test_async_remote_create_keeps_interval_unspecified():
     job = await db.create_materialized_view_async(
         "adults", "people", auto_refresh_enabled=True
     )
-    assert job.id == QueryBackedCreateJob.id
-    assert job.job_type == "query"
+    assert job.id() == QueryBackedCreateJob.id
+    assert job.job_type() == "query"
     assert not hasattr(job, "query_id")
     assert await job.wait() is None
     assert await job.status() == "finished"
@@ -783,18 +801,34 @@ def test_remote_create_rejects_invalid_interval_without_request(seconds):
 
 
 @pytest.mark.experimental_functions
-def test_namespace_forwards_automatic_refresh_request(tmp_path):
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"auto_refresh_enabled": True},
+        {"total_cpu_millis": 8000, "total_gpu_count": 0},
+        {"total_memory_bytes": 1024},
+    ],
+)
+def test_namespace_forwards_automatic_refresh_request(tmp_path, options):
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
-        db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
+        db.create_materialized_view("mv", "source", **options)
 
 
 @pytest.mark.experimental_functions
 @pytest.mark.asyncio
-async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"auto_refresh_enabled": True},
+        {"total_cpu_millis": 8000, "total_gpu_count": 0},
+        {"total_memory_bytes": 1024},
+    ],
+)
+async def test_async_namespace_forwards_automatic_refresh_request(tmp_path, options):
     db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError, match="requires LanceDB Enterprise"):
-        await db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
+        await db.create_materialized_view("mv", "source", **options)
 
 
 @pytest.mark.experimental_functions

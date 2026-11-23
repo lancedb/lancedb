@@ -411,14 +411,6 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
         parsed: super::client::ParsedDbUrl,
     ) -> Result<Self> {
-        let sql_client = SqlClient::new(
-            parsed.db_name.clone(),
-            parsed.db_prefix.clone(),
-            api_key.to_string(),
-            host_overrides.rest.clone(),
-            host_overrides.sql,
-            client_config.clone(),
-        );
         let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
@@ -429,6 +421,27 @@ impl RemoteDatabase {
             &client_config,
         )?;
 
+        // Preserve the resolved source-account hint when table operations use SQL.
+        let mut sql_config = client_config.clone();
+        if let Some(account) = header_map.get("x-azure-storage-account-name") {
+            sql_config.extra_headers.insert(
+                "x-azure-storage-account-name".into(),
+                account
+                    .to_str()
+                    .map_err(|error| Error::InvalidInput {
+                        message: error.to_string(),
+                    })?
+                    .into(),
+            );
+        }
+        let sql_client = SqlClient::new(
+            parsed.db_name.clone(),
+            parsed.db_prefix.clone(),
+            api_key.to_string(),
+            host_overrides.rest.clone(),
+            host_overrides.sql,
+            sql_config,
+        );
         let namespace_headers: HashMap<String, String> = header_map
             .iter()
             .filter_map(|(k, v)| {
@@ -729,6 +742,18 @@ struct RemoteListJobRow {
     #[serde(default)]
     created_at_millis: i64,
     #[serde(default)]
+    completed_at_millis: Option<i64>,
+    #[serde(default)]
+    duration_millis: Option<i64>,
+    #[serde(default)]
+    columns: Vec<String>,
+    #[serde(default)]
+    function_name: Option<String>,
+    #[serde(default)]
+    function_version: Option<String>,
+    #[serde(default)]
+    failure: Option<crate::error::JobFailure>,
+    #[serde(default)]
     progress: Option<serde_json::Value>,
     #[serde(default)]
     phase: Option<String>,
@@ -797,6 +822,33 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         if let Some(seconds) = request.auto_refresh_interval_seconds {
             options.push(format!("auto_refresh_interval_seconds = {seconds}"));
+        }
+        if request.total_cpu_millis == Some(0) || request.total_memory_bytes == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "total_cpu_millis and total_memory_bytes must be positive integers".into(),
+            });
+        }
+        for (key, value) in [
+            ("total_cpu_millis", request.total_cpu_millis),
+            ("total_memory_bytes", request.total_memory_bytes),
+            ("total_gpu_count", request.total_gpu_count.map(u64::from)),
+        ] {
+            if let Some(value) = value {
+                options.push(format!("{key} = {value}"));
+            }
+        }
+
+        if let Some(class) = &request.gpu_class {
+            crate::function::validate_gpu_class_name(class)?;
+            options.push(format!("gpu_class = '{class}'"));
+        }
+        if let Some(count) = request.gpu_count {
+            if count == 0 {
+                return Err(Error::InvalidInput {
+                    message: "gpu_count must be positive".into(),
+                });
+            }
+            options.push(format!("gpu_count = {count}"));
         }
         let name = request.name.replace('"', "\"\"");
         let options = if options.is_empty() {
@@ -983,6 +1035,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 query: sql,
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
@@ -999,6 +1052,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
@@ -1021,6 +1075,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 query: format!("DROP STORAGE INTEGRATION {name}"),
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
+                options: Default::default(),
             })
             .await?;
         result.reader().await?.try_collect::<Vec<_>>().await?;
@@ -1358,6 +1413,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 job_type: row.job_type,
                 state: job_state_to_client(&row.state),
                 created_at_millis: row.created_at_millis,
+                completed_at_millis: row.completed_at_millis,
+                duration_millis: row.duration_millis,
+                columns: row.columns,
+                function_name: row.function_name,
+                function_version: row.function_version,
+                failure: row.failure,
                 progress: row.progress,
                 phase: row.phase,
                 paused: row.paused,
@@ -1539,6 +1600,30 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // The remote create endpoint does not transmit Lance write parameters.
         // Reject them before consuming data or issuing a request, especially
         // for overwrite: silently using the server's format can lose intent.
+        //
+        // Name the blob-base options specifically: they carry data placement
+        // and URI-resolution semantics the server cannot honor, and a generic
+        // "write_options" message would not tell the caller which input to drop.
+        if let Some(params) = request.write_options.lance_write_params.as_ref() {
+            let unsupported = if params
+                .initial_bases
+                .as_ref()
+                .is_some_and(|bases| !bases.is_empty())
+            {
+                Some("initial_bases")
+            } else if params.allow_external_blob_outside_bases {
+                Some("allow_external_blob_outside_bases")
+            } else {
+                None
+            };
+            if let Some(option) = unsupported {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "{option} is not supported for table creation in LanceDB Enterprise"
+                    ),
+                });
+            }
+        }
         for (option, provided) in [
             (
                 "write_options (including storage_options)",
@@ -2897,6 +2982,89 @@ mod tests {
                 builder.execute().await,
                 Err(Error::NotSupported { .. })
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_blob_base_options_before_reading_input() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let base = crate::BasePath::new(1, "s3://bucket/prefix".to_string(), None, false);
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let data: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(CountingReader {
+            schema: schema.clone(),
+            reads: reads.clone(),
+        });
+        let err = conn
+            .create_table("table1", data)
+            .initial_bases(vec![base])
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::NotSupported { ref message } if message.contains("initial_bases")),
+            "got {err:?}"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        let err = conn
+            .create_empty_table("table1", schema)
+            .allow_external_blob_outside_bases(true)
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::NotSupported { ref message } if message.contains("allow_external_blob_outside_bases")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_accepts_empty_blob_base_options() {
+        // Empty bases and the explicit opt-out are not customization: the remote
+        // create must stay an ordinary request.
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        for builder in [
+            conn.create_table("table1", data)
+                .initial_bases(Vec::new())
+                .allow_external_blob_outside_bases(false),
+            conn.create_empty_table("table1", schema)
+                .initial_bases(Vec::new())
+                .allow_external_blob_outside_bases(false),
+        ] {
+            assert!(builder.execute().await.is_ok());
+        }
+    }
+
+    struct CountingReader {
+        schema: Arc<Schema>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl Iterator for CountingReader {
+        type Item = Result<RecordBatch, arrow_schema::ArrowError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+    }
+
+    impl arrow_array::RecordBatchReader for CountingReader {
+        fn schema(&self) -> arrow_schema::SchemaRef {
+            self.schema.clone()
         }
     }
 
@@ -4508,7 +4676,7 @@ mod tests {
                     http::Response::builder()
                         .status(200)
                         .body(
-                            r#"{"jobs": [{"job_id": "job-2", "table": "t2", "job_type": "create_index", "state": "succeeded", "created_at_millis": 2000}, {"job_id": "job-3", "table": "t3", "job_type": "create_index", "state": "timed_out", "created_at_millis": 3000}]}"#,
+                            r#"{"jobs": [{"job_id": "job-2", "table": "t2", "job_type": "create_index", "state": "succeeded", "created_at_millis": 2000}, {"job_id": "job-3", "table": "t3", "job_type": "create_index", "state": "timed_out", "created_at_millis": 3000, "completed_at_millis": 3000, "duration_millis": 0, "columns": ["embedding"], "function_name": "features$embed", "function_version": "7", "failure": {"phase": "execute", "message": "worker failed", "retryable": false}}]}"#,
                         )
                         .unwrap()
                 }
@@ -4526,11 +4694,26 @@ mod tests {
         assert_eq!(jobs[0].progress.as_ref().unwrap()["rows_computed"], 4);
         assert_eq!(jobs[0].phase.as_deref(), Some("running"));
         assert!(jobs[0].paused);
+        assert_eq!(jobs[0].completed_at_millis, None);
+        assert_eq!(jobs[0].duration_millis, None);
+        assert!(jobs[0].columns.is_empty());
+        assert_eq!(jobs[0].function_name, None);
+        assert_eq!(jobs[0].function_version, None);
+        assert_eq!(jobs[0].failure, None);
         assert_eq!(jobs[1].job_id, "job-2");
         assert_eq!(jobs[1].state, "finished");
         assert_eq!(jobs[1].created_at_millis, 2000);
         assert_eq!(jobs[2].job_id, "job-3");
         assert_eq!(jobs[2].state, "failed");
+        assert_eq!(jobs[2].completed_at_millis, Some(3000));
+        assert_eq!(jobs[2].duration_millis, Some(0));
+        assert_eq!(jobs[2].columns, ["embedding"]);
+        assert_eq!(jobs[2].function_name.as_deref(), Some("features$embed"));
+        assert_eq!(jobs[2].function_version.as_deref(), Some("7"));
+        let failure = jobs[2].failure.as_ref().unwrap();
+        assert_eq!(failure.message.as_deref(), Some("worker failed"));
+        assert_eq!(failure.retryable, Some(false));
+        assert_eq!(failure.traceback, None);
     }
 
     #[tokio::test]
@@ -4944,6 +5127,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn function_refresh_status_tracks_capacity_without_ending_wait() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let count = polls.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            // Open, status while waiting, status after admission, another wait
+            // observed inside wait(), and finally a successful completion.
+            let (state, phase) = match count.fetch_add(1, Ordering::SeqCst) {
+                0 | 1 | 3 => ("IN_PROGRESS", "waiting_for_capacity"),
+                2 => ("IN_PROGRESS", "running"),
+                _ => ("SUCCEEDED", "waiting_for_capacity"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "job_id": "job-1", "job_type": "function_refresh",
+                        "job_state": state, "phase": phase, "creation_ms": 1
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let job = conn.open_job("job-1").await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "waiting_for_capacity");
+        assert_eq!(job.state().as_deref(), Some("running"));
+        assert_eq!(job.status().await.unwrap(), "running");
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert!(polls.load(Ordering::SeqCst) >= 6);
+    }
+
+    #[tokio::test]
+    async fn capacity_status_requires_an_active_function_refresh() {
+        for (job_type, lifecycle, phase, paused_at) in [
+            (
+                "create_index",
+                "in_progress",
+                Some("waiting_for_capacity"),
+                None,
+            ),
+            (
+                "function_refresh",
+                "in_progress",
+                Some("waiting_for_capacity"),
+                Some(42),
+            ),
+            (
+                "function_refresh",
+                "queued",
+                Some("waiting_for_capacity"),
+                None,
+            ),
+            ("function_refresh", "in_progress", None, None),
+        ] {
+            let conn = Connection::new_with_handler(move |_| {
+                http::Response::builder().status(200).body(
+                    serde_json::json!({
+                        "job_id": "job-1", "job_type": job_type, "job_state": "IN_PROGRESS",
+                        "lifecycle_state": lifecycle, "phase": phase, "paused_at_millis": paused_at
+                    }).to_string()
+                ).unwrap()
+            });
+            let job = conn.open_job("job-1").await.unwrap();
+            assert_eq!(job.status().await.unwrap(), "running");
+        }
+    }
+
+    #[tokio::test]
     async fn test_conn_job_waits_to_done() {
         let polls = Arc::new(AtomicUsize::new(0));
         let polls_ref = polls.clone();
@@ -4981,6 +5233,12 @@ mod tests {
         for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let result = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    gpu_class: Default::default(),
+                    gpu_count: Default::default(),
+                    total_cpu_millis: None,
+                    total_memory_bytes: None,
+                    total_gpu_count: None,
+
                     exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec![],

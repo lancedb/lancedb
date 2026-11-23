@@ -35,6 +35,9 @@ rows = tbl.take_row_ids([1001, 1002, 1005]).to_arrow()
 
 # By offset -- the full range is always [0, len(tbl))
 rows = tbl.take_offsets([0, 1, 2]).to_arrow()
+
+# By offset in input order; missing offsets are omitted
+rows = tbl.take_offsets([2, 0, 2], preserve_order=True).to_arrow()
 ```
 
 ```typescript TypeScript icon="square-js"
@@ -53,6 +56,13 @@ let rows_by_id = tbl.take_row_ids(vec![1001, 1002, 1005]).execute().await?;
 
 // By offset -- the full range is always [0, tbl.count_rows().await?)
 let rows_by_offset = tbl.take_offsets(vec![0, 1, 2]).execute().await?;
+
+// By offset in input order; missing offsets are omitted
+let rows_by_offset_in_order = tbl
+    .take_offsets(vec![2, 0, 2])
+    .preserve_order()
+    .execute()
+    .await?;
 ```
 </CodeGroup>
 
@@ -74,19 +84,26 @@ sampling with replacement. In Rust, an explicit nonempty
 `QueryBase::order_by` list overrides the requested order; limits and offsets
 apply after restoring repeated rows.
 
-`take_offsets` also preserves repeated offsets, but does not guarantee
-input order. It tracks `_rowoffset` internally to restore repeated rows
-and drops that column from the output unless you explicitly `select` it.
-Add `_rowoffset` to your selection when you need to align a `take_offsets`
-result with the input offsets.
+`take_offsets` preserves repeated offsets. By default, it does not guarantee
+input order and returns found rows as they arrive. Python sync and async
+builders accept `preserve_order=True`, and Rust accepts `.preserve_order()`,
+to return found rows in input order, including repeated offsets. Missing
+non-negative offsets are omitted; negative offsets are rejected and are not
+Python-style relative indices. The default unordered path remains the
+existing incremental behavior.
+
+The method tracks `_rowoffset` internally to restore repeated rows and drops
+that column from the output unless you explicitly `select` it. Add
+`_rowoffset` to your selection when you need to align a `take_offsets` result
+with the input offsets.
 
 <Note>
-Ordered takes by row ID collect all matching batches, combine them into one
-batch and reorder the rows before returning output batches. Even
-`to_batches(max_batch_length=1)` only limits the returned batch size; it
-does not bound working memory. For large requests or rows with large
-column values, split the input IDs into smaller requests and use
-`.select(...)` to fetch only the columns you need.
+Ordered takes by row ID, and ordered offset takes with `preserve_order=True`,
+collect all matching batches, combine them into one batch and reorder the rows
+before returning output batches. Even `to_batches(max_batch_length=1)` only
+limits the returned batch size; it does not bound working memory. For large
+requests or rows with large column values, split the input IDs or offsets into
+smaller requests and use `.select(...)` to fetch only the columns you need.
 </Note>
 
 Offsets are mostly useful for sampling: the valid range is always

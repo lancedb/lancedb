@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.42.0-beta.17"
+version = "0.42.0-beta.26"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -140,6 +140,8 @@ pprof = { version = "0.14", features = ["flamegraph"] }
 
 [features]
 default = []
+# Shared golden data for downstream compatibility tests.
+test-fixtures = []
 # Local SQL computed columns and materialized-view creation/refresh.
 # Remote clients and shared server primitives do not require this feature.
 experimental-functions = []

@@ -41,10 +41,11 @@ default. The name says which algorithm is building, not a separate feature.
 ## Triggering an incremental update {#incremental-reindexing}
 
 In the embedded library, you trigger an incremental indexing operation on
-updated data with the `optimize()` method on a table. A deployment does this
-for you and does not support `optimize()`, as described below.
+updated data with the `optimize()` method on a table. LanceDB Enterprise updates
+indexes in the background. Its [manual `optimize()` path](/maintenance/compaction#enterprise-manual-compaction)
+submits compaction only and does not trigger incremental index updates.
 
-Table optimization performs three maintenance operations:
+In LanceDB Embedded, table optimization performs three maintenance operations:
 
 1. **Compaction**: merges small fragments into larger ones to improve read performance
 2. **Pruning/Cleanup**: removes files from versions older than a retention window (7 days by default) -- see [Cleanup](/maintenance/cleanup) for how retention works

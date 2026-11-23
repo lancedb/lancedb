@@ -10,7 +10,7 @@ availability:
 ---
 
 Before you can [import data](/ingestion/import) from external storage or
-[attach an existing database](/ingestion/migrate-from-embedded), define a
+[attach an existing database](/ingestion/attach-database), define a
 storage integration once per location. It is a namespace-scoped catalog
 object that stores the credential -- neither operation names the
 integration directly, LanceDB matches the URI you read against whichever
@@ -166,7 +166,7 @@ for the Python and SQL CRUD operations at a glance.
   <Card title="Import Datasets" icon="file-import" href="/ingestion/import">
     Read or import through the integration once it exists.
   </Card>
-  <Card title="Attach Database" icon="arrow-right-arrow-left" href="/ingestion/migrate-from-embedded">
+  <Card title="Attach Database" icon="arrow-right-arrow-left" href="/ingestion/attach-database">
     Attach an existing database at a location the integration covers.
   </Card>
   <Card title="Storage Integration" icon="cloud" href="/sql/ddl/storage-integration">

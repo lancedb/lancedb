@@ -148,6 +148,45 @@ class ZoneMap:
 
 
 @dataclass
+class RTree:
+    """Describe an RTree index configuration.
+
+    `RTree` is a scalar index on a GeoArrow geometry column, that is, a column
+    whose Arrow field metadata sets ``ARROW:extension:name`` to a GeoArrow type
+    such as ``geoarrow.point``, ``geoarrow.polygon`` or ``geoarrow.wkb``. It
+    stores the bounding box of each geometry and accelerates spatial filters
+    passed to ``where()``.
+
+    The index accelerates ``ST_Intersects``, ``ST_Contains``, ``ST_Within``,
+    ``ST_Touches``, ``ST_Crosses``, ``ST_Overlaps``, ``ST_Covers`` and
+    ``ST_CoveredBy`` between the indexed column and a constant geometry, in
+    either argument order, for example
+    ``ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))``, as well as
+    ``geom IS NULL``. These filters can be combined with other conditions
+    using ``AND``.
+
+    See the R-tree section of <https://docs.lancedb.com/indexing/scalar-index>
+    for storing geometry, the other spatial functions, and spatial filters on
+    vector search.
+
+    Remote tables send the ``RTREE`` index type to the server, which must
+    support it.
+
+    Examples
+    --------
+    >>> config = RTree(page_size=1024)
+
+    Attributes
+    ----------
+    page_size : int, optional
+        The maximum number of entries in each R-tree page. Must be at least 2.
+        ``None`` uses Lance's default of 4096.
+    """
+
+    page_size: Optional[int] = None
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -1001,4 +1040,5 @@ __all__ = [
     "LabelList",
     "Fm",
     "NGram",
+    "RTree",
 ]

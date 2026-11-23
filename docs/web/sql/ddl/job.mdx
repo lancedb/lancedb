@@ -34,6 +34,23 @@ values remain NULL. Children are read-only diagnostic identities.
 following backend continuation pages up to that limit. Child history can be
 `available`, `not_yet_recorded`, or `unavailable` after archival.
 
+{/* Draft for the Enterprise release that provides extended job listing metadata.
+
+```sql
+SHOW JOBS EXTENDED;
+SHOW JOBS EXTENDED FOR TABLE documents;
+```
+
+`EXTENDED` adds `completed_at_millis`, `duration_millis`, `columns`,
+`function_name`, `function_version`, and `failure` to database and table
+listings. Plain `SHOW JOBS` keeps its existing result columns. `columns` is a
+list, Function identity is pinned to the computed column refresh, and
+`failure` is nullable JSON text with phase, message, and retryability. Duration
+is creation-to-completion wall time, including queueing and pauses; it is
+NULL when unfinished or unavailable. `EXTENDED` does not apply to `FOR JOB`.
+
+*/}
+
 <Note>
 A job you completed weeks ago eventually stops appearing here -- it was
 archived, not deleted. Two deployment-scheduled jobs sweep the registry on a
@@ -67,9 +84,23 @@ DESC JOB '<job_id>' [FORMAT TEXT | TABLE | JSON]
 ```
 </CodeGroup>
 
-Both spellings show a finished root job's timing profile. `TEXT` is the
-default; `TABLE` returns typed phase/step rows and `JSON` returns the
-profile as one document. A running job has no profile rows.
+`TEXT` is the default and shows a finished root job's timing profile;
+`TABLE` returns typed phase/step rows. These formats have no profile rows
+while a job runs.
+
+On compatible deployments, `JSON` returns one document in the `profile`
+column with `job_id`, `job_type`, `job_state`, reported `progress`, and the
+successful operation's `result`, alongside any timing profile. It works
+while the job runs, when `result` is null. Compaction counters describe
+committed work only in the result; progress counters describe observed
+execution work. Data prewarm results identify the pinned table version and
+reported executor work. Unavailable measurements remain absent or null.
+
+```sql
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
+
+Older deployments return only the timing profile.
 
 ## SHOW ERRORS {#errors}
 

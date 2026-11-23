@@ -16,6 +16,7 @@ import builtins
 import base64
 import functools
 import hashlib
+import importlib.metadata
 import importlib.util
 import inspect
 import symtable
@@ -64,15 +65,13 @@ from .schema import is_blob_v2_field as _is_blob_v2_field
 from ._blob_reader import BlobReader
 from ._lancedb import _validate_conda_requirement
 from .secrets import EnvVarSecret
+from .resources import _validate_gpu_class_name
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
+_PositiveUInt32 = conint(strict=True, ge=1, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
-_GPU_CLASS_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_GPU_CLASS_ERROR = (
-    "gpu_class must be a lowercase name of at most 63 letters, digits, or "
-    "hyphens, and cannot start or end with a hyphen"
-)
+_PositiveUInt64 = conint(strict=True, ge=1, le=2**64 - 1)
 
 
 def _validate_gpu_wire_marker(value: Any) -> bool:
@@ -81,16 +80,24 @@ def _validate_gpu_wire_marker(value: Any) -> bool:
     return True
 
 
-def _normalize_gpu_marker(value: bool) -> Optional[bool]:
-    if not isinstance(value, bool):
+def _normalize_gpu_request(
+    gpu: Optional[bool], gpu_class: Optional[str], gpu_count: Optional[int]
+) -> tuple[Optional[bool], Optional[str], Optional[int]]:
+    if gpu is not None and not isinstance(gpu, bool):
         raise ValueError("gpu must be a boolean")
-    return True if value else None
-
-
-def _validate_gpu_class_name(value: Any) -> str:
-    if not isinstance(value, str) or not _GPU_CLASS_NAME.fullmatch(value):
-        raise ValueError(_GPU_CLASS_ERROR)
-    return value
+    if gpu is not True:
+        if gpu_class is not None or gpu_count is not None:
+            raise ValueError("gpu_class and gpu_count require gpu=True")
+        return None, None, None
+    if gpu_class is not None:
+        gpu_class = _validate_gpu_class_name(gpu_class)
+    if gpu_count is None:
+        gpu_count = 1
+    if isinstance(gpu_count, bool) or not isinstance(gpu_count, int):
+        raise ValueError("gpu_count must be a positive integer")
+    if not 1 <= gpu_count <= 2**32 - 1:
+        raise ValueError("gpu_count must be between 1 and 4294967295")
+    return True, gpu_class, gpu_count
 
 
 def _validate_batch_size(value: Any) -> Optional[int]:
@@ -451,8 +458,10 @@ class PythonRuntimeSpec(_RemoteValue):
 
     V1 supports ``kind="python"``. Newer runtime kinds remain readable, while
     their unknown payload fields are intentionally not retained by the client.
-    ``kind="python_v2"`` requires ``gpu=True`` and may name an operator-defined
-    ``gpu_class``.
+    ``kind="python_v2"`` requires ``gpu=True``. Its ``gpu_class`` records the
+    requested operator-defined class or ``"any"`` for any eligible class;
+    omitting it also accepts any eligible class. It does not identify the
+    hardware selected for execution.
     """
 
     kind: str
@@ -461,6 +470,7 @@ class PythonRuntimeSpec(_RemoteValue):
     env: Optional[Mapping[str, str]] = None
     gpu: Optional[bool] = None
     gpu_class: Optional[str] = None
+    gpus_per_worker: Optional[_PositiveUInt32] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -498,6 +508,8 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError(
                     "python runtime with gpu_class requires kind='python_v2'"
                 )
+            if self.gpus_per_worker is not None:
+                raise ValueError("gpus_per_worker requires kind='python_v2'")
         elif self.kind == "python_v2":
             if self.python_version is None:
                 raise ValueError("python_v2 runtime requires python_version")
@@ -511,6 +523,7 @@ class PythonRuntimeSpec(_RemoteValue):
             object.__setattr__(self, "env", None)
             object.__setattr__(self, "gpu", None)
             object.__setattr__(self, "gpu_class", None)
+            object.__setattr__(self, "gpus_per_worker", None)
         return self
 
     @property
@@ -712,8 +725,9 @@ class FunctionVersion(_RemoteValue):
     version also requires matching the source and all other registration inputs,
     including signature, Secret bindings, models, and execution controls.
 
-    ``gpu_class`` is the operator-defined GPU pool fixed into this Function
-    version, or ``None`` when registration used the deployment default.
+    ``gpu_class`` records the default GPU pool for this Function version.
+    Column/MV creation and refresh can override it independently of the
+    per-worker ``gpu_count`` in the requested runtime.
 
     ``batch_size``, ``max_concurrency``, ``row_timeout_seconds``, and
     ``result_stability`` retain the execution controls reported by the
@@ -748,6 +762,9 @@ class FunctionVersion(_RemoteValue):
     gpu_class: Optional[str] = None
     batch_size: Optional[int] = None
     max_concurrency: Optional[int] = None
+    total_cpu_millis: Optional[_PositiveUInt64] = None
+    total_memory_bytes: Optional[_PositiveUInt64] = None
+    total_gpu_count: Optional[_UInt32] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
     runtime: Optional[PythonRuntimeSpec] = None
@@ -940,6 +957,9 @@ class FunctionRegistrationRequest(_RemoteValue):
     runtime: PythonRuntimeSpec
     batch_size: Optional[int] = None
     max_concurrency: Optional[int] = None
+    total_cpu_millis: Optional[_PositiveUInt64] = None
+    total_memory_bytes: Optional[_PositiveUInt64] = None
+    total_gpu_count: Optional[_UInt32] = None
     row_timeout_seconds: Optional[float] = None
     retry_policy: Optional[FunctionRetryPolicy] = None
     secret_bindings: tuple[SecretBinding, ...] = ()
@@ -1132,6 +1152,221 @@ class FunctionBinding(_RemoteValue):
         return reader.read_all().to_pylist()[0]
 
 
+class FunctionErrorGroup(_RemoteValue):
+    """A grouped cause among returned Function failures."""
+
+    column: str
+    error_type: str
+    error_message: str
+    rows_failed: _UInt64
+
+
+class FunctionValueProvenance(_RemoteValue):
+    """The Function version and job that produced one stored value."""
+
+    column: str
+    job_id: str
+    function_name: str
+    function_version: str
+    row_id: Optional[_UInt64] = None
+    row_address: Optional[_UInt64] = None
+    source_version: _UInt64
+    published_version: _UInt64
+
+
+class FunctionProvenance(_RemoteValue):
+    """A bounded per-row producing-version listing for a table snapshot."""
+
+    records: tuple[FunctionValueProvenance, ...]
+    truncated: bool = False
+
+
+class _FunctionErrors:
+    """Current Function failures, with grouped causes and source-row lookup.
+
+    Check ``truncated`` and ``fragments`` before treating a listing as complete.
+    ``history=True`` on ``table.function_errors`` returns retained past records.
+    """
+
+    def __init__(self, raw: Any, table: Any, *, history: bool = False):
+        self._raw = raw
+        self._table = table
+        self._history = history
+        self.records = raw.records
+        self.fragments = raw.fragments
+        self.truncated = raw.truncated
+        self.page_token = getattr(raw, "page_token", None)
+
+    def __repr__(self) -> str:
+        return repr(self._raw)
+
+    def as_sync(self, table: Any) -> FunctionErrors:
+        return FunctionErrors(self._raw, table, history=self._history)
+
+    def summary(self) -> list[FunctionErrorGroup]:
+        """Group returned failures by column, exception class, and message.
+
+        Raises when records are incomplete, so sampled counts cannot be mistaken
+        for totals. Narrow the request by column or job, or raise its limit.
+        """
+        if (getattr(self._raw, "workflow_version", None) or 0) < 1:
+            raise NotImplementedError(
+                "The server does not support the current Function failure workflow"
+            )
+        if (
+            self.truncated
+            or self.fragments
+            or any(
+                record.row_offset is None and record.input is None
+                for record in self.records
+            )
+        ):
+            raise ValueError(
+                "Function errors are incomplete; narrow the request or raise limit"
+            )
+        groups: dict[tuple[str, str, str], int] = {}
+        for record in self.records:
+            if record.row_offset is None and record.input is None:
+                continue
+            message = record.error_message
+            if record.input is not None:
+                message = message.split("\nSource input: ", 1)[0].split(
+                    "\nFunction input ", 1
+                )[0]
+            key = (record.column, record.error_type, message)
+            groups[key] = groups.get(key, 0) + 1
+        return [
+            FunctionErrorGroup(
+                column=column, error_type=kind, error_message=message, rows_failed=count
+            )
+            for (column, kind, message), count in sorted(groups.items())
+        ]
+
+    def _identities(self) -> dict[tuple[str, int], list[Any]]:
+        if (getattr(self._raw, "workflow_version", None) or 0) < 1:
+            raise NotImplementedError(
+                "The server does not support the current Function failure workflow"
+            )
+        if self._history:
+            raise ValueError(
+                "Source-row lookup requires current failures; "
+                "read retained history through records"
+            )
+        if self.truncated or self.fragments:
+            raise ValueError(
+                "Function errors are incomplete; narrow the request or raise limit"
+            )
+        result = {}
+        for record in self.records:
+            if record.input is not None or record.row_offset is None:
+                raise ValueError(
+                    "This error names a Function invocation; "
+                    "inspect its input source identities"
+                )
+            identity = (
+                record.row_id if record.row_id is not None else record.row_address
+            )
+            if identity is None:
+                raise ValueError("This error has no source row identity")
+            key = ("_rowid" if record.row_id is not None else "_rowaddr", identity)
+            result.setdefault(key, []).append(record)
+        return result
+
+    def _predicate(self, identities: dict[tuple[str, int], list[Any]]) -> str:
+        clauses = []
+        for field in ("_rowid", "_rowaddr"):
+            selected = [identity for (kind, identity) in identities if kind == field]
+            if selected:
+                clauses.append(field + " IN (" + ",".join(map(str, selected)) + ")")
+        return " OR ".join(clauses) if clauses else "false"
+
+    def _join_rows(
+        self, rows: pa.Table, identities: dict[tuple[str, int], list[Any]]
+    ) -> pa.Table:
+        matches = []
+        indices = []
+        found = set()
+        for index, (row_id, address) in enumerate(
+            zip(rows.column("_rowid").to_pylist(), rows.column("_rowaddr").to_pylist())
+        ):
+            for key in (("_rowid", row_id), ("_rowaddr", address)):
+                for record in identities.get(key, []):
+                    found.add(key)
+                    indices.append(index)
+                    matches.append(record)
+        if found != identities.keys():
+            raise ValueError(
+                "Some failed inputs are no longer addressable in this snapshot; "
+                "refresh the error listing or use a historical snapshot"
+            )
+        rows = rows.take(pa.array(indices, type=pa.int64()))
+        fields = [
+            "column",
+            "error_type",
+            "error_message",
+            "attempts",
+            "function_version",
+            "job_id",
+            "first_seen_at_millis",
+            "last_seen_at_millis",
+            "quarantined",
+        ]
+        arrays = [
+            pa.array([getattr(record, field) for record in matches]) for field in fields
+        ]
+        if "__function_error" in rows.column_names:
+            raise ValueError("Source columns already contain __function_error")
+        return rows.append_column(
+            "__function_error", pa.StructArray.from_arrays(arrays, names=fields)
+        )
+
+
+class FunctionErrors(_FunctionErrors):
+    """Current failures with grouped causes and synchronous source-row lookup."""
+
+    def rows(self, columns: Optional[list[str]] = None) -> pa.Table:
+        """Return current failing inputs with a ``__function_error`` struct.
+
+        Row IDs come from the error records. The server joins stable identities
+        correctly after compaction; callers need no physical-address arithmetic.
+        """
+        identities = self._identities()
+        predicate = self._predicate(identities)
+        query = (
+            self._table.search()
+            .where(predicate)
+            .with_row_id(True)
+            .with_row_address()
+            .limit(max(1, len(identities)))
+        )
+        selected = list(self._table.schema.names if columns is None else columns)
+        selected.extend(name for name in ("_rowid", "_rowaddr") if name not in selected)
+        query = query.select(selected)
+        return self._join_rows(query.to_arrow(), identities)
+
+
+class AsyncFunctionErrors(_FunctionErrors):
+    """Current Function failures returned by an asynchronous table."""
+
+    async def rows(self, columns: Optional[list[str]] = None) -> pa.Table:
+        """Return current failing inputs with their ``__function_error`` metadata."""
+        identities = self._identities()
+        predicate = self._predicate(identities)
+        query = (
+            self._table.query()
+            .where(predicate)
+            .with_row_id()
+            .with_row_address()
+            .limit(max(1, len(identities)))
+        )
+        selected = list(
+            (await self._table.schema()).names if columns is None else columns
+        )
+        selected.extend(name for name in ("_rowid", "_rowaddr") if name not in selected)
+        query = query.select(selected)
+        return self._join_rows(await query.to_arrow(), identities)
+
+
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
@@ -1169,6 +1404,8 @@ class RefreshColumnResult(_RemoteValue):
     """Exact table version the refresh read."""
 
     published_version: Optional[_UInt64] = None
+    error_groups: tuple[FunctionErrorGroup, ...] = ()
+    error_groups_truncated: bool = False
     """Table version made visible by the refresh, when one was published."""
 
     @property
@@ -1859,26 +2096,55 @@ def _is_function_decorator(node: ast.expr) -> bool:
     )
 
 
-def _literal_source(value: Any, name: str) -> str:
-    if value is None or type(value) in (bool, int, str, bytes):
-        return repr(value)
-    if type(value) is float and math.isfinite(value):
-        return repr(value)
-    if type(value) is tuple:
-        children = ", ".join(_literal_source(child, name) for child in value)
-        if len(value) == 1:
-            children += ","
-        return f"({children})"
-    raise TypeError(
+# A captured value is inlined into the artifact source; larger data belongs in a
+# table or a package resource.
+_MAX_CAPTURED_SOURCE = 1024 * 1024
+# Far below CPython's parser nesting limit.
+_MAX_CAPTURED_DEPTH = 32
+_CAPTURE_REMEDY = "Define this value inside the function or class body instead."
+
+
+def _unsupported_capture(name: str, kind: str) -> TypeError:
+    return TypeError(
         "Function source references an unsupported global value of type "
-        f"{type(value).__name__} in {name!r}. Only None, bool, int, str, bytes, "
-        "finite float, and tuples of these literals can be captured. "
-        "Define this value inside the function or class body instead."
+        f"{kind} in {name!r}. Captured globals can be None, bool, int, str, "
+        "bytes, or finite float values; tuples, lists, dicts, sets, or frozensets "
+        "of supported values; PyArrow data types, fields, or schemas; or NumPy "
+        "arrays or scalars of bool, integer, float16, float32, or float64 dtypes. "
+        + _CAPTURE_REMEDY
     )
+
+
+def _python_extension_type(data_type: pa.DataType) -> Optional[pa.ExtensionType]:
+    """The first extension type within `data_type` whose class is defined in
+    Python. IPC carries only its name, so it deserializes as the storage type
+    wherever that class is not registered."""
+    if isinstance(data_type, pa.ExtensionType):
+        return data_type
+    if isinstance(data_type, pa.BaseExtensionType):
+        return _python_extension_type(data_type.storage_type)
+    if isinstance(data_type, pa.DictionaryType):
+        return _python_extension_type(data_type.value_type)
+    for index in range(data_type.num_fields):
+        found = _python_extension_type(data_type.field(index).type)
+        if found is not None:
+            return found
+    return None
 
 
 _DYNAMIC_NAMESPACE_ACCESS = frozenset(
     {"globals", "locals", "vars", "eval", "exec", "compile", "__import__"}
+)
+# Static diagnostic operations the packager can reconstruct. Anything else that
+# reaches through a namespace-access module remains unrepresentable.
+_APPROVED_NAMESPACE_ATTRIBUTES = {
+    "sys": frozenset({"stderr", "version_info"}),
+    "importlib.metadata": frozenset({"version"}),
+}
+_APPROVED_NAMESPACE_OPERATIONS = (
+    "sys.stderr",
+    "sys.version_info",
+    "importlib.metadata.version",
 )
 # Modules that hand out namespaces (`sys.modules`, `builtins`, importers,
 # introspection). The artifact's module namespace holds only the names it was
@@ -1894,28 +2160,170 @@ _NAMESPACE_HELPER_HINT = (
 )
 
 
+_APPROVED_NAMESPACE_HINT = (
+    "The supported diagnostic operations are "
+    + ", ".join(_APPROVED_NAMESPACE_OPERATIONS)
+    + ". "
+)
+
+
+def _namespace_operation_error(operations: Sequence[str]) -> ValueError:
+    label = operations[0] if len(operations) == 1 else list(operations)
+    return ValueError(
+        f"@function cannot package namespace operation {label!r}. "
+        "The artifact's module namespace holds only the names it was packaged "
+        "with, so references that reach around it cannot be represented. "
+        + _APPROVED_NAMESPACE_HINT
+        + _NAMESPACE_HELPER_HINT
+    )
+
+
 def _namespace_import_error(modules: Sequence[str]) -> ValueError:
     return ValueError(
         f"@function cannot package imports from namespace-access modules: {modules!r}. "
         f"Imports of {', '.join(sorted(_NAMESPACE_MODULES))} (including submodules) "
         "are blocked because they can access names outside the packaged "
-        "Function's reconstructed module namespace. " + _NAMESPACE_HELPER_HINT
+        "Function's reconstructed module namespace. "
+        + _APPROVED_NAMESPACE_HINT
+        + _NAMESPACE_HELPER_HINT
     )
 
 
-def _namespace_imports(definition: Union[ast.FunctionDef, ast.ClassDef]) -> list[str]:
-    found: set[str] = set()
+def _namespace_import_bindings(
+    definition: Union[ast.FunctionDef, ast.ClassDef],
+) -> tuple[dict[str, frozenset[str]], list[str], list[str]]:
+    """Return approved diagnostic bindings and rejected imports.
+
+    A binding maps the local name an import creates to the attribute paths
+    that may be read through it. Rejected modules and operations are kept
+    separate so each error names the relevant rule.
+    """
+    bindings: dict[str, frozenset[str]] = {}
+    blocked_modules: set[str] = set()
+    blocked_operations: set[str] = set()
     for node in ast.walk(definition):
         if isinstance(node, ast.Import):
-            found.update(
-                alias.name
-                for alias in node.names
-                if alias.name.split(".")[0] in _NAMESPACE_MODULES
-            )
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module.split(".")[0] in _NAMESPACE_MODULES:
-                found.add(node.module)
-    return sorted(found)
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root not in _NAMESPACE_MODULES:
+                    continue
+                attributes = _APPROVED_NAMESPACE_ATTRIBUTES.get(alias.name)
+                if attributes is None:
+                    blocked_modules.add(alias.name)
+                    continue
+                if alias.asname:
+                    name = alias.asname
+                    bases = frozenset(f"{name}.{attribute}" for attribute in attributes)
+                else:
+                    name = root
+                    module = alias.name if "." in alias.name else name
+                    bases = frozenset(
+                        f"{module}.{attribute}" for attribute in attributes
+                    )
+                bindings[name] = bindings.get(name, frozenset()) | bases
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+            and node.module.split(".")[0] in _NAMESPACE_MODULES
+        ):
+            if node.module == "importlib":
+                for alias in node.names:
+                    if alias.name == "metadata":
+                        name = alias.asname or "metadata"
+                        bindings[name] = bindings.get(name, frozenset()) | frozenset(
+                            {f"{name}.version"}
+                        )
+                    else:
+                        blocked_modules.add("importlib")
+                continue
+            attributes = _APPROVED_NAMESPACE_ATTRIBUTES.get(node.module)
+            if attributes is None:
+                blocked_modules.add(node.module)
+                continue
+            for alias in node.names:
+                if alias.name in attributes:
+                    name = alias.asname or alias.name
+                    bindings[name] = bindings.get(name, frozenset()) | frozenset({name})
+                else:
+                    blocked_operations.add(f"{node.module}.{alias.name}")
+    return bindings, sorted(blocked_modules), sorted(blocked_operations)
+
+
+def _namespace_binding_errors(
+    definition: Union[ast.FunctionDef, ast.ClassDef],
+    bindings: Mapping[str, frozenset[str]],
+) -> list[str]:
+    """Operations that read a diagnostic binding outside its approved paths."""
+    if not bindings:
+        return []
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(definition):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    invalid: set[str] = set()
+    for node in ast.walk(definition):
+        if not isinstance(node, ast.Name):
+            continue
+        allowed = bindings.get(node.id)
+        if allowed is None:
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            invalid.add(node.id)
+            continue
+        path = node.id
+        current: ast.AST = node
+        while True:
+            parent = parents.get(current)
+            if isinstance(parent, ast.Attribute) and parent.value is current:
+                path = f"{path}.{parent.attr}"
+                current = parent
+                continue
+            break
+        if not any(path == base or path.startswith(f"{base}.") for base in allowed):
+            invalid.add(path)
+            continue
+        if any(part.startswith("__") for part in path.split(".")[1:]):
+            invalid.add(path)
+    return sorted(invalid)
+
+
+def _approved_global_namespace_binding(
+    definition: Optional[Union[ast.FunctionDef, ast.ClassDef]],
+    name: str,
+    value: Any,
+) -> Optional[str]:
+    """The artifact import for an approved diagnostic global, if any."""
+    if definition is None:
+        return None
+    if isinstance(value, types.ModuleType):
+        if value is sys:
+            bases = frozenset({f"{name}.stderr", f"{name}.version_info"})
+            line = f"import sys as {name}"
+        elif value is importlib.metadata:
+            bases = frozenset({f"{name}.version"})
+            line = f"import importlib.metadata as {name}"
+        elif value is importlib and name == "importlib":
+            # ``import importlib.metadata`` binds the top-level package name.
+            bases = frozenset({"importlib.metadata.version"})
+            line = "import importlib.metadata"
+        else:
+            return None
+    elif value is sys.stderr:
+        bases = frozenset({name})
+        line = f"from sys import stderr as {name}"
+    elif value is sys.version_info:
+        bases = frozenset({name})
+        line = f"from sys import version_info as {name}"
+    elif value is importlib.metadata.version:
+        bases = frozenset({name})
+        line = f"from importlib.metadata import version as {name}"
+    else:
+        return None
+    invalid = _namespace_binding_errors(definition, {name: bases})
+    if invalid:
+        raise _namespace_operation_error(invalid)
+    return line
 
 
 def _module_references(module_source: str) -> set[str]:
@@ -2175,7 +2583,7 @@ class _SourcePackager:
 
     The module holds the definition plus exactly the module-level names it
     references: modules as imports, importable classes and functions as
-    imports, literals inline, and functions and classes defined in
+    imports, captured values inline, and functions and classes defined in
     ``__main__`` by source, recursively, dependencies first.
     """
 
@@ -2183,6 +2591,7 @@ class _SourcePackager:
         self._code_modules = code_modules
         self._requirements = requirements
         self._imports: dict[str, str] = {}
+        self._support_imports: dict[str, str] = {}
         self._definitions: list[str] = []
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
@@ -2191,8 +2600,13 @@ class _SourcePackager:
     def package(self, target: Any, signature: FunctionSignature) -> str:
         entry = self._definition(target, entry=True, signature=signature)
         parts = [_SOURCE_HEADER]
-        if self._imports:
-            parts.extend(["", *(self._imports[name] for name in sorted(self._imports))])
+        # Captured values are rebuilt with the support modules, so those come first.
+        imports = [
+            *(self._support_imports[alias] for alias in sorted(self._support_imports)),
+            *(self._imports[name] for name in sorted(self._imports)),
+        ]
+        if imports:
+            parts.extend(["", *imports])
         for definition in self._definitions:
             parts.extend(["", definition])
         parts.extend(["", entry, ""])
@@ -2222,14 +2636,21 @@ class _SourcePackager:
                 "Function's reconstructed module namespace. Reference dependencies "
                 "explicitly. " + _NAMESPACE_HELPER_HINT
             )
-        namespace_imports = _namespace_imports(definition)
-        if namespace_imports:
-            raise _namespace_import_error(namespace_imports)
+        namespace_bindings, blocked_modules, blocked_operations = (
+            _namespace_import_bindings(definition)
+        )
+        if blocked_modules:
+            raise _namespace_import_error(blocked_modules)
+        if blocked_operations:
+            raise _namespace_operation_error(blocked_operations)
+        invalid_operations = _namespace_binding_errors(definition, namespace_bindings)
+        if invalid_operations:
+            raise _namespace_operation_error(invalid_operations)
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
         if reader_name is not None:
-            self._bind(reader_name, BlobReader)
+            self._bind(reader_name, BlobReader, definition=definition)
         unresolved = []
         for name in sorted(references):
             if name == target.__name__:
@@ -2241,7 +2662,7 @@ class _SourcePackager:
                     )
                 continue
             if name in namespace:
-                self._bind(name, namespace[name])
+                self._bind(name, namespace[name], definition=definition)
             elif not hasattr(builtins, name):
                 unresolved.append(name)
         if unresolved:
@@ -2296,7 +2717,13 @@ class _SourcePackager:
                 "name to different values"
             )
 
-    def _bind(self, name: str, value: Any) -> None:
+    def _bind(
+        self,
+        name: str,
+        value: Any,
+        *,
+        definition: Optional[Union[ast.FunctionDef, ast.ClassDef]] = None,
+    ) -> None:
         if _packaged_by_source(value):
             if value.__name__ != name:
                 raise ValueError(
@@ -2307,14 +2734,23 @@ class _SourcePackager:
                 self._definitions.append(self._definition(value, entry=False))
             self._claim(name, ("definition", id(value)))
             return
-        line = self._global_source(name, value)
+        line = self._global_source(name, value, definition=definition)
         self._claim(name, line)
         self._imports[name] = line
 
-    def _global_source(self, name: str, value: Any) -> str:
+    def _global_source(
+        self,
+        name: str,
+        value: Any,
+        *,
+        definition: Optional[Union[ast.FunctionDef, ast.ClassDef]] = None,
+    ) -> str:
         """One module-level line that rebinds `name` to `value` in the artifact:
-        an import for modules and importable classes/functions, a literal
-        otherwise."""
+        an import for modules and importable classes/functions, a captured
+        copy otherwise."""
+        approved = _approved_global_namespace_binding(definition, name, value)
+        if approved is not None:
+            return approved
         if value is BlobReader:
             return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
@@ -2347,7 +2783,149 @@ class _SourcePackager:
             if imported is value:
                 self._require_importable(module_name)
                 return f"from {module_name} import {qualname} as {name}"
-        return f"{name} = {_literal_source(value, name)}"
+        return f"{name} = {self._captured_source(name, value)}"
+
+    def _captured_source(self, name: str, value: Any) -> str:
+        """An expression that rebuilds a copy of the global `name`.
+
+        Literals and containers are written as Python literals, with set
+        elements sorted by their source so the artifact does not depend on hash
+        randomization. Arrow values are rebuilt from Arrow's IPC schema encoding
+        and NumPy values from their dtype and elements.
+        """
+        remaining = _MAX_CAPTURED_SOURCE
+        enclosing: set[int] = set()
+
+        def too_large() -> ValueError:
+            return ValueError(
+                f"Function global {name!r} is too large to capture: its source "
+                f"exceeds {_MAX_CAPTURED_SOURCE} characters. Load large data inside "
+                "the function or class body instead, for example from a table or a "
+                "package resource shipped with code=."
+            )
+
+        def charge(source: str, nested: Sequence[str] = ()) -> str:
+            nonlocal remaining
+            remaining -= len(source) - sum(map(len, nested))
+            if remaining < 0:
+                raise too_large()
+            return source
+
+        def emit(value: Any) -> str:
+            if value is None or type(value) in (bool, int, str, bytes):
+                return charge(repr(value))
+            if type(value) is float and math.isfinite(value):
+                return charge(repr(value))
+            if isinstance(value, (pa.DataType, pa.Field, pa.Schema)):
+                return charge(self._arrow_source(name, value))
+            numpy = sys.modules.get("numpy")
+            if numpy is not None and (
+                type(value) is numpy.ndarray or isinstance(value, numpy.generic)
+            ):
+                return emit_numpy(numpy, value)
+            if type(value) in (tuple, list, dict, set, frozenset):
+                return emit_container(value)
+            raise _unsupported_capture(name, type(value).__name__)
+
+        def emit_numpy(numpy: types.ModuleType, value: Any) -> str:
+            # These convert to exact Python values; longdouble stays a NumPy scalar.
+            if value.dtype.kind not in "biuf" or value.dtype.type is numpy.longdouble:
+                raise _unsupported_capture(
+                    name, f"{type(value).__name__} with dtype {value.dtype}"
+                )
+            # Every element takes at least one character; check before tolist().
+            if value.size > remaining:
+                raise too_large()
+            alias = self._support_module("numpy")
+            dtype = repr(value.dtype.str)
+            if isinstance(value, numpy.generic):
+                item = emit(value.item())
+                return charge(f"{alias}.dtype({dtype}).type({item})", (item,))
+            if value.size == 0:
+                return charge(
+                    f"{alias}.array([], dtype={dtype}).reshape({value.shape!r})"
+                )
+            elements = emit(value.tolist())
+            source = f"{alias}.array({elements}, dtype={dtype})"
+            return charge(source, (elements,))
+
+        def emit_container(value: Any) -> str:
+            if id(value) in enclosing:
+                raise ValueError(
+                    f"Function global {name!r} contains itself and cannot be "
+                    "captured. " + _CAPTURE_REMEDY
+                )
+            if len(enclosing) == _MAX_CAPTURED_DEPTH:
+                raise ValueError(
+                    f"Function global {name!r} nests containers more than "
+                    f"{_MAX_CAPTURED_DEPTH} levels deep and cannot be captured. "
+                    + _CAPTURE_REMEDY
+                )
+            enclosing.add(id(value))
+            if type(value) is dict:
+                entries = [(emit(key), emit(child)) for key, child in value.items()]
+                children = [part for entry in entries for part in entry]
+                listed = ", ".join(f"{key}: {child}" for key, child in entries)
+                source = f"{{{listed}}}"
+            else:
+                children = [emit(child) for child in value]
+                if type(value) in (set, frozenset):
+                    listed = ", ".join(sorted(children))
+                else:
+                    listed = ", ".join(children)
+                if type(value) is tuple:
+                    source = f"({listed},)" if len(children) == 1 else f"({listed})"
+                elif type(value) is list:
+                    source = f"[{listed}]"
+                elif type(value) is set:
+                    source = (
+                        f"{{{listed}}}" if children else f"{self._builtin('set')}()"
+                    )
+                else:
+                    items = f"{{{listed}}}" if children else ""
+                    source = f"{self._builtin('frozenset')}({items})"
+            enclosing.remove(id(value))
+            return charge(source, children)
+
+        return emit(value)
+
+    def _arrow_source(
+        self, name: str, value: Union[pa.DataType, pa.Field, pa.Schema]
+    ) -> str:
+        if isinstance(value, pa.Schema):
+            schema, suffix = value, ""
+        elif isinstance(value, pa.Field):
+            schema, suffix = pa.schema([value]), ".field(0)"
+        else:
+            schema, suffix = pa.schema([pa.field("", value)]), ".field(0).type"
+        for data_type in schema.types:
+            extension = _python_extension_type(data_type)
+            if extension is not None:
+                raise TypeError(
+                    f"Function global {name!r} uses the Arrow extension type "
+                    f"{extension.extension_name!r}, which is defined in Python and "
+                    "cannot be captured. " + _CAPTURE_REMEDY
+                )
+        alias = self._support_module("pyarrow")
+        # Schema IPC keeps nullability, metadata, and nested fields exactly.
+        data = schema.serialize().to_pybytes()
+        return f"{alias}.ipc.read_schema({alias}.py_buffer({data!r})){suffix}"
+
+    def _support_module(self, module: str) -> str:
+        """The artifact's private alias for a module that rebuilds captured
+        values."""
+        alias = f"_lancedb_{module}"
+        if alias not in self._support_imports:
+            self._require_importable(module)
+            self._claim(alias, ("support", module))
+            self._support_imports[alias] = f"import {module} as {alias}"
+        return alias
+
+    def _builtin(self, name: str) -> str:
+        """A builtin called by captured source, which the artifact must not
+        rebind."""
+        self._claim(name, ("builtin", name))
+        return name
 
     def _require_importable(self, module_name: str) -> None:
         """Warn about an import the Function's environment may not be able to
@@ -2624,6 +3202,12 @@ class FunctionDefinition:
     remote application or build the declared remote runtime, and it does not
     need the private implementation attribute.
 
+    Arguments to this call are Python and Arrow values. An
+    [Expr][lancedb.expr.Expr] argument, such as ``col("value")``, is a column
+    binding that only a registered
+    [FunctionVersion][lancedb.functions.FunctionVersion] can carry, so this
+    call rejects it with ``TypeError`` instead of running the callable.
+
     Remote execution adapts the callable to the internal Arrow batch ABI
     described by the registration artifact. By default it invokes the callable
     once per row. A callable whose parameters are all annotated as
@@ -2648,8 +3232,12 @@ class FunctionDefinition:
         max_concurrency: Optional[int] = None,
         row_timeout_seconds: Optional[float] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
-        gpu: bool = False,
+        gpu: Optional[bool] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
         apt: tuple[str, ...] = (),
@@ -2670,11 +3258,9 @@ class FunctionDefinition:
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
         _validate_package_requirements("conda" if conda else "pip", conda or pip)
-        gpu_marker = _normalize_gpu_marker(gpu)
-        if gpu_class is not None:
-            _validate_gpu_class_name(gpu_class)
-            if gpu_marker is None:
-                raise ValueError("gpu_class requires gpu=True")
+        gpu_marker, gpu_class, gpus_per_worker = _normalize_gpu_request(
+            gpu, gpu_class, gpu_count
+        )
         packages = tuple(sorted(set(conda if conda else pip)))
         system_packages = tuple(sorted(set(apt)))
         if any(
@@ -2792,6 +3378,7 @@ class FunctionDefinition:
             env=environment,
             gpu=gpu_marker,
             gpu_class=gpu_class,
+            gpus_per_worker=gpus_per_worker,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -2813,6 +3400,9 @@ class FunctionDefinition:
             runtime=runtime,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             row_timeout_seconds=row_timeout_seconds,
             retry_policy=retry_policy,
             models=models,
@@ -2893,6 +3483,16 @@ class FunctionDefinition:
         return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
+        from lancedb.expr import Expr
+
+        if any(isinstance(value, Expr) for value in (*args, *kwargs.values())):
+            raise TypeError(
+                "a FunctionDefinition runs locally on Python and Arrow values; "
+                "an Expr input binds only on a registered FunctionVersion. "
+                "Register the definition with create_function or "
+                "create_function_async, then bind col(...) on the returned "
+                "version."
+            )
         return self._function(*args, **kwargs)
 
 
@@ -2914,8 +3514,12 @@ def function(
     max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
-    gpu: bool = False,
+    gpu: Optional[bool] = None,
     gpu_class: Optional[str] = None,
+    gpu_count: Optional[int] = None,
+    total_cpu_millis: Optional[int] = None,
+    total_memory_bytes: Optional[int] = None,
+    total_gpu_count: Optional[int] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
@@ -2938,8 +3542,12 @@ def function(
     max_concurrency: Optional[int] = None,
     row_timeout_seconds: Optional[float] = None,
     retry_policy: Optional[FunctionRetryPolicy] = None,
-    gpu: bool = False,
+    gpu: Optional[bool] = None,
     gpu_class: Optional[str] = None,
+    gpu_count: Optional[int] = None,
+    total_cpu_millis: Optional[int] = None,
+    total_memory_bytes: Optional[int] = None,
+    total_gpu_count: Optional[int] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
     apt: tuple[str, ...] | list[str] = (),
@@ -2983,7 +3591,12 @@ def function(
     it takes one ``pyarrow.RecordBatch``. These batch annotations require both
     ``input_schema`` and ``output_schema`` explicitly: the annotations do not
     specify Arrow element types or fields. This also applies to a class's
-    ``__call__`` method. A decorated class is the same callable with state:
+    ``__call__`` method. Each ``input_schema`` field names one parameter, so
+    several input columns take one ``pyarrow.Array`` parameter each, while a
+    single ``pyarrow.RecordBatch`` parameter binds one input column and
+    receives it as a batch. The
+    [Function authoring guide](https://lancedb.com/docs/curation/create-function#batch)
+    has the worked examples. A decorated class is the same callable with state:
     each remote instance calls ``__init__`` once, calls
     ``__call__`` for every row or batch of every input it processes, and calls
     ``close()``, if defined, once when it retires. Load models, open clients,
@@ -3015,8 +3628,11 @@ def function(
     - modules, and classes and functions importable from an installed
       package, become imports; the package must be declared in ``pip`` or
       ``conda``;
-    - literals (``None``, ``bool``, ``int``, ``str``, ``bytes``, finite
-      ``float``, and tuples containing only these literals) are inlined;
+    - values are copied into the source: ``None``, ``bool``, ``int``,
+      ``str``, ``bytes``, and finite ``float``; tuples, lists, dicts, sets,
+      and frozensets of supported values; PyArrow data types, fields, and
+      schemas; and NumPy arrays and scalars of ``bool``, integer,
+      ``float16``, ``float32``, and ``float64`` dtypes;
     - functions and classes defined in ``__main__``, such as notebook cells,
       are packaged by source, together with what they reference;
     - modules and packages listed in ``code`` are shipped as Python source and
@@ -3034,27 +3650,46 @@ def function(
     image. Warnings follow normal Python warning filters and may be promoted
     to errors. Declare every third-party import in ``pip`` or ``conda`` even
     when it happens to be installed on the registration host.
-    Other global values, including Arrow types and schemas, lists, dictionaries,
-    sets, and NumPy arrays, cannot be captured as literals. Define them inside
-    the function or class body instead.
-    Closures, lambdas, nested definitions, mutable module-level objects, and a
-    non-standard ``__builtins__`` are rejected where they can be seen and
+    Closures, lambdas, nested definitions, other mutable module-level objects,
+    and a non-standard ``__builtins__`` are rejected where they can be seen and
     otherwise unsupported.
 
-    **Namespace restrictions.** The packaged source cannot import ``sys``,
+    **Captured values.** A captured value is copied when the decorator runs
+    and rebuilt in every worker process. Later changes on the client do not
+    reach the Function, changes a worker makes stay in that process, and
+    globals that share an object on the client become separate copies.
+    Dictionaries keep their insertion order and set elements are written in a
+    canonical order, so the same values always package to the same source.
+    Floats, including NumPy elements, must be finite. Arrow values are rebuilt
+    from Arrow's IPC schema encoding, which preserves nullability, metadata,
+    and nested fields; extension types defined in Python cannot be captured.
+    NumPy values keep their dtype and shape and need ``numpy`` in the remote
+    environment, so declare it in ``pip`` or ``conda``. Each captured value is
+    limited to 1 MiB of source and 32 levels of nesting, and cannot contain
+    itself. Load larger data inside the function or class body, for example
+    from a table or a package resource shipped with ``code``. Define other
+    values, such as instances of your own classes, inside the function or
+    class body as well.
+
+    **Namespace restrictions.** The packaged source may use three static
+    diagnostic operations: ``sys.stderr``, ``sys.version_info``, and
+    ``importlib.metadata.version``. Direct imports, ``from`` imports, and
+    aliases are treated the same way, whether the import appears inside the
+    function or class body or at module level. Any other import of ``sys``,
     ``builtins``, ``importlib``, ``inspect``, ``gc``, ``ctypes``, or ``types``,
-    including submodules such as ``ctypes.util`` and ``importlib.metadata``.
-    Referencing a module-level alias for one of these modules is also rejected.
-    References to ``globals``, ``locals``, ``vars``, ``eval``, ``exec``,
-    ``compile``, or ``__import__`` are rejected as dynamic namespace access.
-    These restrictions are conservative: even ordinary uses such as
-    ``ctypes.util.find_library`` or ``sys.version`` are blocked because these
-    modules can reach names outside the reconstructed Function namespace.
-    Move such code into an importable helper module supplied with ``code=``,
-    ``pip=``, or ``conda=``, then import and call the helper from the Function.
-    Helpers imported normally keep their own module namespace; these checks do
-    not scan their bodies. A helper defined in ``__main__`` is packaged by source
-    and is subject to the same checks.
+    including submodules such as ``ctypes.util``, ``importlib.resources``, and
+    ``importlib.import_module``, is rejected. Referencing a module-level alias
+    for an unapproved module or operation is also rejected. References to
+    ``globals``, ``locals``, ``vars``, ``eval``, ``exec``, ``compile``, or
+    ``__import__`` are rejected as dynamic namespace access. These
+    restrictions are conservative: even ordinary uses such as
+    ``ctypes.util.find_library`` or ``sys.version`` remain blocked because
+    these modules can reach names outside the reconstructed Function
+    namespace. Move such code into an importable helper module supplied with
+    ``code=``, ``pip=``, or ``conda=``, then import and call the helper from
+    the Function. Helpers imported normally keep their own module namespace;
+    these checks do not scan their bodies. A helper defined in ``__main__`` is
+    packaged by source and is subject to the same checks.
 
     Changing any packaged source, including a module in ``code``, produces a
     new Function version; the environment built from ``pip`` or ``conda`` is
@@ -3123,22 +3758,37 @@ def function(
         Positive, finite deadline in seconds for each Python call: one row for
         scalar Functions and one batch for vectorized Functions. This does not
         govern class initialization. When omitted, the service applies its
-        default per-call budget.
+        default per-call budget, currently 300 seconds on Enterprise builds.
+        Set it for a GPU Function whose longest call can exceed that budget.
+        Enterprise builds that require an explicit GPU deadline reject a
+        refresh when neither the definition nor the refresh request sets one;
+        a refresh value overrides the definition.
     retry_policy : FunctionRetryPolicy, optional
         Retry selected failed calls inside the Function, with bounded attempts
         and backoff. A refresh may override this default. Retrying a partial
         call must be safe; completed calls are not repeated. For batch Functions,
         skip after exhaustion applies to the whole failed call.
-    gpu : bool, default False
-        Whether every remote execution requires a GPU. The execution platform
-        selects one compatible GPU for each worker. The requirement is part of
-        the immutable Function version.
+    gpu : bool, optional
+        Enable GPU execution. Defaults to CPU execution.
     gpu_class : str, optional
-        Operator-defined GPU class for every execution of this Function, such
-        as ``"a10g"`` or ``"h100"``. Requires ``gpu=True`` and follows the
-        lowercase 63-character DNS-label rule. The class is part of the
-        immutable Function version; per-refresh aggregate GPU budgets are
-        selected through ``refresh_column`` instead of registration.
+        Select an operator-configured GPU pool, such as ``"h100"``.
+        Requires ``gpu=True``. Omitting it is equivalent to ``"any"`` and accepts
+        any eligible configured GPU class. Use ``"default"`` to select the
+        deployment's default pool explicitly.
+    gpu_count : int, optional
+        Default GPUs allocated together to each Function worker. Requires ``gpu=True``
+        and defaults to one. Column/MV creation and refresh can override it.
+        Must be a positive integer. Refresh
+        ``total_gpu_count`` limits the total GPUs across the worker fleet.
+    total_cpu_millis : int, optional
+        Default total CPU budget for an execution, in millicores (1000 = one
+        core). A column/MV declaration or refresh may override this value.
+    total_memory_bytes : int, optional
+        Default total memory budget for an execution, in bytes.
+    total_gpu_count : int, optional
+        Default total GPU budget across an execution's workers. This is
+        separate from ``gpu_count``, which allocates GPUs to each worker.
+        MVs add the defaults of their distinct pinned Function versions.
     code : sequence of module, optional
         Top-level modules or packages shipped with the Function and importable
         by their own names. Package resources, including binary data and
@@ -3182,13 +3832,13 @@ def function(
     ...     return value
     >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
     [1, 2, 3]
-    >>> @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+    >>> @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g", gpu_count=2)
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
-    >>> gpu_score.registration_request.runtime.gpu_class
-    'a10g'
+    >>> gpu_score.registration_request.runtime.gpus_per_worker
+    2
     >>> @function
     ... class scale:
     ...     def __init__(self, factor: float, offset: float = 0.0):
@@ -3223,7 +3873,10 @@ def function(
     remote environment, resolve Secrets, or run the remote Arrow adapter or
     sandbox. A registered ``FunctionVersion`` call is different: it binds
     ``col(...)`` inputs and returns a remote
-    [FunctionApplication][lancedb.functions.FunctionApplication].
+    [FunctionApplication][lancedb.functions.FunctionApplication]. Passing an
+    [Expr][lancedb.expr.Expr] to a definition raises ``TypeError`` before the
+    callable runs, because a column reference binds only on a registered
+    version.
 
     ```python
     scaled = scale(factor=2.0)
@@ -3262,6 +3915,10 @@ def function(
             retry_policy=retry_policy,
             gpu=gpu,
             gpu_class=gpu_class,
+            gpu_count=gpu_count,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
             apt=tuple(apt),
@@ -3304,12 +3961,21 @@ __all__ = [
     "ResolvedEnvironmentProvenance",
     "ResolvedPackage",
     "RefreshColumnResult",
+    "FunctionErrors",
+    "AsyncFunctionErrors",
+    "FunctionErrorGroup",
+    "FunctionProvenance",
+    "FunctionValueProvenance",
     "FunctionDefinition",
 ]
 
 
 def udf(*args: Any, **kwargs: Any) -> Any:
-    """Deprecated alias of :func:`function`."""
+    """Deprecated alias of :func:`function`.
+
+    Accepts the same options, including ``row_timeout_seconds``. See
+    :func:`function` for GPU deadline guidance.
+    """
     warnings.warn(
         "lancedb.udf is deprecated; use lancedb.function",
         DeprecationWarning,
