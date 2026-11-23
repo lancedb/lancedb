@@ -1200,7 +1200,9 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1208,7 +1210,9 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                auto_refresh_resource_budget=auto_refresh_resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
             )
         )
 
@@ -1220,11 +1224,12 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -1232,6 +1237,7 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -1247,11 +1253,12 @@ class RemoteTable(Table):
                 batch_size=batch_size,
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
-                resource_budget=resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
                 supervisor_resources=supervisor_resources,
                 planning_workers=planning_workers,
                 gpu_class=gpu_class,
-                gpu_count=gpu_count,
+                total_gpu_count=total_gpu_count,
                 retry_policy=retry_policy,
                 error_policy=error_policy,
                 max_failed_fraction=max_failed_fraction,
@@ -1259,6 +1266,7 @@ class RemoteTable(Table):
                 row_timeout_seconds=row_timeout_seconds,
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
+                max_job_attempts=max_job_attempts,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
                 retry_errors=retry_errors,
                 retry_job_id=retry_job_id,
@@ -1277,11 +1285,12 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -1289,6 +1298,7 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -1305,11 +1315,12 @@ class RemoteTable(Table):
                     batch_size=batch_size,
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
-                    resource_budget=resource_budget,
+                    total_cpu_millis=total_cpu_millis,
+                    total_memory_bytes=total_memory_bytes,
                     supervisor_resources=supervisor_resources,
                     planning_workers=planning_workers,
                     gpu_class=gpu_class,
-                    gpu_count=gpu_count,
+                    total_gpu_count=total_gpu_count,
                     retry_policy=retry_policy,
                     error_policy=error_policy,
                     max_failed_fraction=max_failed_fraction,
@@ -1317,6 +1328,7 @@ class RemoteTable(Table):
                     row_timeout_seconds=row_timeout_seconds,
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
+                    max_job_attempts=max_job_attempts,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
                     retry_errors=retry_errors,
                     retry_job_id=retry_job_id,
@@ -1327,6 +1339,9 @@ class RemoteTable(Table):
                 )
             )
         )
+
+    def resume_refresh(self, job_id: str) -> Job[RefreshColumnResult]:
+        return Job(LOOP.run(self._table.resume_refresh(job_id)))
 
     def function_errors(
         self,

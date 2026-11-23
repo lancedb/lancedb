@@ -962,26 +962,18 @@ export abstract class Table {
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
    * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
-   * `maxConcurrency`, `resourceBudget`, `supervisorResources`,
+   * `maxConcurrency`, `totalCpuMillis`, `totalMemoryBytes`, `supervisorResources`,
    * `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
    * Function refreshes. `retryPolicy` overrides user-code retries only when
    * repeating partial work is safe; set `maxAttempts: 1` to disable retries.
    * `maxConcurrency` overrides the registered default for this logical
    * execution only and is a positive integer; it is not an account-wide
-   * quota. A `resourceBudget` requires `cpuMillis` and
-   * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
-   * `supervisorResources` and each `planningWorkers.resources` entry require
-   * positive `cpuMillis`, `memoryBytes` and `ephemeralStorageBytes`.
-   * `planningWorkers` also requires positive `maxWorkers`,
-   * `rowsPerWorker` and `fragmentsPerWorker`.
-   * The budget applies only to this explicit refresh and does not configure
-   * a later automatic refresh.
-   * `gpuCount` at the top level is the shorthand that preserves the
-   * deployment defaults for CPU and memory, and cannot be combined with
-   * `resourceBudget`. `numWorkers` applies only to expression columns; use
-   * `resourceBudget` for registered Functions. All are LanceDB Enterprise
-   * only; a LanceDB Embedded refresh rejects every option other than
-   * `batchSize`, `gpuClass` and `gpuCount`.
+   * quota. `totalCpuMillis`, `totalMemoryBytes`, and `totalGpuCount` override
+   * their corresponding execution-wide resource limits independently. Unset
+   * values inherit column defaults, then Function defaults, then deployment
+   * defaults. A zero GPU limit is valid for CPU-only Functions.
+   * `supervisorResources` and `planningWorkers.resources` are per-pod sizes.
+   * `numWorkers` applies only to expression columns.
    * `publicationIntervalRows` opts into publishing completed Function split
    * ranges once their accumulated unpublished rows reach the threshold.
    * It must be a positive safe integer and requires non-Blob Function outputs.
@@ -991,10 +983,8 @@ export abstract class Table {
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
    *   where: "published_at > '2026-01-01'",
-   *   resourceBudget: {
-   *     cpuMillis: 8000,
-   *     memoryBytes: 16 * 1024 ** 3,
-   *   },
+   *   totalCpuMillis: 8000,
+   *   totalMemoryBytes: 16 * 1024 ** 3,
    *   maxConcurrency: 4,
    *   publicationIntervalRows: 10000,
    *   errorPolicy: "skip",
@@ -1067,6 +1057,11 @@ export abstract class Table {
   abstract refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    totalCpuMillis?: number,
+    totalMemoryBytes?: number,
+    totalGpuCount?: number,
+    gpuClass?: string,
+    gpuCount?: number,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -2048,8 +2043,21 @@ export class LocalTable extends Table {
   async refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    totalCpuMillis?: number,
+    totalMemoryBytes?: number,
+    totalGpuCount?: number,
+    gpuClass?: string,
+    gpuCount?: number,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion, full);
+    return await this.inner.refreshMaterializedView(
+      sourceVersion,
+      full,
+      totalCpuMillis,
+      totalMemoryBytes,
+      totalGpuCount,
+      gpuClass,
+      gpuCount,
+    );
   }
 
   async materializedViewDefinition(): Promise<string> {

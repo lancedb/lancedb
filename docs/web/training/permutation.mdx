@@ -35,6 +35,9 @@ By default a permutation table is stored in memory. Call `persist` before `execu
 LanceDB connection backed by local files or object storage. The plan becomes an ordinary table, so another process
 with access to the same storage can open it and use `Permutation.from_tables` to read the same split.
 
+Only the plan destination must be embedded. The base table can be Embedded or Enterprise; an Enterprise base is
+pinned through the plan's recorded base branch and version.
+
 <CodeGroup>
 ```py Python icon=Python
 from lancedb.permutation import Permutation, permutation_builder
@@ -57,9 +60,9 @@ reopened directly in a worker process.
 
 `mode="create"` is the default and fails when the destination table already exists. Pass `mode="overwrite"` to
 replace it explicitly. Overwriting writes a new table version; readers that already opened the previous version keep
-reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting to LanceDB Enterprise
-connections is not supported yet, because reproducible Enterprise plan ordering requires deterministic remote row
-ordering.
+reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting the plan itself to a
+LanceDB Enterprise connection is not supported yet, because reproducible Enterprise plan ordering requires
+deterministic remote row ordering.
 
 The plan records the base table version and branch in its schema metadata. `Permutation.base_version` and
 `Permutation.base_branch` read those values without querying the base table; both are `None` for older plans that did

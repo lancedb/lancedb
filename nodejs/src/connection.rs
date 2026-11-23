@@ -303,6 +303,7 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_materialized_view(
         &self,
         name: String,
@@ -311,6 +312,11 @@ impl Connection {
         filter: Option<String>,
         limit: Option<i64>,
         with_no_data: bool,
+        total_cpu_millis: Option<f64>,
+        total_memory_bytes: Option<f64>,
+        total_gpu_count: Option<f64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<f64>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.create_materialized_view(name, source);
         if let Some(projections) = projections {
@@ -330,6 +336,45 @@ impl Connection {
             let limit = u64::try_from(limit)
                 .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))?;
             builder = builder.limit(limit);
+        }
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        for (name, value, maximum, minimum) in [
+            ("total_cpu_millis", total_cpu_millis, MAX_SAFE_INTEGER, 1.0),
+            (
+                "total_memory_bytes",
+                total_memory_bytes,
+                MAX_SAFE_INTEGER,
+                1.0,
+            ),
+            ("total_gpu_count", total_gpu_count, u32::MAX as f64, 0.0),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value.fract() != 0.0 || value < minimum || value > maximum
+                {
+                    return Err(napi::Error::from_reason(format!(
+                        "{name} must be an integer between {minimum} and {maximum}"
+                    )));
+                }
+                builder = match name {
+                    "total_cpu_millis" => builder.total_cpu_millis(value as u64),
+                    "total_memory_bytes" => builder.total_memory_bytes(value as u64),
+                    _ => builder.total_gpu_count(value as u32),
+                };
+            }
+        }
+        if let Some(class) = gpu_class {
+            builder = builder.gpu_class(class);
+        }
+        if let Some(count) = gpu_count {
+            if !count.is_finite()
+                || count.fract() != 0.0
+                || !(1.0..=u32::MAX as f64).contains(&count)
+            {
+                return Err(napi::Error::from_reason(
+                    "gpuCount must be an integer between 1 and 4294967295",
+                ));
+            }
+            builder = builder.gpu_count(count as u32);
         }
         builder = builder.with_no_data(with_no_data);
         let view = builder.execute().await.default_error()?;

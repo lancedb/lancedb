@@ -635,7 +635,9 @@ dependencies are part of its definition:
 | `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
 | `env` | environment variables |
 | `python_version` | Python major/minor for the execution environment, defaulting to yours |
-| `gpu` | whether every execution requires a GPU |
+| `gpu` | Enable GPU execution with `True` (Python) or `true` (SQL); defaults to CPU execution |
+| `gpu_class` | Operator-configured GPU class, such as `h100`; requires GPU execution |
+| `gpu_count` | GPUs allocated together per Function worker; positive integer, defaults to one; requires GPU execution |
 
 <CodeGroup>
 ```python Python icon="python"

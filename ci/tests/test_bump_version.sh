@@ -34,6 +34,23 @@ git tag v0.0.0
 current_version=$(python -c 'import tomllib; print(tomllib.load(open(".bumpversion.toml", "rb"))["tool"]["bumpversion"]["current_version"])')
 git tag "v$current_version"
 
+# Verify the current baseline before bumping; stale Java POMs must fail.
+python - "$current_version" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+expected = sys.argv[1]
+ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+for path, xpath in (
+    ("java/pom.xml", "m:version"),
+    ("java/lancedb-core/pom.xml", "m:parent/m:version"),
+):
+    actual = ET.parse(path).getroot().findtext(xpath, namespaces=ns)
+    if actual != expected:
+        raise SystemExit(f"Java baseline mismatch in {path}: expected {expected}, got {actual}")
+print(f"Java baseline matches {expected} in both POMs")
+PY
+
 check_java_release() {
     local release_type=$1
     local expected_version=$2

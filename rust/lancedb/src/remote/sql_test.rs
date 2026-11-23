@@ -116,6 +116,7 @@ struct CapturedHeaders {
     api_key: String,
     database_prefix: String,
     materialized_view_job_handle: Option<String>,
+    grpc_timeout: Option<String>,
 }
 
 /// Every exchange's statement and the parameter row it arrived with.
@@ -138,6 +139,7 @@ struct TestSqlService {
     first_continuation_count: Arc<AtomicUsize>,
     transient_poll_failures: Arc<AtomicUsize>,
     headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
+    result_deadlines: Arc<std::sync::Mutex<Vec<Option<String>>>>,
     gate_refresh_release: Arc<Notify>,
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
@@ -172,6 +174,9 @@ impl TestSqlService {
                 .to_string()
         };
         self.headers.lock().unwrap().push(CapturedHeaders {
+            grpc_timeout: metadata
+                .get("grpc-timeout")
+                .map(|value| value.to_str().unwrap().to_owned()),
             database: header("database"),
             namespace_path: header("namespace-path"),
             request_id: header("x-request-id"),
@@ -315,6 +320,7 @@ impl Default for TestSqlService {
             first_continuation_count: Arc::new(AtomicUsize::new(0)),
             transient_poll_failures: Arc::new(AtomicUsize::new(0)),
             headers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            result_deadlines: Arc::new(std::sync::Mutex::new(Vec::new())),
             gate_refresh_release: Arc::new(Notify::new()),
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -531,6 +537,14 @@ impl FlightService for TestSqlService {
             assert_eq!(
                 request.metadata().get(PROTOCOL_HEADER).unwrap(),
                 PROTOCOL_VERSION
+            );
+        }
+        if initial.is_none() {
+            self.result_deadlines.lock().unwrap().push(
+                request
+                    .metadata()
+                    .get("grpc-timeout")
+                    .map(|value| value.to_str().unwrap().to_owned()),
             );
         }
         let query = initial
@@ -1239,17 +1253,38 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             panic!("CREATE must use SQL, not REST: {}", request.url().path());
         })
         .with_sql_client(sql_client.clone());
-        for (enabled, interval, expected) in [
-            (None, None, ""),
-            (Some(true), None, " WITH (auto_refresh_enabled = true)"),
+        for (enabled, interval, cpu, gpu, expected) in [
+            (None, None, None, None, ""),
+            (
+                Some(true),
+                None,
+                None,
+                None,
+                " WITH (auto_refresh_enabled = true)",
+            ),
             (
                 Some(false),
                 Some(0.5),
+                None,
+                None,
                 " WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 0.5)",
+            ),
+            (
+                None,
+                None,
+                Some(8000),
+                Some(0),
+                " WITH (total_cpu_millis = 8000, total_gpu_count = 0)",
             ),
         ] {
             let job = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    gpu_class: Default::default(),
+                    gpu_count: Default::default(),
+                    total_cpu_millis: cpu,
+                    total_memory_bytes: None,
+                    total_gpu_count: gpu,
+
                     exist_ok: false,
                     name: "adults".into(),
                     namespace_path: vec!["team".into(), "reports".into()],
@@ -1278,7 +1313,7 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             );
         }
         assert_eq!(count.load(Ordering::SeqCst), 0);
-        assert_eq!(statements.lock().unwrap().len(), 3);
+        assert_eq!(statements.lock().unwrap().len(), 4);
         assert!(
             headers
                 .lock()
@@ -1333,6 +1368,12 @@ async fn remote_create_returns_the_registry_job_from_the_early_status_row() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+
             exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
@@ -1396,6 +1437,12 @@ async fn remote_create_if_not_exists_accepts_a_completed_noop_without_a_registry
         .with_sql_client(client);
         let job = db
             .create_materialized_view_async(CreateMaterializedViewRequest {
+                gpu_class: Default::default(),
+                gpu_count: Default::default(),
+                total_cpu_millis: None,
+                total_memory_bytes: None,
+                total_gpu_count: None,
+
                 exist_ok: true,
                 name: "adults".into(),
                 namespace_path: vec!["team".into()],
@@ -1483,6 +1530,12 @@ async fn remote_create_registry_handle_reopens_describes_and_cancels() {
 
     let job = db
         .create_materialized_view_async(CreateMaterializedViewRequest {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+
             exist_ok: false,
             name: "adults".into(),
             namespace_path: vec!["team".into(), "reports".into()],
@@ -1584,6 +1637,7 @@ async fn fast_durable_job_failure_exposes_the_same_job_id_on_the_query_handle() 
             query: "SELECT durable job failure".into(),
             default_namespace_path: vec![],
             parameters: None,
+            options: Default::default(),
         })
         .await
         .unwrap();
@@ -1716,10 +1770,11 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     let third = view
         .refresh()
         .full(true)
-        .cpu_millis(8000)
-        .memory_bytes(16 << 30)
-        .gpu_count(2)
+        .total_cpu_millis(8000)
+        .total_memory_bytes(16 << 30)
+        .total_gpu_count(2)
         .gpu_class("h100")
+        .gpu_count(2)
         .execute_async()
         .await
         .unwrap()
@@ -1727,9 +1782,8 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         .await
         .unwrap();
     for invalid in [
-        view.refresh().cpu_millis(1),
         view.refresh().gpu_class("H200:8"),
-        view.refresh().gpu_count(0).gpu_class("h100"),
+        view.refresh().total_gpu_count(0).gpu_class("h100"),
     ] {
         assert!(matches!(
             invalid.execute_async().await,
@@ -1757,7 +1811,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
             "DESCRIBE MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
-            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2, gpu_class = 'h100')",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2, gpu_class = 'h100', gpu_count = 2)",
         ]
     );
     assert!(
@@ -1937,10 +1991,12 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
         .delay_next
         .store(true, Ordering::SeqCst);
     assert_overall_timeout(collect_result(&timeout_query).await, "result");
-    timeout_header_provider
-        .delay_next
-        .store(true, Ordering::SeqCst);
-    assert_overall_timeout(timeout_query.cancel().await, "cancellation");
+    wait_for(
+        &cancel_count,
+        1,
+        "the overall timeout must cancel execution",
+    )
+    .await;
     timeout_query.cancel().await.unwrap();
 
     let pre_dispatch_timeout = timeout_client
@@ -2346,7 +2402,14 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
         .submit("SELECT fail", &["public".to_string()])
         .await
         .unwrap();
+    let before_failure = cancel_count.load(Ordering::SeqCst);
     assert!(collect_result(&failed).await.is_err());
+    wait_for(
+        &cancel_count,
+        before_failure + 1,
+        "failed result reads must cancel execution",
+    )
+    .await;
 
     let registry = QueryRegistry::new();
     for descriptor in ["active-one", "active-two"] {
@@ -2411,7 +2474,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     assert_eq!(client.initialized_client_count().await, 1);
     assert_eq!(query_count.load(Ordering::SeqCst), 21);
     assert_eq!(do_get_count.load(Ordering::SeqCst), 17);
-    assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
+    assert_eq!(cancel_count.load(Ordering::SeqCst), 16);
     assert_eq!(first_result, vec![expected.clone()]);
     assert!(empty_result.is_empty());
     assert!(client.describe(Uuid::nil()).await.is_err());
@@ -3212,6 +3275,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let mut request_json: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         request_json["batch_size"] = serde_json::json!(2);
         request_json["max_concurrency"] = serde_json::json!(4);
+        request_json["total_cpu_millis"] = serde_json::json!(8000);
+        request_json["total_memory_bytes"] = serde_json::json!(17179869184_u64);
+        request_json["total_gpu_count"] = serde_json::json!(0);
         request_json["row_timeout_seconds"] = serde_json::json!(0.75);
         request_json["secret_bindings"] = serde_json::json!([{
             "kind": "env",
@@ -3220,6 +3286,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         }]);
         let mut version_json: serde_json::Value = serde_json::from_str(VERSION).unwrap();
         version_json["batch_size"] = serde_json::json!(12);
+        for field in ["total_cpu_millis", "total_memory_bytes", "total_gpu_count"] {
+            version_json[field] = request_json[field].clone();
+        }
         version_json["max_concurrency"] = serde_json::json!(4);
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
@@ -3298,6 +3367,9 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(created.name(), "embed");
         assert_eq!(created.version(), "1");
         assert_eq!(created.batch_size(), Some(12));
+        assert_eq!(created.total_cpu_millis(), Some(8000));
+        assert_eq!(created.total_memory_bytes(), Some(17179869184));
+        assert_eq!(created.total_gpu_count(), Some(0));
         assert_eq!(created.max_concurrency(), Some(4));
         assert_eq!(created.row_timeout_seconds(), Some(8.0));
         assert_eq!(created.result_stability(), Some("input_and_context"));
@@ -5065,4 +5137,260 @@ async fn remote_cleanup_preview_uses_sql_without_job_calls() {
         ["EXPLAIN (FORMAT JSON) VACUUM \"events\" WITH (min_age_seconds = 0)"]
     );
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn sql_deadline_expires_unread_streamed_and_deferred_queries() {
+    for deferred in [false, true] {
+        for parameters in [None, Some(parameter_row())] {
+            let service = TestSqlService {
+                adaptive: true,
+                defer: deferred,
+                ..TestSqlService::default()
+            };
+            let cancellations = service.cancel_count.clone();
+            let headers = service.headers.clone();
+            let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+            let mut request = ExecuteQueryRequest::new("SELECT slow get");
+            request.parameters = parameters;
+            request.options.timeout = Some(Duration::from_secs(3));
+            let query = client.execute(request).await.unwrap();
+            assert!(headers.lock().unwrap()[0].grpc_timeout.is_some());
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(4)).await;
+            tokio::task::yield_now().await;
+            tokio::time::resume();
+            assert_overall_timeout(query.describe().await, "result");
+            assert_overall_timeout(client.describe(query.id()).await, "result");
+            assert_overall_timeout(query.reader().await, "result");
+            if deferred {
+                wait_for(
+                    &cancellations,
+                    1,
+                    "expiry must cancel deferred execution without a reader",
+                )
+                .await;
+            }
+            let ordinary = client
+                .execute(ExecuteQueryRequest::new("SELECT 1"))
+                .await
+                .unwrap();
+            assert!(
+                !collect_result(&ordinary).await.unwrap().is_empty(),
+                "query options must not change the connection defaults"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_deferred_result_timeout_sends_cancellation() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let cancellations = service.cancel_count.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT slow get");
+    request.options.timeout = Some(Duration::from_secs(3));
+    let query = client.execute(request).await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(2_900)).await;
+    let result = query.reader().await;
+    tokio::time::resume();
+    assert_overall_timeout(result, "result");
+    wait_for(
+        &cancellations,
+        1,
+        "a deferred reader timeout must cancel execution",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sql_read_timeout_is_per_query_and_cancels_deferred_execution() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let cancellations = service.cancel_count.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT slow get");
+    request.options.read_timeout = Some(Duration::from_millis(100));
+    let query = client.execute(request).await.unwrap();
+    let error = collect_result(&query).await.unwrap_err();
+    assert!(
+        error.to_string().contains("SQL result read timed out"),
+        "{error}"
+    );
+    wait_for(
+        &cancellations,
+        1,
+        "a read timeout must cancel deferred execution",
+    )
+    .await;
+    let next = client
+        .execute(ExecuteQueryRequest::new("SELECT slow get"))
+        .await
+        .unwrap();
+    assert!(!collect_result(&next).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn deferred_cancellation_on_drop_is_opt_in() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let cancellations = service.cancel_count.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let detached = client
+        .execute(ExecuteQueryRequest::new("SELECT 1"))
+        .await
+        .unwrap();
+    let id = detached.id();
+    drop(detached);
+    assert_eq!(
+        client.describe(id).await.unwrap().status,
+        QueryStatus::Finished
+    );
+    assert_eq!(cancellations.load(Ordering::SeqCst), 0);
+    let mut request = ExecuteQueryRequest::new("SELECT 1");
+    request.options.cancel_on_drop = true;
+    let query = client.execute(request).await.unwrap();
+    let id = query.id();
+    // Drop outside the async runtime, as Python garbage collection may do.
+    std::thread::spawn(move || drop(query)).join().unwrap();
+    wait_for(&cancellations, 1, "dropping an opted-in handle must cancel").await;
+    assert_eq!(
+        client.describe(id).await.unwrap().status,
+        QueryStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn deferred_reader_owns_cancellation_after_the_handle_is_dropped() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let cancellations = service.cancel_count.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT slow");
+    request.options.cancel_on_drop = true;
+    let query = client.execute(request).await.unwrap();
+    let rows = query.reader().await.unwrap();
+    drop(query);
+    assert_eq!(
+        cancellations.load(Ordering::SeqCst),
+        0,
+        "an active reader must survive dropping its query handle"
+    );
+    drop(rows);
+    wait_for(
+        &cancellations,
+        1,
+        "dropping the reader must cancel deferred execution",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_completed_query_is_not_cancelled_on_drop_or_deadline() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let cancellations = service.cancel_count.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT 1");
+    request.options.timeout = Some(Duration::from_secs(3));
+    request.options.cancel_on_drop = true;
+    let query = client.execute(request).await.unwrap();
+    assert!(!collect_result(&query).await.unwrap().is_empty());
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(4)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    assert_eq!(
+        query.describe().await.unwrap().status,
+        QueryStatus::Finished
+    );
+    drop(query);
+    assert_eq!(cancellations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn sql_deadline_applies_to_buffered_results_and_stops_its_timer_on_completion() {
+    for deferred in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer: deferred,
+            ..TestSqlService::default()
+        };
+        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let mut request = ExecuteQueryRequest::new("SELECT 1");
+        request.options.timeout = Some(Duration::from_secs(3));
+        let query = client.execute(request).await.unwrap();
+        let mut rows = query.reader().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            query.describe().await.unwrap().status,
+            QueryStatus::Finished
+        );
+        match client.queries.get(query.id()).unwrap() {
+            RegisteredQuery::Polled(query) => {
+                assert!(query.deadline_task.lock().unwrap().is_none())
+            }
+            RegisteredQuery::Streamed(query) => assert!(query.deadline_stopped()),
+        }
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        tokio::time::resume();
+        assert_overall_timeout(rows.try_next().await, "result");
+        assert!(rows.try_next().await.unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn sql_deadline_is_forwarded_to_deferred_result_requests() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..TestSqlService::default()
+    };
+    let deadlines = service.result_deadlines.clone();
+    let headers = service.headers.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT 1");
+    request.options.timeout = Some(Duration::from_secs(3));
+    let query = client.execute(request).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!collect_result(&query).await.unwrap().is_empty());
+    let deadlines = deadlines.lock().unwrap();
+    let result_deadline = deadlines[0]
+        .as_deref()
+        .expect("the result request must carry an execution deadline");
+    assert_ne!(
+        Some(result_deadline),
+        headers.lock().unwrap()[0].grpc_timeout.as_deref(),
+        "the timeout budget must not restart for the result request"
+    );
+}
+
+#[tokio::test]
+async fn sql_rejects_timeouts_that_cannot_be_encoded_by_grpc() {
+    let (client, _shutdown) =
+        start_sql_service(TestSqlService::default(), ClientConfig::default()).await;
+    let mut request = ExecuteQueryRequest::new("SELECT 1");
+    request.options.timeout = Some(Duration::from_secs(u64::MAX));
+    assert!(matches!(
+        client.execute(request).await,
+        Err(Error::InvalidInput { .. })
+    ));
 }

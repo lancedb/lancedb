@@ -516,17 +516,25 @@ where
         };
         match handle.describe().await {
             Ok(description) => {
-                let state = description.state.clone();
                 let mut cache = self.cache_write();
-                cache.state = Some(state.clone());
+                cache.state = Some(description.state.clone());
                 cache.lifecycle_state = Some(
                     description
                         .lifecycle_state
                         .clone()
-                        .unwrap_or_else(|| JobState::from(state.as_str())),
+                        .unwrap_or_else(|| JobState::from(description.state.as_str())),
                 );
+                let status = if cache.lifecycle_state == Some(JobState::InProgress)
+                    && description.job_type == "function_refresh"
+                    && description.paused_at_millis.is_none()
+                    && description.phase.as_deref() == Some("waiting_for_capacity")
+                {
+                    "waiting_for_capacity".to_owned()
+                } else {
+                    description.state.clone()
+                };
                 cache.description = Some(description);
-                Ok(state)
+                Ok(status)
             }
             // An in-process job knows its own state and nothing more.
             Err(Error::NotSupported { .. }) => {
@@ -540,8 +548,9 @@ where
         }
     }
 
-    /// The operation's current lifecycle state: "running", "finished",
-    /// "failed", or "cancelled".
+    /// The current status, usually "running", "finished", "failed", or "cancelled".
+    /// A running Function refresh reports "waiting_for_capacity" while it
+    /// waits for execution workers. [`Job::wait`] continues polling during this wait.
     ///
     /// A point snapshot; unlike [`Job::wait`] it does not block, raise on a
     /// terminal failure state, or retry. States a newer server reports that

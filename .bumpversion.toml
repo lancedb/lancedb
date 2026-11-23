@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.42.0-beta.21"
+current_version = "0.42.0-beta.25"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -23,7 +23,6 @@ allow_dirty = true
 commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
-
 [tool.bumpversion.parts.pre_l]
 optional_value = "final"
 values = ["beta", "final"]

@@ -51,8 +51,10 @@ const DEFAULT_SQL_PORT: u16 = 10025;
 const DEFAULT_SQL_TLS_PORT: u16 = 10026;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
+const AUTOMATIC_CANCELLATION_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_SQL_TIMEOUT: Duration = Duration::from_secs(99_999_999 * 60 * 60);
 const MAX_SQL_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
 const SQL_JOB_ID_METADATA_KEY: &str = "x-lancedb-sql-job-id";
 const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
@@ -69,6 +71,7 @@ pub(super) struct SubmittedQuery {
     pub(super) materialized_view_job_handle_supported: bool,
 }
 
+#[derive(Clone)]
 struct SqlClientInner {
     database: String,
     database_prefix: Option<String>,
@@ -77,6 +80,8 @@ struct SqlClientInner {
     sql_host_override: Option<String>,
     client_config: ClientConfig,
     client: Arc<OnceCell<SqlConnection>>,
+    deadline: Option<tokio::time::Instant>,
+    cancel_on_drop: bool,
 }
 
 struct SqlConnection {
@@ -213,6 +218,8 @@ impl SqlClient {
                 sql_host_override,
                 client_config,
                 client: Arc::new(OnceCell::new()),
+                deadline: None,
+                cancel_on_drop: false,
             }),
             queries: Arc::new(QueryRegistry::new()),
         }
@@ -279,12 +286,34 @@ impl SqlClient {
         request: ExecuteQueryRequest,
         materialized_view_job_handle: bool,
     ) -> Result<SubmittedQuery> {
-        let timeout = self.inner.overall_timeout()?;
+        let mut client = self.inner.as_ref().clone();
+        client.deadline = request
+            .options
+            .timeout
+            .map(|timeout| {
+                if timeout > MAX_SQL_TIMEOUT {
+                    return Err(Error::InvalidInput {
+                        message: "SQL query timeout exceeds the gRPC limit".to_string(),
+                    });
+                }
+                tokio::time::Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "SQL query timeout is too large".to_string(),
+                    })
+            })
+            .transpose()?;
+        client.cancel_on_drop = request.options.cancel_on_drop;
+        if let Some(read_timeout) = request.options.read_timeout {
+            client.client_config.timeout_config.read_timeout = Some(read_timeout);
+        }
+        let client = Arc::new(client);
+        let timeout = client.execution_timeout()?;
         with_overall_timeout(timeout, "SQL query submission", async {
             validate_namespace_path(&request.default_namespace_path)?;
             let query_id = Uuid::now_v7();
             let opened = StreamingQuery::open(
-                self.inner.clone(),
+                client.clone(),
                 &request.query,
                 request.parameters,
                 &request.default_namespace_path,
@@ -300,24 +329,26 @@ impl SqlClient {
                 Submission::Stream(response) => {
                     let query = Arc::new(StreamingQuery::new(
                         query_id,
-                        self.inner.clone(),
+                        client.clone(),
                         response,
                         job_id.clone(),
                     ));
                     self.queries
                         .insert(query_id, RegisteredQuery::Streamed(query.clone()));
+                    query.start_deadline();
                     Query::new(Arc::new(StreamingQueryHandle::new(query)))
                 }
                 Submission::Deferred(poll_info) => {
                     let query = Arc::new(RemoteQuery::new(
                         query_id,
-                        self.inner.clone(),
+                        client.clone(),
                         request.default_namespace_path,
                         poll_info,
                         job_id,
                     )?);
                     self.queries
                         .insert(query_id, RegisteredQuery::Polled(query.clone()));
+                    query.start_deadline();
                     Query::new(Arc::new(RemoteQueryHandle::new(query)))
                 }
             };
@@ -375,6 +406,7 @@ impl SqlClient {
                 query: statement,
                 default_namespace_path: namespace,
                 parameters: None,
+                options: Default::default(),
             })
             .await?,
         );
@@ -417,6 +449,21 @@ impl SqlClient {
 }
 
 impl SqlClientInner {
+    fn execution_timeout(&self) -> Result<Option<Duration>> {
+        match self.deadline {
+            Some(deadline) => Ok(Some(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )),
+            None => self.overall_timeout(),
+        }
+    }
+
+    fn set_execution_timeout<T>(&self, request: &mut Request<T>) {
+        if let Some(deadline) = self.deadline {
+            request.set_timeout(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        }
+    }
+
     fn overall_timeout(&self) -> Result<Option<Duration>> {
         resolve_timeout(
             self.client_config.timeout_config.timeout,
@@ -561,6 +608,7 @@ impl SqlClientInner {
             .clone();
         let mut request = Request::new(ticket);
         *request.metadata_mut() = metadata;
+        self.set_execution_timeout(&mut request);
         let response =
             tokio::time::timeout(read_timeout, connection.client.clone().do_get(request))
                 .await
@@ -801,6 +849,10 @@ struct RemoteQuery {
     last_accessed: StdMutex<Instant>,
     lifecycle: StdMutex<QueryLifecycle>,
     cancel_request_uncertain: Arc<AtomicBool>,
+    failure: StdMutex<Option<String>>,
+    cleanup_started: AtomicBool,
+    runtime: tokio::runtime::Handle,
+    deadline_task: StdMutex<Option<tokio::task::AbortHandle>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -843,7 +895,73 @@ impl RemoteQuery {
             last_accessed: StdMutex::new(Instant::now()),
             lifecycle: StdMutex::new(lifecycle),
             cancel_request_uncertain: Arc::new(AtomicBool::new(false)),
+            failure: StdMutex::new(None),
+            cleanup_started: AtomicBool::new(false),
+            runtime: tokio::runtime::Handle::current(),
+            deadline_task: StdMutex::new(None),
         })
+    }
+
+    fn start_deadline(self: &Arc<Self>) {
+        let Some(deadline) = self.client.deadline else {
+            return;
+        };
+        let query = Arc::downgrade(self);
+        let task = self.runtime.spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            if let Some(query) = query.upgrade()
+                && !matches!(
+                    query.lifecycle(),
+                    QueryLifecycle::Completed | QueryLifecycle::Cancelled
+                )
+            {
+                query.fail(&sql_result_timeout());
+            }
+        });
+        *self.deadline_task.lock().unwrap() = Some(task.abort_handle());
+    }
+
+    fn stop_deadline(&self) {
+        if let Some(task) = self.deadline_task.lock().unwrap().take() {
+            task.abort();
+        }
+    }
+
+    fn fail(self: &Arc<Self>, error: &Error) {
+        let lifecycle = self.lifecycle.lock().unwrap();
+        if matches!(
+            *lifecycle,
+            QueryLifecycle::Completed | QueryLifecycle::Cancelled | QueryLifecycle::Cancelling
+        ) {
+            return;
+        }
+        self.failure
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| match error {
+                Error::Runtime { message } => message.clone(),
+                other => other.to_string(),
+            });
+        drop(lifecycle);
+        self.stop_deadline();
+        self.mark_terminal();
+        self.cancelled.notify_waiters();
+        self.cancel_in_background();
+    }
+
+    fn cancel_in_background(self: &Arc<Self>) {
+        if matches!(
+            self.lifecycle(),
+            QueryLifecycle::Completed | QueryLifecycle::Cancelled
+        ) || self.cleanup_started.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        let query = self.clone();
+        self.runtime.spawn(async move {
+            let _ =
+                tokio::time::timeout(AUTOMATIC_CANCELLATION_TIMEOUT, query.cancel_inner()).await;
+        });
     }
 
     fn registry_expired(&self, abandoned: bool) -> bool {
@@ -882,6 +1000,7 @@ impl RemoteQuery {
         }
         *lifecycle = QueryLifecycle::Cancelled;
         drop(lifecycle);
+        self.stop_deadline();
         self.mark_terminal();
         self.cancelled.notify_waiters();
         self.state_changed.notify_waiters();
@@ -916,13 +1035,17 @@ impl RemoteQuery {
 
     fn mark_result_completed(&self) -> Result<()> {
         let mut lifecycle = self.lifecycle.lock().unwrap();
-        if matches!(
-            *lifecycle,
-            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
-        ) {
+        if self.failure.lock().unwrap().is_some()
+            || matches!(
+                *lifecycle,
+                QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+            )
+        {
             return Err(self.cancelled_error());
         }
         *lifecycle = QueryLifecycle::Completed;
+        drop(lifecycle);
+        self.stop_deadline();
         Ok(())
     }
 
@@ -931,13 +1054,20 @@ impl RemoteQuery {
     }
 
     fn is_cancellation_requested(&self) -> bool {
-        matches!(
-            self.lifecycle(),
-            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
-        )
+        let failed = self.failure.lock().unwrap().is_some();
+        failed
+            || matches!(
+                self.lifecycle(),
+                QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+            )
     }
 
     fn cancelled_error(&self) -> Error {
+        if let Some(message) = self.failure.lock().unwrap().as_ref() {
+            return Error::Runtime {
+                message: message.clone(),
+            };
+        }
         Error::JobCancelled {
             job_id: Some(self.id.to_string()),
         }
@@ -1214,6 +1344,9 @@ impl RemoteQuery {
 
     async fn describe_inner(&self) -> Result<QueryDescription> {
         self.touch();
+        if self.failure.lock().unwrap().is_some() {
+            return Err(self.cancelled_error());
+        }
         if self.is_cancellation_requested() {
             let state = self.state.lock().await.clone();
             return query_description(self.id, self.job_id(), &state, self.lifecycle());
@@ -1380,6 +1513,14 @@ impl RemoteQuery {
     }
 }
 
+struct CancelQueryOnDrop(Arc<RemoteQuery>);
+
+impl Drop for CancelQueryOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel_in_background();
+    }
+}
+
 struct RemoteQueryHandle {
     query: Arc<RemoteQuery>,
     result_started: AtomicBool,
@@ -1390,6 +1531,14 @@ impl RemoteQueryHandle {
         Self {
             query,
             result_started: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Drop for RemoteQueryHandle {
+    fn drop(&mut self) {
+        if self.query.client.cancel_on_drop && !self.result_started.load(Ordering::SeqCst) {
+            self.query.cancel_in_background();
         }
     }
 }
@@ -1410,7 +1559,10 @@ impl QueryHandle for RemoteQueryHandle {
     }
 
     async fn reader(&self) -> Result<SendableRecordBatchStream> {
-        let timeout = self.query.client.overall_timeout()?;
+        let timeout = self.query.client.execution_timeout()?;
+        if self.query.failure.lock().unwrap().is_some() {
+            return Err(self.query.cancelled_error());
+        }
         if self
             .result_started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1421,9 +1573,22 @@ impl QueryHandle for RemoteQueryHandle {
             });
         }
         let result_start = ResultStartGuard::new(&self.result_started);
+        let cancel_on_drop = self
+            .query
+            .client
+            .cancel_on_drop
+            .then(|| CancelQueryOnDrop(self.query.clone()));
         let started = Instant::now();
         let prepared =
-            with_overall_timeout(timeout, "SQL query result", self.query.prepare_result()).await?;
+            match with_overall_timeout(timeout, "SQL query result", self.query.prepare_result())
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.query.fail(&error);
+                    return Err(error);
+                }
+            };
         let remaining_timeout = timeout.map(|timeout| timeout.saturating_sub(started.elapsed()));
         let schema = prepared.schema.clone();
         let (sender, receiver) = mpsc::channel(2);
@@ -1433,19 +1598,17 @@ impl QueryHandle for RemoteQueryHandle {
             let result = with_overall_timeout(
                 remaining_timeout,
                 "SQL query result",
-                query.run_result_stream(prepared, sender),
+                query.clone().run_result_stream(prepared, sender),
             )
             .await;
             if let Err(error) = result {
+                query.fail(&error);
                 let _ = error_sender.send(Err(error)).await;
             }
         });
-        let stream = futures::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|item| (item, receiver))
-        });
         result_start.commit();
-        let stream: SendableRecordBatchStream =
-            Box::pin(SimpleRecordBatchStream::new(stream, schema));
+        let stream =
+            sql_result_stream(receiver, schema, self.query.client.deadline, cancel_on_drop);
         Ok(match self.job_id() {
             Some(job_id) => attach_sql_job_id(stream, &job_id),
             None => stream,
@@ -1455,6 +1618,33 @@ impl QueryHandle for RemoteQueryHandle {
     async fn cancel(&self) -> Result<()> {
         self.query.cancel().await
     }
+}
+
+fn sql_result_timeout() -> Error {
+    Error::Runtime {
+        message: "SQL query result timed out".to_string(),
+    }
+}
+
+fn sql_result_stream<G: Send + 'static>(
+    receiver: mpsc::Receiver<Result<RecordBatch>>,
+    schema: SchemaRef,
+    deadline: Option<tokio::time::Instant>,
+    guard: G,
+) -> SendableRecordBatchStream {
+    let stream = futures::stream::unfold(Some((receiver, guard)), move |state| async move {
+        let (mut receiver, guard) = state?;
+        let item = match deadline {
+            Some(deadline) => tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => return Some((Err(sql_result_timeout()), None)),
+                item = receiver.recv() => item,
+            },
+            None => receiver.recv().await,
+        };
+        item.map(|item| (item, Some((receiver, guard))))
+    });
+    Box::pin(SimpleRecordBatchStream::new(stream, schema))
 }
 
 fn query_description(
