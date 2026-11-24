@@ -9,7 +9,7 @@ from .base import (
     TextEmbeddingFunction,
     UntrustedEmbeddingConfigError,
 )
-from .bedrock import BedRockText
+from .bedrock import BedrockImage, BedRockText
 from .cohere import CohereEmbeddingFunction
 from .gemini_text import GeminiText
 from .instructor import InstructorEmbeddingFunction
@@ -45,6 +45,7 @@ __all__ = [
     "NvidiaEmbeddings",
     "OpenClipEmbeddings",
     "BedRockText",
+    "BedrockImage",
     "CohereEmbeddingFunction",
     "GeminiText",
     "GteEmbeddings",

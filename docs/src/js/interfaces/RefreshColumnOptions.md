@@ -8,7 +8,7 @@
 
 Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-`batchSize`, `gpuClass` and `gpuCount` and rejects the rest.
+`batchSize`, `gpuClass` and `totalGpuCount` and rejects the rest.
 
 ## Properties
 
@@ -49,7 +49,7 @@ GPU class for Function workers.
 optional gpuCount: number;
 ```
 
-Positive aggregate GPU budget for Function workers.
+Positive GPU count allocated to each Function worker.
 
 ***
 
@@ -60,6 +60,17 @@ optional initTimeoutSeconds: number;
 ```
 
 Deadline for Function initialization, in seconds.
+
+***
+
+### maxConcurrency?
+
+```ts
+optional maxConcurrency: number;
+```
+
+Override the registered Function's maximum concurrent user-code calls
+for this logical execution.
 
 ***
 
@@ -105,6 +116,39 @@ Worker count for an expression column; Function columns reject it.
 
 ***
 
+### planningWorkers?
+
+```ts
+optional planningWorkers: FunctionRefreshPlanningConfig;
+```
+
+Resources and sizing for the refresh planning fleet.
+
+***
+
+### publicationIntervalRows?
+
+```ts
+optional publicationIntervalRows: number;
+```
+
+Row-count threshold for publishing completed Function split ranges.
+Must be a positive safe integer. Omit for whole-fragment publication.
+Actual publications can be larger; remaining rows publish at completion.
+Requires LanceDB Enterprise with non-Blob Function outputs.
+
+***
+
+### retryPolicy?
+
+```ts
+optional retryPolicy: FunctionRetryPolicy;
+```
+
+Override retries of failed user-code calls for this refresh.
+
+***
+
 ### rowTimeoutSeconds?
 
 ```ts
@@ -112,6 +156,46 @@ optional rowTimeoutSeconds: number;
 ```
 
 Deadline for one Function call, in seconds.
+
+***
+
+### supervisorResources?
+
+```ts
+optional supervisorResources: FunctionRefreshPodResources;
+```
+
+CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+
+***
+
+### totalCpuMillis?
+
+```ts
+optional totalCpuMillis: number;
+```
+
+Override the total CPU budget in millicores for this refresh.
+
+***
+
+### totalGpuCount?
+
+```ts
+optional totalGpuCount: number;
+```
+
+Nonnegative total GPU budget for Function workers.
+
+***
+
+### totalMemoryBytes?
+
+```ts
+optional totalMemoryBytes: number;
+```
+
+Override the total memory budget in bytes for this refresh.
 
 ***
 

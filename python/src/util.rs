@@ -9,6 +9,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyfunction,
 };
+use rattler_conda_types::{MatchSpec, ParseStrictness};
 
 /// A wrapper around a rust builder
 ///
@@ -59,6 +60,13 @@ pub fn parse_distance_type(distance_type: impl AsRef<str>) -> PyResult<DistanceT
 pub fn validate_table_name(table_name: &str) -> PyResult<()> {
     lancedb::utils::validate_table_name(table_name)
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction(name = "_validate_conda_requirement")]
+pub fn validate_conda_requirement(requirement: &str) -> PyResult<()> {
+    MatchSpec::from_str(requirement, ParseStrictness::Lenient)
+        .map(|_| ())
+        .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 /// Parse field references with the same identifier syntax as Lance writes.

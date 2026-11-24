@@ -242,6 +242,8 @@ def retry_with_exponential_backoff(
     jitter: bool = True,
     max_retries: int = 7,
     max_delay: float = 60,
+    *,
+    do_not_retry: Callable[[Exception], bool] | None = None,
 ):
     """Retry a function with exponential backoff.
 
@@ -265,6 +267,7 @@ def retry_with_exponential_backoff(
         max_retries (int): Maximum number of retries (default is 7).
         max_delay (float): Maximum delay between two attempts, in seconds
             (default is 60).
+        do_not_retry: Optional predicate for additional permanent failures.
 
     Returns:
         function: The decorated function.
@@ -286,7 +289,9 @@ def retry_with_exponential_backoff(
             except Exception as e:  # noqa: PERF203
                 # Don't retry permanent failures (e.g., OpenAI 401 or 404). They
                 # won't be fixed by retrying and would only delay the real error.
-                if _is_non_retryable_error(e):
+                if _is_non_retryable_error(e) or (
+                    do_not_retry is not None and do_not_retry(e)
+                ):
                     raise
 
                 num_retries += 1

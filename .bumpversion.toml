@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.42.0-beta.9"
+current_version = "0.42.0-beta.29"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -23,31 +23,6 @@ allow_dirty = true
 commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
-# bump-my-version >=1.4.0 rejects pre_commit_hooks containing shell syntax unless opted in.
-allow_shell_hooks = true
-
-# Java maven files
-pre_commit_hooks = [
-  """
-    NEW_VERSION="${BVHOOK_NEW_MAJOR}.${BVHOOK_NEW_MINOR}.${BVHOOK_NEW_PATCH}"
-    if [ ! -z "$BVHOOK_NEW_PRE_L" ] && [ ! -z "$BVHOOK_NEW_PRE_N" ]; then
-        NEW_VERSION="${NEW_VERSION}-${BVHOOK_NEW_PRE_L}.${BVHOOK_NEW_PRE_N}"
-    fi
-    echo "Constructed new version: $NEW_VERSION"
-    cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
-
-    # Check for any modified but unstaged pom.xml files
-    MODIFIED_POMS=$(git ls-files -m | grep pom.xml)
-    if [ ! -z "$MODIFIED_POMS" ]; then
-        echo "The following pom.xml files were modified but not staged. Adding them now:"
-        echo "$MODIFIED_POMS" | while read -r file; do
-            git add "$file"
-            echo "Added: $file"
-        done
-    fi
-    """,
-]
-
 [tool.bumpversion.parts.pre_l]
 optional_value = "final"
 values = ["beta", "final"]
@@ -87,7 +62,17 @@ filename = "python/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
 
-# Java documentation
+# Java Maven coordinates and documentation
+[[tool.bumpversion.files]]
+filename = "java/pom.xml"
+search = "<artifactId>lancedb-parent</artifactId>\n    <version>{current_version}</version>"
+replace = "<artifactId>lancedb-parent</artifactId>\n    <version>{new_version}</version>"
+
+[[tool.bumpversion.files]]
+filename = "java/lancedb-core/pom.xml"
+search = "<artifactId>lancedb-parent</artifactId>\n      <version>{current_version}</version>"
+replace = "<artifactId>lancedb-parent</artifactId>\n      <version>{new_version}</version>"
+
 [[tool.bumpversion.files]]
 filename = "docs/src/java/java.md"
 replace = "<version>{new_version}</version>"

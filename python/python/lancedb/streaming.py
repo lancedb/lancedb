@@ -30,7 +30,7 @@ import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from multiprocessing import RawArray, get_context
+from multiprocessing import RawArray, get_all_start_methods, get_context
 from typing import Any, Callable, cast, Iterator, Literal, NamedTuple, Optional, Union
 
 import pyarrow as pa
@@ -58,6 +58,13 @@ _EPOCH_PRIME = 100003
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
 _UNSET = object()
+
+
+def _default_worker_start_method() -> str:
+    """Return the worker start method used when the caller omits a context."""
+    if "forkserver" in get_all_start_methods():
+        return "forkserver"
+    return "spawn"
 
 
 class _WorkerSample(NamedTuple):
@@ -1999,6 +2006,14 @@ class StreamingDataLoader(DataLoader):
     because the custom iterator cannot provide the exact per-yield checkpoint
     snapshots required by this loader.
 
+    When ``num_workers > 0`` and ``multiprocessing_context`` is omitted or
+    ``None``, workers default to the ``forkserver`` start method when the
+    platform provides it, and to ``spawn`` otherwise. Explicit start-method
+    names and context objects are used unchanged. With ``num_workers == 0``,
+    no context is selected, leaving PyTorch's single-process behavior intact.
+    Callbacks and worker state must be picklable under the selected start
+    method, following PyTorch's DataLoader rules.
+
     Examples
     --------
     >>> # dataset = StreamingDataset(table, num_splits=2)
@@ -2028,6 +2043,10 @@ class StreamingDataLoader(DataLoader):
             )
         self._streaming_dataset = dataset
         super().__init__(_StreamingDatasetAdapter(dataset), *args, **kwargs)
+        # Fill the default only after DataLoader has handled an explicit context;
+        # num_workers=0 keeps whatever PyTorch decided.
+        if self.num_workers > 0 and self.multiprocessing_context is None:
+            self.multiprocessing_context = _default_worker_start_method()
         if self.drop_last:
             raise ValueError(
                 "StreamingDataLoader does not support drop_last=True because "

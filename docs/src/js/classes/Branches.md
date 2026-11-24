@@ -64,6 +64,35 @@ with `status: "failed"` instead of throwing.
 
 ### create()
 
+#### create(name, options)
+
+```ts
+create(name, options): Promise<Table>
+```
+
+Create a branch from a tag and return a handle scoped to it.
+
+##### Parameters
+
+* **name**: `string`
+    Name of the new branch.
+
+* **options**: [`CreateBranchOptions`](../interfaces/CreateBranchOptions.md)
+    Named source. `fromTag` keeps the tag's branch and version.
+
+##### Returns
+
+`Promise`&lt;[`Table`](Table.md)&gt;
+
+##### Example
+
+```typescript
+const branches = await table.branches();
+const branch = await branches.create("exp", { fromTag: "baseline" });
+```
+
+#### create(name, fromRef, fromVersion)
+
 ```ts
 create(
    name,
@@ -73,7 +102,7 @@ create(
 
 Create a branch and return a handle scoped to it.
 
-#### Parameters
+##### Parameters
 
 * **name**: `string`
     Name of the new branch.
@@ -84,7 +113,7 @@ Create a branch and return a handle scoped to it.
 * **fromVersion?**: `number`
     A specific version on `fromRef`. Defaults to latest.
 
-#### Returns
+##### Returns
 
 `Promise`&lt;[`Table`](Table.md)&gt;
 

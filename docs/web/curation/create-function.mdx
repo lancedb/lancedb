@@ -44,12 +44,66 @@ table.add_columns({"doubled": version(value=col("value"))})
 immutable version, so changing one produces a new version rather than
 altering rows a previous version already filled.
 
+## Supported Function signatures {#signature-types}
+
+A table's [Arrow schema](/sql/data-types#supported) can contain types that a
+Function cannot accept or return. The matrix below describes the Python SDK
+`0.42.0-beta.12` source contract. Nested schemas and list-Blob outputs require
+a matching Enterprise server; an SDK upgrade alone does not enable them.
+
+| Arrow type | Function input/output support |
+| --- | --- |
+| Boolean; signed/unsigned 8, 16, 32, 64-bit integers; float16/32/64 | Supported. Ordinary `int` and `float` annotations infer int64 and float64. |
+| utf8 / large_utf8; binary / large_binary | Supported. `str` and `bytes` infer utf8 and binary. Plain binary does not carry Blob semantics. |
+| date32 / date64 | Supported; Python `date` infers date32. |
+| timestamp, with or without timezone; time32/64; duration; interval | Unsupported by the Function signature grammar. A Python `datetime` annotation can resolve to an Arrow timestamp but registration still rejects it. |
+| decimal; map; dictionary; union; fixed-size binary | Unsupported. Decode dictionary values and use supported scalar/list/struct representations. |
+| struct; list / large_list; positive-length fixed-size list | Supported with supported children. Explicit schemas preserve child nullability; annotation-only `list[T]` uses non-nullable elements. Struct fields must be nonempty and uniquely named. |
+| Blob v2 at top level or in a struct | Supported in inputs and outputs; use `lancedb.blob(...)` in the schema. |
+| Blob v2 under list / large_list | Output only on supporting SDK/server versions. Inputs are rejected. |
+| Blob v2 under fixed-size list or map | Unsupported in both directions. |
+
+For times, pass an int64 epoch value with an explicit unit such as microseconds,
+or a UTF-8 ISO 8601 string with its timezone. Convert inside the Function and
+cast the result in SQL if needed. Use scaled integers with a declared scale
+when exact decimal values matter; converting to float can lose precision.
+Represent a map as a list of key/value structs when that fits the calculation.
+
+A scalar output is non-nullable because physical NULL represents an unfilled
+computed output. For an optional value, return a named struct with a nullable
+field, for example:
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+@function(
+    input_schema=pa.schema([pa.field("text", pa.string(), nullable=False)]),
+    output_schema=pa.schema([pa.field("score", pa.float64(), nullable=True)]),
+)
+def optional_score(text: str):
+    return {"score": float(len(text)) if text else None}
+```
+
+Return a dictionary by field name. A successfully computed nullable field can
+be NULL; `score IS NULL` alone cannot distinguish it from pending work or a
+skipped failure. Use the job result and error diagnostics. Do not assume an
+explicit assignment-state flag is available on every deployment.
+
+List-nested Blob outputs are queryable as descriptors, but row-ID blob fetch
+APIs and `blob_mode="bytes"` do not fetch payloads inside lists. Prefer a
+separate row per media item when you need independent reads, retries or
+re-scoring. A plain struct shaped like a Blob without its extension metadata
+is not a substitute for `lancedb.blob`.
+
 ## Batch: once per call, many rows at a time {#batch}
 
-A function is called once per batch instead of once per row when its
-parameters are annotated `pyarrow.Array`, or when it takes a single
-`pyarrow.RecordBatch` parameter to read more than one column together. The
-same doubling logic, vectorized over a whole batch at once:
+A function is called once per batch instead of once per row when all of its
+parameters are annotated `pyarrow.Array`. Those annotations say that a whole
+column arrives in one call, but not which Arrow type the column holds, so a
+batch function also passes `input_schema` and `output_schema`; every field of
+`input_schema` matches a parameter by name and by order. The same doubling
+logic, vectorized over a whole batch at once:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -59,7 +113,10 @@ from lancedb import function
 
 @function(
     pip=["numpy==2.2.0"],
+    input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
+    output_schema=pa.float64(),
     batch_size=32,
+    max_concurrency=4,
     row_timeout_seconds=90,
 )
 def score_batch(value: pa.Array) -> pa.Array:
@@ -67,17 +124,41 @@ def score_batch(value: pa.Array) -> pa.Array:
 ```
 </CodeGroup>
 
+Read several columns in one call by taking one `pa.Array` parameter per
+column, with one schema field for each:
+
+```python
+@function(
+    input_schema=pa.schema([
+        pa.field("value", pa.float64(), nullable=False),
+        pa.field("weight", pa.float64(), nullable=False),
+    ]),
+    output_schema=pa.float64(),
+)
+def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+    return pc.multiply(value, weight)
+```
+
+A single `pyarrow.RecordBatch` parameter is also a batch function, but it does
+not read several columns at once: `input_schema` declares one field per
+parameter, so a `RecordBatch` parameter binds one input column and receives
+that column as a batch. A schema with more fields than the callable has
+parameters is rejected at decoration.
+
 Batching amortizes per-call overhead across many rows, which matters most
 once a function also does something with real fixed cost per call -- loading
 a model, opening a connection, making a network round trip.
 
 `batch_size` caps the number of input rows in each execution batch; actual
-batches may be smaller. `row_timeout_seconds` bounds each Python call: one
-row for scalar Functions or the entire batch for vectorized Functions. It
-does not include the instance's `__init__`. Both settings are fixed into the
-registered version and apply to direct calls, computed columns, and
-materialized-view refreshes alike. Omit them to use adaptive batching and the
-service's default per-call deadline.
+batches may be smaller. `max_concurrency` limits user-code calls in flight for
+one Function within one logical execution; it does not limit calls across
+different jobs and is not an account-wide quota. `row_timeout_seconds` bounds
+each Python call: one row for scalar Functions or the entire batch for
+vectorized Functions. It does not include the instance's `__init__`. These
+settings are fixed into the registered version and apply to direct calls,
+computed columns, and materialized-view refreshes alike. A refresh can
+override `max_concurrency` for that execution. Omit it to preserve the
+existing behavior.
 
 ## Stateful Functions: load once, call many times {#stateful}
 
@@ -113,8 +194,9 @@ and remote-API Functions both build on below.
 `db.list_gpu_classes()` lists the GPU classes configured for the deployment.
 Each record reports the operator's hardware description and limits; it does
 not mean a GPU is currently free. Listing requires the System Usage
-permission. Pass a returned class name to `gpu_class` to fix that placement
-in the Function version. `gpu=True` remains required:
+permission. Pass a returned class name to `gpu_class`, such as `gpu=True, gpu_class="a10g", gpu_count=2`,
+to select a pool; `gpu_count` controls the GPUs allocated together to each worker.
+`gpu_count` defaults to one. Omitting `gpu` uses CPU workers:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -128,7 +210,10 @@ gpu_class = next(
 @function(
     gpu=True,
     gpu_class=gpu_class,
+    row_timeout_seconds=600,
     pip=["torch==2.12.0", "sentence-transformers==5.7.0"],
+    input_schema=pa.schema([pa.field("text", pa.string(), nullable=True)]),
+    output_schema=pa.list_(pa.float32(), 384),
 )
 class embed_text:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
@@ -148,10 +233,39 @@ table.add_columns({"embedding": version(text=col("caption"))})
 ```
 </CodeGroup>
 
+`row_timeout_seconds` sets the per-call deadline, not the `__init__` budget.
+Current Enterprise builds default to 300 seconds for both CPU and GPU
+Functions. Enterprise 1.13.0 through 1.14.1, and 1.15.0 builds before the
+shared default was restored, reject a GPU refresh unless the Function
+definition or the refresh request sets a positive value; registration still
+succeeds. A refresh value overrides the definition. Size the deadline from the
+longest observed call. The 600 seconds above is one working GPU example, not a
+universal recommendation.
+
 Older servers that do not implement `GET /v1/gpu/classes` raise
-`NotImplementedError`. Without `gpu_class`, the deployment's default GPU
-class is used. The class is immutable with the Function version; set a
-per-refresh class or aggregate GPU budget through
+`NotImplementedError`. With `gpu=True`, omitting `gpu_class` accepts any
+eligible configured class, equivalent to `gpu_class="any"`. Use
+`gpu_class="default"` to request the default pool explicitly. Class names
+must be lowercase. Counts
+must be positive integers; the deployment must have a node that can supply
+that many devices together. `max_gpu_count_per_worker` in the class inventory
+is the operator's cap; an unset cap does not promise unlimited hardware.
+Use `gpu=True, gpu_class="any", gpu_count=2` when any configured GPU class is acceptable, but each
+worker needs two devices together. `gpu=True, gpu_class="any"` requests one GPU. The server
+selects a class that fits the request using operator-configured limits,
+preferring known multi-GPU limits over unspecified limits. The selected
+class is fixed for the worker cohort; selection does not reserve capacity
+until the worker is scheduled. `gpu=True, gpu_count=2` makes the same request
+as `gpu=True, gpu_class="any", gpu_count=2`. A Function with an `any` request
+can share a SQL job with a
+Function pinned to a class; that job uses the pinned class.
+
+The request is immutable with the Function version. Configure tensor
+parallelism in the model separately, for example vLLM's
+`tensor_parallel_size=2` for `gpu=True, gpu_class="a10g", gpu_count=2`.
+
+The refresh `total_gpu_count` is a separate aggregate budget across workers and
+must be at least the Function's per-worker count. Set it through
 [`refresh_column_async`](/feature-engineering/refresh-column#resources).
 
 The model loads once per worker instance, in `__init__`; `__call__` only
@@ -166,9 +280,12 @@ in the function's source. A Secret is a database-scoped named credential:
 puts it in the environment variable the function reads, without ever
 returning it from any API or recording it in the function's own definition.
 Combine it with the stateful form so the HTTP client -- and any rate limiter
-around it -- is built once, not reopened on every row. There is no built-in
-retry or per-row error-skip policy -- a function that calls a flaky service
-should handle timeouts and retries itself, inside `__call__`.
+around it -- is built once, not reopened on every row. Configure HTTP timeouts
+inside `__call__`. Refresh-level `error_policy='skip'` can record row failures;
+see [handling failures](/management/function#failures). Native retry policies
+need matching SDK, server and Function-image support; on other deployments,
+handle bounded retries inside the Function only when repeating the request is
+safe.
 
 See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
 full worked example, how the bound value actually reaches a running
@@ -177,11 +294,10 @@ evaluation, and how that differs from rotating or revoking it later.
 ## Read and produce blobs {#blobs}
 
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
-return another blob, including a blob nested inside a struct field, not only
-at the top level. In row mode, a top-level blob parameter arrives as Python
-`bytes`, or `None` for a nullable input, after the worker has read the
-payload. Return bytes and let the destination table store the Managed
-payload and descriptor.
+return a Blob v2 value at the top level or inside a struct. In row mode, a
+top-level blob parameter arrives as Python `bytes`, or `None` for a nullable
+input, after the worker reads the payload. Use `BlobReader` to read it
+incrementally.
 
 This section extracts a frame from a stored video and captions it,
 continuing as one example across chaining, persisting and incremental reads
@@ -205,10 +321,32 @@ frames = db.create_table("frames", [
 
 ### Produce a blob {#produce-blobs}
 
-Declare blob inputs and outputs explicitly. `extract_frame` reads one frame
-out of a video at a timestamp and returns it as a JPEG, without loading the
-whole clip first -- see [Read a blob incrementally](#incremental) below for
-how the `video: BlobReader` parameter does that:
+{/*
+Draft for the streaming Blob output release.
+
+Use `BlobWriter` during computed column refresh to produce a Blob v2 value in
+chunks. Register the Function with a Python SDK that exposes `BlobWriter`
+after upgrading the LanceDB Enterprise server and Function worker images to
+versions that support streaming Blob output. Keep returning `bytes` with an
+explicit Blob v2 output schema on deployments without writer support.
+
+Import `BlobWriter` from `lancedb.functions`. In a scalar Function,
+`-> BlobWriter` infers a non-nullable Blob v2 output. For a vectorized
+Function, provide `input_schema` and annotate the return as
+`list[BlobWriter]` or `tuple[BlobWriter, ...]` to infer one Blob v2 result per
+row. Return the writers in input row order. Use `BlobWriter.field(...)` in
+an explicit output schema to mark writer-capable Blob v2 fields in named or
+nested results.
+
+Open a writer with `BlobWriter.open()`, pass each chunk to `write()`, and
+return the sealed writer after leaving its context manager. For plain SQL
+`SELECT`, use a byte-returning Function within the query's Arrow output
+limits.
+*/}
+
+`extract_frame` reads one frame from a video and returns JPEG bytes. Its
+explicit output schema declares a Blob v2 result. The `BlobReader` input
+lets it read the video incrementally. [Read a blob incrementally](#incremental)
 
 <CodeGroup>
 ```python Python icon="python"
@@ -236,26 +374,20 @@ extract_frame_version = db.create_function_async(extract_frame).wait(
 ```
 </CodeGroup>
 
-An empty byte string is a filled result. A scalar output cannot be nullable,
-because a physical NULL marks an unfilled computed row. To return a nullable
-blob as a value, use a named-struct output schema with a nullable blob field;
-the struct itself records whether the result has been filled. Read a nested
-blob with `table.fetch_blobs("payload.image", hits)`.
+An empty byte string is a filled result. A top-level Blob v2 output cannot be
+nullable; to return a nullable blob as a value, use a named-struct output
+schema with a nullable blob field. The struct itself records whether the
+result has been filled. A nullable non-Blob scalar output is declared with
+`Optional[T]` or `T | None`; see [Functions](/management/function#define).
+Read a nested blob with `table.fetch_blobs("payload.image", hits)`.
 
 A list or large-list output may also contain Blob v2 elements; inputs and
 fixed-size lists do not support this layout. List-nested values are queryable
 as descriptors, but `fetch_blobs` and `blob_mode="bytes"` cannot fetch their
 payloads.
 
-<Warning>
-`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
-rather than plain Arrow `binary`. Returning `bytes` from a function whose
-output type is inferred from a bare annotation, with no explicit
-`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
-still holds the right bytes, but it skips the Managed storage path, descriptor
-reads, and `fetch_blobs`. Declare it explicitly on every function whose output
-should be a blob, not just the first one in a chain.
-</Warning>
+A bare `bytes` return annotation infers ordinary Arrow `binary`. To store
+returned bytes as Blob v2, declare `output_schema=lancedb.blob(...)`.
 
 ### Chain a Function on its output {#chain}
 
@@ -383,3 +515,62 @@ as `bytes`; this feature does not add streamed outputs.
     Filling the column a Function is bound to, and re-filling it as inputs change.
   </Card>
 </CardGroup>
+
+
+## Default execution budgets
+
+`total_cpu_millis`, `total_memory_bytes`, and
+`total_gpu_count` supply execution-wide defaults. CPU is in millicores
+(1000 = one core), memory is in bytes, and GPU count is a total across workers.
+All five resource settings use the same names at registration, creation, and
+refresh. Each resolves independently in this order:
+
+1. The refresh's value.
+2. The column or materialized view's value.
+3. The registered Function's value.
+4. The deployment default for total budgets and device count; any eligible
+    configured GPU class when no layer specifies one.
+
+For a materialized view using multiple Functions, the third layer adds the
+`total_*` budgets across distinct pinned Function versions. Its per-worker GPU
+count uses the largest Function default, and GPU classes must be compatible
+unless the declaration or refresh overrides the class. Calling the same version
+more than once counts it once. Column and view defaults also apply when the
+service schedules a refresh automatically. Integer overflow or a budget that
+cannot fit a required worker is rejected.
+
+```python
+@function(
+    gpu=True,
+    gpu_class="h100",
+    gpu_count=2,
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=4,
+)
+def embed(text: str) -> list[float]: ...
+
+version = db.create_function(embed)
+table.add_columns(
+    {"embedding": version(text=col("text"))},
+    gpu_class="any",
+    gpu_count=1,
+    total_gpu_count=8,
+)
+table.refresh_column("embedding", gpu_class="h100", gpu_count=4, total_gpu_count=8)
+
+db.create_materialized_view(
+    "embeddings", query="SELECT embed(text) AS embedding FROM documents",
+    total_cpu_millis=16000,
+    gpu_class="any",
+    gpu_count=2,
+    total_gpu_count=8,
+)
+```
+
+`gpu_class` selects the GPU pool and `gpu_count` selects the positive number
+of devices allocated together to each worker. Both can be overridden at
+column/MV creation and refresh. An explicit `gpu_class="any"` replaces a
+registered class with any eligible configured pool. These settings require a
+GPU Function for computed columns. The `total_*` values are ceilings for the
+whole worker fleet. CPU and memory can limit the fleet before it reaches its GPU ceiling.

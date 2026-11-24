@@ -2,26 +2,181 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, DeltaRef as LanceDbDeltaRef,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, Ref, Table as LanceDbTable,
+    FunctionRefreshPlanningConfig as LanceFunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources as LanceFunctionRefreshPodResources, NewColumnTransform, Ref,
+    Table as LanceDbTable, TableDelta as LanceDbTableDelta,
 };
 use napi::Env;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
-use crate::error::NapiErrorExt;
+use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
+use crate::error::{NapiErrorExt, convert_error};
 use crate::index::Index;
+use crate::iterator::RecordBatchIterator;
+use crate::job::JobFailureInfo;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
+
+/// Settings for durable data-cache prewarm submission.
+#[napi(object)]
+pub struct PrewarmDataOptions {
+    pub columns: Option<Vec<String>>,
+    pub filter: Option<String>,
+    pub concurrency: Option<f64>,
+    pub parameters: Option<Buffer>,
+}
+
+impl PrewarmDataOptions {
+    fn into_options(self) -> napi::Result<lancedb::table::PrewarmDataOptions> {
+        let mut options =
+            lancedb::table::PrewarmDataOptions::new().columns(self.columns.unwrap_or_default());
+        options.filter = self.filter;
+        if let Some(parameters) = self.parameters {
+            let mut batches = ipc_file_to_batches(parameters.to_vec())
+                .and_then(|reader| {
+                    reader
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(Into::into)
+                })
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            if batches.len() != 1 || batches[0].num_rows() != 1 {
+                return Err(napi::Error::from_reason(
+                    "prewarm parameters must contain one row in one batch",
+                ));
+            }
+            options.parameters = Some(batches.remove(0));
+        }
+        if let Some(value) = self.concurrency {
+            if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > u32::MAX as f64
+            {
+                return Err(napi::Error::from_reason(
+                    "concurrency must be an integer between 1 and 4294967295",
+                ));
+            }
+            options.concurrency = Some(value as u32);
+        }
+        Ok(options)
+    }
+}
+
+/// Per-invocation file-compaction settings. All numbers must be safe integers.
+#[napi(object)]
+pub struct CompactionOptions {
+    pub target_rows_per_fragment: Option<f64>,
+    pub max_source_rows: Option<f64>,
+    pub io_buffer_size: Option<f64>,
+    pub batch_size: Option<f64>,
+}
+
+impl CompactionOptions {
+    fn into_overrides(self) -> napi::Result<lancedb::table::optimize::CompactionOverrides> {
+        const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+        fn integer(
+            value: Option<f64>,
+            name: &str,
+            max: u64,
+            allow_zero: bool,
+        ) -> napi::Result<Option<u64>> {
+            let Some(value) = value else {
+                return Ok(None);
+            };
+            let min = if allow_zero { 0 } else { 1 };
+            let max = max.min(MAX_SAFE_INTEGER);
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || value < min as f64
+                || value > max as f64
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be a safe integer between {min} and {max}"
+                )));
+            }
+            Ok(Some(value as u64))
+        }
+        let mut options = lancedb::table::optimize::CompactionOverrides::default();
+        if let Some(target) = integer(
+            self.target_rows_per_fragment,
+            "targetRowsPerFragment",
+            u32::MAX as u64,
+            false,
+        )? {
+            options.target_rows_per_fragment = Some(target as usize);
+        }
+        options.max_source_rows = integer(
+            self.max_source_rows,
+            "maxSourceRows",
+            usize::MAX as u64,
+            false,
+        )?
+        .map(|v| v as usize);
+        options.io_buffer_size = integer(self.io_buffer_size, "ioBufferSize", u64::MAX, true)?;
+        options.batch_size =
+            integer(self.batch_size, "batchSize", u32::MAX as u64, false)?.map(|v| v as usize);
+        Ok(options)
+    }
+}
+
+/// One endpoint of a table delta: a positive version or a same-branch tag.
+#[napi(object)]
+pub struct DeltaRef {
+    /// A persisted version, expressed as a positive lossless u64 bigint.
+    pub version: Option<BigInt>,
+    /// A tag on the table handle's current branch.
+    pub tag: Option<String>,
+}
+
+impl DeltaRef {
+    fn into_delta_ref(self) -> napi::Result<LanceDbDeltaRef> {
+        match (self.version, self.tag) {
+            (Some(version), None) => {
+                let (negative, value, lossless) = version.get_u64();
+                if negative || !lossless {
+                    return Err(napi::Error::from_reason(
+                        "delta version must be a positive lossless u64 bigint",
+                    ));
+                }
+                if value == 0 {
+                    return Err(napi::Error::from_reason(
+                        "delta version must be greater than zero",
+                    ));
+                }
+                Ok(LanceDbDeltaRef::Version(value))
+            }
+            (None, Some(tag)) => {
+                if tag.is_empty() {
+                    return Err(napi::Error::from_reason(
+                        "delta tag must be a non-empty string",
+                    ));
+                }
+                Ok(LanceDbDeltaRef::Tag(tag))
+            }
+            _ => Err(napi::Error::from_reason(
+                "delta reference must contain exactly one of version or tag",
+            )),
+        }
+    }
+}
+
+/// A committed transaction in a table delta range.
+#[napi(object)]
+pub struct TableDeltaTransaction {
+    pub read_version: BigInt,
+    pub uuid: String,
+    pub operation: String,
+    pub tag: Option<String>,
+    pub transaction_properties: Option<HashMap<String, String>>,
+}
 
 #[napi]
 pub struct Table {
@@ -75,7 +230,7 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean, retries?: number"
     )]
     pub async fn add(
         &self,
@@ -83,6 +238,7 @@ impl Table {
         mode: String,
         progress_callback: Option<ProgressFn>,
         allow_external_blob_outside_bases: Option<bool>,
+        retries: Option<u32>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -98,6 +254,11 @@ impl Table {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
+        if let Some(retries) = retries {
+            let retries = u8::try_from(retries)
+                .map_err(|_| napi::Error::from_reason("retries must be between 0 and 255"))?;
+            op = op.retries(retries);
+        }
 
         op = if mode == "append" {
             op.mode(AddDataMode::Append)
@@ -232,6 +393,40 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn prewarm_data_async(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .prewarm_data_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn explain_prewarm_data(
+        &self,
+        options: Option<PrewarmDataOptions>,
+    ) -> napi::Result<serde_json::Value> {
+        let options = options
+            .map(PrewarmDataOptions::into_options)
+            .transpose()?
+            .unwrap_or_default();
+        let plan = self
+            .inner_ref()?
+            .explain_prewarm_data(options)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn wait_for_index(&self, index_names: Vec<String>, timeout_s: i64) -> Result<()> {
         let timeout = std::time::Duration::from_secs(timeout_s.try_into().unwrap());
         let index_names: Vec<&str> = index_names.iter().map(|s| s.as_str()).collect();
@@ -282,6 +477,31 @@ impl Table {
     #[napi(catch_unwind)]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
+    }
+
+    /// Whether this handle reads an in-process dataset.
+    #[napi]
+    pub fn is_native(&self) -> napi::Result<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
+    }
+
+    /// Constrain deferred blob reads by the producing query response.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot_with_identity(
+        &self,
+        version: String,
+        identity: String,
+    ) -> napi::Result<Self> {
+        // Keep u64 query versions exact across the JavaScript boundary.
+        let version = version
+            .parse::<u64>()
+            .map_err(|_| napi::Error::from_reason("Invalid query snapshot version"))?;
+        let snapshot = self
+            .inner_ref()?
+            .query_snapshot_with_identity(version, &identity)
+            .await
+            .default_error()?;
+        Ok(Self::new(snapshot))
     }
 
     /// Return a read-only table handle pinned to the current query revision.
@@ -355,7 +575,32 @@ impl Table {
                 .fetch_blobs(column.as_str(), &row_ids)
                 .await
                 .default_error()?;
-            Ok(copy_blob_buffers(array))
+            copy_blob_buffers(array)
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blob_ranges<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        requests: Vec<BlobRangeRequest>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(requests.len()).map_err(|error| {
+            napi::Error::from_reason(format!("cannot allocate blob range requests: {error}"))
+        })?;
+        for request in requests {
+            ranges.push(request.parse()?);
+        }
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blob_ranges(column.as_str(), ranges)
+                .await
+                .default_error()?;
+            copy_blob_buffers(array)
         })
     }
 
@@ -464,9 +709,11 @@ impl Table {
             })
             .transpose()?;
         let request = lancedb::function::FunctionErrorsRequest {
+            history: false,
             job_id: options.job_id,
             column: options.column,
             limit,
+            page_token: options.page_token,
         };
         let errors = self
             .inner_ref()?
@@ -477,10 +724,65 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn function_column_statuses(
+        &self,
+        column: Option<String>,
+    ) -> napi::Result<Vec<FunctionColumnStatus>> {
+        let statuses = self
+            .inner_ref()?
+            .function_column_statuses(column.as_deref())
+            .await
+            .default_error()?;
+        Ok(statuses.into_iter().map(Into::into).collect())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn function_column_status(
+        &self,
+        column: String,
+    ) -> napi::Result<FunctionColumnStatus> {
+        let status = self
+            .inner_ref()?
+            .function_column_status(&column)
+            .await
+            .default_error()?;
+        Ok(status.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_function_column(
+        &self,
+        column: String,
+        timeout_seconds: Option<i64>,
+    ) -> napi::Result<FunctionColumnStatus> {
+        let timeout = timeout_seconds
+            .map(|seconds| {
+                u64::try_from(seconds)
+                    .map(std::time::Duration::from_secs)
+                    .map_err(|_| {
+                        napi::Error::from_reason("timeoutSeconds must be a non-negative integer")
+                    })
+            })
+            .transpose()?;
+        let status = self
+            .inner_ref()?
+            .wait_for_function_column(&column, timeout)
+            .await
+            .default_error()?;
+        Ok(status.into())
+    }
+
+    #[napi(catch_unwind)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn refresh_materialized_view(
         &self,
         source_version: Option<i64>,
         full: Option<bool>,
+        total_cpu_millis: Option<f64>,
+        total_memory_bytes: Option<f64>,
+        total_gpu_count: Option<f64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<f64>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
@@ -491,6 +793,30 @@ impl Table {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
             })?;
             builder = builder.source_version(version);
+        }
+        let resources: lancedb::table::RefreshColumnOptions = RefreshColumnOptions {
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class,
+            gpu_count,
+            ..Default::default()
+        }
+        .try_into()?;
+        if let Some(value) = resources.total_cpu_millis {
+            builder = builder.total_cpu_millis(value);
+        }
+        if let Some(value) = resources.total_memory_bytes {
+            builder = builder.total_memory_bytes(value);
+        }
+        if let Some(value) = resources.total_gpu_count {
+            builder = builder.total_gpu_count(value);
+        }
+        if let Some(value) = resources.gpu_class {
+            builder = builder.gpu_class(value);
+        }
+        if let Some(value) = resources.gpu_count {
+            builder = builder.gpu_count(value);
         }
         let result = builder.execute().await.default_error()?;
         Ok(result.into())
@@ -611,6 +937,37 @@ impl Table {
         Ok(spec.map(RTEWriteSpec::from))
     }
 
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn get_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .get_table_overrides()
+            .await
+            .default_error()
+    }
+
+    #[napi(
+        catch_unwind,
+        ts_args_type = "overrides: Record<string, unknown>",
+        ts_return_type = "Promise<Record<string, unknown>>"
+    )]
+    pub async fn update_table_overrides(
+        &self,
+        overrides: serde_json::Value,
+    ) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .update_table_overrides(overrides)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind, ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn reset_table_overrides(&self) -> napi::Result<serde_json::Value> {
+        self.inner_ref()?
+            .reset_table_overrides()
+            .await
+            .default_error()
+    }
+
     #[napi(catch_unwind, js_name = "closeRTEWriters")]
     pub async fn close_rte_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_rte_writers().await.default_error()
@@ -680,6 +1037,19 @@ impl Table {
         self.inner_ref()?.checkout_latest().await.default_error()
     }
 
+    /// Compare two persisted versions or same-branch tags.
+    #[napi(catch_unwind)]
+    pub async fn delta(
+        &self,
+        from_version: DeltaRef,
+        to_version: Option<DeltaRef>,
+    ) -> napi::Result<TableDelta> {
+        let from = from_version.into_delta_ref()?;
+        let to = to_version.map(DeltaRef::into_delta_ref).transpose()?;
+        let delta = self.inner_ref()?.delta(from, to).await.default_error()?;
+        Ok(TableDelta::new(delta))
+    }
+
     #[napi(catch_unwind)]
     pub async fn list_versions(&self) -> napi::Result<Vec<Version>> {
         self.inner_ref()?
@@ -728,10 +1098,55 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn explain_cleanup(
+        &self,
+        min_age_seconds: Option<f64>,
+    ) -> napi::Result<serde_json::Value> {
+        let plan = self
+            .inner_ref()?
+            .explain_cleanup(parse_cleanup_options(min_age_seconds)?)
+            .await
+            .default_error()?;
+        serde_json::to_value(plan).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn cleanup_async(
+        &self,
+        min_age_seconds: Option<f64>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = parse_cleanup_options(min_age_seconds)?;
+        let job = self
+            .inner_ref()?
+            .cleanup_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn compact_async(
+        &self,
+        options: Option<CompactionOptions>,
+    ) -> napi::Result<crate::job::Job> {
+        let options = options
+            .map(CompactionOptions::into_overrides)
+            .transpose()?
+            .unwrap_or_default();
+        let job = self
+            .inner_ref()?
+            .compact_async(options)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new_typed(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
         before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
+        compaction_options: Option<CompactionOptions>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
@@ -746,8 +1161,11 @@ impl Table {
             .transpose()?;
 
         let stats = inner
-            .optimize_full(
-                lancedb::table::CompactionOptions::default(),
+            .optimize_full_with_overrides(
+                compaction_options
+                    .map(CompactionOptions::into_overrides)
+                    .transpose()?
+                    .unwrap_or_default(),
                 None,
                 before_timestamp,
                 delete_unverified,
@@ -1523,11 +1941,91 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
+    /// Empty starts retained history, including repaired rows, for an exact jobId; otherwise continue that page.
+    pub page_token: Option<String>,
+}
+
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: f64,
+    /// Memory limit in bytes.
+    pub memory_bytes: f64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: f64,
+}
+
+/// Resources and sizing policy for the planning fleet of one registered
+/// Function refresh.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: f64,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: f64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: f64,
+}
+
+/// Overrides retries of failed user-code calls for one refresh. Omitted
+/// fields use the Function refresh defaults.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct FunctionRetryPolicy {
+    /// Total calls, including the first; 1 disables retries, maximum 100.
+    pub max_attempts: Option<u32>,
+    /// Initial exponential-backoff ceiling, in seconds.
+    pub initial_backoff_seconds: Option<f64>,
+    /// Maximum backoff, in seconds.
+    pub max_backoff_seconds: Option<f64>,
+    /// Exception class names, preferably qualified.
+    pub exception_types: Option<Vec<String>>,
+    /// Regular expression matched against the exception class and message.
+    pub message_pattern: Option<String>,
+    /// Structured provider error codes or HTTP status codes.
+    pub error_codes: Option<Vec<String>>,
+    /// Match connection/timeouts, HTTP 429/503, SlowDown and
+    /// ServiceUnavailable.
+    pub transient: Option<bool>,
+    /// Honor Retry-After within the configured maximum.
+    pub honor_retry_after: Option<bool>,
+}
+
+fn positive_safe_integer(value: f64, name: &str) -> napi::Result<u64> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if !value.is_finite() || value.fract() != 0.0 || !(1.0..=MAX_SAFE_INTEGER).contains(&value) {
+        return Err(napi::Error::from_reason(format!(
+            "{name} must be a positive safe integer"
+        )));
+    }
+    Ok(value as u64)
+}
+
+fn positive_u32(value: Option<f64>, name: &str) -> napi::Result<Option<u32>> {
+    value
+        .map(|value| {
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || !(1.0..=u32::MAX as f64).contains(&value)
+            {
+                return Err(napi::Error::from_reason(format!(
+                    "{name} must be an integer between 1 and 4294967295"
+                )));
+            }
+            Ok(value as u32)
+        })
+        .transpose()
 }
 
 /// Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 /// option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-/// `batchSize`, `gpuClass` and `gpuCount` and rejects the rest.
+/// `batchSize`, `gpuClass` and `totalGpuCount` and rejects the rest.
 #[napi(object)]
 #[derive(Clone, Debug, Default)]
 pub struct RefreshColumnOptions {
@@ -1536,10 +2034,30 @@ pub struct RefreshColumnOptions {
     pub where_clause: Option<String>,
     /// Maximum rows per Function call; must be greater than zero.
     pub batch_size: Option<u32>,
+    /// Row-count threshold for publishing completed Function split ranges.
+    /// Must be a positive safe integer. Omit for whole-fragment publication.
+    /// Actual publications can be larger; remaining rows publish at completion.
+    /// Requires LanceDB Enterprise with non-Blob Function outputs.
+    pub publication_interval_rows: Option<f64>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub max_concurrency: Option<f64>,
     /// GPU class for Function workers.
     pub gpu_class: Option<String>,
-    /// Positive aggregate GPU budget for Function workers.
-    pub gpu_count: Option<u32>,
+    /// Positive GPU count allocated to each Function worker.
+    pub gpu_count: Option<f64>,
+    /// Override the total CPU budget in millicores for this refresh.
+    pub total_cpu_millis: Option<f64>,
+    /// Override the total memory budget in bytes for this refresh.
+    pub total_memory_bytes: Option<f64>,
+    /// CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing for the refresh planning fleet.
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
+    /// Nonnegative total GPU budget for Function workers.
+    pub total_gpu_count: Option<f64>,
+    /// Override retries of failed user-code calls for this refresh.
+    pub retry_policy: Option<FunctionRetryPolicy>,
     /// `"fail"` (default) stops on a row error; `"skip"` writes null and
     /// records the error, subject to the failure limits.
     pub error_policy: Option<String>,
@@ -1566,8 +2084,115 @@ impl TryFrom<RefreshColumnOptions> for lancedb::table::RefreshColumnOptions {
         let mut options = Self::default();
         options.where_clause = value.where_clause;
         options.batch_size = value.batch_size.map(|size| size as usize);
+        options.publication_interval_rows = value
+            .publication_interval_rows
+            .map(|rows| positive_safe_integer(rows, "publicationIntervalRows"))
+            .transpose()?;
+        options.max_concurrency = positive_u32(value.max_concurrency, "maxConcurrency")?;
         options.gpu_class = value.gpu_class;
-        options.gpu_count = value.gpu_count;
+        options.gpu_count = positive_u32(value.gpu_count, "gpuCount")?;
+        options.total_cpu_millis = value
+            .total_cpu_millis
+            .map(|value| positive_safe_integer(value, "totalCpuMillis"))
+            .transpose()?;
+        options.total_memory_bytes = value
+            .total_memory_bytes
+            .map(|value| positive_safe_integer(value, "totalMemoryBytes"))
+            .transpose()?;
+        options.supervisor_resources = value
+            .supervisor_resources
+            .map(|resources| {
+                Ok::<_, napi::Error>(LanceFunctionRefreshPodResources::new(
+                    positive_safe_integer(resources.cpu_millis, "supervisorResources.cpuMillis")?,
+                    positive_safe_integer(
+                        resources.memory_bytes,
+                        "supervisorResources.memoryBytes",
+                    )?,
+                    positive_safe_integer(
+                        resources.ephemeral_storage_bytes,
+                        "supervisorResources.ephemeralStorageBytes",
+                    )?,
+                ))
+            })
+            .transpose()?;
+        options.planning_workers = value
+            .planning_workers
+            .map(|planning| {
+                let resources = LanceFunctionRefreshPodResources::new(
+                    positive_safe_integer(
+                        planning.resources.cpu_millis,
+                        "planningWorkers.resources.cpuMillis",
+                    )?,
+                    positive_safe_integer(
+                        planning.resources.memory_bytes,
+                        "planningWorkers.resources.memoryBytes",
+                    )?,
+                    positive_safe_integer(
+                        planning.resources.ephemeral_storage_bytes,
+                        "planningWorkers.resources.ephemeralStorageBytes",
+                    )?,
+                );
+                let max_workers = usize::try_from(positive_safe_integer(
+                    planning.max_workers,
+                    "planningWorkers.maxWorkers",
+                )?)
+                .map_err(|_| napi::Error::from_reason("planningWorkers.maxWorkers is too large"))?;
+                Ok::<_, napi::Error>(LanceFunctionRefreshPlanningConfig::new(
+                    resources,
+                    max_workers,
+                    positive_safe_integer(
+                        planning.rows_per_worker,
+                        "planningWorkers.rowsPerWorker",
+                    )?,
+                    positive_safe_integer(
+                        planning.fragments_per_worker,
+                        "planningWorkers.fragmentsPerWorker",
+                    )?,
+                ))
+            })
+            .transpose()?;
+        options.total_gpu_count = value
+            .total_gpu_count
+            .map(|count| {
+                if !count.is_finite()
+                    || count.fract() != 0.0
+                    || !(0.0..=u32::MAX as f64).contains(&count)
+                {
+                    return Err(napi::Error::from_reason(
+                        "totalGpuCount must be an integer between 0 and 4294967295",
+                    ));
+                }
+                Ok(count as u32)
+            })
+            .transpose()?;
+        options.retry_policy = value.retry_policy.map(|policy| {
+            let mut converted = lancedb::function::FunctionRetryPolicy::default();
+            if let Some(max_attempts) = policy.max_attempts {
+                converted.max_attempts = max_attempts;
+            }
+            if let Some(seconds) = policy.initial_backoff_seconds {
+                converted.initial_backoff_seconds = seconds;
+            }
+            if let Some(seconds) = policy.max_backoff_seconds {
+                converted.max_backoff_seconds = seconds;
+            }
+            if let Some(exception_types) = policy.exception_types {
+                converted.exception_types = exception_types;
+            }
+            if let Some(pattern) = policy.message_pattern {
+                converted.message_pattern = Some(pattern);
+            }
+            if let Some(error_codes) = policy.error_codes {
+                converted.error_codes = error_codes;
+            }
+            if let Some(transient) = policy.transient {
+                converted.transient = transient;
+            }
+            if let Some(honor_retry_after) = policy.honor_retry_after {
+                converted.honor_retry_after = honor_retry_after;
+            }
+            converted
+        });
         options.error_policy = match value.error_policy.as_deref() {
             None => None,
             Some("fail") => Some(lancedb::function::FunctionErrorPolicy::Fail),
@@ -1665,6 +2290,118 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     pub truncated: bool,
+    /// Continue the same job/filter. Absent for complete pages and older servers.
+    pub page_token: Option<String>,
+}
+
+/// One exact immutable Function revision attached to a table output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnVersionStatus {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub object_id: String,
+    pub location: String,
+    pub version: String,
+    pub manifest_digest: String,
+}
+
+/// Latest matching refresh Job projected for a Function output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnLastRefreshJob {
+    pub job_id: String,
+    pub state: String,
+    pub automatic: Option<bool>,
+    pub completed_at_millis: Option<BigInt>,
+    pub failure: Option<JobFailureInfo>,
+}
+
+impl From<lancedb::table::FunctionColumnLastRefreshJob> for FunctionColumnLastRefreshJob {
+    fn from(job: lancedb::table::FunctionColumnLastRefreshJob) -> Self {
+        Self {
+            job_id: job.job_id,
+            state: job.state,
+            automatic: job.automatic,
+            completed_at_millis: job.completed_at_millis.map(BigInt::from),
+            failure: job.failure.map(Into::into),
+        }
+    }
+}
+
+/// Automatic-refresh projection for a Function output.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnAutoRefreshStatus {
+    pub enabled: bool,
+    pub interval_seconds: Option<BigInt>,
+    pub active_job_id: Option<String>,
+    pub state: String,
+    pub failure_streak: u32,
+    pub effective_cooldown_millis: Option<BigInt>,
+    pub blocked_reason: Option<String>,
+    pub next_run_at_millis: Option<BigInt>,
+    pub next_run_at_reason: Option<String>,
+}
+
+/// Exact four-way status of one Function output at one table version.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionColumnStatus {
+    pub column: String,
+    pub binding_id: String,
+    pub function: FunctionColumnVersionStatus,
+    pub table_version: BigInt,
+    pub rows: BigInt,
+    pub fresh: BigInt,
+    pub stale: BigInt,
+    pub never_computed: BigInt,
+    pub failed: BigInt,
+    pub last_refresh_job: Option<FunctionColumnLastRefreshJob>,
+    pub last_failure_job: Option<FunctionColumnLastRefreshJob>,
+    pub auto_refresh: FunctionColumnAutoRefreshStatus,
+}
+
+impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
+    fn from(status: lancedb::table::FunctionColumnStatus) -> Self {
+        Self {
+            column: status.column,
+            binding_id: status.binding_id,
+            function: FunctionColumnVersionStatus {
+                name: status.function.name,
+                namespace_path: status.function.namespace_path,
+                object_id: status.function.object_id,
+                location: status.function.location,
+                version: status.function.version,
+                manifest_digest: status.function.manifest_digest,
+            },
+            table_version: BigInt::from(status.table_version),
+            rows: BigInt::from(status.rows),
+            fresh: BigInt::from(status.fresh),
+            stale: BigInt::from(status.stale),
+            never_computed: BigInt::from(status.never_computed),
+            failed: BigInt::from(status.failed),
+            last_refresh_job: status.last_refresh_job.map(Into::into),
+            last_failure_job: status.last_failure_job.map(Into::into),
+            auto_refresh: FunctionColumnAutoRefreshStatus {
+                enabled: status.auto_refresh.enabled,
+                interval_seconds: status.auto_refresh.interval_seconds.map(BigInt::from),
+                active_job_id: status.auto_refresh.active_job_id,
+                state: status.auto_refresh.state.as_str().to_string(),
+                failure_streak: status.auto_refresh.failure_streak,
+                effective_cooldown_millis: status
+                    .auto_refresh
+                    .effective_cooldown_millis
+                    .map(BigInt::from),
+                blocked_reason: status
+                    .auto_refresh
+                    .blocked_reason
+                    .map(|reason| reason.as_str().to_string()),
+                next_run_at_millis: status.auto_refresh.next_run_at_millis.map(BigInt::from),
+                next_run_at_reason: status.auto_refresh.next_run_at_reason,
+            },
+        }
+    }
 }
 
 impl From<lancedb::function::FunctionErrors> for FunctionErrors {
@@ -1673,6 +2410,7 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
             records: errors.records.into_iter().map(Into::into).collect(),
             fragments: errors.fragments.into_iter().map(Into::into).collect(),
             truncated: errors.truncated,
+            page_token: errors.page_token,
         }
     }
 }
@@ -1771,6 +2509,84 @@ pub struct BranchContents {
     pub manifest_size: i64,
 }
 
+fn from_tag_hint(name: &str, tag: &str) -> String {
+    let name_literal = serde_json::Value::String(name.to_string()).to_string();
+    let tag_literal = serde_json::Value::String(tag.to_string()).to_string();
+    format!(
+        "If {tag_literal} is a tag, use branches.create({name_literal}, {{ fromTag: {tag_literal} }}) instead of fromRef."
+    )
+}
+
+/// A pinned version range with streaming row changes.
+#[napi]
+pub struct TableDelta {
+    inner: Arc<LanceDbTableDelta>,
+}
+
+impl TableDelta {
+    fn new(inner: LanceDbTableDelta) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[napi]
+impl TableDelta {
+    #[napi]
+    pub fn begin_version(&self) -> BigInt {
+        BigInt::from(self.inner.begin_version())
+    }
+
+    #[napi]
+    pub fn end_version(&self) -> BigInt {
+        BigInt::from(self.inner.end_version())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn inserted_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.inserted_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn updated_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.updated_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn upserted_rows(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.upserted_rows().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn deleted_row_ids(&self) -> napi::Result<RecordBatchIterator> {
+        let stream = self.inner.deleted_row_ids().await.default_error()?;
+        Ok(RecordBatchIterator::new(stream.into()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_transactions(&self) -> napi::Result<Vec<TableDeltaTransaction>> {
+        let transactions = self.inner.list_transactions().await.default_error()?;
+        Ok(transactions
+            .into_iter()
+            .map(|transaction| TableDeltaTransaction {
+                read_version: BigInt::from(transaction.read_version),
+                uuid: transaction.uuid,
+                operation: transaction.operation.name().to_string(),
+                tag: transaction.tag,
+                transaction_properties: transaction
+                    .transaction_properties
+                    .as_ref()
+                    .map(|properties| (**properties).clone()),
+            })
+            .collect())
+    }
+}
+
+/// Tags label table versions with human-readable names.
 #[napi]
 pub struct Tags {
     inner: LanceDbTable,
@@ -1809,12 +2625,20 @@ impl Tags {
             .default_error()
     }
 
+    /// Create a tag for a table version.
+    ///
+    /// Omit `version` to tag the version this handle currently shows,
+    /// including a checked-out version.
     #[napi]
-    pub async unsafe fn create(&mut self, tag: String, version: i64) -> napi::Result<()> {
+    pub async unsafe fn create(&mut self, tag: String, version: Option<i64>) -> napi::Result<()> {
+        let version = match version {
+            Some(version) => version as u64,
+            None => self.inner.version().await.default_error()?,
+        };
         let mut rust_tags = self.inner.tags().await.default_error()?;
         rust_tags
             .as_mut()
-            .create(tag.as_str(), version as u64)
+            .create(tag.as_str(), version)
             .await
             .default_error()
     }
@@ -1872,7 +2696,18 @@ impl Branches {
         name: String,
         from_ref: Option<String>,
         from_version: Option<i64>,
+        from_tag: Option<String>,
     ) -> napi::Result<Table> {
+        if from_tag.is_some() && (from_ref.is_some() || from_version.is_some()) {
+            return Err(napi::Error::from_reason(
+                "fromTag cannot be combined with fromRef or fromVersion; pass only one source",
+            ));
+        }
+        let from_branch = if from_tag.is_none() {
+            from_ref.clone()
+        } else {
+            None
+        };
         let from_ref = from_ref.filter(|b| b != "main");
         let from_version = from_version
             .map(|v| {
@@ -1881,13 +2716,27 @@ impl Branches {
                 })
             })
             .transpose()?;
-        let from = Ref::Version(from_ref, from_version);
-        let table = self
-            .inner
-            .create_branch(&name, from)
-            .await
-            .default_error()?;
-        Ok(Table::new(table))
+        let from = match from_tag {
+            Some(tag) => Ref::Tag(tag),
+            None => Ref::Version(from_ref, from_version),
+        };
+        match self.inner.create_branch(&name, from).await {
+            Ok(table) => Ok(Table::new(table)),
+            Err(error) => {
+                // A missing branch is a native NotFound. A missing version is
+                // VersionNotFound, and an Enterprise 404 is an ambiguous
+                // TableNotFound, so only the native branch case gets the hint.
+                let missing_branch = matches!(
+                    &error,
+                    lancedb::Error::Lance { source } if source.is_not_found()
+                );
+                let mut error = convert_error(&error);
+                if missing_branch && let Some(branch) = from_branch.as_deref() {
+                    error.reason = format!("{}\n{}", error.reason, from_tag_hint(&name, branch));
+                }
+                Err(error)
+            }
+        }
     }
 
     #[napi]
@@ -1933,5 +2782,38 @@ impl Branches {
         serde_json::to_value(result).map_err(|err| {
             napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
         })
+    }
+}
+
+fn parse_cleanup_options(
+    min_age_seconds: Option<f64>,
+) -> napi::Result<lancedb::table::CleanupOptions> {
+    let mut options = lancedb::table::CleanupOptions::new();
+    if let Some(age) = min_age_seconds {
+        if !age.is_finite() || age.fract() != 0.0 || !(0.0..=9_007_199_254_740_991.0).contains(&age)
+        {
+            return Err(napi::Error::from_reason(
+                "minAgeSeconds must be a nonnegative safe integer",
+            ));
+        }
+        options.min_age_seconds = Some(age as u64);
+    }
+    Ok(options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_tag_hint;
+
+    #[test]
+    fn from_tag_hint_uses_escaped_javascript_string_literals() {
+        assert_eq!(
+            from_tag_hint("exp", "baseline"),
+            r#"If "baseline" is a tag, use branches.create("exp", { fromTag: "baseline" }) instead of fromRef."#
+        );
+        assert_eq!(
+            from_tag_hint("branch\"name\\path", "tag\"name\\path"),
+            r#"If "tag\"name\\path" is a tag, use branches.create("branch\"name\\path", { fromTag: "tag\"name\\path" }) instead of fromRef."#
+        );
     }
 }

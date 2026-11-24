@@ -54,6 +54,11 @@ pub(super) fn create_sql(
     namespace: &[String],
     request: &CreateStorageIntegrationRequest,
 ) -> Result<String> {
+    let if_not_exists = if request.exist_ok {
+        " IF NOT EXISTS"
+    } else {
+        ""
+    };
     if request.storage_provider != StorageProvider::HuggingFace
         && request.huggingface_token_secret.is_some()
     {
@@ -70,6 +75,7 @@ pub(super) fn create_sql(
             || request.azure_tenant_id_secret.is_some()
             || request.azure_client_id_secret.is_some()
             || request.azure_client_secret_secret.is_some()
+            || request.azure_storage_account_access_key_secret.is_some()
             || request.gcp_credentials_json_secret.is_some()
         {
             return Err(invalid(
@@ -77,7 +83,7 @@ pub(super) fn create_sql(
             ));
         }
         let mut sql = format!(
-            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'HUGGINGFACE' STORAGE_PREFIX = {}",
+            "CREATE STORAGE INTEGRATION{if_not_exists} {} STORAGE_PROVIDER = 'HUGGINGFACE' STORAGE_PREFIX = {}",
             object_name(name, namespace)?,
             literal(&request.storage_prefix)
         );
@@ -105,6 +111,7 @@ pub(super) fn create_sql(
             || request.azure_tenant_id_secret.is_some()
             || request.azure_client_id_secret.is_some()
             || request.azure_client_secret_secret.is_some()
+            || request.azure_storage_account_access_key_secret.is_some()
         {
             return Err(invalid(
                 "GCP integrations cannot contain AWS or Azure options",
@@ -115,7 +122,7 @@ pub(super) fn create_sql(
             .as_ref()
             .ok_or_else(|| invalid("GCP integrations require gcp_credentials_json_secret"))?;
         return Ok(format!(
-            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'GCP' STORAGE_PREFIX = {} GCP_CREDENTIALS_JSON_SECRET = {}",
+            "CREATE STORAGE INTEGRATION{if_not_exists} {} STORAGE_PROVIDER = 'GCP' STORAGE_PREFIX = {} GCP_CREDENTIALS_JSON_SECRET = {}",
             object_name(name, namespace)?,
             literal(&request.storage_prefix),
             secret_name(reference)?
@@ -135,29 +142,37 @@ pub(super) fn create_sql(
             .filter(|account| !account.is_empty())
             .ok_or_else(|| invalid("Azure integrations require azure_storage_account"))?;
         let mut sql = format!(
-            "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'AZURE' STORAGE_PREFIX = {} STORAGE_AZURE_STORAGE_ACCOUNT = {}",
+            "CREATE STORAGE INTEGRATION{if_not_exists} {} STORAGE_PROVIDER = 'AZURE' STORAGE_PREFIX = {} STORAGE_AZURE_STORAGE_ACCOUNT = {}",
             object_name(name, namespace)?,
             literal(&request.storage_prefix),
             literal(account)
         );
-        for (key, reference) in [
-            (
-                "STORAGE_AZURE_TENANT_ID_SECRET",
-                &request.azure_tenant_id_secret,
-            ),
-            (
-                "STORAGE_AZURE_CLIENT_ID_SECRET",
-                &request.azure_client_id_secret,
-            ),
-            (
-                "STORAGE_AZURE_CLIENT_SECRET_SECRET",
-                &request.azure_client_secret_secret,
-            ),
-        ] {
-            let reference = reference.as_ref().ok_or_else(|| {
-                invalid("Azure integrations require all three credential Secret references")
-            })?;
-            sql.push_str(&format!(" {key} = {}", secret_name(reference)?));
+        match (
+            &request.azure_storage_account_access_key_secret,
+            &request.azure_tenant_id_secret,
+            &request.azure_client_id_secret,
+            &request.azure_client_secret_secret,
+        ) {
+            (Some(reference), None, None, None) => {
+                sql.push_str(&format!(
+                    " STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = {}",
+                    secret_name(reference)?
+                ));
+            }
+            (None, Some(tenant), Some(client), Some(secret)) => {
+                for (key, reference) in [
+                    ("STORAGE_AZURE_TENANT_ID_SECRET", tenant),
+                    ("STORAGE_AZURE_CLIENT_ID_SECRET", client),
+                    ("STORAGE_AZURE_CLIENT_SECRET_SECRET", secret),
+                ] {
+                    sql.push_str(&format!(" {key} = {}", secret_name(reference)?));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    "Specify either azure_storage_account_access_key_secret or all three Azure service principal Secret references",
+                ));
+            }
         }
         return Ok(sql);
     }
@@ -165,11 +180,12 @@ pub(super) fn create_sql(
         || request.azure_tenant_id_secret.is_some()
         || request.azure_client_id_secret.is_some()
         || request.azure_client_secret_secret.is_some()
+        || request.azure_storage_account_access_key_secret.is_some()
     {
         return Err(invalid("S3 integrations cannot contain Azure options"));
     }
     let mut sql = format!(
-        "CREATE STORAGE INTEGRATION {} STORAGE_PROVIDER = 'S3' STORAGE_PREFIX = {}",
+        "CREATE STORAGE INTEGRATION{if_not_exists} {} STORAGE_PROVIDER = 'S3' STORAGE_PREFIX = {}",
         object_name(name, namespace)?,
         literal(&request.storage_prefix)
     );
@@ -239,6 +255,7 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
                 | "azure_tenant_id_secret"
                 | "azure_client_id_secret"
                 | "azure_client_secret_secret"
+                | "azure_storage_account_access_key_secret"
                 | "gcp_credentials_json_secret"
                 | "huggingface_token_secret"
                 | "trust_policy"
@@ -254,34 +271,73 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
         .map_err(|error| invalid(format!("Invalid storage integration SQL result: {error}")))
 }
 
-pub(super) fn decode_names(batches: &[RecordBatch]) -> Result<Vec<String>> {
-    let mut names = Vec::new();
-    for batch in batches {
-        let column = batch
-            .column_by_name("name")
-            .ok_or_else(|| invalid("SQL storage integration listing is missing names"))?;
-        for row in 0..batch.num_rows() {
-            if column.is_null(row) {
-                return Err(invalid("SQL storage integration name cannot be null"));
-            }
-            names.push(
-                string_value(column.as_ref(), row)
-                    .ok_or_else(|| {
-                        invalid("SQL storage integration listing requires string names")
-                    })?
-                    .to_string(),
-            );
-        }
-    }
-    names.sort();
-    Ok(names)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn azure_account_access_key_sql_references_only_the_key_secret() {
+        let mut request = CreateStorageIntegrationRequest::azure_with_account_access_key(
+            "az://customer-data/raw/",
+            "customeraccount",
+            SecretReference::new("blob_key")
+                .with_database("shared")
+                .with_namespace(vec!["credentials".into()]),
+        );
+        let sql = create_sql("blobs", &[], &request).unwrap();
+        assert!(sql.contains("STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'"));
+        assert!(sql.contains(
+            r#"STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = "shared"."credentials"."blob_key""#
+        ));
+        assert!(!sql.contains("STORAGE_AZURE_TENANT_ID_SECRET"));
+        assert!(!sql.contains("STORAGE_AZURE_CLIENT_ID_SECRET"));
+        assert!(!sql.contains("STORAGE_AZURE_CLIENT_SECRET_SECRET"));
+
+        request.azure_client_id_secret = Some(SecretReference::new("client"));
+        assert!(create_sql("blobs", &[], &request).is_err());
+    }
+
+    #[test]
+    fn create_if_not_exists_preserves_provider_options() {
+        let secret = SecretReference::new("credential");
+        let requests = [
+            CreateStorageIntegrationRequest::s3("s3://bucket/", "role"),
+            CreateStorageIntegrationRequest::s3_with_secrets(
+                "s3://bucket/",
+                secret.clone(),
+                secret.clone(),
+            ),
+            CreateStorageIntegrationRequest::azure(
+                "az://container/",
+                "account",
+                secret.clone(),
+                secret.clone(),
+                secret.clone(),
+            ),
+            CreateStorageIntegrationRequest::gcp("gs://bucket/", secret),
+            CreateStorageIntegrationRequest::huggingface("hf://datasets/acme/data/"),
+        ];
+        for request in requests {
+            let legacy_json = serde_json::to_value(&request).unwrap();
+            assert!(legacy_json.get("exist_ok").is_none());
+            let decoded: CreateStorageIntegrationRequest =
+                serde_json::from_value(legacy_json).unwrap();
+            assert!(!decoded.exist_ok);
+            let strict = create_sql("raw", &[], &request).unwrap();
+            let guarded = request.exist_ok(true);
+            assert_eq!(serde_json::to_value(&guarded).unwrap()["exist_ok"], true);
+            assert_eq!(
+                create_sql("raw", &[], &guarded).unwrap(),
+                strict.replacen(
+                    "CREATE STORAGE INTEGRATION ",
+                    "CREATE STORAGE INTEGRATION IF NOT EXISTS ",
+                    1,
+                )
+            );
+        }
+    }
 
     #[test]
     fn sql_quotes_values_and_keeps_secret_root_namespace_explicit() {

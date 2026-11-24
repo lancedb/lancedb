@@ -16,9 +16,10 @@ use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
-    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, MergeResult, PyBlobFile,
-    RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult, Table,
-    UpdateFieldMetadataResult, UpdateResult,
+    FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
+    FunctionColumnVersionStatus, FunctionErrorFragment, FunctionErrorRecord, FunctionErrors,
+    MergeResult, PyBlobFile, RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult,
+    Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
@@ -39,6 +40,7 @@ pub mod query;
 pub mod runtime;
 pub mod session;
 pub mod sql;
+mod sync_stream;
 pub mod table;
 pub mod util;
 
@@ -96,6 +98,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<table::TableDelta>()?;
     m.add_class::<crate::oauth::PyOAuthSession>()?;
     m.add_class::<crate::oauth::PySessionStatus>()?;
     m.add_class::<crate::oauth::PySessionLogout>()?;
@@ -112,11 +115,16 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<HybridQuery>()?;
     m.add_class::<VectorQuery>()?;
     m.add_class::<RecordBatchStream>()?;
+    m.add_class::<sync_stream::SyncRecordBatchStream>()?;
     m.add_class::<AddColumnsResult>()?;
     m.add_class::<RefreshColumnResult>()?;
     m.add_class::<FunctionErrors>()?;
     m.add_class::<FunctionErrorRecord>()?;
     m.add_class::<FunctionErrorFragment>()?;
+    m.add_class::<FunctionColumnStatus>()?;
+    m.add_class::<FunctionColumnVersionStatus>()?;
+    m.add_class::<FunctionColumnLastRefreshJob>()?;
+    m.add_class::<FunctionColumnAutoRefreshStatus>()?;
     m.add_class::<RefreshMaterializedViewResult>()?;
     m.add_class::<AlterColumnsResult>()?;
     m.add_class::<UpdateFieldMetadataResult>()?;
@@ -145,6 +153,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
+    m.add_function(wrap_pyfunction!(util::validate_conda_requirement, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_function_retry_policy, m)?)?;
     m.add_function(wrap_pyfunction!(util::parse_field_path, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;

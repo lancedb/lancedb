@@ -15,10 +15,10 @@ SELECT id, blob_descriptor(video) AS descriptor FROM videos
 ```
 </CodeGroup>
 
-A [BlobV2](/management/table#managed-blobs) column's bytes are not fetched by
-a plain `SELECT`: that already returns `large_binary`, the same as any other
-binary column. `blob_descriptor` instead returns a small struct describing
-where the payload lives, without reading it. Pass one row's descriptor to
+A plain `SELECT` of a [BlobV2](/management/table#managed-blobs) column returns
+its payload as `large_binary`. `blob_descriptor` instead returns a small
+struct describing where the payload lives, without reading the payload.
+Pass one row's descriptor to
 the SDK's blob file reader to open that payload directly:
 
 <CodeGroup>

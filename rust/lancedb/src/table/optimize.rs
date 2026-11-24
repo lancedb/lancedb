@@ -32,6 +32,35 @@ pub use lance::dataset::optimize::{CompactionMode, CompactionOptions, IndexRemap
 
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
 
+/// Actual outcome of one remote compaction job, returned by its job handle.
+///
+/// A successful bounded run can leave more work for another invocation. A
+/// partial commit reports uncommitted rows rather than inventing file counts.
+/// File/fragment counts are unknown (`None`) when an older worker omitted them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct CompactionResult {
+    /// A complete bounded plan left eligible work for a later invocation.
+    #[serde(default)]
+    pub more_work: bool,
+    /// Some planned groups were not committed.
+    pub partial_commit: bool,
+    /// Live source rows in committed rewrite groups.
+    pub rows_succeeded: u64,
+    /// Planned live rows not committed by this job.
+    pub rows_failed: u64,
+    /// Percentage of planned live rows committed, from 0 to 100.
+    pub completion_percentage: f64,
+    /// Files added by committed rewrites, including deletion files, when reported.
+    pub files_added: Option<u64>,
+    /// Files removed by committed rewrites, including deletion files, when reported.
+    pub files_removed: Option<u64>,
+    /// Fragments added by committed rewrites, when reported by the server.
+    pub fragments_added: Option<u64>,
+    /// Fragments removed by committed rewrites, when reported by the server.
+    pub fragments_removed: Option<u64>,
+}
+
 struct PrecomputedCompactionPlanner {
     plan: Mutex<Option<CompactionPlan>>,
 }
@@ -184,6 +213,53 @@ async fn validate_sq_index_remapping(
     Ok(plan)
 }
 
+/// Optional compaction tuning. Remote tables inherit omitted values from table
+/// policy, then deployment/built-in defaults. Explicit values, including a zero
+/// I/O budget, take precedence. Local tables use Lance defaults for omissions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompactionOverrides {
+    pub target_rows_per_fragment: Option<usize>,
+    pub max_source_rows: Option<usize>,
+    /// Read-ahead budget in bytes; zero disables byte-based I/O backpressure.
+    pub io_buffer_size: Option<u64>,
+    pub batch_size: Option<usize>,
+}
+
+impl CompactionOverrides {
+    pub(crate) fn into_options(self) -> CompactionOptions {
+        let mut options = CompactionOptions::default();
+        if let Some(target) = self.target_rows_per_fragment {
+            options.target_rows_per_fragment = target;
+        }
+        options.max_source_rows = self.max_source_rows;
+        options.io_buffer_size = self.io_buffer_size;
+        options.batch_size = self.batch_size;
+        options
+    }
+}
+
+impl TryFrom<CompactionOptions> for CompactionOverrides {
+    type Error = Error;
+
+    fn try_from(options: CompactionOptions) -> Result<Self> {
+        let mut remaining = options.clone();
+        let defaults = CompactionOptions::default();
+        remaining.target_rows_per_fragment = defaults.target_rows_per_fragment;
+        remaining.max_source_rows = defaults.max_source_rows;
+        remaining.io_buffer_size = defaults.io_buffer_size;
+        remaining.batch_size = defaults.batch_size;
+        if remaining != defaults {
+            return Err(Error::NotSupported { message: "remote CompactionOptions support only target_rows_per_fragment, max_source_rows, io_buffer_size, and batch_size; other options must retain their defaults".into() });
+        }
+        Ok(Self {
+            target_rows_per_fragment: Some(options.target_rows_per_fragment),
+            max_source_rows: options.max_source_rows,
+            io_buffer_size: options.io_buffer_size,
+            batch_size: options.batch_size,
+        })
+    }
+}
+
 /// Optimize the dataset.
 ///
 /// Similar to `VACUUM` in PostgreSQL, it offers different options to
@@ -209,9 +285,27 @@ pub enum OptimizeAction {
     ///
     /// # LanceDB Enterprise (remote tables)
     ///
-    /// A remote table only supports `Compact` with default `options` and no
-    /// custom `remap_options`; both are rejected with
-    /// [`crate::Error::NotSupported`] otherwise. It submits a durable
+    /// A remote table supports per-job `target_rows_per_fragment`,
+    /// `max_source_rows`, `io_buffer_size`, and `batch_size`. Other non-default
+    /// options and custom `remap_options` return [`crate::Error::NotSupported`]
+    /// before submission. The server must support these SQL options; errors
+    /// from older servers are returned without dropping the settings.
+    /// The source-row budget admits whole tasks. On current Enterprise servers,
+    /// worker planning fails if the budget cannot admit the first useful task,
+    /// reporting its required live rows and source fragment count. Older servers
+    /// may instead finish without rewriting data in this case.
+    /// Zero I/O buffer size disables byte-based I/O
+    /// backpressure. Use a positive size to limit I/O read-ahead; this is not a
+    /// total-memory limit. Row targets, source-row budgets, and batch sizes must
+    /// be positive.
+    /// The legacy Lance options type cannot distinguish an omitted fragment target
+    /// from its default value; that default is treated as unspecified remotely.
+    /// Use [`crate::Table::compact`] with [`CompactionOverrides`] to explicitly
+    /// override a table target with the Lance default value.
+    /// Omitted options inherit table tuning, then deployment/built-in defaults; options
+    /// affect only this job, without changing ongoing table policy.
+    ///
+    /// It submits a durable
     /// compaction job to the server over SQL and waits for that submission to
     /// be confirmed, not for compaction itself to finish: the job then runs
     /// asynchronously on the server, so this call can return well before the
@@ -219,10 +313,28 @@ pub enum OptimizeAction {
     /// [`OptimizeStats::compaction`] is a zeroed [`CompactionMetrics`]
     /// placeholder rather than the real counts a local table reports.
     ///
-    /// A branch-scoped table handle compacts that branch. The branch is not
-    /// validated to exist before the job is submitted, so a nonexistent
-    /// branch fails the compaction job asynchronously rather than failing
-    /// this call.
+    /// ```
+    /// use lancedb::{Table, table::{CompactionOptions, OptimizeAction}};
+    /// # async fn compact(table: &Table) -> lancedb::Result<()> {
+    /// table.optimize(OptimizeAction::Compact {
+    ///     options: CompactionOptions {
+    ///         target_rows_per_fragment: 100_000,
+    ///         max_source_rows: Some(1_000_000),
+    ///         io_buffer_size: Some(64 * 1024 * 1024),
+    ///         batch_size: Some(1024),
+    ///         ..Default::default()
+    ///     },
+    ///     remap_options: None,
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// A branch-scoped table handle compacts that branch. Current Enterprise
+    /// servers validate the table and branch through the service catalog before
+    /// creating the compaction job, so a nonexistent branch fails submission.
+    /// Older servers may accept submission and fail the compaction job
+    /// asynchronously instead.
     Compact {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,

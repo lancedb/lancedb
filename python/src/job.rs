@@ -2,16 +2,20 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::runtime::future_into_py;
 use arrow::{
     datatypes::Schema,
     pyarrow::{IntoPyArrow, Table as PyArrowTable},
 };
-use lancedb::job::JobEventsRequest;
+use lancedb::job::{
+    FunctionProfile, FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions,
+    JobEventsRequest,
+};
 use pyo3::{
     Bound, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::PyValueError,
+    exceptions::{PyTimeoutError, PyValueError},
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods},
 };
@@ -20,6 +24,17 @@ use serde::Serialize;
 use crate::error::PythonErrorExt;
 
 const REPR_INDENT: &str = "    ";
+
+fn profile_json(result: lancedb::Result<FunctionProfile>) -> PyResult<String> {
+    let profile = result.infer_error()?;
+    serde_json::to_string(&profile)
+        .map_err(|error| PyValueError::new_err(format!("invalid profile metadata: {error}")))
+}
+
+fn profile_duration(seconds: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| PyValueError::new_err("profile durations must be finite and nonnegative"))
+}
 
 /// Parse a stored JSON payload into Python data. The bindings carry these as
 /// strings because that is what crosses the boundary cheaply; the public
@@ -82,6 +97,43 @@ impl Job {
     }
 
     #[getter]
+    pub fn job_id(&self) -> Option<String> {
+        self.inner.job_id()
+    }
+
+    #[getter]
+    pub fn operation_id(&self) -> Option<String> {
+        self.inner.operation_id()
+    }
+
+    #[getter]
+    pub fn attempt(&self) -> Option<u32> {
+        self.inner.attempt()
+    }
+
+    #[getter]
+    pub fn retry_of(&self) -> Option<String> {
+        self.inner.retry_of()
+    }
+
+    #[getter]
+    pub fn lifecycle_state(&self) -> Option<String> {
+        self.inner
+            .lifecycle_state()
+            .map(|state| state.as_str().to_string())
+    }
+
+    #[getter]
+    pub fn source_table_version(&self) -> Option<u64> {
+        self.inner.source_table_version()
+    }
+
+    #[getter]
+    pub fn execution_epoch(&self) -> Option<i64> {
+        self.inner.execution_epoch()
+    }
+
+    #[getter]
     pub fn job_type(&self) -> Option<String> {
         self.inner.job_type()
     }
@@ -132,6 +184,15 @@ impl Job {
         })
     }
 
+    pub fn retry(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(Self {
+                inner: Arc::new(inner.retry().await.infer_error()?),
+            })
+        })
+    }
+
     pub fn refresh(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
@@ -152,14 +213,105 @@ impl Job {
         self.inner.description().map(JobDescription::from)
     }
 
-    #[pyo3(signature = (*, limit=None, filter=None))]
+    pub fn timeline(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.timeline().await.infer_error()?.to_string())
+        })
+    }
+
+    pub fn stack(self_: PyRef<'_, Self>, worker_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.stack(worker_id).await.infer_error()?.to_string())
+        })
+    }
+
+    #[pyo3(signature = (worker_id, *, kind="cpu", duration_seconds=None, session_slot=0))]
+    pub fn capture_profile<'py>(
+        self_: PyRef<'py, Self>,
+        worker_id: String,
+        kind: &str,
+        duration_seconds: Option<f64>,
+        session_slot: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let kind: FunctionProfileKind = serde_json::from_value(serde_json::json!(kind))
+            .map_err(|_| PyValueError::new_err("kind must be 'cpu', 'memory' or 'gpu'"))?;
+        let mut options = FunctionProfileOptions::new(kind).session_slot(session_slot);
+        if let Some(seconds) = duration_seconds {
+            options = options.duration(profile_duration(seconds)?);
+        }
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            profile_json(inner.capture_profile(worker_id, options).await)
+        })
+    }
+
+    pub fn profile_status(
+        self_: PyRef<'_, Self>,
+        profile_id: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            profile_json(inner.profile_status(profile_id).await)
+        })
+    }
+
+    #[pyo3(signature = (profile_id, *, timeout_seconds=None, poll_interval_seconds=None))]
+    pub fn wait_for_profile(
+        self_: PyRef<'_, Self>,
+        profile_id: String,
+        timeout_seconds: Option<f64>,
+        poll_interval_seconds: Option<f64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let mut options = FunctionProfileWaitOptions::new();
+        if let Some(seconds) = timeout_seconds {
+            options = options.timeout(profile_duration(seconds)?);
+        }
+        if let Some(seconds) = poll_interval_seconds {
+            options = options.poll_interval(profile_duration(seconds)?);
+        }
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            match inner.wait_for_profile(profile_id, options).await {
+                Err(lancedb::Error::Timeout { message }) => Err(PyTimeoutError::new_err(message)),
+                result => profile_json(result),
+            }
+        })
+    }
+
+    pub fn profile_artifact(
+        self_: PyRef<'_, Self>,
+        profile_id: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner
+                .profile_artifact(profile_id)
+                .await
+                .infer_error()?
+                .to_string())
+        })
+    }
+
+    pub fn stats(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move { inner.stats().await.infer_error() })
+    }
+
+    #[pyo3(signature = (*, limit=None, filter=None, page_token=None))]
     pub fn events(
         self_: PyRef<'_, Self>,
         limit: Option<u32>,
         filter: Option<String>,
+        page_token: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
-        let request = JobEventsRequest { limit, filter };
+        let request = JobEventsRequest {
+            limit,
+            filter,
+            page_token,
+        };
         future_into_py(self_.py(), async move {
             let batches = inner.events(request).await.infer_error()?;
             Python::attach(|py| {
@@ -184,6 +336,18 @@ pub struct JobInfo {
     job_type: String,
     state: String,
     created_at_millis: i64,
+    /// Terminal timestamp in milliseconds since the epoch, when known.
+    completed_at_millis: Option<i64>,
+    /// Creation-to-completion wall time, including queueing and pauses.
+    duration_millis: Option<i64>,
+    /// Affected columns; empty when unavailable or not column-scoped.
+    columns: Vec<String>,
+    /// Pinned Function catalog name, with namespace segments joined by `$`.
+    function_name: Option<String>,
+    /// Pinned Function version, when known.
+    function_version: Option<String>,
+    /// Durable failure summary, when available.
+    failure: Option<JobFailureInfo>,
     _progress_json: Option<String>,
     paused: bool,
 }
@@ -220,6 +384,12 @@ impl From<lancedb::database::JobInfo> for JobInfo {
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
+            completed_at_millis: info.completed_at_millis,
+            duration_millis: info.duration_millis,
+            columns: info.columns,
+            function_name: info.function_name,
+            function_version: info.function_version,
+            failure: info.failure.map(Into::into),
             _progress_json: Some(progress),
             paused: info.paused,
         }
@@ -228,7 +398,7 @@ impl From<lancedb::database::JobInfo> for JobInfo {
 
 /// The server's account of why a job failed.
 #[pyclass(module = "lancedb._lancedb", get_all, skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
@@ -236,6 +406,18 @@ pub struct JobFailureInfo {
     traceback: Option<String>,
     retryable: Option<bool>,
     sql_job_id: Option<String>,
+}
+
+impl From<lancedb::error::JobFailure> for JobFailureInfo {
+    fn from(failure: lancedb::error::JobFailure) -> Self {
+        Self {
+            phase: failure.phase,
+            message: failure.message,
+            traceback: failure.traceback,
+            retryable: failure.retryable,
+            sql_job_id: failure.sql_job_id,
+        }
+    }
 }
 
 #[pymethods]
@@ -270,6 +452,13 @@ impl JobFailureInfo {
 #[derive(Clone)]
 pub struct JobDescription {
     job_id: String,
+    attempt_job_id: Option<String>,
+    operation_id: Option<String>,
+    attempt: Option<u32>,
+    retry_of: Option<String>,
+    lifecycle_state: Option<String>,
+    source_table_version: Option<u64>,
+    execution_epoch: Option<i64>,
     job_type: String,
     state: String,
     creation_ms: i64,
@@ -332,6 +521,15 @@ impl From<lancedb::database::JobDescription> for JobDescription {
         let progress_json = description.progress_snapshot().to_string();
         Self {
             job_id: description.job_id,
+            attempt_job_id: description.attempt_job_id,
+            operation_id: description.operation_id,
+            attempt: description.attempt,
+            retry_of: description.retry_of,
+            lifecycle_state: description
+                .lifecycle_state
+                .map(|state| state.as_str().to_string()),
+            source_table_version: description.source_table_version,
+            execution_epoch: description.execution_epoch,
             job_type: description.job_type,
             state: description.state,
             creation_ms: description.creation_ms,
@@ -341,13 +539,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 .filter(|result| !result.is_null())
                 .map(|result| result.to_string()),
             _progress_json: Some(progress_json),
-            failure: description.failure.map(|failure| JobFailureInfo {
-                phase: failure.phase,
-                message: failure.message,
-                traceback: failure.traceback,
-                retryable: failure.retryable,
-                sql_job_id: failure.sql_job_id,
-            }),
+            failure: description.failure.map(Into::into),
         }
     }
 }

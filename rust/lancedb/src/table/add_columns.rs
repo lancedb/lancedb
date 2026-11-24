@@ -89,6 +89,30 @@ impl AddColumnsBuilder {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// In LanceDB Embedded, an expression can also call functions registered
+    /// on a DataFusion `SessionContext` attached to the connection's Lance
+    /// session. They are not stored with the table, so attach them on every
+    /// connection that opens it.
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use datafusion::execution::context::SessionContext;
+    /// # use datafusion::logical_expr::ScalarUDF;
+    /// # async fn declare(my_udf: ScalarUDF) -> Result<(), Box<dyn std::error::Error>> {
+    /// let functions = SessionContext::new();
+    /// functions.register_udf(my_udf);
+    /// let session = lance::session::Session::default().with_datafusion_session(functions);
+    /// let db = lancedb::connect("data/db")
+    ///     .session(Arc::new(session))
+    ///     .execute()
+    ///     .await?;
+    /// let table = db.open_table("t").execute().await?;
+    /// table.add_columns().computed("y", "my_udf(x)").execute().await?;
+    /// table.refresh_column("y").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
         self.computed.push((name.into(), expression.into()));
         self
@@ -147,15 +171,22 @@ impl AddColumnsBuilder {
 
     /// Configure automatic refresh for every output declared in this call.
     /// Settings are stored with the declaration. They require computed or
-    /// Function columns; LanceDB Embedded persists them without starting a scheduler.
+    /// Function columns. LanceDB Embedded persists enabled and interval settings
+    /// without starting a scheduler; an automatic resource budget requires an
+    /// Enterprise registered Function and rejects SQL-expression columns.
     ///
     /// ```
     /// # use lancedb::{Table, table::computed_columns::ComputedColumnOptions};
     /// # async fn declare(table: &Table) -> lancedb::Result<()> {
     /// table.add_columns().computed("doubled", "x * 2")
     ///     .computed_options(ComputedColumnOptions {
+    ///     gpu_class: Default::default(),
+    ///     gpu_count: Default::default(),
     ///         auto_refresh_enabled: true,
     ///         auto_refresh_interval_seconds: Some(300),
+    ///         total_cpu_millis: None,
+    ///         total_memory_bytes: None,
+    ///         total_gpu_count: None,
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -175,12 +206,17 @@ impl AddColumnsBuilder {
             read_columns,
             options,
         } = self;
-        if let Some(options) = options {
+        if let Some(options) = &options {
             options.validate()?;
             if computed.is_empty() && function.is_none() {
                 return Err(Error::InvalidInput {
                     message: "automatic refresh options require computed or Function columns"
                         .into(),
+                });
+            }
+            if options.has_resource_defaults() && function.is_none() {
+                return Err(Error::InvalidInput {
+                    message: "total_* resources require a registered Function declaration".into(),
                 });
             }
         }
@@ -263,13 +299,18 @@ mod tests {
         let table = table_with_two_columns("options").await;
         let version = table.version().await.unwrap();
         let options = ComputedColumnOptions {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
             auto_refresh_enabled: false,
             auto_refresh_interval_seconds: Some(300),
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
         };
         let result = table
             .add_columns()
             .computed("doubled", "x * 2")
-            .computed_options(options)
+            .computed_options(options.clone())
             .execute()
             .await
             .unwrap();
@@ -285,7 +326,7 @@ mod tests {
         for interval in [0, u64::MAX] {
             let invalid = ComputedColumnOptions {
                 auto_refresh_interval_seconds: Some(interval),
-                ..options
+                ..options.clone()
             };
             assert!(
                 table
@@ -304,7 +345,7 @@ mod tests {
                     "once".into(),
                     "x".into()
                 )]))
-                .computed_options(options)
+                .computed_options(options.clone())
                 .execute()
                 .await
                 .is_err()
@@ -346,6 +387,38 @@ mod tests {
                 .unwrap()
                 .get("auto_refresh_interval_seconds")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_resource_budget_requires_a_function() {
+        let table = table_with_two_columns("budget_expression").await;
+        let err = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .computed_options(ComputedColumnOptions {
+                gpu_class: Default::default(),
+                gpu_count: Default::default(),
+                auto_refresh_enabled: true,
+                auto_refresh_interval_seconds: None,
+                total_cpu_millis: Some(1000),
+                total_memory_bytes: Some(1024),
+                total_gpu_count: Some(0),
+            })
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("registered Function")),
+            "{err:?}"
+        );
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("doubled")
+                .is_err()
         );
     }
 
