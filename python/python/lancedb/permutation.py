@@ -512,6 +512,88 @@ class Transforms:
 # HuggingFace uses 10 which is pretty small
 DEFAULT_BATCH_SIZE = 100
 
+_MAP_FORMAT_ERROR = (
+    "map cannot be combined with with_format or with_transform; convert the "
+    "output inside the map callback or in the DataLoader collate_fn instead"
+)
+
+
+def _map_rows(data: Any, num_rows: int) -> list[dict[str, Any]]:
+    """Return the data flowing through a map chain as a list of row dicts."""
+    if isinstance(data, pa.RecordBatch):
+        return data.to_pylist()
+    if isinstance(data, dict):
+        return [
+            {name: values[i] for name, values in data.items()} for i in range(num_rows)
+        ]
+    return data
+
+
+def _map_columns(data: Any) -> dict[str, Any]:
+    """Return the data flowing through a map chain as a dict of columns."""
+    if isinstance(data, pa.RecordBatch):
+        return data.to_pydict()
+    if isinstance(data, list):
+        names = data[0].keys()
+        if any(row.keys() != names for row in data):
+            raise ValueError(
+                "Cannot pass rows to a batched map callback because the previous "
+                "callback did not return the same keys for every row"
+            )
+        return {name: [row[name] for row in data] for name in names}
+    return data
+
+
+class _MapTransform:
+    """
+    The transform installed by [map][lancedb.permutation.Permutation.map]
+
+    Each step is a ``(fn, batched)`` pair.  This is a module-level class, and not a
+    closure, so that a mapped permutation pickles whenever its callbacks do.
+    """
+
+    def __init__(self, steps: tuple[tuple[Callable, bool], ...]):
+        self.steps = steps
+
+    def __call__(self, batch: pa.RecordBatch) -> list[dict[str, Any]]:
+        num_rows = batch.num_rows
+        if num_rows == 0:
+            return []
+
+        # The layout is only converted when a callback needs the other one
+        data = batch
+        for fn, batched in self.steps:
+            if batched:
+                data = fn(_map_columns(data))
+                if not isinstance(data, dict):
+                    raise TypeError(
+                        "A batched map callback must return a dict of columns, "
+                        f"got {type(data).__name__}"
+                    )
+                for name, values in data.items():
+                    # A str or dict can be indexed but is not a column of values
+                    if isinstance(values, (str, bytes, dict)) or not hasattr(
+                        values, "__getitem__"
+                    ):
+                        raise TypeError(
+                            "A batched map callback must return a list of values "
+                            f"for column `{name}`, got {type(values).__name__}"
+                        )
+                    if len(values) != num_rows:
+                        raise ValueError(
+                            f"A batched map callback returned {len(values)} values "
+                            f"for column `{name}` but the batch has {num_rows} rows"
+                        )
+            else:
+                data = [fn(row) for row in _map_rows(data, num_rows)]
+                for row in data:
+                    if not isinstance(row, dict):
+                        raise TypeError(
+                            "A map callback must return a dict for each row, "
+                            f"got {type(row).__name__}"
+                        )
+        return _map_rows(data, num_rows)
+
 
 def _is_persisted_plan(table: Table) -> bool:
     """Whether a permutation table lives in reopenable storage rather than memory."""
@@ -619,6 +701,8 @@ class Permutation:
         self.split = split
         self.selection = selection
         self.transform_fn = transform_fn
+        # Whether with_format / with_transform replaced the default transform
+        self._explicit_transform = False
         self.batch_size = batch_size
         self.offset = offset
         self.limit = limit
@@ -881,6 +965,7 @@ class Permutation:
             "selection": self.selection,
             "batch_size": self.batch_size,
             "transform_fn": self.transform_fn,
+            "explicit_transform": self._explicit_transform,
             "offset": self.offset,
             "limit": self.limit,
             "connection_factory": self.connection_factory,
@@ -953,6 +1038,7 @@ class Permutation:
         self.selection = state["selection"]
         self.batch_size = state["batch_size"]
         self.transform_fn = state["transform_fn"]
+        self._explicit_transform = state.get("explicit_transform", False)
         self.offset = state["offset"]
         self.limit = state["limit"]
         self.connection_factory = connection_factory
@@ -1304,6 +1390,10 @@ class Permutation:
         For custom formatting, use
         [with_transform][lancedb.permutation.Permutation.with_transform] which
         overrides this method.
+
+        A format cannot be combined with
+        [map][lancedb.permutation.Permutation.map], which always yields a list
+        of dicts.  Doing so raises a ValueError.
         """
         assert format is not None, "format is required"
         if format == "python":
@@ -1339,11 +1429,108 @@ class Permutation:
         Note: transforms are not invoked in parallel.  This method is not a good place
         for expensive operations such as image decoding.
 
-        For a higher-level API that works with Python dicts, see map().
+        For a higher-level API that works with Python dicts, see
+        [map][lancedb.permutation.Permutation.map].  A transform cannot be combined
+        with ``map``.  Doing so raises a ValueError.
         """
         assert transform is not None, "transform is required"
+        if isinstance(self.transform_fn, _MapTransform):
+            raise ValueError(_MAP_FORMAT_ERROR)
         new = copy.copy(self)
         new.transform_fn = transform
+        new._explicit_transform = True
+        return new
+
+    def map(
+        self,
+        fn: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        batched: bool = False,
+    ) -> "Permutation":
+        """
+        Apply a function to the rows of the permutation
+
+        This is a dict-based alternative to
+        [with_transform][lancedb.permutation.Permutation.with_transform], loosely
+        modeled after the huggingface ``Dataset.map``.  It is lazy: ``fn`` is not
+        called until data is read.
+
+        Calls to ``map`` can be chained.  The callbacks run in order and the dict
+        returned by a callback replaces the row entirely, so the next callback only
+        sees what the previous one returned.  Unlike the huggingface method, the
+        returned dict is not merged into the row: return every column to keep.
+
+        A mapped permutation always yields a list of dicts (one per row) for each
+        batch, which is the same shape as the default "python" format.  ``batched``
+        only controls what ``fn`` receives.  Rows keep their position, so a callback
+        cannot add, drop, or reorder rows.
+
+        Since ``map`` decides the output format it cannot be combined with
+        [with_format][lancedb.permutation.Permutation.with_format] or
+        [with_transform][lancedb.permutation.Permutation.with_transform].  Calling
+        one after the other, in either order, raises a ValueError.  Convert the
+        mapped rows to tensors in the DataLoader ``collate_fn`` instead.
+
+        [select_columns][lancedb.permutation.Permutation.select_columns],
+        [remove_columns][lancedb.permutation.Permutation.remove_columns],
+        [rename_column][lancedb.permutation.Permutation.rename_column] and
+        [schema][lancedb.permutation.Permutation.schema] describe the columns read
+        from the base table, which are the input of the first callback.  They do
+        not describe the output of ``map``, whether they are used before or after it.
+
+        Parameters
+        ----------
+        fn: Callable
+            The function to apply.  It receives and returns a single row as a dict
+            mapping column names to values.  If ``batched`` is True it instead
+            receives and returns a whole batch as a dict mapping column names to
+            lists of values, and every returned column must have one value per
+            input row.
+
+            DataLoader workers started with ``spawn`` or ``forkserver`` receive a
+            pickled copy of the permutation, so ``fn`` must then be picklable.
+            Use a top-level function; lambdas and local functions do not pickle.
+        batched: bool, default False
+            Whether ``fn`` is called once per batch instead of once per row.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory:///")
+        >>> tbl = db.create_table("tbl", data=[{"x": x} for x in range(3)])
+        >>> def add_y(row):
+        ...     return {**row, "y": row["x"] * 2}
+        >>> def add_z(batch):
+        ...     return {**batch, "z": [x + y for x, y in zip(batch["x"], batch["y"])]}
+        >>> permutation = Permutation.identity(tbl).map(add_y).map(add_z, batched=True)
+        >>> permutation.take_offsets([0, 1])
+        [{'x': 0, 'y': 0, 'z': 0}, {'x': 1, 'y': 2, 'z': 3}]
+
+        With a PyTorch DataLoader, a ``collate_fn`` turns the mapped rows of each
+        batch into tensors::
+
+            import torch
+
+            def collate(rows):
+                return {
+                    "x": torch.tensor([row["x"] for row in rows]),
+                    "z": torch.tensor([row["z"] for row in rows]),
+                }
+
+            dataloader = torch.utils.data.DataLoader(
+                permutation, batch_size=32, shuffle=True, collate_fn=collate
+            )
+        """
+        if not callable(fn):
+            raise TypeError("fn must be callable")
+        if self._explicit_transform:
+            raise ValueError(_MAP_FORMAT_ERROR)
+
+        steps = ((fn, batched),)
+        if isinstance(self.transform_fn, _MapTransform):
+            steps = self.transform_fn.steps + steps
+        new = copy.copy(self)
+        new.transform_fn = _MapTransform(steps)
         return new
 
     def take_offsets(self, offsets: list[int]) -> Any:
@@ -1351,8 +1538,8 @@ class Permutation:
         Take rows from the permutation by offset
 
         The returned value is passed through the permutation's current transform,
-        so `with_format` and `with_transform` affect this method in the same way
-        they affect iteration.
+        so `with_format`, `with_transform`, and `map` affect this method in the
+        same way they affect iteration.
         """
         self._ensure_open()
 
@@ -1361,36 +1548,6 @@ class Permutation:
 
         batch = LOOP.run(do_take_offsets())
         return self.transform_fn(batch)
-
-    def map(self, fn: Callable, *, batched: bool = False) -> "Permutation":
-        """
-        Apply a transformation function to each row or batch.
-
-        When batched=False (default), fn receives a single row as a dict
-        and should return a dict. This is applied to every row.
-
-        When batched=True, fn receives a column-oriented dict (keys are
-        column names, values are lists) and should return a dict of the
-        same shape.
-
-        This is a lazy transform -- fn is not called until data is
-        iterated or accessed. This replaces any previously set format
-        or transform.
-        """
-        if not callable(fn):
-            raise TypeError("fn must be callable")
-
-        if batched:
-
-            def _wrapper(batch: pa.RecordBatch):
-                return fn(Transforms.arrow2pythoncol(batch))
-
-        else:
-
-            def _wrapper(batch: pa.RecordBatch):
-                return [fn(row) for row in Transforms.arrow2python(batch)]
-
-        return self.with_transform(_wrapper)
 
     def __getitem__(self, index: int) -> Any:
         """
