@@ -82,6 +82,7 @@ from .index import (
     NGram,
     ZoneMap,
     RTree,
+    BloomFilter,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -354,6 +355,7 @@ IndexConfigType = Union[
     NGram,
     ZoneMap,
     RTree,
+    BloomFilter,
     FTS,
 ]
 
@@ -2028,7 +2030,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, BloomFilter, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -5162,7 +5164,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, BloomFilter, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -7873,6 +7875,7 @@ class AsyncTable:
                 NGram,
                 ZoneMap,
                 RTree,
+                BloomFilter,
                 FTS,
             ]
         ] = None,
@@ -7955,12 +7958,13 @@ class AsyncTable:
                     NGram,
                     ZoneMap,
                     RTree,
+                    BloomFilter,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, or FTS,"
+                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, BloomFilter, or FTS,"
                     " but got " + str(type(config))
                 )
         try:
@@ -8002,6 +8006,7 @@ class AsyncTable:
                 NGram,
                 ZoneMap,
                 RTree,
+                BloomFilter,
                 FTS,
             ]
         ] = None,
@@ -10501,6 +10506,7 @@ class IndexStatistics:
         "NGRAM",
         "ZONEMAP",
         "RTREE",
+        "BLOOM_FILTER",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

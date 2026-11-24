@@ -7,19 +7,19 @@ use lancedb::index::vector::{
     IvfPqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
 };
 use lancedb::index::{
-    Index as LanceDbIndex,
     scalar::{
-        BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder, NGramIndexBuilder,
-        RTreeIndexBuilder, ZoneMapIndexBuilder,
+        BTreeIndexBuilder, BloomFilterIndexBuilder, DocumentGranularity, FmIndexBuilder,
+        FtsIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
     },
+    Index as LanceDbIndex,
 };
-use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
+use pyo3::IntoPyObject;
 use pyo3::{
-    Bound, FromPyObject, Py, PyAny, PyResult, Python,
     exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
     types::{PyAnyMethods, PyString},
+    Bound, FromPyObject, Py, PyAny, PyResult, Python,
 };
 
 use crate::util::parse_distance_type;
@@ -128,6 +128,21 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                         .map_err(|err| PyValueError::new_err(err.to_string()))?;
                 }
                 Ok(LanceDbIndex::RTree(builder))
+            }
+            "BloomFilter" => {
+                let params = source.extract::<BloomFilterParams>()?;
+                let mut bloom_filter_builder = BloomFilterIndexBuilder::default();
+                if let Some(number_of_items) = params.number_of_items {
+                    bloom_filter_builder = bloom_filter_builder
+                        .number_of_items(number_of_items)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                }
+                if let Some(probability) = params.probability {
+                    bloom_filter_builder = bloom_filter_builder
+                        .probability(probability)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                }
+                Ok(LanceDbIndex::BloomFilter(bloom_filter_builder))
             }
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
@@ -303,7 +318,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
             }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, BloomFilter, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
@@ -340,6 +355,12 @@ struct FtsParams {
 #[derive(FromPyObject)]
 struct RTreeParams {
     page_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct BloomFilterParams {
+    number_of_items: Option<u64>,
+    probability: Option<f64>,
 }
 
 #[derive(FromPyObject)]
