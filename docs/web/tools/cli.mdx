@@ -18,8 +18,21 @@ statements supported by your deployment.
 
 ## Install
 
-On Apple Silicon macOS or Linux (x86-64 or ARM64), run the hosted installer.
-It downloads the latest stable CLI for your platform, verifies the archive's
+On Apple Silicon macOS or Linux (x86-64 or ARM64), install the CLI with
+Homebrew or the hosted shell installer.
+
+### Homebrew
+
+```sh
+brew install lancedb/tap/lancedb
+lancedb --version
+```
+
+To upgrade an existing Homebrew installation, run `brew upgrade lancedb/tap/lancedb`.
+
+### Shell installer
+
+The installer downloads the latest stable CLI for your platform, verifies the archive's
 SHA-256 checksum, and installs the executable in `$HOME/.local/bin`.
 
 ```sh
