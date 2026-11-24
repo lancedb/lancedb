@@ -132,3 +132,37 @@ Question: ${input}`,
 );
 // --8<-- [end:frameworks_genkit_custom_retriever]
 
+// --8<-- [start:frameworks_mastra_quickstart]
+import { LanceVectorStore } from "@mastra/lance";
+
+const store = await LanceVectorStore.create("./lancedb-data");
+const indexName = "documents";
+
+await store.createIndex({ indexName, dimension: 3 });
+
+await store.upsert({
+  indexName,
+  ids: ["mastra", "lancedb"],
+  vectors: [
+    [0, 1, 0],
+    [1, 0, 0],
+  ],
+});
+
+const results = await store.query({
+  indexName,
+  queryVector: [1, 0, 0],
+  topK: 1,
+});
+
+console.log(results[0].id, results[0].score);
+store.close();
+// --8<-- [end:frameworks_mastra_quickstart]
+
+// --8<-- [start:frameworks_mastra_native_index]
+await store.createIndex({
+  indexName,
+  dimension: 3,
+  indexConfig: { type: "ivfflat", numPartitions: 1 },
+});
+// --8<-- [end:frameworks_mastra_native_index]

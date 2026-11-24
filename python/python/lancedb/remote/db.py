@@ -1150,6 +1150,9 @@ class RemoteDBConnection(DBConnection):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -1168,6 +1171,7 @@ class RemoteDBConnection(DBConnection):
                 azure_tenant_id_secret=azure_tenant_id_secret,
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
+                azure_storage_account_access_key_secret=azure_storage_account_access_key_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
                 exist_ok=exist_ok,

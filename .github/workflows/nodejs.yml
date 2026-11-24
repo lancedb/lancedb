@@ -42,6 +42,12 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        # The workspace-wide Clippy run below builds the PyO3 bindings, whose
+        # minimum supported interpreter is 3.11. Ubuntu 22.04 defaults to 3.10.
+        python-version: "3.11"
     - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       with:
         version: 11.1.1

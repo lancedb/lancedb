@@ -1,0 +1,69 @@
+---
+title: "Mastra"
+sidebarTitle: "Mastra"
+description: "Use LanceDB Embedded as a local vector store in Mastra with @mastra/lance."
+availability:
+  embedded: available
+  enterprise: unavailable
+---
+
+import {
+  TsFrameworksMastraNativeIndex,
+  TsFrameworksMastraQuickstart,
+} from '/snippets/integrations.mdx';
+
+[Mastra](https://mastra.ai) is an open-source TypeScript framework for building AI agents, workflows, and retrieval-augmented generation (RAG) pipelines. Its official `@mastra/lance` package connects Mastra to LanceDB Embedded on local disk with no separate database server.
+
+## Installation {#installation}
+
+`@mastra/lance` requires Node.js 22.13.0 or later and depends on `@mastra/core`. Install both packages:
+
+<CodeGroup>
+```bash Bash icon="terminal"
+npm install @mastra/lance @mastra/core
+```
+</CodeGroup>
+
+Installing `@mastra/lance` also installs `@lancedb/lancedb` and the matching native binary for your platform.
+
+## Vector search quickstart {#vector-search-quickstart}
+
+Save the following script as `example.mjs`. It opens a local LanceDB directory with `LanceVectorStore.create()`, creates a `documents` table, upserts two 3-dimensional vectors, and runs a nearest-neighbor query:
+
+<CodeBlock filename="example.mjs" language="TypeScript" icon="square-js">
+  {TsFrameworksMastraQuickstart}
+</CodeBlock>
+
+Run the script:
+
+<CodeGroup>
+```bash Bash icon="terminal"
+node example.mjs
+```
+</CodeGroup>
+
+The nearest-neighbor query returns `lancedb` with a cosine similarity score of `1`:
+
+```text Output
+lancedb 1
+```
+
+## Native vector index {#native-vector-index}
+
+The first `createIndex()` call initializes an empty LanceDB table without building a native vector index. When `tableName` is omitted, `indexName` sets the table name and `vector` is the vector column. Queries work on small tables immediately through flat scan.
+
+To build a native [LanceDB vector index](/indexing/vector-index) when extending the quickstart, call `createIndex()` again after upserting at least 256 rows and before `store.close()`:
+
+<CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+  {TsFrameworksMastraNativeIndex}
+</CodeBlock>
+
+Supported `indexConfig.type` values include `"ivfflat"`, `"ivfpq"`, and the default HNSW PQ index.
+
+## Application storage and references {#application-storage-and-references}
+
+`@mastra/lance` also exports `LanceStorage` for Mastra agent memory and workflow state. The published `LanceStorage.create(id, name, uri)` factory takes three required arguments (`id`, `name`, and `uri`). See the [released `LanceStorage.create` implementation](https://github.com/mastra-ai/mastra/blob/d60ba71be015e2acbdc303208a14563902fb1f39/stores/lance/src/storage/index.ts#L78-L119) for the current signature if you encounter older two-argument examples.
+
+- [Mastra LanceDB vector store reference](https://mastra.ai/integrations/vectors/lance)
+- [Mastra LanceDB storage guide](https://mastra.ai/integrations/databases/lancedb)
+- [Released `LanceVectorStore.createIndex` implementation](https://github.com/mastra-ai/mastra/blob/d60ba71be015e2acbdc303208a14563902fb1f39/stores/lance/src/vector/index.ts#L685-L815)
