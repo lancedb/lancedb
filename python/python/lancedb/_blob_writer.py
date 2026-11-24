@@ -34,6 +34,10 @@ class BlobWriter:
     Open one writer per Blob value. Writes are sequential and block for
     capacity. Closing the writer seals the result, including an empty Blob.
     A context manager seals on normal exit and aborts on exceptional exit.
+    A discarded writer still uses one entry in the batch's cumulative
+    descriptor allowance. Explicit writers and implicit uploads of returned
+    ``bytes`` share this allowance.
+
     Return the sealed writer once at its declared Blob v2 output field during
     the same invocation. Unclosed or reused writers are invalid results.
 
