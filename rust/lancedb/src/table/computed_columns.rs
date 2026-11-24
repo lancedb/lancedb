@@ -1709,7 +1709,7 @@ pub(crate) fn plan_function_application(
     let mut outputs = Vec::new();
     let mut output_fields = Vec::new();
     match output.kind.as_str() {
-        "scalar" => {
+        "scalar" | "scalar_blob_writer" => {
             if !application.columns().is_empty() {
                 return Err(invalid_function(
                     "scalar Function applications cannot rename result fields",
@@ -1738,7 +1738,7 @@ pub(crate) fn plan_function_application(
             });
             output_fields.push(function_output_field(name, true, arrow_type)?);
         }
-        "named_struct" => {
+        "named_struct" | "named_struct_blob_writer" => {
             if output.fields.is_empty() {
                 return Err(invalid_function(
                     "named-struct Function output requires at least one field",
@@ -5197,17 +5197,53 @@ mod tests {
     #[test]
     fn test_blob_function_plans_semantic_input_and_scalar_output() {
         let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
-        let application =
-            blob_application(r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#);
-        let plan = plan_function_application(&schema, &application, Some("thumbnail")).unwrap();
+        for output in [
+            r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#,
+            r#"{"kind":"scalar_blob_writer","arrow_type":"blob_v2","nullable":false,"blob_writer_paths":[[]]}"#,
+        ] {
+            let application = blob_application(output);
+            let plan = plan_function_application(&schema, &application, Some("thumbnail")).unwrap();
 
-        assert_eq!(plan.input_bindings[0].arrow_type, FUNCTION_BLOB_V2_TYPE);
-        let input_schema =
-            lance_namespace::schema::convert_json_arrow_schema(&plan.input_schema).unwrap();
-        assert!(input_schema.field(0).is_blob_v2());
-        let output_schema =
-            lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
-        assert!(output_schema.field(0).is_blob_v2());
+            assert_eq!(plan.input_bindings[0].arrow_type, FUNCTION_BLOB_V2_TYPE);
+            let input_schema =
+                lance_namespace::schema::convert_json_arrow_schema(&plan.input_schema).unwrap();
+            assert!(input_schema.field(0).is_blob_v2());
+            let output_schema =
+                lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
+            assert!(output_schema.field(0).is_blob_v2());
+        }
+    }
+
+    #[test]
+    fn test_named_blob_writer_plan_preserves_logical_output_columns() {
+        let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
+        let application = blob_application(
+            r#"{
+                "kind":"named_struct_blob_writer",
+                "fields":[
+                    {"name":"item","arrow_type":"blob_v2","nullable":true},
+                    {"name":"checksum","arrow_type":"binary","nullable":false}
+                ],
+                "blob_writer_paths":[[{"field":"item"}]]
+            }"#,
+        );
+        let expanded = plan_function_application(&schema, &application, None).unwrap();
+        let expanded_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&expanded.output_schema).unwrap();
+        assert_eq!(expanded_schema.field(0).name(), "item");
+        assert!(expanded_schema.field(0).is_blob_v2());
+        assert_eq!(expanded_schema.field(1).data_type(), &DataType::Binary);
+
+        let whole = plan_function_application(&schema, &application, Some("rendered")).unwrap();
+        let whole_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&whole.output_schema).unwrap();
+        let DataType::Struct(fields) = whole_schema.field(0).data_type() else {
+            panic!("named writer output must bind as a struct");
+        };
+        assert!(fields[0].is_blob_v2());
+        assert!(fields[0].is_nullable());
+        assert_eq!(fields[1].data_type(), &DataType::Binary);
+        assert!(!fields[1].is_nullable());
     }
 
     #[test]

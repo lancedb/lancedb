@@ -63,6 +63,7 @@ from pydantic import (
 from .schema import blob as _blob_field
 from .schema import is_blob_v2_field as _is_blob_v2_field
 from ._blob_reader import BlobReader
+from ._blob_writer import BlobWriter, _BLOB_WRITER_METADATA_KEY, _mark_blob_writer
 from ._lancedb import _validate_conda_requirement
 from .secrets import EnvVarSecret
 from .resources import _validate_gpu_class_name
@@ -330,17 +331,27 @@ class FunctionResultField(_OpenRemoteValue):
     nullable: bool
 
 
+class _BlobWriterFieldStep(_RemoteValue):
+    field: str
+
+
+_BlobWriterPath = tuple[Union[_BlobWriterFieldStep, Literal["item"]], ...]
+
+
 class FunctionOutput(_OpenRemoteValue):
     """Scalar or ordered named-struct output; unknown kinds remain decodable.
 
     A scalar output may be nullable. A named-struct output has no top-level
-    nullability; its fields carry their own flags.
+    nullability; its fields carry their own flags. Writer-capable outputs
+    carry the paths of the declared Blob v2 leaves and use the corresponding
+    ``scalar_blob_writer`` or ``named_struct_blob_writer`` kind.
     """
 
     kind: str
     arrow_type: Optional[str] = None
     nullable: Optional[bool] = None
     fields: tuple[FunctionResultField, ...] = ()
+    blob_writer_paths: tuple[_BlobWriterPath, ...] = ()
 
 
 class SecretReference(_RemoteValue):
@@ -1069,7 +1080,7 @@ class FunctionApplication(_OpenRemoteValue):
 
     def rename(self, *, columns: Mapping[str, str]) -> FunctionApplication:
         """Return a copy with result-field to table-column aliases."""
-        if self.output.kind != "named_struct":
+        if self.output.kind not in ("named_struct", "named_struct_blob_writer"):
             raise ValueError("rename(columns=...) requires a named-struct application")
         result_fields = {field.name for field in self.output.fields}
         unknown = set(columns) - result_fields
@@ -1496,32 +1507,38 @@ def _grammar_list_item(data_type: pa.DataType) -> Optional[str]:
     return _grammar_arrow_type(child.type)
 
 
-def _validate_exact_arrow_field(field: pa.Field) -> None:
+def _validate_exact_arrow_field(
+    field: pa.Field, *, allow_blob_writer: bool = False
+) -> None:
     if not field.name:
         raise TypeError(
             "unsupported Arrow type for Function signature: field names "
             "must not be empty"
         )
-    if _is_blob_v2_field(field):
+    metadata = field.metadata or {}
+    is_blob = _is_blob_v2_field(field)
+    if allow_blob_writer and _BLOB_WRITER_METADATA_KEY in metadata:
+        if not is_blob or metadata[_BLOB_WRITER_METADATA_KEY] != b"true":
+            raise TypeError("BlobWriter output requires a Blob v2 field marked true")
+        metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key != _BLOB_WRITER_METADATA_KEY
+        }
+    if is_blob:
         if not _has_supported_blob_v2_layout(field):
             raise TypeError(
                 "unsupported Arrow type for Function signature: lance.blob.v2 "
                 f"requires a supported Blob storage layout, got {field}"
             )
-        metadata = {
-            (key.decode() if isinstance(key, bytes) else key): (
-                value.decode() if isinstance(value, bytes) else value
-            )
-            for key, value in (field.metadata or {}).items()
-        }
         if metadata and metadata != {
-            _ARROW_EXTENSION_NAME_KEY: _BLOB_V2_EXTENSION_NAME
+            _ARROW_EXTENSION_NAME_KEY.encode(): _BLOB_V2_EXTENSION_NAME.encode()
         }:
             raise TypeError(
                 "unsupported Arrow type for Function signature: lance.blob.v2 "
                 "field metadata must contain only its canonical extension marker"
             )
-    elif field.metadata:
+    elif metadata:
         raise TypeError(
             "unsupported Arrow type for Function signature: field metadata "
             f"is not supported, got {field}"
@@ -1580,7 +1597,7 @@ def _has_supported_blob_v2_layout(field: pa.Field) -> bool:
 
 def _canonical_arrow_field(field: pa.Field, *, collection_blobs: bool = False) -> str:
     """``collection_blobs`` admits Blob v2 under a list, which only outputs support."""
-    _validate_exact_arrow_field(field)
+    _validate_exact_arrow_field(field, allow_blob_writer=collection_blobs)
     if _is_blob_v2_field(field):
         return _FUNCTION_BLOB_V2_TYPE
     return _canonical_arrow_type(field.type, collection_blobs=collection_blobs)
@@ -1640,10 +1657,11 @@ def _exact_arrow_field(
     inside_collection: bool = False,
     collection_blobs: bool = False,
 ) -> dict[str, Any]:
-    _validate_exact_arrow_field(field)
-    if _is_blob_v2_field(field):
-        if inside_collection and not collection_blobs:
-            raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+    is_blob = _is_blob_v2_field(field)
+    if is_blob and inside_collection and not collection_blobs:
+        raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+    _validate_exact_arrow_field(field, allow_blob_writer=collection_blobs)
+    if is_blob:
         return {
             "name": field.name,
             "nullable": field.nullable,
@@ -1914,6 +1932,106 @@ def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Paramete
     return parameters
 
 
+def _uses_blob_writer(annotation: Any) -> bool:
+    return annotation is BlobWriter or any(
+        _uses_blob_writer(argument) for argument in get_args(annotation)
+    )
+
+
+def _annotated_blob_writer_field(
+    annotation: Any, name: str, field: Optional[pa.Field] = None
+) -> pa.Field:
+    """Infer a writer-bearing field or mark the matching leaf in an explicit field."""
+    nullable = False
+    arrow_type = None
+    while True:
+        origin = get_origin(annotation)
+        if origin is Annotated:
+            annotation, *metadata = get_args(annotation)
+            types_ = [value for value in metadata if isinstance(value, pa.DataType)]
+            if len(types_) != 1:
+                raise TypeError(
+                    "Annotated Function types require exactly one PyArrow DataType"
+                )
+            if arrow_type is None:
+                arrow_type = types_[0]
+        elif origin in (Union, types.UnionType):
+            arguments = get_args(annotation)
+            branches = tuple(arg for arg in arguments if arg is not type(None))
+            nullable |= len(branches) != len(arguments)
+            if len(branches) == 1:
+                (annotation,) = branches
+            elif frozenset(branches) == {BlobWriter, bytes}:
+                annotation = BlobWriter
+            else:
+                raise TypeError(f"unsupported union annotation: {annotation!r}")
+        else:
+            break
+
+    if field is None and arrow_type is not None:
+        field = pa.field(name, arrow_type, nullable=nullable)
+    if annotation is BlobWriter:
+        if field is None:
+            return BlobWriter.field(name, nullable=nullable)
+        if not _is_blob_v2_field(field):
+            raise TypeError("BlobWriter output requires a Blob v2 field")
+        _validate_exact_arrow_field(field, allow_blob_writer=True)
+        return _mark_blob_writer(field)
+    if get_origin(annotation) is list:
+        (element,) = get_args(annotation)
+        if field is None:
+            child = _annotated_blob_writer_field(element, "item")
+            return pa.field(name, pa.list_(child), nullable=nullable)
+        if not (pa.types.is_list(field.type) or pa.types.is_large_list(field.type)):
+            raise TypeError("a list of BlobWriter values requires a list output field")
+        child = field.type.value_field
+        child = _annotated_blob_writer_field(element, child.name, child)
+        list_type = pa.large_list if pa.types.is_large_list(field.type) else pa.list_
+        return field.with_type(list_type(child))
+    raise TypeError(
+        "BlobWriter return annotations require a BlobWriter or list of BlobWriter "
+        "values. Use BlobWriter.field in the output schema for named results."
+    )
+
+
+def _writer_annotation_output(annotation, output_schema, *, vectorized: bool):
+    if vectorized:
+        arguments = get_args(annotation)
+        origin = get_origin(annotation)
+        if origin is list and len(arguments) == 1:
+            (annotation,) = arguments
+        elif origin is tuple and len(arguments) == 2 and arguments[1] is Ellipsis:
+            annotation = arguments[0]
+        else:
+            raise TypeError(
+                "vectorized BlobWriter Functions must annotate a row-aligned list "
+                "or tuple of results"
+            )
+    if output_schema is None:
+        return _annotated_blob_writer_field(annotation, "result")
+    if isinstance(output_schema, pa.DataType):
+        output_schema = pa.field("result", output_schema, nullable=False)
+    if not isinstance(output_schema, pa.Field):
+        raise TypeError("use BlobWriter.field in the output schema for named results")
+    return _annotated_blob_writer_field(annotation, output_schema.name, output_schema)
+
+
+def _blob_writer_paths(field: pa.Field) -> tuple[_BlobWriterPath, ...]:
+    if _is_blob_v2_field(field):
+        return ((),) if _BLOB_WRITER_METADATA_KEY in (field.metadata or {}) else ()
+    if pa.types.is_struct(field.type):
+        return tuple(
+            (_BlobWriterFieldStep(field=child.name), *path)
+            for child in field.type
+            for path in _blob_writer_paths(child)
+        )
+    if pa.types.is_list(field.type) or pa.types.is_large_list(field.type):
+        return tuple(
+            ("item", *path) for path in _blob_writer_paths(field.type.value_field)
+        )
+    return ()
+
+
 def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutput:
     if isinstance(output, pa.Schema):
         if output.metadata:
@@ -1924,7 +2042,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         and not _is_blob_v2_field(output)
         and pa.types.is_struct(output.type)
     ):
-        _validate_exact_arrow_field(output)
+        _validate_exact_arrow_field(output, allow_blob_writer=True)
         if output.nullable:
             raise ValueError("Function output must be non-nullable")
         fields = tuple(output.type)
@@ -1940,32 +2058,39 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise TypeError(
                 "output_schema must be a PyArrow DataType, Field, or Schema"
             )
-        _validate_exact_arrow_field(field)
+        arrow_type = _canonical_arrow_field(field, collection_blobs=True)
         if field.nullable and _is_blob_v2_field(field):
             raise ValueError("Blob v2 Function output must be non-nullable")
+        paths = _blob_writer_paths(field)
         return FunctionOutput(
-            kind="scalar",
-            arrow_type=_canonical_arrow_field(field, collection_blobs=True),
+            kind="scalar_blob_writer" if paths else "scalar",
+            arrow_type=arrow_type,
             nullable=field.nullable,
+            blob_writer_paths=paths,
         )
 
     if not fields:
         raise ValueError("named-struct Function output must contain at least one field")
-    for field in fields:
-        _validate_exact_arrow_field(field)
     names = [field.name for field in fields]
     if len(set(names)) != len(names):
         raise ValueError("Function output field names must be unique")
+    results = tuple(
+        FunctionResultField(
+            name=field.name,
+            arrow_type=_canonical_arrow_field(field, collection_blobs=True),
+            nullable=field.nullable,
+        )
+        for field in fields
+    )
+    paths = tuple(
+        (_BlobWriterFieldStep(field=field.name), *path)
+        for field in fields
+        for path in _blob_writer_paths(field)
+    )
     return FunctionOutput(
-        kind="named_struct",
-        fields=tuple(
-            FunctionResultField(
-                name=field.name,
-                arrow_type=_canonical_arrow_field(field, collection_blobs=True),
-                nullable=field.nullable,
-            )
-            for field in fields
-        ),
+        kind="named_struct_blob_writer" if paths else "named_struct",
+        fields=results,
+        blob_writer_paths=paths,
     )
 
 
@@ -1987,6 +2112,8 @@ def _infer_signature(
 
     def input_parameter(field):
         annotation = annotations.get(field.name)
+        if _uses_blob_writer(annotation):
+            raise TypeError("BlobWriter is only supported in Function outputs")
         if get_origin(annotation) in (Union, types.UnionType):
             choices = [
                 value for value in get_args(annotation) if value is not type(None)
@@ -2042,10 +2169,17 @@ def _infer_signature(
         missing.append("return")
     if missing:
         raise TypeError(f"missing Function annotations: {missing!r}")
+    return_annotation = annotations.get("return")
+    if _uses_blob_writer(return_annotation):
+        output_schema = _writer_annotation_output(
+            return_annotation,
+            output_schema,
+            vectorized=_is_vectorized_callable(function, method=method),
+        )
     if output_schema is not None:
         output = _function_output(output_schema)
     else:
-        output_type, output_nullable = _annotation_type(annotations["return"])
+        output_type, output_nullable = _annotation_type(return_annotation)
         output = _function_output(
             pa.field("result", output_type, nullable=output_nullable)
         )
@@ -2578,6 +2712,25 @@ def _module_locations_for_name(module_name: str) -> tuple[str, ...]:
     return ()
 
 
+def _blob_writer_annotation_source(annotation: Any, writer_name: str) -> str:
+    if annotation is BlobWriter:
+        return writer_name
+    if annotation is type(None):
+        return "None"
+    if annotation is bytes:
+        return "bytes"
+    if annotation is Ellipsis:
+        return "..."
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin is Annotated:
+        return _blob_writer_annotation_source(arguments[0], writer_name)
+    elements = [_blob_writer_annotation_source(arg, writer_name) for arg in arguments]
+    if origin in (Union, types.UnionType):
+        return " | ".join(elements)
+    return f"{origin.__name__}[{', '.join(elements)}]"
+
+
 class _SourcePackager:
     """Builds the entry module of a Function artifact.
 
@@ -2621,10 +2774,10 @@ class _SourcePackager:
                 "@function cannot package functions that capture closure values"
             )
         namespace = _definition_namespace(target)
-        reader_name = (
-            self._blob_annotations(definition, signature, namespace)
+        blob_bindings = (
+            self._blob_annotations(target, definition, signature, namespace)
             if signature is not None
-            else None
+            else {}
         )
         source = ast.unparse(definition)
         references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
@@ -2649,8 +2802,8 @@ class _SourcePackager:
         self._warn_unshipped_direct_imports(definition)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
-        if reader_name is not None:
-            self._bind(reader_name, BlobReader, definition=definition)
+        for name, blob_type in blob_bindings.items():
+            self._bind(name, blob_type, definition=definition)
         unresolved = []
         for name in sorted(references):
             if name == target.__name__:
@@ -2673,19 +2826,19 @@ class _SourcePackager:
 
     def _blob_annotations(
         self,
+        target: Any,
         definition: Union[ast.FunctionDef, ast.ClassDef],
         signature: FunctionSignature,
         namespace: Mapping[str, Any],
-    ) -> Optional[str]:
-        """Bind reader inputs to the worker type, including postponed aliases."""
+    ) -> dict[str, type]:
+        """Bind Blob annotations to worker types, including postponed aliases."""
         readers = {
             parameter.name: parameter
             for parameter in signature.inputs
             if parameter.blob_access == "reader"
         }
-        if not readers:
-            return None
-        call = definition
+        if not readers and not signature.output.blob_writer_paths:
+            return {}
         if isinstance(definition, ast.ClassDef):
             call = next(
                 (
@@ -2695,19 +2848,47 @@ class _SourcePackager:
                 ),
                 None,
             )
-        if call is None:
-            return None
-        # Avoid shadowing globals used by the body or other packaged definitions.
-        name = "_lance_blob_reader"
-        while name in namespace or name in self._names or name == definition.name:
-            name += "_"
-        for argument in (*call.args.args, *call.args.kwonlyargs):
-            if argument.arg in readers:
-                annotation = name
-                if readers[argument.arg].nullable:
-                    annotation += " | None"
-                argument.annotation = ast.parse(annotation, mode="eval").body
-        return name
+            if call is None:
+                return {}
+        else:
+            call = definition
+
+        def alias(name: str) -> str:
+            # Avoid shadowing globals used by the body or other definitions.
+            while name in namespace or name in self._names or name == definition.name:
+                name += "_"
+            return name
+
+        bindings = {}
+        if readers:
+            name = alias("_lance_blob_reader")
+            for argument in (*call.args.args, *call.args.kwonlyargs):
+                if argument.arg in readers:
+                    annotation = name
+                    if readers[argument.arg].nullable:
+                        annotation += " | None"
+                    argument.annotation = ast.parse(annotation, mode="eval").body
+            bindings[name] = BlobReader
+        if signature.output.blob_writer_paths:
+            method = inspect.isclass(target)
+            callable_ = _class_call(target) if method else target
+            annotations = get_type_hints(callable_, include_extras=True)
+            if _is_vectorized_callable(callable_, method=method):
+                name = alias("_lance_arrow")
+                for argument in (*call.args.args, *call.args.kwonlyargs):
+                    arrow_type = annotations.get(argument.arg)
+                    if arrow_type is pa.Array or arrow_type is pa.RecordBatch:
+                        argument.annotation = ast.parse(
+                            f"{name}.{arrow_type.__name__}", mode="eval"
+                        ).body
+                bindings[name] = pa
+            return_type = annotations.get("return")
+            if _uses_blob_writer(return_type):
+                name = alias("_lance_blob_writer")
+                annotation = _blob_writer_annotation_source(return_type, name)
+                call.returns = ast.parse(annotation, mode="eval").body
+                bindings[name] = BlobWriter
+        return bindings
 
     def _claim(self, name: str, meaning: Any) -> None:
         claimed = self._names.setdefault(name, meaning)
@@ -2751,8 +2932,8 @@ class _SourcePackager:
         approved = _approved_global_namespace_binding(definition, name, value)
         if approved is not None:
             return approved
-        if value is BlobReader:
-            return f"from lance_blob import BlobReader as {name}"
+        if value is BlobReader or value is BlobWriter:
+            return f"from lance_blob import {value.__name__} as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
                 raise _namespace_import_error([value.__name__])
@@ -3699,9 +3880,10 @@ def function(
     ----------
     function : function or class, optional
         The synchronous callable, or the class whose instances are called. For
-        a function, annotate every parameter as ``pyarrow.Array`` to opt into
-        vectorized execution; a matching return annotation documents that the
-        callable returns an Arrow array.
+        a function, annotate every parameter as ``pyarrow.Array`` or a single
+        parameter as ``pyarrow.RecordBatch`` to opt into vectorized execution.
+        A vectorized Function using ``BlobWriter`` returns a row-aligned list
+        or tuple of results.
     name : str, optional
         The remote Function name. Defaults to the callable name.
         Must start with an ASCII letter or underscore and contain only ASCII
@@ -3717,8 +3899,9 @@ def function(
         a map key must be non-nullable utf8 and its value field keeps the
         declared nullability. Temporal fields use canonical Arrow JSON; the
         microsecond/no-timezone case keeps the legacy timestamp/duration shape.
-        Required for batch annotations. When omitted, the output is inferred
-        from the return annotation.
+        Required for batch annotations unless the return annotation declares
+        a row-aligned sequence of ``BlobWriter`` results. When omitted, the
+        output is inferred from the return annotation.
     pip : sequence of str, optional
         Pip requirements for the remote environment. Syntax is validated at
         decoration time, including extras and environment markers. Named direct
@@ -3892,6 +4075,14 @@ def function(
     declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
     plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
 
+    For a streaming Blob v2 result, annotate a scalar return with
+    [``BlobWriter``][lancedb.functions.BlobWriter], or annotate a vectorized
+    return with ``list[BlobWriter]`` or ``tuple[BlobWriter, ...]``. To declare a
+    writer in a named or nested output, use ``BlobWriter.field(...)`` in the
+    explicit output schema. Writer-capable Functions run during computed
+    column refresh. Plain SQL ``SELECT`` continues to support byte-returning
+    Functions under its Arrow output limits.
+
     A Blob v2 field may sit at the top level or inside a struct in inputs and
     outputs. Only outputs may nest it in a list or large list (for example
     ``pa.list_(lancedb.blob("item"))``, returned as a list of ``bytes``);
@@ -3935,6 +4126,7 @@ def function(
 __all__ = [
     "AssignmentMapping",
     "ApplicationInput",
+    "BlobWriter",
     "FunctionApplication",
     "FunctionArtifact",
     "FunctionArtifactContent",
