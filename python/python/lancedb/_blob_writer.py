@@ -53,7 +53,7 @@ class BlobWriter:
         with BlobWriter.open() as output:
             for line in text.splitlines():
                 output.write(line.encode("utf-8"))
-                output.write(b"\n")
+                output.write(b"\\n")
         return output
     ```
     """
