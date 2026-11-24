@@ -50,6 +50,7 @@ class StorageIntegrationInfo:
     azure_client_secret_secret: Optional[SecretReference] = None
     gcp_credentials_json_secret: Optional[SecretReference] = None
     huggingface_token_secret: Optional[SecretReference] = None
+    azure_storage_account_access_key_secret: Optional[SecretReference] = None
 
     def __post_init__(self):
         for field in (
@@ -58,6 +59,7 @@ class StorageIntegrationInfo:
             "azure_tenant_id_secret",
             "azure_client_id_secret",
             "azure_client_secret_secret",
+            "azure_storage_account_access_key_secret",
             "gcp_credentials_json_secret",
             "huggingface_token_secret",
         ):
