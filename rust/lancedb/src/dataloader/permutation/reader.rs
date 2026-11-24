@@ -508,9 +508,30 @@ impl PermutationReader {
             )?;
             Self::load_batch(&self.base_table, row_ids, selection).await
         } else {
+            // No permutation table: offsets address the base table. Shift by the
+            // skip and reject anything outside the skip/take window, which is the
+            // same index space `count_rows` and `read` use. A missing map entry
+            // on the permutation-table path is an error, so an offset past this
+            // window is an error too.
+            let start = self.offset.unwrap_or(0);
+            let absolute_offsets = offsets
+                .iter()
+                .map(|offset| {
+                    if *offset >= self.available_rows {
+                        Err(Error::InvalidInput {
+                            message: format!(
+                                "Offset {offset} is outside the permutation window of length {}",
+                                self.available_rows
+                            ),
+                        })
+                    } else {
+                        Ok(start + *offset)
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
             let table = Table::from(self.base_table.clone());
             let batches = table
-                .take_offsets(offsets.to_vec())
+                .take_offsets(absolute_offsets)
                 .preserve_order()
                 .select(selection.clone())
                 .execute()
@@ -948,6 +969,116 @@ mod tests {
             .values()
             .to_vec();
         assert_eq!(idx_values, vec![0, 2, 0, 4, 6]);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_identity_window_matches_iteration() {
+        let base_table = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
+            .await;
+        let base = base_table.base_table().clone();
+
+        let window = PermutationReader::identity(base.clone())
+            .await
+            .unwrap()
+            .with_offset(3)
+            .await
+            .unwrap()
+            .with_limit(4)
+            .await
+            .unwrap();
+        assert_eq!(window.count_rows(), 4);
+
+        let iterated = collect_from_stream::<Int32Type>(
+            window
+                .read(
+                    Select::All,
+                    QueryExecutionOptions {
+                        max_batch_length: 10,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap(),
+            "idx",
+        )
+        .await;
+        assert_eq!(iterated, vec![3, 4, 5, 6]);
+
+        let taken = window.take_offsets(&[0, 3, 1], Select::All).await.unwrap();
+        let taken_idx = taken
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(taken_idx, vec![iterated[0], iterated[3], iterated[1]]);
+        assert!(window.take_offsets(&[4], Select::All).await.is_err());
+        assert!(window.take_offsets(&[0, 4], Select::All).await.is_err());
+
+        let skipped = PermutationReader::identity(base.clone())
+            .await
+            .unwrap()
+            .with_offset(3)
+            .await
+            .unwrap();
+        assert_eq!(skipped.count_rows(), 7);
+        let skipped_batch = skipped.take_offsets(&[0, 6], Select::All).await.unwrap();
+        assert_eq!(
+            skipped_batch
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .values()
+                .to_vec(),
+            vec![3, 9]
+        );
+        assert!(skipped.take_offsets(&[7], Select::All).await.is_err());
+
+        let limited = PermutationReader::identity(base)
+            .await
+            .unwrap()
+            .with_limit(2)
+            .await
+            .unwrap();
+        assert_eq!(limited.count_rows(), 2);
+        let limited_batch = limited.take_offsets(&[0, 1], Select::All).await.unwrap();
+        assert_eq!(
+            limited_batch
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .values()
+                .to_vec(),
+            vec![0, 1]
+        );
+        assert!(limited.take_offsets(&[2], Select::All).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_permutation_window_rejects_past_end() {
+        let (base_table, row_ids_table, row_ids) = setup_permutation_tables(6).await;
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            row_ids_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap()
+        .with_offset(1)
+        .await
+        .unwrap()
+        .with_limit(2)
+        .await
+        .unwrap();
+
+        assert_eq!(reader.count_rows(), 2);
+        let batch = reader.take_offsets(&[0, 1], Select::All).await.unwrap();
+        let idx_values = batch
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(idx_values, vec![row_ids[1] as i32, row_ids[2] as i32]);
+        assert!(reader.take_offsets(&[2], Select::All).await.is_err());
     }
 
     #[tokio::test]

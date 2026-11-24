@@ -1713,6 +1713,255 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
         some_permutation.__getitems__([999999])
 
 
+def test_getitem_returns_single_row(some_permutation: Permutation):
+    """An integer index returns one row, matching the first batched item."""
+    row = some_permutation[0]
+    batched = some_permutation.__getitems__([0])
+
+    assert isinstance(batched, list)
+    assert len(batched) == 1
+    assert isinstance(row, dict)
+    assert row == batched[0]
+    assert row == some_permutation.take_offsets([0])[0]
+    assert some_permutation.with_format("python")[0] == row
+    assert (
+        some_permutation[-1]
+        == some_permutation.__getitems__([some_permutation.num_rows - 1])[0]
+    )
+
+
+def test_getitems_two_indices_stay_a_list(some_permutation: Permutation):
+    """Batched access still returns one list entry per requested offset."""
+    rows = some_permutation.__getitems__([0, 1])
+
+    assert isinstance(rows, list)
+    assert len(rows) == 2
+    assert rows[0] == some_permutation[0]
+    assert rows[1] == some_permutation[1]
+
+
+def test_getitem_arrow_format_is_one_row_batch(some_permutation: Permutation):
+    batch = some_permutation.with_format("arrow")[0]
+
+    assert isinstance(batch, pa.RecordBatch)
+    assert batch.num_rows == 1
+    assert batch.to_pylist() == [some_permutation[0]]
+
+    several = some_permutation.with_format("arrow").__getitems__([0, 1])
+    assert isinstance(several, pa.RecordBatch)
+    assert several.num_rows == 2
+
+
+def test_getitem_python_col_format(some_permutation: Permutation):
+    np = pytest.importorskip("numpy")
+    row = some_permutation[0]
+
+    columnar = some_permutation.with_format("python_col")[0]
+    assert columnar == {"id": [row["id"]], "value": [row["value"]]}
+    assert some_permutation[np.int64(0)] == row
+
+
+def test_getitem_numpy_format(some_permutation: Permutation):
+    """The numpy format is built with ``batch.to_pandas().to_numpy()``."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("pandas")
+    row = some_permutation[0]
+
+    array = some_permutation.with_format("numpy")[0]
+    assert isinstance(array, np.ndarray)
+    assert array.shape == (1, some_permutation.num_columns)
+    assert array[0, 0] == row["id"]
+    assert array[0, 1] == row["value"]
+
+
+def test_getitem_pandas_format(some_permutation: Permutation):
+    pd = pytest.importorskip("pandas")
+
+    frame = some_permutation.with_format("pandas")[0]
+
+    assert isinstance(frame, pd.DataFrame)
+    assert len(frame) == 1
+    assert frame.to_dict(orient="records") == [some_permutation[0]]
+
+
+def test_getitem_polars_format(some_permutation: Permutation):
+    pl = pytest.importorskip("polars")
+
+    frame = some_permutation.with_format("polars")[0]
+
+    assert isinstance(frame, pl.DataFrame)
+    assert frame.shape == (1, some_permutation.num_columns)
+    assert frame.to_dicts() == [some_permutation[0]]
+
+
+def test_getitem_torch_formats(some_permutation: Permutation):
+    torch = pytest.importorskip("torch")
+
+    per_row = some_permutation.with_format("torch")[0]
+    assert isinstance(per_row, dict)
+    assert set(per_row) == {"id", "value"}
+    assert isinstance(per_row["id"], torch.Tensor)
+    assert per_row["id"].shape == ()
+    assert int(per_row["id"]) == some_permutation[0]["id"]
+
+    row_tensor = some_permutation.with_format("torch_row")[0]
+    assert isinstance(row_tensor, torch.Tensor)
+    assert row_tensor.shape == (some_permutation.num_columns,)
+
+    columns = some_permutation.with_format("torch_dict")[0]
+    assert isinstance(columns, dict)
+    assert columns["id"].shape == (1,)
+    assert int(columns["id"][0]) == some_permutation[0]["id"]
+
+    stacked = some_permutation.with_format("torch_col")[0]
+    assert isinstance(stacked, torch.Tensor)
+    assert stacked.shape == (some_permutation.num_columns, 1)
+
+    rows = some_permutation.with_format("torch").__getitems__([0, 1])
+    assert isinstance(rows, list)
+    assert len(rows) == 2
+    assert rows[0]["id"].shape == ()
+
+
+def test_getitem_custom_transform(mem_db):
+    """Lists of one row unwrap; other custom return values stay intact."""
+    table = mem_db.create_table(
+        "getitem_custom", pa.table({"id": range(4), "value": range(4)})
+    )
+    permutation = Permutation.identity(table)
+
+    def ids(batch: pa.RecordBatch) -> list[int]:
+        return batch.column("id").to_pylist()
+
+    listed = permutation.with_transform(ids)
+    assert listed[0] == 0
+    assert listed[-1] == 3
+    assert listed.__getitems__([0, 1]) == [0, 1]
+    assert listed.take_offsets([2, 0]) == [2, 0]
+
+    def as_batch(batch: pa.RecordBatch) -> pa.RecordBatch:
+        return batch
+
+    kept = permutation.with_transform(as_batch)[1]
+    assert isinstance(kept, pa.RecordBatch)
+    assert kept.num_rows == 1
+    assert kept.column("id").to_pylist() == [1]
+
+    def pair(batch: pa.RecordBatch) -> tuple[int, int]:
+        row = batch.to_pylist()[0]
+        return (row["id"], row["value"])
+
+    assert permutation.with_transform(pair)[2] == (2, 2)
+
+    def not_a_row_list(batch: pa.RecordBatch) -> list[int]:
+        return [batch.num_rows, batch.num_columns]
+
+    assert permutation.with_transform(not_a_row_list)[0] == [1, 2]
+
+
+def test_getitem_negative_and_out_of_range(mem_db):
+    table = mem_db.create_table(
+        "getitem_bounds", pa.table({"id": range(5), "value": range(5, 10)})
+    )
+    permutation = Permutation.identity(table)
+
+    assert permutation[0] == {"id": 0, "value": 5}
+    assert permutation[-1] == {"id": 4, "value": 9}
+    assert permutation[-5] == permutation[0]
+    assert permutation[4] == permutation[-1]
+
+    with pytest.raises(IndexError, match="out of range"):
+        permutation[5]
+    with pytest.raises(IndexError, match="out of range"):
+        permutation[-6]
+
+    with pytest.raises(TypeError):
+        permutation["0"]
+    with pytest.raises(TypeError):
+        permutation[0:2]
+    with pytest.raises(TypeError):
+        permutation[[0, 1]]
+
+    # Multi-row reads keep raw offsets and still reject negatives.
+    with pytest.raises(OverflowError):
+        permutation.__getitems__([-1])
+    with pytest.raises(OverflowError):
+        permutation.take_offsets([-1])
+
+
+def _iter_rows(permutation: Permutation) -> list:
+    rows = []
+    for batch in permutation.iter(32, skip_last_batch=False):
+        rows.extend(batch)
+    return rows
+
+
+def test_identity_window_matches_iteration(mem_db):
+    """Identity skip/take uses one index space for reads and iteration."""
+    table = mem_db.create_table(
+        "identity_window", pa.table({"id": range(10), "value": range(10, 20)})
+    )
+    identity = Permutation.identity(table)
+    windows = [
+        identity.with_skip(3).with_take(4),
+        identity.with_skip(3),
+        identity.with_take(4),
+    ]
+
+    for window in windows:
+        iterated = _iter_rows(window)
+        last = len(iterated) - 1
+        assert window.num_rows == len(iterated)
+        assert window[0] == iterated[0]
+        assert window[-1] == iterated[last]
+        assert window.__getitems__([0, last]) == [iterated[0], iterated[last]]
+        assert window.take_offsets([0, last]) == [iterated[0], iterated[last]]
+        assert window.take_offsets([last, 0]) == [iterated[last], iterated[0]]
+        with pytest.raises(Exception):
+            window.take_offsets([len(iterated)])
+        with pytest.raises(Exception):
+            window.__getitems__([0, len(iterated)])
+        with pytest.raises(IndexError, match="out of range"):
+            window[len(iterated)]
+
+    skipped = identity.with_skip(3).with_take(4)
+    assert skipped[0] == {"id": 3, "value": 13}
+    assert skipped[-1] == {"id": 6, "value": 16}
+    assert [row["id"] for row in _iter_rows(skipped)] == [3, 4, 5, 6]
+
+
+def test_identity_window_dataloader(mem_db):
+    torch = pytest.importorskip("torch")
+    table = mem_db.create_table("identity_loader", pa.table({"id": range(10)}))
+    window = Permutation.identity(table).with_skip(3).with_take(4)
+
+    one_at_a_time = list(torch.utils.data.DataLoader(window, batch_size=None))
+    assert [row["id"] for row in one_at_a_time] == [3, 4, 5, 6]
+
+    batches = list(torch.utils.data.DataLoader(window, batch_size=2, shuffle=False))
+    assert [[int(value) for value in batch["id"]] for batch in batches] == [
+        [3, 4],
+        [5, 6],
+    ]
+
+
+def test_getitem_negative_respects_skip_window(some_permutation: Permutation):
+    """Negative indexes count from the end of a skip/take window."""
+    window = some_permutation.with_skip(100).with_take(200)
+    last = window.num_rows - 1
+
+    assert window[0] == window.__getitems__([0])[0]
+    assert window[-1] == window.__getitems__([last])[0]
+    assert window[0] == some_permutation.__getitems__([100])[0]
+    assert window[-1] == some_permutation.__getitems__([100 + last])[0]
+    with pytest.raises(IndexError, match="out of range"):
+        window[window.num_rows]
+    with pytest.raises(IndexError, match="out of range"):
+        window[-window.num_rows - 1]
+    with pytest.raises(Exception):
+        window.take_offsets([window.num_rows])
+
+
 def test_take_offsets(some_permutation: Permutation):
     result = some_permutation.take_offsets([0, 1, 2])
 
@@ -2004,6 +2253,44 @@ def test_map_take_offsets(some_permutation: Permutation):
     calls.clear()
     assert mapped.take_offsets([]) == []
     assert calls == []
+
+
+def test_getitem_unwraps_mapped_row(some_permutation: Permutation):
+    """map() yields one dict per row, so an integer index unwraps that dict."""
+    last = some_permutation.num_rows - 1
+    source = some_permutation.take_offsets([0, 1, last])
+
+    for mapped in (
+        some_permutation.map(_double_value_row),
+        some_permutation.map(_double_value_batch, batched=True),
+    ):
+        assert mapped[0] == _double_value_row(source[0])
+        assert mapped[-1] == _double_value_row(source[2])
+        assert mapped.take_offsets([0]) == [mapped[0]]
+        assert mapped.__getitems__([0]) == [mapped[0]]
+        assert mapped.__getitems__([0, 1]) == [
+            _double_value_row(source[0]),
+            _double_value_row(source[1]),
+        ]
+        with pytest.raises(IndexError, match="out of range"):
+            mapped[mapped.num_rows]
+        with pytest.raises(IndexError, match="out of range"):
+            mapped[-mapped.num_rows - 1]
+
+    chained = some_permutation.map(_double_value_row).map(
+        _double_value_batch, batched=True
+    )
+    assert chained[1]["value"] == source[1]["value"] * 4
+    assert chained.take_offsets([1]) == [chained[1]]
+
+    window_source = some_permutation.take_offsets([2, 4])
+    for window in (
+        some_permutation.with_skip(2).with_take(3).map(_double_value_row),
+        some_permutation.map(_double_value_row).with_skip(2).with_take(3),
+    ):
+        assert window[0] == _double_value_row(window_source[0])
+        assert window[-1] == _double_value_row(window_source[1])
+        assert window.take_offsets([0, 2]) == [window[0], window[-1]]
 
 
 def test_map_validates_output(some_permutation: Permutation):
