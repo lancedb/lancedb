@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use arrow_array::{Array, StringArray, UInt64Array};
-use futures::TryStreamExt;
+use arrow_array::{Array, UInt64Array};
 use serde::de::DeserializeOwned;
 
 use super::{cleanup, optimize, prewarm};
 use crate::job::Job;
 use crate::remote::client::{HttpSend, RestfulLanceDbClient};
 use crate::remote::job::RemoteJob;
+use crate::remote::sql::receipt::ReceiptRow;
 use crate::sql::Query;
 use crate::{Error, Result};
 
@@ -50,34 +50,22 @@ impl JobReceipt {
             Self::Cleanup => cleanup::map_error,
         };
         let query = submission.map_err(map_error)?;
-        let mut reader = query.reader().await.map_err(map_error)?;
-        let mut receipt = None;
-        let mut rows = 0usize;
-        while let Some(batch) = reader.try_next().await.map_err(map_error)? {
-            rows = rows.saturating_add(batch.num_rows());
-            if rows == 1 && batch.num_rows() == 1 {
-                receipt = Some(batch);
-            }
-        }
-        let batch = receipt
-            .filter(|_| rows == 1)
+        let row = ReceiptRow::read(&query)
+            .await
+            .map_err(map_error)?
             .ok_or_else(|| self.invalid())?;
-        let ids = batch
-            .column_by_name("job_id")
-            .and_then(|column| column.as_any().downcast_ref::<StringArray>())
-            .filter(|ids| !ids.is_null(0) && !ids.value(0).trim().is_empty())
-            .ok_or_else(|| self.invalid())?;
+        let Ok(Some(job_id)) = row.job_id() else {
+            return Err(self.invalid());
+        };
         if matches!(self, Self::Prewarm) {
-            batch
-                .column_by_name("table_version")
+            row.column("table_version")
                 .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
                 .filter(|versions| !versions.is_null(0))
                 .ok_or_else(|| self.invalid())?;
         }
-        let job_id = ids.value(0).to_owned();
         Ok(Job::new_typed(Box::new(RemoteJob::new(
             client.clone(),
-            job_id,
+            job_id.to_owned(),
         ))))
     }
 }
