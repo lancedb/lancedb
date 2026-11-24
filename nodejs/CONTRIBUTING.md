@@ -81,6 +81,9 @@ Run tests:
 pnpm test
 ```
 
+Jest uses SWC to transpile TypeScript. Run `pnpm run typecheck:tests` after
+`pnpm build` to check the test suite's types.
+
 To run a single test:
 
 ```shell
