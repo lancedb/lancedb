@@ -62,7 +62,7 @@ from ._blob import (
 from .types import BlobMode, QueryProjection
 
 if TYPE_CHECKING:
-    import sys
+    from typing import Self
 
     import PIL
     import polars as pl
@@ -76,11 +76,6 @@ if TYPE_CHECKING:
     from .common import VEC
     from .pydantic import LanceModel
     from .table import AsyncTable, Table
-
-    if sys.version_info >= (3, 11):
-        from typing import Self
-    else:
-        from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
 
