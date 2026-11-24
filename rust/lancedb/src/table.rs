@@ -93,7 +93,10 @@ pub use optimize::CompactionResult;
 mod cleanup;
 pub use cleanup::{CleanupOptions, CleanupPlan, CleanupResult};
 mod prewarm;
-pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
+pub use prewarm::{
+    OrderedPrewarmOptions, PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult,
+    PrewarmPruningSummary,
+};
 pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
@@ -3330,7 +3333,9 @@ impl Table {
     /// Status and waiting use the generic HTTP job APIs; events and cancellation
     /// retain their separate privileges. Unsupported servers are not retried
     /// through REST or with requested settings removed. Local tables are unsupported.
-    /// Historical-version checkouts are unsupported; use `checkout_latest()` first.
+    /// Ordinary prewarm uses the branch head. For ordered prewarm, supply the
+    /// streaming permutation’s table version in [`OrderedPrewarmOptions`]. A
+    /// historical handle must match that version.
     /// After [`Job::refresh`], the pinned source version is in [`Job::spec`].
     ///
     /// ```no_run
@@ -3356,7 +3361,8 @@ impl Table {
     /// Requires LanceDB Enterprise with structured SQL PREWARM previews and
     /// SELECT permission plus database/namespace usage. Reads metadata without
     /// submitting a warming job. A later submission plans its own snapshot.
-    /// Historical-version and Embedded handles are unsupported.
+    /// Ordered previews require server support for the pinned snapshot and sampler.
+    /// Ordinary previews require a latest-version Enterprise handle.
     ///
     /// ```no_run
     /// # async fn preview(table: &lancedb::Table) -> lancedb::Result<()> {

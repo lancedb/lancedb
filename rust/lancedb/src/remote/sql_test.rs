@@ -4645,6 +4645,77 @@ async fn remote_prewarm_data_returns_the_durable_job_without_polling() {
 }
 
 #[tokio::test]
+async fn ordered_prewarm_submits_the_pinned_sampler_and_checks_the_receipt() {
+    use crate::table::{OrderedPrewarmOptions, PrewarmDataOptions};
+    let service = TestSqlService {
+        adaptive: true,
+        result: prewarm_result(),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let headers = service.headers.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = RemoteTable::new_with_sql_client(
+        client_with_handler(|_| -> http::Response<String> { panic!("no HTTP fallback") }),
+        "analytics".into(),
+        "clip\"name".into(),
+        vec!["team".into()],
+        "team$clip".into(),
+        Default::default(),
+        Some(sql),
+    )
+    .with_branch(Some("train".into()));
+    let mut options = PrewarmDataOptions::new()
+        .columns(["attrs.score"])
+        .filter("quality > 70");
+    options.ordered = Some(OrderedPrewarmOptions {
+        table_version: 42,
+        num_splits: 6,
+        world_size: 3,
+        workers_per_rank: 1,
+        slices_per_worker: None,
+        shuffle: true,
+        shuffle_seed: 17,
+        epoch: 4,
+        shuffle_clump_size: Some(3),
+        split_start_positions: Some(vec![0, 1, 2, 3, 4, 5]),
+    });
+    let job = table.prewarm_data_async(options.clone()).await.unwrap();
+    assert_eq!(job.id(), Some("warming-job"));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        [
+            r#"PREWARM WITH (branch = 'train', permutation_version = 1, num_splits = 6, world_size = 3, workers_per_rank = 1, shuffle = true, shuffle_seed = 17, epoch = 4, shuffle_clump_size = 3, split_start_positions = ARRAY[0, 1, 2, 3, 4, 5]) AS SELECT "attrs"."score" FROM "clip""name" AS OF VERSION 42 WHERE quality > 70"#
+        ]
+    );
+    assert!(
+        headers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|h| h.namespace_path == "team" && h.database == "analytics")
+    );
+
+    let ordered = options.ordered.as_mut().unwrap();
+    ordered.table_version = 43;
+    ordered.slices_per_worker = Some(2);
+    ordered.shuffle = false;
+    ordered.shuffle_clump_size = None;
+    ordered.split_start_positions = None;
+    let error = table.prewarm_data_async(options).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("acknowledged snapshot 42, expected 43")
+    );
+    let sent = statements.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[1].contains("slices_per_worker = 2, shuffle = false"));
+    assert!(!sent[1].contains("split_start_positions"));
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn remote_legacy_prewarm_data_submits_sql_and_returns_on_acceptance() {
     for columns in [None, Some(vec![]), Some(vec!["payload".into()])] {
         let service = TestSqlService {

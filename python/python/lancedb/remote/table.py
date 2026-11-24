@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import timedelta
 import deprecation
+import json
 import logging
 from functools import cached_property, wraps
 import os
@@ -1587,6 +1588,19 @@ class RemoteTable(Table):
                 )
             )
         )
+
+    def _submit_streaming_prewarm(self, columns, predicate, settings) -> str:
+        table = self._table
+
+        async def submit():
+            return await table._inner.prewarm_data_async(
+                columns, filter=predicate, ordered_json=json.dumps(settings)
+            )
+
+        job = LOOP.run(submit())
+        if job.id is None:
+            raise RuntimeError("Enterprise PREWARM returned no durable job ID")
+        return job.id
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)

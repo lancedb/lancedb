@@ -53,6 +53,43 @@ pub(super) fn statement(
     if let Some(concurrency) = options.concurrency {
         settings.push(format!("concurrency = {concurrency}"));
     }
+    if let Some(ordered) = &options.ordered {
+        let workers = ordered
+            .world_size
+            .checked_mul(ordered.workers_per_rank)
+            .ok_or_else(|| invalid("prewarm worker count overflow"))?;
+        if workers == 0 || ordered.num_splits == 0 || !ordered.num_splits.is_multiple_of(workers) {
+            return Err(invalid(
+                "num_splits must be a positive multiple of the total worker count",
+            ));
+        }
+        if ordered.slices_per_worker == Some(0) || ordered.shuffle_clump_size == Some(0) {
+            return Err(invalid("prewarm slice and clump sizes must be positive"));
+        }
+        settings.extend([
+            "permutation_version = 1".into(),
+            format!("num_splits = {}", ordered.num_splits),
+            format!("world_size = {}", ordered.world_size),
+            format!("workers_per_rank = {}", ordered.workers_per_rank),
+        ]);
+        if let Some(slices) = ordered.slices_per_worker {
+            settings.push(format!("slices_per_worker = {slices}"));
+        }
+        settings.extend([
+            format!("shuffle = {}", ordered.shuffle),
+            format!("shuffle_seed = {}", ordered.shuffle_seed),
+            format!("epoch = {}", ordered.epoch),
+        ]);
+        if let Some(clump) = ordered.shuffle_clump_size {
+            settings.push(format!("shuffle_clump_size = {clump}"));
+        }
+        if let Some(positions) = &ordered.split_start_positions {
+            if positions.len() as u64 != ordered.num_splits {
+                return Err(invalid("prewarm requires one start position per split"));
+            }
+            settings.push(format!("split_start_positions = ARRAY{positions:?}"));
+        }
+    }
     let mut sql = "PREWARM".to_string();
     if !settings.is_empty() {
         sql.push_str(&format!(" WITH ({})", settings.join(", ")));
@@ -78,10 +115,37 @@ pub(super) fn statement(
         " AS SELECT {projection} FROM {}",
         quote_sql_identifier(table)
     ));
+    if let Some(ordered) = &options.ordered {
+        sql.push_str(&format!(" AS OF VERSION {}", ordered.table_version));
+    }
     if let Some(filter) = &options.filter {
         sql.push_str(&format!(" WHERE {filter}"));
     }
     Ok(sql)
+}
+
+pub(super) fn validate_pin(pin: Option<u64>, options: &PrewarmDataOptions) -> Result<()> {
+    if let Some(pin) = pin {
+        match &options.ordered {
+            None => {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "SQL PREWARM does not support historical version {pin} without ordered prewarm"
+                    ),
+                });
+            }
+            Some(ordered) if ordered.table_version != pin => {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "prewarm source snapshot {} differs from table snapshot {pin}",
+                        ordered.table_version
+                    ),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn receipt(batches: &[RecordBatch]) -> Result<(String, u64)> {

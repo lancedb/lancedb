@@ -38,6 +38,7 @@ import pyarrow.compute as pc
 import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
+from . import _streaming_prewarm
 from .permutation import (
     Permutation,
     PermutationBuilder,
@@ -2014,15 +2015,41 @@ class StreamingDataLoader(DataLoader):
     Callbacks and worker state must be picklable under the selected start
     method, following PyTorch's DataLoader rules.
 
+    Set ``prewarm=True`` on a compatible Enterprise connection to submit an
+    ordered PREWARM command before the parent starts its workers. Each iterator
+    uses the permutation's pinned snapshot, built-in sampler and actual worker
+    count. ``slices_per_worker`` defaults to the number of splits each worker
+    owns. Every rank must enable the option and start the iterator together
+    using the same default ``torch.distributed`` group. Rank zero submits once
+    per iterator and shares the accepted job ID through ``prewarm_job_id``.
+    Acceptance lets iteration begin while warming proceeds. This option requires
+    server support for ordered, snapshot-pinned PREWARM. Submission failures
+    propagate before worker reads begin.
+
     Examples
     --------
     >>> # dataset = StreamingDataset(table, num_splits=2)
     >>> # loader = StreamingDataLoader(dataset, batch_size=8, num_workers=2)
     >>> # batch = next(iter(loader))
     >>> # checkpoint = dataset.state_dict()
+    >>> # loader = StreamingDataLoader(enterprise_dataset, num_workers=2, prewarm=True)
+    >>> # batches = iter(loader)
+    >>> # job = db.open_job(loader.prewarm_job_id)
     """
 
-    def __init__(self, dataset: StreamingDataset, *args, **kwargs):
+    def __init__(
+        self,
+        dataset: StreamingDataset,
+        *args,
+        prewarm: bool = False,
+        slices_per_worker: Optional[int] = None,
+        **kwargs,
+    ):
+        if slices_per_worker is not None and not prewarm:
+            raise ValueError("slices_per_worker requires prewarm=True")
+        self._prewarm = prewarm
+        self._slices_per_worker = slices_per_worker
+        self._prewarm_job_id: Optional[str] = None
         if not isinstance(dataset, StreamingDataset):
             raise TypeError("StreamingDataLoader requires a StreamingDataset")
         if type(dataset).__iter__ is not StreamingDataset.__iter__:
@@ -2055,38 +2082,43 @@ class StreamingDataLoader(DataLoader):
             )
         self.collate_fn = _CheckpointCollate(self.collate_fn)
 
+    @property
+    def prewarm_job_id(self) -> Optional[str]:
+        """Durable Enterprise job ID accepted for the latest iterator startup."""
+        return self._prewarm_job_id
+
     def __iter__(self):
         dataset = self._streaming_dataset
         previous_lease = dataset._consumer_iterator_lease
         owner_token = None
         try:
-            owner_token = dataset._acquire_consumer_iterator()
-            state = dataset._checkpoint_snapshot()
-            packed = dataset._pack_sequences is not None
-            if packed:
-                blocks = state["blocks_emitted_per_split"]
-                rank_blocks = [blocks[split] for split in dataset._rank_splits]
-                if len(set(rank_blocks)) > 1:
-                    raise RuntimeError(
-                        "StreamingDataLoader cannot start from a partial packed "
-                        "logical step; resume from a checkpoint whose splits "
-                        "assigned to this rank have equal emitted-block counts"
+            prepared = None
+            failure = None
+            try:
+                owner_token = dataset._acquire_consumer_iterator()
+                self._prewarm_job_id = None
+                state = self._validated_start_state()
+                if self._prewarm:
+                    prepared = _streaming_prewarm.prepare(
+                        dataset,
+                        state,
+                        max(1, self.num_workers),
+                        self._slices_per_worker,
                     )
-            elif self.num_workers > 1:
-                samples = state["samples_consumed_per_split"]
-                rank_samples = [samples[split] for split in dataset._rank_splits]
-                if len(set(rank_samples)) > 1:
-                    raise RuntimeError(
-                        "StreamingDataLoader cannot start multiple workers from a "
-                        "partial logical step; resume from a checkpoint whose "
-                        "splits assigned to this rank have equal consumed-sample "
-                        "counts"
-                    )
+            except Exception as exc:
+                if not self._prewarm:
+                    raise
+                failure = exc
+            if self._prewarm:
+                self._prewarm_job_id = _streaming_prewarm.submit(
+                    dataset, prepared, failure
+                )
             return _ConsumerCommitIterator(
                 super().__iter__(),
                 dataset,
                 owner_token=owner_token,
-                require_uniform=self.num_workers > 1 or packed,
+                require_uniform=self.num_workers > 1
+                or dataset._pack_sequences is not None,
             )
         except BaseException:
             if owner_token is not None:
@@ -2094,3 +2126,27 @@ class StreamingDataLoader(DataLoader):
             else:
                 dataset._release_consumer_iterator_after_failed_acquire(previous_lease)
             raise
+
+    def _validated_start_state(self):
+        dataset = self._streaming_dataset
+        state = dataset._checkpoint_snapshot()
+        if dataset._pack_sequences is not None:
+            blocks = state["blocks_emitted_per_split"]
+            rank_blocks = [blocks[split] for split in dataset._rank_splits]
+            if len(set(rank_blocks)) > 1:
+                raise RuntimeError(
+                    "StreamingDataLoader cannot start from a partial packed "
+                    "logical step; resume from a checkpoint whose splits "
+                    "assigned to this rank have equal emitted-block counts"
+                )
+        elif self.num_workers > 1:
+            samples = state["samples_consumed_per_split"]
+            rank_samples = [samples[split] for split in dataset._rank_splits]
+            if len(set(rank_samples)) > 1:
+                raise RuntimeError(
+                    "StreamingDataLoader cannot start multiple workers from a "
+                    "partial logical step; resume from a checkpoint whose "
+                    "splits assigned to this rank have equal consumed-sample "
+                    "counts"
+                )
+        return state

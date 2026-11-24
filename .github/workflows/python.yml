@@ -126,6 +126,7 @@ jobs:
         run: |
           python -c "import torch"
           pytest python/tests/test_torch.py::test_remote_permutation_dataloader_multiprocessing -q -rs
+          pytest python/tests/test_elastic_dataloader.py -k prewarm -v
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
   linux:

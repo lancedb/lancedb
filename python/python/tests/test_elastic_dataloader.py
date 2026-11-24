@@ -3798,3 +3798,148 @@ def test_default_checkpoint_resumes_after_compaction(lance_table):
         lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
     )
     ds_resumed.load_state_dict(checkpoint)  # must not raise
+
+
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_enterprise_prewarm_is_submitted_before_workers_start(monkeypatch, num_workers):
+    flight = pytest.importorskip("pyarrow.flight")
+    server = MockPermutationServer(num_rows=24)
+    calls = []
+
+    class PrewarmServer(flight.FlightServerBase):
+        def do_get(self, context, ticket):
+            calls.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table(
+                    {
+                        "job_id": ["training-job"],
+                        "table_version": pa.array([1], pa.uint64()),
+                    }
+                )
+            )
+
+    with (
+        PrewarmServer("grpc://127.0.0.1:0") as sql,
+        mock_remote_table(
+            server, sql_host_override=f"grpc://127.0.0.1:{sql.port}"
+        ) as table,
+    ):
+        dataset = StreamingDataset(
+            table,
+            num_splits=6,
+            columns=["id"],
+            filter="id >= 0",
+            shuffle_seed=7,
+            epoch=3,
+            shuffle_clump_size=2,
+        )
+        state = dataset.state_dict()
+        state.update(
+            samples_consumed_per_split=[1] * 6, positions_consumed_per_split=[2] * 6
+        )
+        dataset.load_state_dict(state)
+        server.publish_version(2, range(24))
+        loader = StreamingDataLoader(
+            dataset, num_workers=num_workers, prewarm=True, slices_per_worker=3
+        )
+
+        def start_workers(_):
+            calls.append("workers")
+            return iter(())
+
+        monkeypatch.setattr(streaming.DataLoader, "__iter__", start_workers)
+        assert loader.prewarm_job_id is None
+        assert list(iter(loader)) == []
+        ticket, started = calls
+        assert started == "workers"
+        expected_sql = (
+            "PREWARM WITH (permutation_version = 1, num_splits = 6, world_size = 1, "
+            f"workers_per_rank = {max(1, num_workers)}, slices_per_worker = 3, "
+            "shuffle = true, shuffle_seed = 7, epoch = 3, shuffle_clump_size = 2, "
+            "split_start_positions = ARRAY[2, 2, 2, 2, 2, 2]) "
+            'AS SELECT "id" FROM "remote_data" AS OF VERSION 1 WHERE id >= 0'
+        )
+        assert expected_sql.encode() in ticket
+        assert loader.prewarm_job_id == "training-job"
+
+
+def test_enterprise_prewarm_error_releases_iterator_without_reading(monkeypatch):
+    server = MockPermutationServer()
+    with mock_remote_table(server) as table:
+        dataset = StreamingDataset(table)
+        loader = StreamingDataLoader(dataset, prewarm=True)
+
+        def reject(*_):
+            raise RuntimeError("server does not support ordered PREWARM")
+
+        monkeypatch.setattr(table, "_submit_streaming_prewarm", reject)
+        with pytest.raises(RuntimeError, match="does not support ordered PREWARM"):
+            iter(loader)
+        assert not dataset._consumer_iterator_active
+        assert not server.takes
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_prewarm_shares_one_receipt_and_rank_owned_positions(monkeypatch, rank):
+    server = MockPermutationServer(num_rows=24)
+    group = streaming._streaming_prewarm.dist
+    with mock_remote_table(server) as table:
+        dataset = StreamingDataset(table, num_splits=6, world_size=2, rank=rank)
+        loader = StreamingDataLoader(dataset, prewarm=True)
+        monkeypatch.setattr(group, "is_available", lambda: True)
+        monkeypatch.setattr(group, "is_initialized", lambda: True)
+        monkeypatch.setattr(group, "get_rank", lambda: rank)
+        monkeypatch.setattr(group, "get_world_size", lambda: 2)
+
+        def gather(reports, local):
+            error, (recipe, positions) = local
+            assert error is None
+            assert len(positions) == 3
+            reports[rank] = local
+            reports[1 - rank] = (None, (recipe, [1, 2, 3]))
+
+        def broadcast(receipt, src):
+            assert src == 0
+            if rank:
+                assert receipt == [None]
+                receipt[0] = ("group-job", None)
+            else:
+                assert receipt == [("group-job", None)]
+
+        def submit(columns, predicate, settings):
+            assert rank == 0
+            assert settings["split_start_positions"] == [0, 0, 0, 1, 2, 3]
+            return "group-job"
+
+        monkeypatch.setattr(group, "all_gather_object", gather)
+        monkeypatch.setattr(group, "broadcast_object_list", broadcast)
+        monkeypatch.setattr(table, "_submit_streaming_prewarm", submit)
+        monkeypatch.setattr(streaming.DataLoader, "__iter__", lambda _: iter(()))
+        assert list(iter(loader)) == []
+        assert loader.prewarm_job_id == "group-job"
+
+
+def test_prewarm_rejects_disagreeing_snapshots_before_submission(monkeypatch):
+    server = MockPermutationServer()
+    group = streaming._streaming_prewarm.dist
+    with mock_remote_table(server) as table:
+        dataset = StreamingDataset(table, num_splits=2, world_size=2, rank=0)
+        loader = StreamingDataLoader(dataset, prewarm=True)
+        monkeypatch.setattr(group, "is_available", lambda: True)
+        monkeypatch.setattr(group, "is_initialized", lambda: True)
+        monkeypatch.setattr(group, "get_rank", lambda: 0)
+        monkeypatch.setattr(group, "get_world_size", lambda: 2)
+
+        def gather(reports, local):
+            _, (recipe, positions) = local
+            other = dataclasses.replace(
+                recipe, settings={**recipe.settings, "table_version": 5}
+            )
+            reports[:] = [local, (None, (other, positions))]
+
+        monkeypatch.setattr(group, "all_gather_object", gather)
+        with pytest.raises(ValueError, match="Ranks disagree"):
+            iter(loader)
+        assert loader.prewarm_job_id is None
+        assert not dataset._consumer_iterator_active
+        assert not server.takes

@@ -1852,13 +1852,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None))]
+    #[pyo3(signature = (columns=None, *, filter=None, concurrency=None, parameters=None, ordered_json=None))]
     pub fn prewarm_data_async<'py>(
         self_: PyRef<'py, Self>,
         columns: Option<Vec<String>>,
         filter: Option<String>,
         concurrency: Option<&Bound<'py, PyAny>>,
         parameters: Option<PyArrowType<arrow::record_batch::RecordBatch>>,
+        ordered_json: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let mut options =
@@ -1866,6 +1867,12 @@ impl Table {
         options.filter = filter;
         options.parameters = parameters.map(|parameters| parameters.0);
         options.concurrency = positive_u32_integer(concurrency, "concurrency")?;
+        options.ordered = ordered_json
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|err| {
+                PyValueError::new_err(format!("invalid ordered prewarm settings: {err}"))
+            })?;
         future_into_py(self_.py(), async move {
             let job = inner.prewarm_data_async(options).await.infer_error()?;
             Ok(crate::job::Job::new_typed(job))
