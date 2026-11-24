@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.42.0-beta.20"
+version = "0.42.0-beta.26"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -54,7 +54,7 @@ pyo3-build-config = "0.29"
 default = ["stable-abi", "default-python"]
 # Keep stable ABI selection separate so the free-threaded wheel can use its
 # native CPython ABI without changing the default Python distribution.
-stable-abi = ["pyo3/abi3-py310"]
+stable-abi = ["pyo3/abi3-py311"]
 default-python = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/metrics-otel", "lancedb/geo"]
 free-threaded = ["default-python"]
 fp16kernels = ["lancedb/fp16kernels"]

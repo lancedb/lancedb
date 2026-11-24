@@ -84,11 +84,14 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod delta;
 pub mod freshness;
 pub mod function_column_status;
 pub mod merge;
 pub mod optimize;
 pub use optimize::CompactionResult;
+mod cleanup;
+pub use cleanup::{CleanupOptions, CleanupPlan, CleanupResult};
 mod prewarm;
 pub use prewarm::{PrewarmDataOptions, PrewarmDataPlan, PrewarmDataResult, PrewarmPruningSummary};
 pub(crate) mod primary_key;
@@ -112,6 +115,7 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
+pub use delta::{DeltaRef, TableDelta};
 pub use function_column_status::{
     FunctionColumnAutoRefreshBlockedReason, FunctionColumnAutoRefreshState,
     FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
@@ -907,6 +911,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Submit Enterprise version cleanup and retain its durable job and outcome.
+    async fn cleanup_async(&self, _options: CleanupOptions) -> Result<Job<CleanupResult>> {
+        Err(Error::NotSupported {
+            message: "durable cleanup jobs are only supported on remote tables".into(),
+        })
+    }
+
+    async fn explain_cleanup(&self, _options: CleanupOptions) -> Result<CleanupPlan> {
+        Err(Error::NotSupported {
+            message: "cleanup previews require LanceDB Enterprise".into(),
+        })
+    }
+
     /// Submit remote compaction and retain its durable job and actual outcome.
     async fn compact_async(
         &self,
@@ -1004,6 +1021,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         }
         self.refresh_column_async(column).await
     }
+    /// Resume a failed Function refresh on this table and branch.
+    async fn resume_refresh(
+        &self,
+        _job_id: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "resuming a Function refresh requires LanceDB Enterprise".into(),
+        })
+    }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
     async fn function_errors(
@@ -1056,6 +1082,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Compare two persisted versions on this table's current branch.
+    ///
+    /// The default implementation returns [`Error::NotSupported`]; table types
+    /// without a local Lance dataset, such as remote tables, cannot stream row
+    /// changes.
+    async fn delta(
+        &self,
+        _from_version: DeltaRef,
+        _to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        Err(Error::NotSupported {
+            message: "table.delta is only supported on LanceDB Embedded tables".into(),
+        })
+    }
     /// Return a new table handle pinned to the exact revision currently visible.
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
         Err(Error::NotSupported {
@@ -1897,9 +1937,16 @@ impl Table {
     /// Create a [`Query`] Builder.
     ///
     /// Queries allow you to search your existing data.  By default the query will
-    /// return all the data in the table in no particular order.  The builder
+    /// return all the data in the table.  The builder
     /// returned by this method can be used to control the query using filtering,
     /// vector similarity, sorting, and more.
+    ///
+    /// An ordinary unfiltered base-only scan of a fixed table version in
+    /// Embedded returns manifest order: fragments in manifest order, then rows
+    /// in fragment order. RTE tables scan the LSM by default; use
+    /// `use_rte(false)` for the base table guarantee. Compaction, updates, and
+    /// newer versions can change that order. Use [`Query::scan_in_order`] to
+    /// require it explicitly and fail on paths that cannot uphold it.
     ///
     /// Note: By default, all columns are returned.  For best performance, you should
     /// only fetch the columns you need.  See [`Query::select_with_projection`] for
@@ -1967,8 +2014,10 @@ impl Table {
     ///
     /// ## Full scan
     ///
-    /// This query will return everything in the table in no particular
-    /// order.
+    /// This query returns everything in the table. On an Embedded table, an
+    /// ordinary unfiltered base-only scan of a fixed version returns manifest
+    /// order. RTE tables scan the LSM by default and need `use_rte(false)` for
+    /// base manifest order.
     ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
@@ -2129,6 +2178,35 @@ impl Table {
         options: optimize::CompactionOverrides,
     ) -> Result<Job<CompactionResult>> {
         self.inner.compact_async(options).await
+    }
+
+    /// Submit durable version cleanup through SQL VACUUM and return after acceptance.
+    ///
+    /// Retention resolves invocation > selected table/branch > deployment. Requires
+    /// Ownership and parent Usage. Local and historical handles are unsupported.
+    /// Operators must disable/drain automatic cleanup and prevent other cleanup,
+    /// tag/branch publication and restore until completion, including direct clients.
+    /// The server does not enforce that coordination. Preview is available without deletion.
+    /// Wait, cancel and reopen reuse the shared Job APIs; timeout does not cancel,
+    /// and cancellation cannot undo deletion or prove storage I/O has stopped.
+    ///
+    /// ```
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let job = table.cleanup_async(lancedb::table::CleanupOptions::new()
+    ///     .min_age_seconds(604800)).await?;
+    /// let result = job.wait().await?;
+    /// println!("{:?}", result.old_versions);
+    /// # Ok(()) }
+    /// ```
+    pub async fn cleanup_async(&self, options: CleanupOptions) -> Result<Job<CleanupResult>> {
+        self.inner.cleanup_async(options).await
+    }
+
+    /// Explain Enterprise version cleanup without deleting files or submitting a job.
+    /// Requires the same ownership and retention options as [`Self::cleanup_async`].
+    /// Counts are observational estimates, not a reservation for later execution.
+    pub async fn explain_cleanup(&self, options: CleanupOptions) -> Result<CleanupPlan> {
+        self.inner.explain_cleanup(options).await
     }
 
     /// Language-binding entry point retaining optional compaction fields.
@@ -2295,10 +2373,10 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
     /// row-count publication threshold for completed Function outputs; unset
     /// keeps whole-fragment publication.
-    /// [`RefreshColumnOptions::resource_budget()`] sets the aggregate CPU,
+    /// [`RefreshColumnOptions::total_memory_bytes()`] sets the aggregate CPU,
     /// memory, and GPU budget for a Function refresh.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
-    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget
+    /// [`RefreshColumnOptions::total_gpu_count()`] sets the aggregate GPU budget
     /// without changing the deployment's CPU and memory defaults.
     /// Batch-size and GPU options have no effect on expression-backed columns
     /// in LanceDB Embedded; a resource budget and publication threshold are
@@ -2355,6 +2433,25 @@ impl Table {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
+    /// Resume a failed Function refresh on this table and its current branch.
+    /// Returns the successor attempt. Its result includes the published table version.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn resume(table: &Table, failed_job_id: &str) -> lancedb::Result<()> {
+    /// let job = table.resume_refresh(failed_job_id).await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn resume_refresh(
+        &self,
+        job_id: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.resume_refresh(job_id.as_ref()).await
+    }
+
     /// Like [`Table::refresh_column_async`], with explicit refresh options.
     ///
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
@@ -2363,9 +2460,9 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
     /// completed Function outputs at a row-count threshold; unset keeps
     /// whole-fragment publication. Set
-    /// [`RefreshColumnOptions::resource_budget()`] to pass a complete aggregate
+    /// [`RefreshColumnOptions::total_memory_bytes()`] to pass a complete aggregate
     /// CPU, memory, and GPU budget for a Function refresh. The standalone
-    /// [`RefreshColumnOptions::gpu_count()`] shorthand and
+    /// [`RefreshColumnOptions::total_gpu_count()`] shorthand and
     /// [`RefreshColumnOptions::gpu_class()`] placement remain available; a
     /// resource budget cannot be combined with the gpu-count shorthand. Unset
     /// values use the Function and server defaults; invalid counts and malformed
@@ -2405,7 +2502,7 @@ impl Table {
     ///     RefreshColumnOptions::default()
     ///         .batch_size(8)
     ///         .gpu_class("a10g")
-    ///         .gpu_count(2),
+    ///         .total_gpu_count(2),
     /// ).await?;
     /// let result = job.wait().await?;
     /// # Ok(())
@@ -2868,6 +2965,48 @@ impl Table {
     /// version to replace the current table with a previous version.
     pub async fn version(&self) -> Result<u64> {
         self.inner.version().await
+    }
+
+    /// Compare two persisted versions of this table on its current branch.
+    ///
+    /// `from_version` is exclusive and `to_version` is inclusive. Both accept
+    /// a version number (starting at 1) or a tag on the current branch.
+    /// Omitting `to_version` uses the version this handle currently sees,
+    /// including a time-travel [`Self::checkout`]. The endpoints are resolved
+    /// once when this method is called, so moving a tag or advancing the table
+    /// later does not change the delta, and the table's own checkout state is
+    /// left untouched.
+    ///
+    /// The returned [`TableDelta`] streams the rows inserted, updated,
+    /// upserted, or deleted between the endpoints. Those row-level readers
+    /// require stable row ids at both endpoints; create the table with
+    /// `storage_options={"new_table_enable_stable_row_ids": "true"}` to enable
+    /// them. [`TableDelta::list_transactions`] works without stable row ids.
+    /// Equal valid versions produce empty streams with the same schemas.
+    ///
+    /// Reversed ranges, version 0, missing versions or tags, and tags from a
+    /// different branch are rejected. A row-level range that contains a
+    /// `Restore`, or whose transaction history is incomplete, is rejected
+    /// because the restored snapshot can retain older row-version metadata that
+    /// the delta readers would omit; recompute the checkpoint with a full
+    /// rescan and reinitialize it at the end version. Remote tables return
+    /// [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::table::DeltaRef;
+    /// # async fn example(table: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let delta = table.delta(1u64, Some(DeltaRef::Version(table.version().await?))).await?;
+    /// let _inserted = delta.inserted_rows().await?;
+    /// let transactions = delta.list_transactions().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delta(
+        &self,
+        from_version: impl Into<DeltaRef>,
+        to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        self.inner.delta(from_version.into(), to_version).await
     }
 
     /// Return a new table handle pinned to the exact revision currently visible.
@@ -4215,6 +4354,15 @@ impl BaseTable for NativeTable {
 
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn delta(
+        &self,
+        from_version: DeltaRef,
+        to_version: Option<DeltaRef>,
+    ) -> Result<TableDelta> {
+        let visible = self.dataset.get().await?;
+        TableDelta::from_visible_snapshot(&visible, from_version, to_version).await
     }
 
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
@@ -5811,6 +5959,60 @@ mod tests {
         let at2 = table.checkout_branch("exp2", Some(v2)).await.unwrap();
         assert_eq!(at2.count_rows(Some("i = 20".to_string())).await.unwrap(), 1);
         assert_eq!(at2.count_rows(Some("i = 10".to_string())).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_branch_from_tag_on_branch_with_same_version_as_main() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let fork_point = table.version().await.unwrap();
+
+        // Advance exp and main to the same version number with different rows.
+        let exp = table.create_branch("exp", fork_point).await.unwrap();
+        exp.add(sample_rows(vec![10])).execute().await.unwrap();
+        let exp_version = exp.version().await.unwrap();
+        table.add(sample_rows(vec![100])).execute().await.unwrap();
+        assert_eq!(exp_version, table.version().await.unwrap());
+
+        // Tag exp at that shared version number. The tag must keep exp's branch
+        // identity, so forking from it sees exp's snapshot rather than main's
+        // version with the same number.
+        let mut tags = exp.tags().await.unwrap();
+        tags.create("exp-v2", exp_version).await.unwrap();
+
+        let from_tag = table
+            .create_branch(
+                "from-tag",
+                lance::dataset::refs::Ref::Tag("exp-v2".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(from_tag.current_branch().as_deref(), Some("from-tag"));
+        assert_eq!(
+            from_tag
+                .count_rows(Some("i = 10".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            from_tag
+                .count_rows(Some("i = 100".to_string()))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

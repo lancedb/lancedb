@@ -15,7 +15,7 @@ use crate::{
     Error, Result, Table,
     arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
     connect,
-    database::{CreateTableRequest, Database},
+    database::{CreateTableMode, CreateTableRequest, Database},
     dataloader::permutation::{
         shuffle::{Shuffler, ShufflerConfig},
         split::{SPLIT_ID_COLUMN, SplitStrategy, Splitter},
@@ -43,7 +43,34 @@ enum PermutationDestination {
     #[default]
     Temporary,
     /// The permutation table is a permanent table in a database
-    Permanent(Arc<dyn Database>, String),
+    Permanent {
+        database: Arc<dyn Database>,
+        table_name: String,
+        namespace_path: Vec<String>,
+        mode: PermutationPersistMode,
+    },
+}
+
+/// How a persisted permutation table handles an existing table of the same name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PermutationPersistMode {
+    /// Fail if the destination table already exists.
+    #[default]
+    Create,
+    /// Replace the destination table with the new plan.
+    ///
+    /// The previous table version remains readable by handles that were already
+    /// opened against it.
+    Overwrite,
+}
+
+/// Options for storing a permutation table in a database.
+#[derive(Debug, Clone, Default)]
+pub struct PermutationPersistOptions {
+    /// The namespace path to create the table in. Empty means the root namespace.
+    pub namespace_path: Vec<String>,
+    /// Whether an existing table may be replaced.
+    pub mode: PermutationPersistMode,
 }
 
 /// Configuration for creating a permutation table
@@ -161,9 +188,29 @@ impl PermutationBuilder {
     /// Stores the permutation as a table in a database
     ///
     /// By default, the permutation is stored in memory.  If this method is called then
-    /// the permutation will be stored as a table in the given database.
-    pub fn persist(mut self, database: Arc<dyn Database>, table_name: String) -> Self {
-        self.config.destination = PermutationDestination::Permanent(database, table_name);
+    /// the permutation will be stored as a table in the given database. The table is
+    /// created in the root namespace and an existing table is not replaced; use
+    /// [`Self::persist_with_options`] to choose a namespace or overwrite mode.
+    pub fn persist(self, database: Arc<dyn Database>, table_name: String) -> Self {
+        self.persist_with_options(database, table_name, PermutationPersistOptions::default())
+    }
+
+    /// Stores the permutation as a table in a database with explicit options.
+    ///
+    /// This is the same as [`Self::persist`] but lets the caller select the target
+    /// namespace and whether an existing table may be overwritten.
+    pub fn persist_with_options(
+        mut self,
+        database: Arc<dyn Database>,
+        table_name: String,
+        options: PermutationPersistOptions,
+    ) -> Self {
+        self.config.destination = PermutationDestination::Permanent {
+            database,
+            table_name,
+            namespace_path: options.namespace_path,
+            mode: options.mode,
+        };
         self
     }
 
@@ -369,17 +416,31 @@ impl PermutationBuilder {
         let streaming_data = Self::add_config_metadata(renamed, metadata)?;
 
         let (name, database) = match &self.config.destination {
-            PermutationDestination::Permanent(database, table_name) => {
-                (table_name.as_str(), database.clone())
-            }
+            PermutationDestination::Permanent {
+                database,
+                table_name,
+                ..
+            } => (table_name.as_str(), database.clone()),
             PermutationDestination::Temporary => {
                 let conn = connect("memory:///").execute().await?;
                 ("permutation", conn.database().clone())
             }
         };
 
-        let create_table_request =
+        let mut create_table_request =
             CreateTableRequest::new(name.to_string(), Box::new(streaming_data));
+        if let PermutationDestination::Permanent {
+            namespace_path,
+            mode,
+            ..
+        } = &self.config.destination
+        {
+            create_table_request.namespace_path = namespace_path.clone();
+            create_table_request.mode = match mode {
+                PermutationPersistMode::Create => CreateTableMode::Create,
+                PermutationPersistMode::Overwrite => CreateTableMode::Overwrite,
+            };
+        }
 
         let table = database.create_table(create_table_request).await?;
 
@@ -1033,5 +1094,90 @@ mod tests {
             Some(r#"["train","test"]"#)
         );
         assert!(metadata.contains_key(BASE_VERSION_CONFIG_KEY));
+    }
+
+    #[tokio::test]
+    async fn test_permutation_persist_create_overwrite_and_namespace() {
+        use lance_namespace::models::CreateNamespaceRequest;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let initial_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(100), BatchCount::from(1));
+        let data_table = db
+            .create_table("base_tbl", initial_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let namespace_path = vec!["plans".to_string()];
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let persist = |mode| PermutationPersistOptions {
+            namespace_path: namespace_path.clone(),
+            mode,
+        };
+        let first_plan = PermutationBuilder::new(data_table.clone())
+            .persist_with_options(
+                db.database().clone(),
+                "splits".to_string(),
+                persist(PermutationPersistMode::Create),
+            )
+            .build()
+            .await
+            .unwrap();
+        let first_version = first_plan.version().await.unwrap();
+        assert_eq!(first_plan.count_rows(None).await.unwrap(), 100);
+
+        let opened = db
+            .open_table("splits")
+            .namespace(namespace_path.clone())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(opened.count_rows(None).await.unwrap(), 100);
+
+        let err = PermutationBuilder::new(data_table.clone())
+            .persist_with_options(
+                db.database().clone(),
+                "splits".to_string(),
+                persist(PermutationPersistMode::Create),
+            )
+            .build()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::TableAlreadyExists { .. }),
+            "expected TableAlreadyExists, got: {err:?}"
+        );
+
+        let more_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(50), BatchCount::from(1));
+        data_table.add(more_data).execute().await.unwrap();
+
+        let second_plan = PermutationBuilder::new(data_table)
+            .persist_with_options(
+                db.database().clone(),
+                "splits".to_string(),
+                persist(PermutationPersistMode::Overwrite),
+            )
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(second_plan.count_rows(None).await.unwrap(), 150);
+
+        // Overwrite creates a new table version; the old handle stays on its snapshot.
+        assert_eq!(first_plan.count_rows(None).await.unwrap(), 100);
+        assert_eq!(first_plan.version().await.unwrap(), first_version);
     }
 }

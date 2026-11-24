@@ -1665,6 +1665,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_btree_index_on_large_utf8() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("explicit", DataType::LargeUtf8, true),
+            Field::new("auto", DataType::LargeUtf8, true),
+        ]));
+        let values = || {
+            Arc::new(LargeStringArray::from(vec![
+                Some("alpha"),
+                None,
+                Some("omega"),
+                Some("alpha"),
+            ])) as ArrayRef
+        };
+        let batch = RecordBatch::try_new(schema, vec![values(), values()]).unwrap();
+        let table = conn
+            .create_table("large_utf8_btree_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["explicit"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        // Auto picks BTree for string columns, so LargeUtf8 must get one too.
+        table
+            .create_index(&["auto"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["explicit_idx", "auto_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 2);
+        for index in index_configs {
+            assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        }
+
+        for column in ["explicit", "auto"] {
+            for (filter, expected_rows) in [
+                (format!("{column} = 'alpha'"), 2),
+                (format!("{column} > 'beta'"), 1),
+                (format!("{column} IS NULL"), 1),
+            ] {
+                let query = table.query().only_if(filter.as_str());
+                let plan = query.explain_plan(false).await.unwrap();
+                assert!(plan.contains("ScalarIndexQuery"), "{filter}: {plan}");
+                let num_rows = query
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|b| b.num_rows())
+                    .sum::<usize>();
+                assert_eq!(num_rows, expected_rows, "{filter}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_create_builtin_scalar_index() {
         for (index, index_type, predicate, invalid_column) in [
             (

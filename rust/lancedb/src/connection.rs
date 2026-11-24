@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -425,6 +426,33 @@ impl ExecuteQueryAsyncBuilder {
             parent,
             request: ExecuteQueryRequest::new(query),
         }
+    }
+
+    /// Limit this execution from submission through result consumption.
+    ///
+    /// Expiry stops result reads and attempts to cancel Flight execution, even
+    /// if no reader was opened. It does not cancel durable server-side jobs.
+    /// Without this option, the connection's existing timeout settings apply.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.timeout = Some(timeout);
+        self
+    }
+
+    /// Override the connection's timeout for each server read on this query.
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.read_timeout = Some(timeout);
+        self
+    }
+
+    /// Cancel deferred Flight execution when its unread handle or reader is dropped.
+    ///
+    /// This is best effort and requires the submitting Tokio runtime to remain
+    /// alive. Defaults to false, allowing deferred queries to be detached.
+    /// Directly streamed queries already stop on drop. Durable jobs require
+    /// explicit job cancellation regardless of this setting.
+    pub fn cancel_on_drop(mut self, cancel: bool) -> Self {
+        self.request.options.cancel_on_drop = cancel;
+        self
     }
 
     /// Set the namespace used for unqualified table names.

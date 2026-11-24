@@ -196,9 +196,19 @@ it can be queried, indexed and searched, and it appears in `tableNames`.
 
 * **options?**
 
+* **options.gpuClass?**: `string`
+
+* **options.gpuCount?**: `number`
+
 * **options.limit?**: `number`
 
 * **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
+
+* **options.totalCpuMillis?**: `number`
+
+* **options.totalGpuCount?**: `number`
+
+* **options.totalMemoryBytes?**: `number`
 
 * **options.where?**: `string`
 

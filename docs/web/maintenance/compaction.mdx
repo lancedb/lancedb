@@ -84,7 +84,7 @@ result = job.wait(timeout=timedelta(minutes=10))
 print(result.rows_succeeded, result.fragments_removed, result.fragments_added)
 
 # Resume from another process with the same connection settings.
-result = db.open_job(job.id).wait()
+result = db.open_job(job.id()).wait()
 ```
 ```typescript TypeScript
 import type { CompactionResult } from "@lancedb/lancedb";

@@ -1328,7 +1328,8 @@ def test_versioning_tags(tmp_db):
     # --8<-- [start:versioning_tags]
     # Create a tag pointing at a specific version
     table.tags.create("baseline", 1)
-    table.tags.create("with-edits", table.version)
+    # Omit version to tag the version this handle currently shows.
+    table.tags.create("with-edits")
 
     # List all tags on this table
     print(table.tags.list())
@@ -1343,6 +1344,9 @@ def test_versioning_tags(tmp_db):
     table.checkout("baseline")
     print(table.version)
 
+    # A checked-out handle tags the older version it shows, not the latest.
+    table.tags.create("baseline-checkout")
+
     # Delete a tag (does not delete the underlying version)
     table.tags.delete("with-edits")
 
@@ -1350,6 +1354,7 @@ def test_versioning_tags(tmp_db):
     table.checkout_latest()
     # --8<-- [end:versioning_tags]
     assert table.version == 3
+    assert table.tags.get_version("baseline-checkout") == 2
     assert "baseline" in table.tags.list()
     assert "with-edits" not in table.tags.list()
 
@@ -1387,7 +1392,14 @@ def test_branches(tmp_db):
     # Fork an isolated, writable branch from main's latest version.
     # `create` returns a table handle scoped to the new branch.
     branch = table.branches.create("exp")
+
+    # Fork from a tag. `from_tag` is keyword-only and cannot be combined with
+    # `from_ref` or `from_version`.
+    table.tags.create("baseline", 1)
+    tag_branch = table.branches.create("exp-from-tag", from_tag="baseline")
     # --8<-- [end:branch_create]
+
+    assert tag_branch.count_rows() == 3
 
     # --8<-- [start:branch_write]
     # Writes land on the branch handle only; main is left untouched.
@@ -1414,6 +1426,8 @@ def test_branches(tmp_db):
 
     assert table.count_rows() == 3
     assert "exp" not in table.branches.list()
+    assert "exp-from-tag" in table.branches.list()
+    table.branches.delete("exp-from-tag")
 
     # Setup: a branch with row results that we want to apply to main.
     candidate = table.branches.create("candidate")

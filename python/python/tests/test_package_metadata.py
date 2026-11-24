@@ -91,12 +91,12 @@ def test_cargo_profiles_preserve_abi3_and_enable_native_free_threading():
     }
     assert set(feature_values("default-python")) == default_python_features
     assert set(feature_values("default")) == {"stable-abi", "default-python"}
-    assert feature_values("stable-abi") == ["pyo3/abi3-py310"]
+    assert feature_values("stable-abi") == ["pyo3/abi3-py311"]
     assert feature_values("free-threaded") == ["default-python"]
 
     pyo3_dependency = re.search(r"(?m)^pyo3\s*=\s*\{([^}]*)\}", cargo_manifest)
     assert pyo3_dependency is not None
-    assert "abi3-py310" not in pyo3_dependency.group(1)
+    assert "abi3-py311" not in pyo3_dependency.group(1)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows wheel regression test")
@@ -106,8 +106,17 @@ def test_windows_wheel_tag_and_native_import():
     if not wheels:
         pytest.skip("no wheel artifact is available in this development environment")
 
+    # The wheel is tagged with the abi3 floor, which follows requires-python.
+    minimum_python = re.search(
+        r'^requires-python\s*=\s*">=(\d+)\.(\d+)"$',
+        (project_dir / "pyproject.toml").read_text(),
+        re.MULTILINE,
+    )
+    assert minimum_python is not None
+    major, minor = minimum_python.groups()
+
     assert len(wheels) == 1
-    assert wheels[0].name.endswith("-cp310-abi3-win_amd64.whl")
+    assert wheels[0].name.endswith(f"-cp{major}{minor}-abi3-win_amd64.whl")
 
     native_module = importlib.import_module("lancedb._lancedb")
     assert Path(native_module.__file__).suffix == ".pyd"

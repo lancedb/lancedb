@@ -50,6 +50,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.cleanup import CleanupPlan, CleanupResult
 from lancedb.job import Job
 from lancedb.functions import (
     FunctionProvenance,
@@ -84,6 +85,7 @@ from ..table import (
     IndexStatistics,
     Query,
     Table,
+    TableDelta,
     Tags,
 )
 from ..types import BaseTokenizerType, ScalarIndexType
@@ -285,6 +287,19 @@ class RemoteTable(Table):
     def list_versions(self):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
+
+    def delta(
+        self,
+        from_version: int | str,
+        to_version: Optional[int | str] = None,
+    ) -> TableDelta:
+        """Compare two versions or tags.
+
+        Streamed version deltas are not supported by LanceDB Enterprise tables;
+        this raises ``NotImplementedError``.
+        """
+        async_delta = LOOP.run(self._table.delta(from_version, to_version))
+        return TableDelta(async_delta._inner)
 
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported in LanceDB Enterprise."""
@@ -1101,7 +1116,8 @@ class RemoteTable(Table):
         cleanup_old_versions() is a no-op in LanceDB Enterprise.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op in LanceDB Enterprise.",
+            "cleanup_old_versions() is a no-op in LanceDB Enterprise. "
+            "Use cleanup_async() to submit durable cleanup explicitly.",
             stacklevel=2,
         )
         pass
@@ -1115,6 +1131,19 @@ class RemoteTable(Table):
             stacklevel=2,
         )
         pass
+
+    def explain_cleanup(self, *, min_age_seconds: Optional[int] = None) -> CleanupPlan:
+        """Preview cleanup without submitting a job or deleting files."""
+        return LOOP.run(self._table.explain_cleanup(min_age_seconds=min_age_seconds))
+
+    def cleanup_async(
+        self, *, min_age_seconds: Optional[int] = None
+    ) -> Job[CleanupResult]:
+        """Submit cleanup. See
+
+        [Table.cleanup_async][lancedb.table.Table.cleanup_async].
+        """
+        return Job(LOOP.run(self._table.cleanup_async(min_age_seconds=min_age_seconds)))
 
     def compact_async(
         self, *, compaction_options: Optional[CompactionOptions] = None
@@ -1171,7 +1200,9 @@ class RemoteTable(Table):
         computed: Dict[str, str] | None = None,
         auto_refresh_enabled: bool | None = None,
         auto_refresh_interval_seconds: int | None = None,
-        auto_refresh_resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
     ) -> AddColumnsResult:
         return LOOP.run(
             self._table.add_columns(
@@ -1179,7 +1210,9 @@ class RemoteTable(Table):
                 computed=computed,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
-                auto_refresh_resource_budget=auto_refresh_resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
             )
         )
 
@@ -1191,11 +1224,12 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -1203,6 +1237,7 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -1218,11 +1253,12 @@ class RemoteTable(Table):
                 batch_size=batch_size,
                 max_concurrency=max_concurrency,
                 publication_interval_rows=publication_interval_rows,
-                resource_budget=resource_budget,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
                 supervisor_resources=supervisor_resources,
                 planning_workers=planning_workers,
                 gpu_class=gpu_class,
-                gpu_count=gpu_count,
+                total_gpu_count=total_gpu_count,
                 retry_policy=retry_policy,
                 error_policy=error_policy,
                 max_failed_fraction=max_failed_fraction,
@@ -1230,6 +1266,7 @@ class RemoteTable(Table):
                 row_timeout_seconds=row_timeout_seconds,
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
+                max_job_attempts=max_job_attempts,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
                 retry_errors=retry_errors,
                 retry_job_id=retry_job_id,
@@ -1248,11 +1285,12 @@ class RemoteTable(Table):
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[Dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[Dict[str, int]] = None,
         planning_workers: Optional[Dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
-        gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[FunctionRetryPolicy] = None,
         error_policy: Optional[Literal["fail", "skip"]] = None,
         max_failed_fraction: Optional[float] = None,
@@ -1260,6 +1298,7 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -1276,11 +1315,12 @@ class RemoteTable(Table):
                     batch_size=batch_size,
                     max_concurrency=max_concurrency,
                     publication_interval_rows=publication_interval_rows,
-                    resource_budget=resource_budget,
+                    total_cpu_millis=total_cpu_millis,
+                    total_memory_bytes=total_memory_bytes,
                     supervisor_resources=supervisor_resources,
                     planning_workers=planning_workers,
                     gpu_class=gpu_class,
-                    gpu_count=gpu_count,
+                    total_gpu_count=total_gpu_count,
                     retry_policy=retry_policy,
                     error_policy=error_policy,
                     max_failed_fraction=max_failed_fraction,
@@ -1288,6 +1328,7 @@ class RemoteTable(Table):
                     row_timeout_seconds=row_timeout_seconds,
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
+                    max_job_attempts=max_job_attempts,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
                     retry_errors=retry_errors,
                     retry_job_id=retry_job_id,
@@ -1299,16 +1340,24 @@ class RemoteTable(Table):
             )
         )
 
+    def resume_refresh(self, job_id: str) -> Job[RefreshColumnResult]:
+        return Job(LOOP.run(self._table.resume_refresh(job_id)))
+
     def function_errors(
         self,
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
         history: bool = False,
+        page_token: Optional[str] = None,
     ):
         return LOOP.run(
             self._table.function_errors(
-                job_id=job_id, column=column, limit=limit, history=history
+                job_id=job_id,
+                column=column,
+                limit=limit,
+                history=history,
+                page_token=page_token,
             )
         ).as_sync(self)
 
@@ -1556,9 +1605,15 @@ class RemoteTable(Table):
         return LOOP.run(self._table.uri())
 
     def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
+        self,
+        offsets: list[int],
+        *,
+        with_row_id: bool = False,
+        preserve_order: bool = False,
     ) -> LanceTakeQueryBuilder:
-        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        builder = LanceTakeQueryBuilder(
+            self._table.take_offsets(offsets, preserve_order=preserve_order)
+        )
         if with_row_id:
             builder.with_row_id()
         return builder
