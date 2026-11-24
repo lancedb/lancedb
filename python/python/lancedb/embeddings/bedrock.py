@@ -239,8 +239,8 @@ class BedrockImage(_BedrockEmbeddingFunction):
     produce null embeddings.
 
     Both models accept PNG and JPEG sources. `cohere.embed-v4:0` also accepts
-    WebP and GIF. For queries, pass a text string or a Pillow image. Pillow
-    queries are converted to RGB PNGs before calling Bedrock. With
+    WebP and GIF. For queries, pass a text string or a Pillow image. Images
+    used as queries are encoded in RGB PNG format before calling Bedrock. With
     [AsyncTable.search][lancedb.table.AsyncTable.search], pass
     `query_type="vector"` for Pillow image queries.
 
