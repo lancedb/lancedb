@@ -372,7 +372,11 @@ def test_azure_lifecycle_uses_one_qualified_account_access_key_secret():
         info = db.create_storage_integration(
             "blobs", "az://customer-data/raw/", **config
         )
-        assert info.azure_storage_account_access_key_secret == key
+        reference = info.azure_storage_account_access_key_secret
+        assert reference is not None
+        assert reference.name == key.name
+        assert reference.database == key.database
+        assert tuple(reference.namespace_path) == key.namespace_path
         assert info.azure_tenant_id_secret is None
         assert info.azure_client_id_secret is None
         assert info.azure_client_secret_secret is None
