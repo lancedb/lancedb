@@ -153,6 +153,39 @@ def test_embedding_cohere_usage() -> None:
     # --8<-- [end:embedding_cohere_usage]
 
 
+def test_embedding_cohere_foundry(monkeypatch) -> None:
+    from lancedb.embeddings import EmbeddingFunctionRegistry
+
+    monkeypatch.setenv("FOUNDRY_COHERE_API_KEY", "test-foundry-key")
+    registry = EmbeddingFunctionRegistry.get_instance()
+    monkeypatch.setattr(registry, "_variables", {})
+    monkeypatch.setattr(registry, "_allowed_endpoints", set())
+
+    # --8<-- [start:embedding_cohere_foundry]
+    import os
+
+    from lancedb.embeddings import get_registry
+    from lancedb.pydantic import LanceModel
+
+    registry = get_registry()
+    registry.set_var("foundry-cohere-key", os.environ["FOUNDRY_COHERE_API_KEY"])
+    endpoint = "https://<resource>.services.ai.azure.com/providers/cohere"
+    embed = registry.get("cohere").create(
+        name="embed-v-4-0",
+        base_url=endpoint,
+        output_dimension=1536,
+        api_key="$var:foundry-cohere-key",
+    )
+
+    class Document(LanceModel):
+        text: str = embed.SourceField()
+        vector: list[float] = embed.VectorField()
+
+    # --8<-- [end:embedding_cohere_foundry]
+
+    assert Document.to_arrow_schema().field("vector").type.list_size == 1536
+
+
 def test_embedding_gemini_usage() -> None:
     require_flag("RUN_GEMINI_SNIPPETS")
 
