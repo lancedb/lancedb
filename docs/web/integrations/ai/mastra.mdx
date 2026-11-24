@@ -52,7 +52,7 @@ lancedb 1
 
 The first `createIndex()` call initializes an empty LanceDB table without building a native vector index. When `tableName` is omitted, `indexName` sets the table name and `vector` is the vector column. Queries work on small tables immediately through flat scan.
 
-To build a native [LanceDB vector index](/indexing/vector-index), call `createIndex()` again after upserting at least 256 rows:
+To build a native [LanceDB vector index](/indexing/vector-index) when extending the quickstart, call `createIndex()` again after upserting at least 256 rows and before `store.close()`:
 
 <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
   {TsFrameworksMastraNativeIndex}
