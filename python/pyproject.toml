@@ -75,7 +75,7 @@ dev = [
     "pyright>=1.1.350",
     "maturin>=1.10",
 ]
-docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
+docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material>=9.8.2", "mkdocstrings[python]>=1.0.7,<2"]
 clip = ["torch", "pillow>=13.0.0", "open-clip-torch"]
 siglip = ["torch", "pillow>=13.0.0", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
