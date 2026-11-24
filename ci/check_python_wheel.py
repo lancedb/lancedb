@@ -13,7 +13,7 @@ from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 PROFILES = {
-    "abi3": ("cp310", "abi3"),
+    "abi3": ("cp311", "abi3"),
     "cp315t": ("cp315", "cp315t"),
 }
 
@@ -74,10 +74,10 @@ def validate_wheel(wheel_path: Path, profile: str, platform_fragment: str) -> No
                     f"wheel metadata names {distribution_name!r}, expected 'lancedb'"
                 )
             if not (distribution_metadata.get("Requires-Python") or "").startswith(
-                ">=3.10"
+                ">=3.11"
             ):
                 raise ValueError(
-                    "wheel metadata does not preserve Requires-Python >=3.10"
+                    "wheel metadata does not preserve Requires-Python >=3.11"
                 )
             if not any(
                 name.startswith("lancedb/_lancedb.")
