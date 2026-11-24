@@ -82,9 +82,21 @@ def foundry_cohere(monkeypatch):
             thread.join()
 
 
-def test_foundry_cohere_retrieval_and_endpoint_trust(foundry_cohere, tmp_path):
+def test_foundry_cohere_retrieval_and_endpoint_trust(
+    foundry_cohere, monkeypatch, tmp_path
+):
+    import httpx
+
     options, requests, _ = foundry_cohere
     func = get_registry().get("cohere").create(**options)
+    request_timeouts = []
+    handle_request = httpx.HTTPTransport.handle_request
+
+    def record_request_timeout(transport, request):
+        request_timeouts.append(request.extensions.get("timeout"))
+        return handle_request(transport, request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", record_request_timeout)
 
     class Document(LanceModel):
         text: str = func.SourceField()
@@ -107,6 +119,10 @@ def test_foundry_cohere_retrieval_and_endpoint_trust(foundry_cohere, tmp_path):
     ]
     assert reopened.search("matching query").limit(1).to_list()[0]["text"] == (
         "matching document"
+    )
+    assert (
+        request_timeouts
+        == [{"connect": 300, "read": 300, "write": 300, "pool": 300}] * 2
     )
 
     # A fresh interpreter has the key but must separately trust the stored URL.

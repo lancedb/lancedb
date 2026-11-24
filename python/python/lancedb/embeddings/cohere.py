@@ -301,12 +301,15 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
                 f"Cohere base_url requires cohere>={_COHERE_V2_MIN_VERSION}"
             )
         httpx = attempt_import_or_raise("httpx")
+        # Older SDK versions override the HTTPX client's timeout on each request.
+        timeout = 300
         # The registry trusts only this endpoint. The SDK follows redirects by
         # default, including redirects that can resend the document or query.
         return cohere.ClientV2(
             base_url=self.base_url,
             api_key=self.api_key,
-            httpx_client=httpx.Client(follow_redirects=False, timeout=300),
+            timeout=timeout,
+            httpx_client=httpx.Client(follow_redirects=False, timeout=timeout),
         )
 
     def _init_client(self):
