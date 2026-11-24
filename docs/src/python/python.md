@@ -1520,7 +1520,7 @@ integration = db.create_storage_integration(
 print(integration.configuration_instructions)
 ```
 
-Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal client credentials; managed identity, account key and SAS authentication are not integration modes.
+Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal credentials and storage account access keys.
 
 The equivalent SQL is:
 
@@ -1536,6 +1536,23 @@ DESCRIBE STORAGE INTEGRATION customer_blobs;
 SHOW STORAGE INTEGRATIONS;
 DROP STORAGE INTEGRATION customer_blobs;
 ```
+
+For Shared Key authorization, store the storage account access key in one
+Secret and pass its reference as the only credential option:
+
+```python
+integration = db.create_storage_integration(
+    "customer_blobs_key",
+    "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_storage_account_access_key_secret="azure_key",
+)
+```
+
+The equivalent SQL credential option is
+`STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = public.azure_key`. Shared
+Key authorization must be enabled on the Azure storage account.
 
 Registration returns setup instructions and leaves `access_verified` false. It stores an account-qualified prefix such as `az://customer-data@customeraccount.blob.core.windows.net/raw/`.
 

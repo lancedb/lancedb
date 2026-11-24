@@ -118,14 +118,23 @@ def remote_server(text_type=pa.string()):
                         trust_policy=None,
                         permissions_policy=None,
                     )
-                    for field, name in (
-                        ("azure_tenant_id_secret", "tenant"),
-                        ("azure_client_id_secret", "client"),
-                        ("azure_client_secret_secret", "credential"),
-                    ):
-                        info[field] = dict(
-                            database="shared", namespace_path=["credentials"], name=name
+                    if b"STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET" in command:
+                        info["azure_storage_account_access_key_secret"] = dict(
+                            database="shared",
+                            namespace_path=["credentials"],
+                            name="blob_key",
                         )
+                    else:
+                        for field, name in (
+                            ("azure_tenant_id_secret", "tenant"),
+                            ("azure_client_id_secret", "client"),
+                            ("azure_client_secret_secret", "credential"),
+                        ):
+                            info[field] = dict(
+                                database="shared",
+                                namespace_path=["credentials"],
+                                name=name,
+                            )
                 if b"STORAGE_AWS_ACCESS_KEY_ID_SECRET" in command:
                     info["aws_role_arn"] = None
                     info["trust_policy"] = None
@@ -149,6 +158,7 @@ def remote_server(text_type=pa.string()):
                     "azure_tenant_id_secret",
                     "azure_client_id_secret",
                     "azure_client_secret_secret",
+                    "azure_storage_account_access_key_secret",
                     "gcp_credentials_json_secret",
                     "huggingface_token_secret",
                 ]:
@@ -337,6 +347,40 @@ def test_azure_lifecycle_uses_three_qualified_secret_references(text_type):
             in sql
         )
         assert b"STORAGE_AWS" not in sql
+
+
+def test_azure_lifecycle_uses_one_qualified_account_access_key_secret():
+    with remote_server() as (host, calls):
+        db = connect(host)
+        key = SecretReference(
+            "blob_key", database="shared", namespace_path=("credentials",)
+        )
+        config = {
+            "storage_provider": "AZURE",
+            "azure_storage_account": "customeraccount",
+            "azure_storage_account_access_key_secret": key,
+        }
+        with pytest.raises(ValueError, match="service principal"):
+            db.create_storage_integration(
+                "blobs",
+                "az://customer-data/raw/",
+                azure_client_id_secret="client",
+                **config,
+            )
+        assert calls == []
+
+        info = db.create_storage_integration(
+            "blobs", "az://customer-data/raw/", **config
+        )
+        assert info.azure_storage_account_access_key_secret == key
+        assert info.azure_tenant_id_secret is None
+        assert info.azure_client_id_secret is None
+        assert info.azure_client_secret_secret is None
+        assert db.describe_storage_integration("blobs") == info
+        assert (
+            b"STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = "
+            b'"shared"."credentials"."blob_key"' in calls[0]
+        )
 
 
 @pytest.mark.asyncio

@@ -99,6 +99,11 @@ role-based alternative.
 
 ### Azure Blob Storage {#azure}
 
+Specify the storage account and choose either service principal credentials or
+a storage account access key. Reference the values through Secrets.
+
+#### Service principal
+
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE STORAGE INTEGRATION blobs
@@ -121,8 +126,28 @@ db.create_storage_integration(
 ```
 </CodeGroup>
 
-All four options are required together; there is no role-based
-alternative for Azure.
+#### Storage account access key
+
+Store the key in a single Secret. Azure must allow Shared Key authorization on
+the storage account.
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION blobs_key
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = azure_key
+```
+```python Python icon="python"
+db.create_storage_integration(
+    "blobs_key", "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_storage_account_access_key_secret="azure_key",
+)
+```
+</CodeGroup>
 
 ### HuggingFace {#huggingface}
 
