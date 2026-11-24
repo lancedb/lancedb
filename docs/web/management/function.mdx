@@ -612,12 +612,26 @@ undecorated class, so local tests can create an instance and call it directly.
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) as
 input and return another. In row mode, a top-level blob parameter arrives as
 Python `bytes`, or `None` for a nullable input, after the worker has read
-the payload; annotate it `BlobReader` instead for seekable, incremental
-reads that avoid materializing the whole payload first. Return bytes and let
-the destination table store the Managed payload and descriptor --
-`output_schema=lancedb.blob(...)` is what makes the result Blob v2 rather
-than plain Arrow `binary`; a bare annotation persists as ordinary binary
-instead, skipping the Managed storage path and `fetch_blobs`.
+the payload. Annotate it `BlobReader` for seekable, incremental reads.
+For a Function that returns `bytes`, declare
+`output_schema=lancedb.blob(...)` to store a Blob v2 result. A bare `bytes`
+return annotation infers ordinary Arrow `binary`.
+
+{/*
+Draft for the streaming Blob output release.
+
+A scalar `BlobWriter` return annotation infers a non-nullable Blob v2
+output. A vectorized Function with an explicit `input_schema` can infer one
+Blob v2 per row with `list[BlobWriter]` or `tuple[BlobWriter, ...]`. Use
+`BlobWriter.field(...)` to declare writer-capable fields in named or nested
+outputs.
+
+Use `BlobWriter` for computed column refresh. Register writer-based Functions
+after the LanceDB Enterprise server and Function worker images support
+streaming Blob output, using a Python SDK that provides `BlobWriter`. Use
+byte-returning Functions on earlier deployments and for plain SQL `SELECT`,
+where results follow the query's Arrow output limits.
+*/}
 
 See [Read and produce blobs](/curation/create-function#blobs) for a full
 example: extracting a frame from a stored video, chaining a second Function

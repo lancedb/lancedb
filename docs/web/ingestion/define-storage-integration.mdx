@@ -22,7 +22,7 @@ integration's prefix covers it.
 | --- | --- | --- |
 | AWS S3 | An IAM role to assume, or a static access key pair | A role needs one extra step outside LanceDB: [trust policy setup](#trust). |
 | Google Cloud Storage | A service account's JSON key | No role-based alternative. |
-| Azure Blob Storage | A service principal's tenant, client ID and client secret | All three required together. |
+| Azure Blob Storage | Three service principal Secrets or one storage account access key Secret | Both modes require the storage account name. |
 | HuggingFace | An access token | Always required to create an integration. For anonymous access at HuggingFace's default rate limits, register no integration for that prefix instead. |
 
 Every credential option takes a [Secret](/management/secret) reference,
@@ -99,6 +99,11 @@ role-based alternative.
 
 ### Azure Blob Storage {#azure}
 
+Specify the storage account and choose either service principal credentials or
+a storage account access key. Reference the values through Secrets.
+
+#### Service principal
+
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE STORAGE INTEGRATION blobs
@@ -121,8 +126,48 @@ db.create_storage_integration(
 ```
 </CodeGroup>
 
-All four options are required together; there is no role-based
-alternative for Azure.
+#### Storage account access key
+
+Store the key in a single Secret. Azure must allow Shared Key authorization on
+the storage account.
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE STORAGE INTEGRATION blobs_key
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = azure_key
+```
+</CodeGroup>
+
+Use SQL to create the integration from TypeScript applications.
+
+{/*
+Draft for the SDK release with Azure storage account access key support.
+Publish these examples when the client APIs and Enterprise support ship.
+
+<CodeGroup>
+```python Python icon="python"
+db.create_storage_integration(
+    "blobs_key", "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_storage_account_access_key_secret="azure_key",
+)
+```
+```rust
+use lancedb::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
+
+let request = CreateStorageIntegrationRequest::azure_with_account_access_key(
+    "az://customer-data/raw/",
+    "customeraccount",
+    SecretReference::new("azure_key"),
+);
+let info = db.create_storage_integration("blobs_key", request, &[]).await?;
+```
+</CodeGroup>
+*/}
 
 ### HuggingFace {#huggingface}
 
