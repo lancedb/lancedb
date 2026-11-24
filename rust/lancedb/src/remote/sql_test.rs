@@ -150,6 +150,7 @@ struct TestSqlService {
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
+    result_tail: Vec<std::result::Result<RecordBatch, Status>>,
     large_result: RecordBatch,
     dictionary_result: RecordBatch,
 }
@@ -330,6 +331,7 @@ impl Default for TestSqlService {
             prewarm_azure_supported: false,
             exchange_drops: Arc::new(AtomicUsize::new(0)),
             result,
+            result_tail: vec![],
             large_result,
             dictionary_result,
         }
@@ -569,7 +571,16 @@ impl FlightService for TestSqlService {
             }
             (!empty).then_some(Ok(result))
         })
-        .filter_map(futures::future::ready);
+        .filter_map(futures::future::ready)
+        .chain(
+            futures::stream::iter(self.result_tail.clone()).then(|item| async {
+                // Let tonic flush the preceding batch before sending an error trailer.
+                if item.is_err() {
+                    tokio::task::yield_now().await;
+                }
+                item.map_err(|status| FlightError::Tonic(Box::new(status)))
+            }),
+        );
         let mut encoder = FlightDataEncoderBuilder::new().with_schema(schema);
         if large {
             encoder = encoder.with_max_flight_data_size(8 * 1024 * 1024);
@@ -711,6 +722,13 @@ impl FlightService for TestSqlService {
         }
         let rows =
             parameters.ok_or_else(|| Status::invalid_argument("exchange without parameters"))?;
+        let rows = self
+            .result_overrides
+            .lock()
+            .unwrap()
+            .get(&query)
+            .cloned()
+            .unwrap_or(rows);
         let schema = rows.schema();
         let rest: BoxStream<'static, arrow_flight::error::Result<RecordBatch>> =
             if query == "SELECT exchange slow" {
@@ -4561,6 +4579,188 @@ fn prewarm_result() -> RecordBatch {
         ),
     ])
     .unwrap()
+}
+
+fn receipt_test_table(
+    sql: SqlClient,
+) -> RemoteTable<crate::remote::client::test_utils::MockSender> {
+    RemoteTable::new_with_sql_client(
+        client_with_handler(|r| -> http::Response<String> {
+            panic!(
+                "unexpected HTTP request while reading a job receipt: {}",
+                r.url()
+            )
+        }),
+        "analytics".into(),
+        "events".into(),
+        vec!["team".into()],
+        "team$events".into(),
+        Default::default(),
+        Some(sql),
+    )
+}
+
+#[tokio::test]
+async fn remote_maintenance_job_receipts_require_one_row_and_a_complete_stream() {
+    let receipt = prewarm_result();
+    let empty = receipt.slice(0, 0);
+    let with_ids = |ids: ArrayRef| {
+        let versions = arrow_array::UInt64Array::from(vec![42; ids.len()]);
+        RecordBatch::try_from_iter([
+            ("job_id", ids),
+            ("table_version", Arc::new(versions) as ArrayRef),
+        ])
+        .unwrap()
+    };
+    let ids = |values: Vec<Option<&str>>| with_ids(Arc::new(StringArray::from(values)));
+    let invalid = "inspect jobs before retrying";
+    // All three commands receive the same wire response.
+    for (first, tail, expected) in [
+        (
+            empty.clone(),
+            vec![Ok(receipt.clone()), Ok(empty.clone())],
+            Ok("warming-job"),
+        ),
+        (ids(vec![Some(" id ")]), vec![], Ok(" id ")),
+        (empty, vec![], Err(invalid)),
+        (ids(vec![None]), vec![], Err(invalid)),
+        (ids(vec![Some("")]), vec![], Err(invalid)),
+        (ids(vec![Some(" \t ")]), vec![], Err(invalid)),
+        (
+            with_ids(Arc::new(Int64Array::from(vec![7]))),
+            vec![],
+            Err(invalid),
+        ),
+        (receipt.project(&[1]).unwrap(), vec![], Err(invalid)),
+        (ids(vec![Some("one"), Some("two")]), vec![], Err(invalid)),
+        (receipt.clone(), vec![Ok(receipt.clone())], Err(invalid)),
+        (
+            receipt,
+            vec![Err(Status::data_loss("receipt stream interrupted"))],
+            Err("receipt stream interrupted"),
+        ),
+    ] {
+        let service = TestSqlService {
+            adaptive: true,
+            result: first,
+            result_tail: tail,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = receipt_test_table(sql);
+        let compact = table.compact_async(Default::default()).await;
+        let prewarm = table.prewarm_data_async(Default::default()).await;
+        let cleanup = table.cleanup_async(Default::default()).await;
+        for (result, command) in [
+            (compact.as_ref().map(|j| j.id()), "OPTIMIZE"),
+            (prewarm.as_ref().map(|j| j.id()), "PREWARM"),
+            (cleanup.as_ref().map(|j| j.id()), "VACUUM"),
+        ] {
+            match expected {
+                Ok(id) => assert_eq!(result.unwrap(), Some(id), "{command}"),
+                Err(message) => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains(message), "{command}: {error}");
+                    if message == invalid {
+                        assert!(error.contains(command), "{error}");
+                    }
+                }
+            }
+        }
+        let commands: Vec<_> = statements
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|sql| sql.split_whitespace().next().unwrap().to_owned())
+            .collect();
+        assert_eq!(commands, ["OPTIMIZE", "PREWARM", "VACUUM"]);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_receipt_requires_a_non_null_uint64_version() {
+    let id = prewarm_result().project(&[0]).unwrap();
+    for version in [
+        None,
+        Some(Arc::new(Int64Array::from(vec![42])) as ArrayRef),
+        Some(Arc::new(arrow_array::UInt64Array::from(vec![None])) as ArrayRef),
+    ] {
+        let result = match version {
+            None => id.clone(),
+            Some(version) => RecordBatch::try_from_iter([
+                ("job_id", id.column(0).clone()),
+                ("table_version", version),
+            ])
+            .unwrap(),
+        };
+        let service = TestSqlService {
+            adaptive: true,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = receipt_test_table(sql);
+        let error = table
+            .prewarm_data_async(Default::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("table_version") && error.contains("inspect jobs before retrying"),
+            "{error}"
+        );
+        assert_eq!(statements.lock().unwrap().len(), 1);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_prewarm_accepts_a_receipt_for_a_bound_filter() {
+    let statement = r#"PREWARM WITH (branch = 'exp') AS SELECT * FROM "events" WHERE tag = $tag"#;
+    let parameters = RecordBatch::try_from_iter([(
+        "tag",
+        Arc::new(StringArray::from(vec!["train's data"])) as ArrayRef,
+    )])
+    .unwrap();
+    let service = TestSqlService {
+        adaptive: true,
+        ..Default::default()
+    };
+    service
+        .result_overrides
+        .lock()
+        .unwrap()
+        .insert(statement.to_owned(), prewarm_result());
+    let exchanges = service.exchanges.clone();
+    let statements = service.statements.clone();
+    let headers = service.headers.clone();
+    let (sql, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let table = receipt_test_table(sql).with_branch(Some("exp".into()));
+    let job = table
+        .prewarm_data_async(
+            crate::table::PrewarmDataOptions::new()
+                .filter("tag = $tag")
+                .parameters(parameters.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(job.id(), Some("warming-job"));
+    assert_eq!(
+        *exchanges.lock().unwrap(),
+        [(statement.to_owned(), Some(parameters))]
+    );
+    assert!(statements.lock().unwrap().is_empty());
+    assert!(
+        headers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|h| h.database == "analytics" && h.namespace_path == "team")
+    );
+    shutdown.send(()).unwrap();
 }
 
 #[tokio::test]
