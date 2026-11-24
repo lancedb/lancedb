@@ -183,7 +183,7 @@ large enough that you would rather control when the work happens.
 
 Automatic refresh is on by default for each computed column, and takes effect
 when your Enterprise deployment enables its refresh scheduler. Until then,
-call [`refresh_column`](/feature-engineering/refresh-column) yourself. Pass
+call [`refresh_column_async`](/feature-engineering/refresh-column#async) yourself. Pass
 `auto_refresh_enabled=False` to opt a column out, or
 `auto_refresh_interval_seconds` to set how often it refreshes:
 

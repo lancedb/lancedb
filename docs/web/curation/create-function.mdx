@@ -543,7 +543,10 @@ table.add_columns(
     gpu_count=1,
     total_gpu_count=8,
 )
-table.refresh_column("embedding", gpu_class="h100", gpu_count=4, total_gpu_count=8)
+job = table.refresh_column_async(
+    "embedding", gpu_class="h100", gpu_count=4, total_gpu_count=8
+)
+job.wait()
 
 db.create_materialized_view(
     "embeddings", query="SELECT embed(text) AS embedding FROM documents",
