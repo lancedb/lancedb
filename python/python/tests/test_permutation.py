@@ -1936,6 +1936,55 @@ def test_map_rejects_format_and_transform(some_permutation: Permutation, explici
         explicit(some_permutation.map(_double_value_row))
 
 
+def test_map_rejects_format_without_optional_dependency(
+    some_permutation: Permutation, monkeypatch
+):
+    """Test the map check runs before a format imports an optional dependency."""
+    import sys
+
+    # Make polars fail to import, as it does on an install without extras
+    monkeypatch.setitem(sys.modules, "polars", None)
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        some_permutation.map(_double_value_row).with_format("polars")
+
+
+def test_map_rejects_explicit_transform_from_old_pickle(
+    some_permutation: Permutation,
+):
+    """Test pickles written before explicit_transform existed keep the guard."""
+
+    def restore_without_flag(permutation):
+        state = permutation.__getstate__()
+        del state["explicit_transform"]
+        restored = Permutation.__new__(Permutation)
+        restored.__setstate__(state)
+        return restored
+
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        restore_without_flag(some_permutation.with_format("arrow")).map(
+            _double_value_row
+        )
+    # The default transform is indistinguishable from an explicit "python" format
+    mapped = restore_without_flag(some_permutation).map(_double_value_row)
+    assert mapped.take_offsets([0]) == [
+        _double_value_row(row) for row in some_permutation.take_offsets([0])
+    ]
+
+
+def test_map_rejects_transform_passed_to_constructor(some_table: Table):
+    """Test a transform given to the constructor counts as explicit too."""
+    permutation = Permutation(
+        some_table,
+        None,
+        0,
+        {"id": "id"},
+        DEFAULT_BATCH_SIZE,
+        Transforms.arrow2arrow,
+    )
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        permutation.map(_double_value_row)
+
+
 def test_map_take_offsets(some_permutation: Permutation):
     """Test .map() keeps the positions and duplicates of the requested offsets."""
     calls = []

@@ -701,8 +701,9 @@ class Permutation:
         self.split = split
         self.selection = selection
         self.transform_fn = transform_fn
-        # Whether with_format / with_transform replaced the default transform
-        self._explicit_transform = False
+        # Whether the default transform was replaced, by with_format, by
+        # with_transform, or by a caller passing its own transform here
+        self._explicit_transform = transform_fn is not Transforms.arrow2python
         self.batch_size = batch_size
         self.offset = offset
         self.limit = limit
@@ -1038,7 +1039,11 @@ class Permutation:
         self.selection = state["selection"]
         self.batch_size = state["batch_size"]
         self.transform_fn = state["transform_fn"]
-        self._explicit_transform = state.get("explicit_transform", False)
+        # Pickles written before this flag existed still carry their transform.
+        # Anything but the default must have been set explicitly.
+        self._explicit_transform = state.get(
+            "explicit_transform", self.transform_fn is not Transforms.arrow2python
+        )
         self.offset = state["offset"]
         self.limit = state["limit"]
         self.connection_factory = connection_factory
@@ -1396,6 +1401,10 @@ class Permutation:
         of dicts.  Doing so raises a ValueError.
         """
         assert format is not None, "format is required"
+        # Checked before with_transform does, so that a format with an optional
+        # dependency cannot fail on its import first
+        if isinstance(self.transform_fn, _MapTransform):
+            raise ValueError(_MAP_FORMAT_ERROR)
         if format == "python":
             return self.with_transform(Transforms.arrow2python)
         if format == "python_col":
