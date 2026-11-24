@@ -2675,6 +2675,32 @@ describe("schema evolution", function () {
       const schema = new Schema([new Field("val", listType, true)]);
       expect(await tableLists.schema()).toEqual(schema);
     }
+
+    // timestamps and durations in another time unit
+    const tableTimes = await con.createTable(
+      "times",
+      [{ ts: new Date(0), dur: 1000n }],
+      {
+        schema: new Schema([
+          new Field("ts", new arrow.TimestampMillisecond(), true),
+          new Field(
+            "dur",
+            new arrow.Duration(arrow.TimeUnit.MILLISECOND),
+            true,
+          ),
+        ]),
+      },
+    );
+    await tableTimes.alterColumns([
+      { path: "ts", dataType: new arrow.TimestampMicrosecond() },
+      { path: "dur", dataType: new arrow.Duration(arrow.TimeUnit.MICROSECOND) },
+    ]);
+    expect(await tableTimes.schema()).toEqual(
+      new Schema([
+        new Field("ts", new arrow.TimestampMicrosecond(), true),
+        new Field("dur", new arrow.Duration(arrow.TimeUnit.MICROSECOND), true),
+      ]),
+    );
   });
 
   it("can drop a column from the schema", async function () {
