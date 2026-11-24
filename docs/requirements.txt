@@ -1,9 +1,9 @@
 mkdocs==1.6.1
 mkdocs-jupyter==0.24.1
-mkdocs-material==9.6.23
-mkdocs-autorefs>=0.5,<=1.0
-mkdocstrings[python]>=0.24,<1.0
-griffe>=0.40,<1.0
+mkdocs-material==9.8.2
+mkdocs-autorefs>=1.4
+mkdocstrings[python]>=1.0.7,<2
+pymdown-extensions>=11.0.1
 mkdocs-render-swagger-plugin>=0.1.0
 pydantic>=2.7.4,<3
 mkdocs-redirects>=1.2.0
