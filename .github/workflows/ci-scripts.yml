@@ -12,6 +12,7 @@ on:
       - ci/extract_sdk_doc_links.py
       - ci/build_cli_linux.sh
       - ci/package_cli.py
+      - ci/update_homebrew_formula.py
       - .bumpversion.toml
       - rust/lancedb/cli/Cargo.toml
       - ci/set_lance_version.py
@@ -26,6 +27,7 @@ on:
       - ci/extract_sdk_doc_links.py
       - ci/build_cli_linux.sh
       - ci/package_cli.py
+      - ci/update_homebrew_formula.py
       - .bumpversion.toml
       - rust/lancedb/cli/Cargo.toml
       - ci/set_lance_version.py
