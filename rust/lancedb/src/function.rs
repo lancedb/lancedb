@@ -162,15 +162,23 @@ fn application_has_unknown_nested_fields(value: &Value) -> bool {
         return true;
     }
     application.get("output").is_some_and(|output| {
-        has_unknown_keys(output, &["kind", "arrow_type", "nullable", "fields"])
-            || output
-                .get("fields")
-                .and_then(Value::as_array)
-                .is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
-                })
+        has_unknown_keys(
+            output,
+            &[
+                "kind",
+                "arrow_type",
+                "nullable",
+                "fields",
+                "blob_writer_paths",
+            ],
+        ) || output
+            .get("fields")
+            .and_then(Value::as_array)
+            .is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
+            })
     })
 }
 
@@ -224,6 +232,23 @@ pub struct FunctionResultField {
     pub nullable: bool,
 }
 
+/// One step from the Function result root to a writer-capable Blob v2 leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum BlobWriterPathStep {
+    /// A struct child addressed by its literal Arrow field name.
+    Field { field: String },
+    /// A list value field, independent of its name.
+    ListItem(BlobWriterListItem),
+}
+
+/// The list step in a Blob writer path, encoded as `"item"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobWriterListItem {
+    Item,
+}
+
 /// Scalar or named-struct Function output.
 ///
 /// `kind` remains a string so unknown future result shapes can be decoded.
@@ -236,6 +261,11 @@ pub struct FunctionOutput {
     pub nullable: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FunctionResultField>,
+    /// Writer-capable Blob v2 leaves in `scalar_blob_writer` and
+    /// `named_struct_blob_writer` results. An empty path denotes a scalar
+    /// Blob result; an empty list denotes a result with no writer leaves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blob_writer_paths: Vec<Vec<BlobWriterPathStep>>,
 }
 
 /// Ordered language-neutral Function signature.
