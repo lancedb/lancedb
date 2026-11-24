@@ -97,9 +97,12 @@ CREATE STORAGE INTEGRATION blobs
 | `STORAGE_AZURE_TENANT_ID_SECRET` | Secret ref | Entra ID tenant |
 | `STORAGE_AZURE_CLIENT_ID_SECRET` | Secret ref | service principal client ID |
 | `STORAGE_AZURE_CLIENT_SECRET_SECRET` | Secret ref | service principal client secret |
+| `STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET` | Secret ref | storage account access key for Azure Shared Key authorization |
 
-All four are required together; there is no role-based alternative for
-Azure.
+Specify the storage account and choose one credential mode. Service principal
+authentication requires all three service principal Secret references. Shared
+Key authentication requires the account access key Secret reference and an Azure
+storage account that allows Shared Key authorization.
 
 ### GCP {#gcp}
 
