@@ -126,7 +126,8 @@ For indexed search, supported distance metrics vary by index type:
 ### Configure Distance Metric
 
 Without a vector index, searches use `l2` by default. You can specify `cosine` or
-`dot` instead (`hamming` is supported for `IVF_FLAT` indexes only).
+`dot` instead. For binary vectors, specify `hamming` even without an index. If
+you build an index for Hamming search, use `IVF_FLAT`.
 
 When a vector index exists, the search metric must match the metric used to build
 the index. If you explicitly request a different metric, LanceDB cannot use that
