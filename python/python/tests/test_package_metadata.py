@@ -68,8 +68,17 @@ def test_windows_wheel_tag_and_native_import():
     if not wheels:
         pytest.skip("no wheel artifact is available in this development environment")
 
+    # The wheel is tagged with the abi3 floor, which follows requires-python.
+    minimum_python = re.search(
+        r'^requires-python\s*=\s*">=(\d+)\.(\d+)"$',
+        (project_dir / "pyproject.toml").read_text(),
+        re.MULTILINE,
+    )
+    assert minimum_python is not None
+    major, minor = minimum_python.groups()
+
     assert len(wheels) == 1
-    assert wheels[0].name.endswith("-cp310-abi3-win_amd64.whl")
+    assert wheels[0].name.endswith(f"-cp{major}{minor}-abi3-win_amd64.whl")
 
     native_module = importlib.import_module("lancedb._lancedb")
     assert Path(native_module.__file__).suffix == ".pyd"
