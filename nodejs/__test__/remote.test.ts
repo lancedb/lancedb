@@ -3,6 +3,7 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
+import { tableFromArrays } from "apache-arrow";
 import packageJson = require("../package.json");
 import {
   ClientAuthMethod,
@@ -854,15 +855,350 @@ describe("remote connection", () => {
         ]);
         expect(errors.records[0].rowOffset).toBe(9);
         expect(errors.fragments[0].rowsSkipped).toBe(500);
-        await table.functionErrors();
+        expect(Object.keys(errors)).not.toContain("summary");
+        expect(errors.workflowVersion).toBeUndefined();
+        expect(() => errors.summary()).toThrow("Function row-failure workflow");
+        await expect(errors.rows(["text"])).rejects.toThrow(
+          "Function row-failure workflow",
+        );
+        await table.functionErrors({ history: false });
         await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
           "limit must be a non-negative integer",
         );
+        for (const operation of [
+          () => table.functionErrors({ history: true }),
+          () => table.retryFailed("embedding"),
+          () => table.upgradeColumn("embedding", { version: "2" }),
+          () => table.quarantineFailed("embedding"),
+          () => table.quarantineFailed("embedding", { quarantined: false }),
+          () => table.functionProvenance("embedding"),
+        ]) {
+          await expect(operation()).rejects.toThrow(
+            "Function row-failure workflow",
+          );
+        }
       },
     );
     expect(bodies).toEqual([
       JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
       {},
+      ...Array.from({ length: 6 }, () => ({ limit: 1 })),
+    ]);
+  });
+
+  it("reads Function failure history and joins current inputs by exact row identity", async () => {
+    const stableId = 9_007_199_254_740_993n;
+    const physicalAddress = 9_007_203_549_708_297n;
+    const currentRows = tableFromArrays({
+      text: ["physical failure", "moved stable row", "unrelated row"],
+      ["_rowid"]: new BigUint64Array([
+        physicalAddress,
+        stableId,
+        stableId - 1n,
+      ]),
+      ["_rowaddr"]: new BigUint64Array([physicalAddress, 14n, 10n]),
+    });
+    const records = `[
+      {"job_id":"j-7", "fragment_id":0, "row_offset":10,
+       "row_id":${stableId}, "row_address":10, "column":"embedding",
+       "function":"embed", "function_version":"2", "table_version":11,
+       "error_type":"ValueError", "error_message":"bad input",
+       "created_at_millis":1700000000001, "first_seen_at_millis":1700000000000,
+       "last_seen_at_millis":1700000000001, "attempts":3, "quarantined":true},
+      {"job_id":"j-7", "fragment_id":2097153, "row_offset":9,
+       "row_address":${physicalAddress}, "column":"embedding",
+       "function":"embed", "function_version":"2", "table_version":11,
+       "error_type":"ValueError", "error_message":"bad input", "created_at_millis":1700000000001},
+      {"job_id":"j-8", "fragment_id":0, "row_offset":10,
+       "row_id":${stableId}, "row_address":10, "column":"score",
+       "function":"score", "function_version":"1", "table_version":11,
+       "error_type":"TypeError", "error_message":"bad input", "created_at_millis":1700000000001}
+    ]`;
+    const groups = `[
+      {"column":"embedding", "error_type":"ValueError", "error_message":"bad input", "rows_failed":2},
+      {"column":"score", "error_type":"TypeError", "error_message":"bad input", "rows_failed":1}
+    ]`;
+    const errorRequests: unknown[] = [];
+    const queryRequests: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          if (req.url === "/v1/table/docs/describe/") {
+            res.writeHead(200).end('{"version":12,"schema":{"fields":[]}}');
+          } else if (req.url === "/v1/table/docs/errors") {
+            const request = JSON.parse(body);
+            errorRequests.push(request);
+            const empty = request.column === "empty";
+            const truncated = request.limit === 2;
+            res.writeHead(200).end(`{
+              "workflow_version":1, "records":${empty ? "[]" : records},
+              "fragments":[], "truncated":${truncated},
+              "error_groups":${empty ? "[]" : groups}
+            }`);
+          } else if (req.url === "/v1/table/docs/query/") {
+            const query = JSON.parse(body);
+            queryRequests.push(query);
+            const rows =
+              queryRequests.length === 1
+                ? currentRows.slice(0, 2)
+                : currentRows.slice(0, 1);
+            res
+              .writeHead(200, {
+                "Content-Type": "application/vnd.apache.arrow.stream",
+              })
+              .end(Buffer.from(tableToIPC(rows, "stream")));
+          } else {
+            res.writeHead(404).end();
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const errors = await table.functionErrors();
+        expect(errors.workflowVersion).toBe(1);
+        expect(errors.records[0]).toMatchObject({
+          rowId: stableId,
+          rowAddress: 10n,
+          attempts: 3,
+          firstSeenAtMillis: 1_700_000_000_000,
+          lastSeenAtMillis: 1_700_000_000_001,
+          quarantined: true,
+        });
+        expect(errors.records[1].rowAddress).toBe(physicalAddress);
+        expect(errors.summary()).toEqual([
+          {
+            column: "embedding",
+            errorType: "ValueError",
+            errorMessage: "bad input",
+            rowsFailed: 2n,
+          },
+          {
+            column: "score",
+            errorType: "TypeError",
+            errorMessage: "bad input",
+            rowsFailed: 1n,
+          },
+        ]);
+        const rows = await errors.rows(["text"]);
+        expect(rows.map(({ input, error }) => [input, error.column])).toEqual([
+          [{ text: "moved stable row" }, "embedding"],
+          [{ text: "physical failure" }, "embedding"],
+          [{ text: "moved stable row" }, "score"],
+        ]);
+        await expect(errors.rows(["text"])).rejects.toThrow(
+          "no longer addressable",
+        );
+        const history = await table.functionErrors({
+          history: true,
+          jobId: "j-7",
+        });
+        expect(history.records[0].rowId).toBe(stableId);
+        await expect(history.rows(["text"])).rejects.toThrow(
+          "requires current Function failures",
+        );
+        const incomplete = await table.functionErrors({ limit: 2 });
+        expect(() => incomplete.summary()).toThrow(
+          "Function errors are incomplete",
+        );
+        await expect(incomplete.rows(["text"])).rejects.toThrow(
+          "Function errors are incomplete",
+        );
+        const empty = await table.functionErrors({ column: "empty" });
+        expect(empty.summary()).toEqual([]);
+        await expect(empty.rows()).resolves.toEqual([]);
+      },
+    );
+    expect(errorRequests).toEqual([
+      {},
+      { limit: 1 },
+      { history: true, ["job_id"]: "j-7" },
+      { limit: 2 },
+      { column: "empty" },
+    ]);
+    expect(queryRequests).toHaveLength(2);
+    for (const request of queryRequests) {
+      expect(request).toMatchObject({
+        columns: ["text", "_rowid", "_rowaddr"],
+        filter: `_rowid IN (${stableId}) OR _rowaddr IN (${physicalAddress})`,
+        k: 2,
+      });
+    }
+  });
+
+  it("forwards exact Function recovery requests and preserves async job results", async () => {
+    const requests: [string, unknown][] = [];
+    const stableId = 9_007_199_254_740_993n;
+    await withMockDatabase(
+      (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          const path = req.url ?? "";
+          const request = body ? JSON.parse(body) : {};
+          requests.push([path, request]);
+          if (path === "/v1/table/docs/describe/") {
+            res.writeHead(200).end('{"version":8,"schema":{"fields":[]}}');
+          } else if (path === "/v1/table/docs/errors") {
+            res
+              .writeHead(200)
+              .end(
+                '{"workflow_version":1,"records":[],"fragments":[],"truncated":false}',
+              );
+          } else if (path === "/v1/table/docs/backfill_column") {
+            res.writeHead(202).end('{"job_id":"refresh-1"}');
+          } else if (path === "/v1/jobs/describe") {
+            res.writeHead(200).end(`{
+              "job_id":"refresh-1", "job_type":"function_refresh", "job_state":"DONE",
+              "result":{"rows_assigned":19, "rows_failed":1, "rows_remaining":0,
+                "source_version":7, "published_version":8, "error_groups_truncated":true,
+                "error_groups":[{"column":"embedding", "error_type":"ValueError",
+                                  "error_message":"bad input", "rows_failed":1}]}
+            }`);
+          } else if (path === "/v1/table/docs/errors/quarantine") {
+            res.writeHead(200).end('{"rows_affected":2}');
+          } else if (path === "/v1/table/docs/function_provenance") {
+            res.writeHead(200).end(`{"truncated":true,"records":[{
+              "column":"embedding", "job_id":"refresh-1", "function_name":"embed",
+              "function_version":"2", "row_id":${stableId}, "row_address":null,
+              "source_version":7, "published_version":8
+            }]}`);
+          } else {
+            res.writeHead(404).end();
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.retryFailed("embedding", {
+          errorType: "ValueError",
+          jobId: "first",
+          includeQuarantined: true,
+          functionVersion: "2",
+          maxFailedFraction: 1,
+        });
+        expect(job.id).toBe("refresh-1");
+        expect(await job.wait()).toEqual({
+          rowsAssigned: 19n,
+          rowsFailed: 1n,
+          rowsRemaining: 0n,
+          sourceVersion: 7n,
+          publishedVersion: 8n,
+          errorGroupsTruncated: true,
+          errorGroups: [
+            {
+              column: "embedding",
+              errorType: "ValueError",
+              errorMessage: "bad input",
+              rowsFailed: 1n,
+            },
+          ],
+        });
+        await table.retryFailed("embedding");
+        await table.upgradeColumn("embedding", {
+          version: "3",
+          recompute: "failed",
+        });
+        await table.upgradeColumn("embedding", { version: "4" });
+        await table.upgradeColumn("embedding", {
+          version: "5",
+          recompute: "none",
+        });
+        await expect(
+          table.quarantineFailed("embedding", {
+            jobId: "first",
+            afterAttempts: 3,
+            errorType: "ValueError",
+          }),
+        ).resolves.toBe(2);
+        await expect(
+          table.quarantineFailed("embedding", { quarantined: false }),
+        ).resolves.toBe(2);
+        const provenance = await table.functionProvenance("embedding", {
+          version: 8n,
+          limit: 1,
+        });
+        expect(provenance.truncated).toBe(true);
+        expect(provenance.records[0]).toMatchObject({
+          jobId: "refresh-1",
+          functionName: "embed",
+          functionVersion: "2",
+          rowId: stableId,
+          sourceVersion: 7n,
+          publishedVersion: 8n,
+        });
+        await expect(
+          table.upgradeColumn("embedding", { version: "" }),
+        ).rejects.toThrow("nonempty function_version");
+        await expect(
+          table.quarantineFailed("embedding", { afterAttempts: 2 ** 32 + 1 }),
+        ).rejects.toThrow("afterAttempts");
+        await expect(
+          table.functionProvenance("embedding", { version: -(2n ** 64n) }),
+        ).rejects.toThrow("positive lossless u64 bigint");
+      },
+    );
+    const probe = ["/v1/table/docs/errors", { limit: 1 }];
+    expect(requests).toEqual([
+      ["/v1/table/docs/describe/", {}],
+      probe,
+      [
+        "/v1/table/docs/backfill_column",
+        JSON.parse(`{
+        "column":"embedding", "retry_errors":true, "retry_job_id":"first",
+        "retry_error_type":"ValueError", "include_quarantined":true,
+        "function_version":"2", "recompute":"failed", "max_failed_fraction":1
+      }`),
+      ],
+      ["/v1/jobs/describe", { ["job_id"]: "refresh-1" }],
+      probe,
+      [
+        "/v1/table/docs/backfill_column",
+        { column: "embedding", ["retry_errors"]: true },
+      ],
+      ...[
+        ["3", "failed"],
+        ["4", "all"],
+        ["5", "none"],
+      ].flatMap(([version, recompute]) => [
+        probe,
+        [
+          "/v1/table/docs/backfill_column",
+          { column: "embedding", ["function_version"]: version, recompute },
+        ],
+      ]),
+      probe,
+      [
+        "/v1/table/docs/errors/quarantine",
+        {
+          column: "embedding",
+          quarantined: true,
+          ["job_id"]: "first",
+          ["after_attempts"]: 3,
+          ["error_type"]: "ValueError",
+        },
+      ],
+      probe,
+      [
+        "/v1/table/docs/errors/quarantine",
+        {
+          column: "embedding",
+          quarantined: false,
+          ["job_id"]: null,
+          ["after_attempts"]: null,
+          ["error_type"]: null,
+        },
+      ],
+      probe,
+      [
+        "/v1/table/docs/function_provenance",
+        { column: "embedding", version: 8, limit: 1 },
+      ],
     ]);
   });
 
