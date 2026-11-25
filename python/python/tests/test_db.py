@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import asyncio
 import contextlib
 import inspect
 import pickle
@@ -434,6 +435,27 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
 
     table = await mem_db_async.create_table("test", data=gen_data())
     assert await table.count_rows() == 10
+
+
+@pytest.mark.asyncio
+async def test_create_table_empty_vector_column_async(
+    mem_db_async: lancedb.AsyncConnection,
+):
+    # A zero-row list column named like a vector leaves nothing to infer the
+    # dimension from; create_table used to hang instead of returning.
+    data = pa.table(
+        {
+            "id": pa.array([], type=pa.int64()),
+            "vector": pa.array([], type=pa.list_(pa.float32())),
+        }
+    )
+
+    table = await asyncio.wait_for(
+        mem_db_async.create_table("test", data=data), timeout=10
+    )
+
+    assert await table.count_rows() == 0
+    assert await table.schema() == data.schema
 
 
 def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
