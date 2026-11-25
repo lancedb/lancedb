@@ -1186,7 +1186,7 @@ mod tests {
         ] {
             assert!(supported_zonemap_data_type(&dtype), "{dtype}");
         }
-        assert!(!supported_zonemap_data_type(DataType::Null));
+        assert!(!supported_zonemap_data_type(&DataType::Null));
     }
 
     #[test]
