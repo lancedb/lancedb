@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! SQL submission and receipt validation for data-cache prewarm jobs.
+//! SQL submission and preview decoding for data-cache prewarm jobs.
 
-use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
+use arrow_array::{Array, RecordBatch, StringArray};
 use datafusion_sql::sqlparser::{dialect::GenericDialect, parser::Parser, tokenizer::Token};
 
 use super::{quote_sql_identifier, quote_sql_string};
@@ -82,33 +82,6 @@ pub(super) fn statement(
         sql.push_str(&format!(" WHERE {filter}"));
     }
     Ok(sql)
-}
-
-pub(super) fn receipt(batches: &[RecordBatch]) -> Result<(String, u64)> {
-    let invalid = || {
-        Error::Runtime {
-        message: "PREWARM did not return a single (job_id, table_version) receipt; inspect jobs before retrying because work may already have been submitted".into(),
-    }
-    };
-    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
-        return Err(invalid());
-    }
-    let batch = batches
-        .iter()
-        .find(|batch| batch.num_rows() == 1)
-        .ok_or_else(invalid)?;
-    let id = batch
-        .column_by_name("job_id")
-        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(invalid)?;
-    let version = batch
-        .column_by_name("table_version")
-        .and_then(|array| array.as_any().downcast_ref::<UInt64Array>())
-        .ok_or_else(invalid)?;
-    if id.is_null(0) || id.value(0).is_empty() || version.is_null(0) {
-        return Err(invalid());
-    }
-    Ok((id.value(0).into(), version.value(0)))
 }
 
 /// Decode the versioned JSON payload without depending on the display text.
@@ -219,7 +192,6 @@ pub(super) fn map_error(error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
     #[test]
@@ -354,46 +326,6 @@ mod tests {
             PrewarmDataOptions::new().concurrency(0),
         ] {
             assert!(statement("clips", None, &options).is_err(), "{options:?}");
-        }
-    }
-
-    fn batch(ids: Vec<Option<&str>>, versions: Vec<Option<u64>>) -> RecordBatch {
-        RecordBatch::try_from_iter([
-            (
-                "job_id",
-                Arc::new(StringArray::from(ids)) as arrow_array::ArrayRef,
-            ),
-            (
-                "table_version",
-                Arc::new(UInt64Array::from(versions)) as arrow_array::ArrayRef,
-            ),
-        ])
-        .unwrap()
-    }
-
-    #[test]
-    fn receipt_requires_one_non_null_job_and_version() {
-        assert_eq!(
-            receipt(&[batch(vec![Some("job-1")], vec![Some(42)])]).unwrap(),
-            ("job-1".into(), 42)
-        );
-        for batches in [
-            vec![],
-            vec![batch(vec![], vec![])],
-            vec![batch(vec![None], vec![Some(42)])],
-            vec![batch(vec![Some("")], vec![Some(42)])],
-            vec![batch(vec![Some("job")], vec![None])],
-            vec![batch(vec![Some("a"), Some("b")], vec![Some(1), Some(2)])],
-            vec![
-                batch(vec![Some("a")], vec![Some(1)]),
-                batch(vec![Some("b")], vec![Some(2)]),
-            ],
-            vec![RecordBatch::new_empty(Arc::new(Schema::new(vec![
-                Field::new("wrong", DataType::Utf8, false),
-            ])))],
-        ] {
-            let error = receipt(&batches).unwrap_err().to_string();
-            assert!(error.contains("inspect jobs before retrying"), "{error}");
         }
     }
 

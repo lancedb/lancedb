@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1813,7 +1813,7 @@ docs = [
     { name = "mkdocs" },
     { name = "mkdocs-jupyter" },
     { name = "mkdocs-material" },
-    { name = "mkdocstrings-python" },
+    { name = "mkdocstrings", extra = ["python"] },
 ]
 embeddings = [
     { name = "awscli" },
@@ -1888,8 +1888,8 @@ requires-dist = [
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "mkdocs", marker = "extra == 'docs'" },
     { name = "mkdocs-jupyter", marker = "extra == 'docs'" },
-    { name = "mkdocs-material", marker = "extra == 'docs'" },
-    { name = "mkdocstrings-python", marker = "extra == 'docs'" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.8.2" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=1.0.7,<2" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "oci", marker = "extra == 'embeddings'", specifier = ">=2.165.1" },
     { name = "ollama", marker = "extra == 'embeddings'", specifier = ">=0.3.0" },
@@ -1912,7 +1912,7 @@ requires-dist = [
     { name = "pyarrow-stubs", marker = "extra == 'tests'", specifier = ">=16.0" },
     { name = "pydantic", specifier = ">=2.7.4,<3" },
     { name = "pylance", marker = "extra == 'pylance'", specifier = ">=15.0.0b3" },
-    { name = "pylance", marker = "extra == 'tests'", specifier = "==15.0.0b32" },
+    { name = "pylance", marker = "extra == 'tests'", specifier = "==15.0.0b34" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.350" },
     { name = "pytest", marker = "extra == 'tests'", specifier = ">=7.0" },
     { name = "pytest-asyncio", marker = "extra == 'tests'", specifier = ">=0.21" },
@@ -2182,7 +2182,7 @@ wheels = [
 
 [[package]]
 name = "mkdocs-material"
-version = "9.7.6"
+version = "9.8.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "babel" },
@@ -2197,9 +2197,9 @@ dependencies = [
     { name = "pymdown-extensions" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/45/29/6d2bcf41ae40802c4beda2432396fff97b8456fb496371d1bc7aad6512ec/mkdocs_material-9.7.6.tar.gz", hash = "sha256:00bdde50574f776d328b1862fe65daeaf581ec309bd150f7bff345a098c64a69", size = 4097959, upload-time = "2026-03-19T15:41:58.161Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/bf/c47389fa622b513c2d115eb4c16075ef04a5f4d8156039f46cb26e5c70a9/mkdocs_material-9.8.2.tar.gz", hash = "sha256:005d942bdbfa22efa049f4818c31d42fb36bed6d362adb641dd7a2e948078f9d", size = 4160697, upload-time = "2026-11-19T19:52:25.799Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/01/bc663630c510822c95c47a66af9fa7a443c295b47d5f041e5e6ae62ef659/mkdocs_material-9.7.6-py3-none-any.whl", hash = "sha256:71b84353921b8ea1ba84fe11c50912cc512da8fe0881038fcc9a0761c0e635ba", size = 9305470, upload-time = "2026-03-19T15:41:55.217Z" },
+    { url = "https://files.pythonhosted.org/packages/18/86/9204441dd9e224f1dc3f1a32edf6a474e84696bfa493c7df067dcde36366/mkdocs_material-9.8.2-py3-none-any.whl", hash = "sha256:ef1414cab33d64fcc13387e972af5ba4620f55f93482d1842933399ed2c69b02", size = 9302480, upload-time = "2026-11-19T19:52:22.436Z" },
 ]
 
 [[package]]
@@ -2213,7 +2213,7 @@ wheels = [
 
 [[package]]
 name = "mkdocstrings"
-version = "1.0.4"
+version = "1.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -2223,9 +2223,14 @@ dependencies = [
     { name = "mkdocs-autorefs" },
     { name = "pymdown-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/5d/f888d4d3eb31359b327bc9b17a212d6ef03fe0b0682fbb3fc2cb849fb12b/mkdocstrings-1.0.4.tar.gz", hash = "sha256:3969a6515b77db65fd097b53c1b7aa4ae840bd71a2ee62a6a3e89503446d7172", size = 100088, upload-time = "2026-04-15T09:16:53.376Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/e8/445b19834bf9559ebbbaa76897e965665b83d2861461eed8d8de4d122057/mkdocstrings-1.0.7.tar.gz", hash = "sha256:0951b147f352118a45a3db85f0f3b660833d34cb5120a2751315b8d08dafd159", size = 103739, upload-time = "2026-10-10T13:50:59.957Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/94/be70f8ee9c45f2f62b39a1f0e9303bc20e138a8f3b8e50ffd89498e177e1/mkdocstrings-1.0.4-py3-none-any.whl", hash = "sha256:63464b4b29053514f32a1dbbf604e52876d5e638111b0c295ab7ed3cac73ca9b", size = 35560, upload-time = "2026-04-15T09:16:51.436Z" },
+    { url = "https://files.pythonhosted.org/packages/22/c3/9062531735ff1fd27f3a79c353c4cf4d822eeffd062fd90b2c553a96f4bb/mkdocstrings-1.0.7-py3-none-any.whl", hash = "sha256:9563828667eeb35256f87a6b61fe857676ac628ec1abbce9aea9839a502c9cb1", size = 41597, upload-time = "2026-10-10T13:50:58.43Z" },
+]
+
+[package.optional-dependencies]
+python = [
+    { name = "mkdocstrings-python" },
 ]
 
 [[package]]
@@ -3644,20 +3649,20 @@ crypto = [
 
 [[package]]
 name = "pylance"
-version = "15.0.0b32"
+version = "15.0.0b34"
 source = { registry = "https://pypi.fury.io/lance-format/" }
 dependencies = [
     { name = "lance-namespace" },
     { name = "pyarrow" },
 ]
 wheels = [
-    { url = "https://pypi.fury.io/lance-format/-/ver_1mmPD/pylance-15.0.0b32-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:1946f9559385773909c685fe46c474e988d4d283d78cab5bbcfa6f32769e8623" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_1fg8VI/pylance-15.0.0b32-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3c5623245aa21700fe7377f9c25c15d87e3e38ea178eb315877a184352c6e399" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_1rf9nS/pylance-15.0.0b32-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:87e6b46d8c629fbf3d0383e5d515a95857bc8a5635c5d19d0b5e8a562b218ba6" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_176TqH/pylance-15.0.0b32-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:2cd78d8a4472f31d292bd8ccc530a83af8b3e11563898a9748d8404d12c12b03" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_1gbxKE/pylance-15.0.0b32-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b6ebff00b80f00bd5c809b83a046981f9ba3f33bac8b347cc44b95ec235c16c0" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_qSF36/pylance-15.0.0b32-cp310-abi3-win_amd64.whl", hash = "sha256:5edc7d24a93e363186e0ffe561aa00eaeda7140cad26885043b378ffe64f10e0" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_JyVBF/pylance-15.0.0b32-cp310-abi3-win_arm64.whl", hash = "sha256:0d066b44acb0949b3f59eefe30092c982f9797dcb41423dd10fcd63210a2f06e" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_2c6cEN/pylance-15.0.0b34-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:a57e6864acf83fef3729ce51e27edf5a76179c308eb747ef0ec6cc51231ef968" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_oRvqr/pylance-15.0.0b34-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6546b3631fcf8a1dd18b144c0d29fe152320b2e91c3a83ccdca2e3b36d66afb6" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1uoRCM/pylance-15.0.0b34-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2077fdfba60fb40db49b2afbb0c35a0fa1935977a7c3820007eef36f4bc758af" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_2auLpe/pylance-15.0.0b34-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:97a5a3d24388619eec61bee71589794517ff7df41fcfdaae2e56e5e8fb1da80d" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1pf71p/pylance-15.0.0b34-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b0f20b4957d81e0ca5461b3fbd27a37863124d4303a232925c25efab614449b2" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1p6L6I/pylance-15.0.0b34-cp310-abi3-win_amd64.whl", hash = "sha256:780e85cfae25ae26c8eccd5dc40ae38003e8fe0752a5e5b4e124f14d8288bd87" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_9H5Qj/pylance-15.0.0b34-cp310-abi3-win_arm64.whl", hash = "sha256:05edaf5e3254ae798437bae276791fd311e110db86e62a002b2fa909b3f3b8cf" },
 ]
 
 [[package]]

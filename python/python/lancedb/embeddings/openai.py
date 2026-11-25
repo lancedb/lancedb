@@ -99,14 +99,17 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        openai = attempt_import_or_raise("openai")
-
         valid_texts = []
         valid_indices = []
         for idx, text in enumerate(texts):
             if text:
                 valid_texts.append(text)
                 valid_indices.append(idx)
+
+        if not valid_texts:
+            return [None] * len(texts)
+
+        openai = attempt_import_or_raise("openai")
 
         # TODO retry, rate limit, token limit
         def embed_batch(texts_batch, indices_batch):

@@ -19,6 +19,8 @@ jobs:
   gh-release:
     needs: cli
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.extract_version.outputs.prerelease }}
     permissions:
       contents: write
     steps:
@@ -102,9 +104,58 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
 
+  homebrew:
+    name: Open Homebrew formula PR
+    needs: gh-release
+    if: github.repository == 'lancedb/lancedb' && needs.gh-release.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    environment: homebrew-tap
+    concurrency: homebrew-tap-${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lancedb/homebrew-tap
+          ref: main
+          path: tap
+          persist-credentials: false
+      - name: Update formula from the published checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          python3 -m ci.update_homebrew_formula "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/SHA256SUMS" tap/Formula/lancedb.rb
+      - name: Create tap installation token
+        id: app
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: lancedb
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or update the tap PR
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+        with:
+          path: tap
+          token: ${{ steps.app.outputs.token }}
+          base: main
+          branch: release/lancedb-${{ github.ref_name }}
+          add-paths: Formula/lancedb.rb
+          commit-message: Update LanceDB CLI to ${{ github.ref_name }}
+          title: Update LanceDB CLI to ${{ github.ref_name }}
+          body: |
+            Update the formula to [${{ github.ref_name }}](https://github.com/lancedb/lancedb/releases/tag/${{ github.ref_name }}) using its published SHA256SUMS.
+            Review and merge after the tap's install tests pass.
+
   report-failure:
     runs-on: ubuntu-24.04
-    needs: [cli, gh-release]
+    needs: [cli, gh-release, homebrew]
     if: always() && failure()
     permissions:
       contents: read

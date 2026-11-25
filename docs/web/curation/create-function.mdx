@@ -553,11 +553,12 @@ def embed(text: str) -> list[float]: ...
 version = db.create_function(embed)
 table.add_columns(
     {"embedding": version(text=col("text"))},
-    gpu_class="any",
-    gpu_count=1,
     total_gpu_count=8,
 )
-table.refresh_column("embedding", gpu_class="h100", gpu_count=4, total_gpu_count=8)
+job = table.refresh_column_async(
+    "embedding", gpu_class="h100", total_gpu_count=8
+)
+job.wait()
 
 db.create_materialized_view(
     "embeddings", query="SELECT embed(text) AS embedding FROM documents",
@@ -570,7 +571,10 @@ db.create_materialized_view(
 
 `gpu_class` selects the GPU pool and `gpu_count` selects the positive number
 of devices allocated together to each worker. Both can be overridden at
-column/MV creation and refresh. An explicit `gpu_class="any"` replaces a
+column/MV creation and refresh. On LanceDB Enterprise, the Python
+`add_columns` does not yet accept `gpu_class` or `gpu_count`, and
+`refresh_column_async` does not yet accept `gpu_count`; those values come from
+the registered Function. An explicit `gpu_class="any"` replaces a
 registered class with any eligible configured pool. These settings require a
 GPU Function for computed columns. The `total_*` values are ceilings for the
 whole worker fleet. CPU and memory can limit the fleet before it reaches its GPU ceiling.

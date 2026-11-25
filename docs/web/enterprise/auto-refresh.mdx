@@ -11,7 +11,7 @@ availability:
 Both a [computed column](/feature-engineering/add-computed-column) and a
 [materialized view](/feature-engineering/materialized-views) can refresh
 themselves on a schedule instead of waiting for an explicit
-`refresh_column()`, `view.refresh()`, or `REFRESH` statement. Either way,
+`refresh_column_async()`, `view.refresh()`, or `REFRESH` statement. Either way,
 `auto_refresh_enabled` turns it on and `auto_refresh_interval_seconds` sets
 a minimum delay before the next automatic refresh is eligible -- omit the
 interval to let the server decide. What that delay is measured from differs
