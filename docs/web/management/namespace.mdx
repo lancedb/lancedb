@@ -107,7 +107,7 @@ You can also explicitly connect to a namespace using `lancedb.connect_namespace(
 <CodeGroup>
 ```python Python icon="python"
 # Local DirectoryNamespace root
-# See https://lance.org/format/namespace/dir/catalog-spec/
+# See https://lance.org/format/catalog/dir/
 db = lancedb.connect_namespace("dir", {"root": "./local_lancedb"})
 
 table_name = "user"
@@ -122,7 +122,7 @@ print(f"Created table: {table.name}")
 import * as lancedb from "@lancedb/lancedb";
 
 // Local DirectoryNamespace root
-// See https://lance.org/format/namespace/dir/catalog-spec/
+// See https://lance.org/format/catalog/dir/
 const db = await lancedb.connectNamespace("dir", { root: "./local_lancedb" });
 
 const table = await db.createTable(
@@ -140,7 +140,7 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field, Schema};
 
 // Local DirectoryNamespace root
-// See https://lance.org/format/namespace/dir/catalog-spec/
+// See https://lance.org/format/catalog/dir/
 let mut properties = HashMap::new();
 properties.insert("root".to_string(), "./local_lancedb".to_string());
 let db = lancedb::connect_namespace("dir", properties)
@@ -184,7 +184,7 @@ application code, load credentials from environment variables or a secrets manag
 <CodeGroup>
 ```python Python icon="python"
 # Remote RestNamespace root
-# See https://lance.org/format/namespace/rest/catalog-spec/
+# See https://lance.org/format/catalog/rest/
 db = lancedb.connect_namespace(
     "rest",
     {
@@ -200,7 +200,7 @@ db = lancedb.connect_namespace(
 import * as lancedb from "@lancedb/lancedb";
 
 // Remote RestNamespace root
-// See https://lance.org/format/namespace/rest/catalog-spec/
+// See https://lance.org/format/catalog/rest/
 const db = await lancedb.connectNamespace("rest", {
   uri: "https://<your_catalog>.internal.<your_org>.com",
   headers: {
@@ -215,7 +215,7 @@ const db = await lancedb.connectNamespace("rest", {
 use std::collections::HashMap;
 
 // Remote RestNamespace root
-// See https://lance.org/format/namespace/rest/catalog-spec/
+// See https://lance.org/format/catalog/rest/
 let mut properties = HashMap::new();
 properties.insert(
     "uri".to_string(),
