@@ -81,6 +81,55 @@ async def test_async_hybrid_query_with_row_ids(table: AsyncTable):
     assert result["_rowid"].to_pylist() == [0, 3]
 
 
+def test_hybrid_rerank_return_score_all_omits_unrequested_rowid(sync_table: Table):
+    reranker = RRFReranker(return_score="all")
+
+    def hybrid():
+        return sync_table.search(query_type="hybrid").vector([0.0, 0.4]).text("dog")
+
+    default_cols = hybrid().rerank(reranker).to_arrow().column_names
+    assert "_rowid" not in default_cols
+    assert "_distance" in default_cols
+    assert "_score" in default_cols
+    assert "_relevance_score" in default_cols
+
+    explicit_false = (
+        hybrid().with_row_id(False).rerank(reranker).to_arrow().column_names
+    )
+    assert "_rowid" not in explicit_false
+    assert "_distance" in explicit_false
+    assert "_score" in explicit_false
+    assert "_relevance_score" in explicit_false
+
+    requested = hybrid().with_row_id(True).rerank(reranker).to_arrow().column_names
+    assert "_rowid" in requested
+    assert "_distance" in requested
+    assert "_score" in requested
+    assert "_relevance_score" in requested
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_rerank_return_score_all_omits_unrequested_rowid(
+    table: AsyncTable,
+):
+    reranker = RRFReranker(return_score="all")
+
+    def hybrid():
+        return table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog")
+
+    result = await hybrid().rerank(reranker).to_arrow()
+    assert "_rowid" not in result.column_names
+    assert "_distance" in result.column_names
+    assert "_score" in result.column_names
+    assert "_relevance_score" in result.column_names
+
+    requested = await hybrid().with_row_id().rerank(reranker).to_arrow()
+    assert "_rowid" in requested.column_names
+    assert "_distance" in requested.column_names
+    assert "_score" in requested.column_names
+    assert "_relevance_score" in requested.column_names
+
+
 def test_hybrid_fragment_constraints_fail_loud(sync_table: Table):
     query = (
         sync_table.search("dog", query_type="hybrid")
