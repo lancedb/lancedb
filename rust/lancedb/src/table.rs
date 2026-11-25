@@ -3623,6 +3623,17 @@ impl NativeTable {
     /// The version is selected during the dataset open. The returned handle is
     /// read-only until it checks out the latest version. `params` supplies the
     /// session, storage options, and commit handler for the dataset.
+    ///
+    /// ```
+    /// use lancedb::table::{BaseTable, NativeTable};
+    ///
+    /// async fn count_snapshot(uri: &str, version: u64) -> lancedb::Result<usize> {
+    ///     let table = NativeTable::open_at_version(uri, "events", version, Default::default()).await?;
+    ///     let rows = table.count_rows(None).await?;
+    ///     table.checkout_latest().await?;
+    ///     Ok(rows)
+    /// }
+    /// ```
     pub async fn open_at_version(
         uri: &str,
         name: &str,
