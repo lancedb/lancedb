@@ -435,18 +435,42 @@ Calling the registered version binds each parameter, by name, to a column with
 {FunctionApply}
 </CodeBlock>
 
-On Enterprise deployments with batch Function declarations, pass several
-applications in one mapping to add all their columns in one schema commit.
+Batch declaration requires support in both the SDK and the Enterprise deployment.
+In Python, pass several applications to `add_columns` in one mapping to add
+all their columns in one schema commit.
 Each key names the column that holds that application's scalar or whole struct
 result. An application can read another output in the same declaration. For
 example, using the registered `double` Function on the `value` column:
 
+<CodeGroup>
 ```python
 table.add_columns({
     "twice": version(value=col("value")),
     "four_times": version(value=col("twice")),
 })
 ```
+
+{/* Draft for the Rust SDK release with AddColumnsBuilder::function_bindings.
+```rust
+use lancedb::{function::FunctionApplication, Table};
+
+async fn declare_doubles(
+    table: &Table,
+    double_value: FunctionApplication, // double applied to the `value` column
+    double_twice: FunctionApplication, // double applied to the new `twice` column
+) -> lancedb::Result<()> {
+    table.add_columns()
+        .function_bindings([
+            (double_value, Some("twice".into())),
+            (double_twice, Some("four_times".into())),
+        ])
+        .execute()
+        .await?;
+    Ok(())
+}
+```
+*/}
+</CodeGroup>
 
 Declaration creates empty columns. Refresh fills their values. A bare
 named-struct application expands its result fields as one binding, with
