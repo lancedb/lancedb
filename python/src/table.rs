@@ -44,6 +44,7 @@ use pyo3::{
     },
 };
 
+mod datafusion;
 mod scannable;
 
 /// Keyword arguments shared by `refresh_column` and `refresh_column_async`.
@@ -1574,6 +1575,14 @@ impl Table {
             block_on_interruptible(async move { inner.schema().await.infer_error() })
         })?;
         Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+    }
+
+    fn __datafusion_table_provider__<'py>(
+        &self,
+        py: Python<'py>,
+        session: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyCapsule>> {
+        datafusion::table_provider(py, self.inner_ref()?, session)
     }
 
     #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false, retries=None))]

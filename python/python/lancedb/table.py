@@ -4690,6 +4690,9 @@ class LanceTable(Table):
             ds = ds.checkout_version((branch, self.version))
         return ds
 
+    def __datafusion_table_provider__(self, session: object) -> object:
+        return self._inner.__datafusion_table_provider__(session)
+
     @property
     def schema(self) -> pa.Schema:
         """Return the schema of the table.
@@ -7736,6 +7739,9 @@ class AsyncTable:
         [to_pandas][lancedb.query.AsyncQuery.to_pandas] and more.
         """
         return AsyncQuery(self._inner.query(), self)
+
+    def __datafusion_table_provider__(self, session: object) -> object:
+        return self._inner.__datafusion_table_provider__(session)
 
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the Lance dataset backing a LanceDB Embedded table.
