@@ -798,9 +798,10 @@ impl<S: HttpSend> BlobLocationsContext<S> {
             }
         }
         log::debug!(
-            "blob_locations resolved rows={} version={} elapsed_ms={:.3}",
+            "blob_locations resolved rows={} version={} identity={} elapsed_ms={:.3}",
             row_ids.len(),
             version,
+            identity.as_deref().unwrap_or(""),
             started.elapsed().as_secs_f64() * 1000.0
         );
         Ok(ResolvedBlobLocations {
@@ -1096,6 +1097,10 @@ impl<S: HttpSend> BlobRangeRequester for PresignedBlobRangeRequester<S> {
                         expires <= now.saturating_add(BLOB_PRESIGN_REFRESH_SKEW.as_secs())
                     }) && !refreshed
                     {
+                        log::debug!(
+                            "blob_direct refresh row={} reason=proactive expires_at={expires:?}",
+                            self.row_id
+                        );
                         self.refresh().await?;
                         refreshed = true;
                         continue;
@@ -1103,6 +1108,7 @@ impl<S: HttpSend> BlobRangeRequester for PresignedBlobRangeRequester<S> {
                     match self.direct_read(&url, base_offset, range.clone()).await {
                         Ok(response) => return Ok(response),
                         Err(PresignedReadError::Expired) if !refreshed => {
+                            log::debug!("blob_direct refresh row={} reason=reactive", self.row_id);
                             self.refresh().await?;
                             refreshed = true;
                         }
@@ -2564,8 +2570,19 @@ impl<S: HttpSend> RemoteTable<S> {
                                 resolved.sources.len()
                             ),
                         })?;
+                let refresh_context = self.blob_locations_context(
+                    &source.column,
+                    Some(source.version),
+                    source.branch.clone(),
+                    Some(source),
+                    resolved
+                        .identity
+                        .clone()
+                        .or_else(|| self.expected_query_snapshot.clone()),
+                    None,
+                );
                 Arc::new(PresignedBlobRangeRequester::new(
-                    self.blob_locations_context_for_source(source),
+                    refresh_context,
                     source.row_reference,
                     size,
                     self.client.blob_presign_threshold_bytes,
@@ -6287,5 +6304,201 @@ mod tests {
             .unwrap();
         let file = files.pop().unwrap().unwrap();
         assert_eq!(file.read_range(0..1).await.unwrap().as_ref(), b"A");
+    }
+
+    struct RefreshHarness {
+        table: RemoteTable<crate::remote::client::test_utils::MockSender>,
+        resolves: Arc<AtomicUsize>,
+        objects: Arc<AtomicUsize>,
+    }
+
+    fn refresh_harness(
+        first_expires: Option<u64>,
+        second_expires: Option<u64>,
+        second_identity: &'static str,
+        second_location_status: Option<StatusCode>,
+        fail_second_object: bool,
+    ) -> RefreshHarness {
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let objects = Arc::new(AtomicUsize::new(0));
+        let captured_resolves = resolves.clone();
+        let captured_objects = objects.clone();
+        let mut table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                if request.url().host_str() == Some("objects.example") {
+                    captured_objects.fetch_add(1, Ordering::SeqCst);
+                    let old = request
+                        .url()
+                        .query()
+                        .is_some_and(|query| query.contains("sig=old"));
+                    if old || fail_second_object {
+                        return http::Response::builder()
+                            .status(StatusCode::FORBIDDEN)
+                            .body(Vec::new())
+                            .unwrap();
+                    }
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, "bytes 0-0/1")
+                        .body(b"A".to_vec())
+                        .unwrap();
+                }
+                let path = request.url().path();
+                if path == "/v1/table/my_table/blob_locations/" {
+                    let call = captured_resolves.fetch_add(1, Ordering::SeqCst) + 1;
+                    if call == 2
+                        && let Some(status) = second_location_status
+                    {
+                        return http::Response::builder()
+                            .status(status)
+                            .body(Vec::new())
+                            .unwrap();
+                    }
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["version"], serde_json::json!(7));
+                    assert_eq!(
+                        body["source_uri"],
+                        serde_json::json!("s3://bucket/table.lance")
+                    );
+                    assert_eq!(body["source_commit_micros"], serde_json::json!(1234));
+                    let identity = if call == 1 {
+                        SNAPSHOT_A
+                    } else {
+                        second_identity
+                    };
+                    let expires = if call == 1 {
+                        first_expires
+                    } else {
+                        second_expires
+                    };
+                    let mut source = serde_json::json!({"url": format!("https://objects.example/object?sig={sig}", sig = if call == 1 { "old" } else { "new" })});
+                    if let Some(expires) = expires {
+                        source["expires_at_unix_secs"] = expires.into();
+                    }
+                    return http::Response::builder()
+                        .status(200)
+                        .header(VERSION_HEADER, "7")
+                        .header(QUERY_SNAPSHOT_HEADER, identity)
+                        .body(
+                            serde_json::json!({
+                                "sources": [source],
+                                "items": [{
+                                    "kind": "presigned",
+                                    "source_index": 0,
+                                    "offset": 0,
+                                    "size": 1,
+                                }],
+                            })
+                            .to_string()
+                            .into_bytes(),
+                        )
+                        .unwrap();
+                }
+                panic!("unexpected request: {path}");
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        table.client.blob_presign_threshold_bytes = 1;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        RefreshHarness {
+            table,
+            resolves,
+            objects,
+        }
+    }
+
+    fn descriptor_for_refresh_harness() -> BlobDescriptor {
+        BlobDescriptor {
+            kind: BlobKind::Dedicated as u8,
+            position: 0,
+            size: 1,
+            blob_id: 0,
+            blob_uri: String::new(),
+            source: BlobDescriptorSource {
+                uri: "s3://bucket/table.lance".into(),
+                version: 7,
+                committed_at_micros: 1234,
+                branch: None,
+                column: "image".into(),
+                row_reference: 10,
+                row_is_address: false,
+            },
+        }
+    }
+
+    async fn read_one_byte(harness: &RefreshHarness) -> Result<()> {
+        let file = harness
+            .table
+            .open_blob_file(&descriptor_for_refresh_harness())
+            .await?;
+        file.read_range(0..1).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_blob_file_refreshes_before_advertised_expiry() {
+        let now = unix_now_secs();
+        let harness = refresh_harness(Some(now + 10), Some(now + 3600), SNAPSHOT_A, None, false);
+        read_one_byte(&harness).await.unwrap();
+        assert_eq!(harness.resolves.load(Ordering::SeqCst), 2);
+        assert_eq!(harness.objects.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_blob_file_refreshes_when_provider_expiry_precedes_url_ttl() {
+        let now = unix_now_secs();
+        let harness = refresh_harness(Some(now + 3600), Some(now + 3600), SNAPSHOT_A, None, false);
+        read_one_byte(&harness).await.unwrap();
+        assert_eq!(harness.resolves.load(Ordering::SeqCst), 2);
+        assert_eq!(harness.objects.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn direct_blob_file_refresh_is_single_shot() {
+        let now = unix_now_secs();
+        let harness = refresh_harness(Some(now + 3600), Some(now + 3600), SNAPSHOT_A, None, true);
+        let error = read_one_byte(&harness).await.unwrap_err();
+        assert!(
+            error.to_string().contains("expired after refresh"),
+            "{error}"
+        );
+        assert_eq!(harness.resolves.load(Ordering::SeqCst), 2);
+        assert_eq!(harness.objects.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn open_blob_file_refresh_preserves_the_resolver_identity() {
+        let now = unix_now_secs();
+        let harness = refresh_harness(Some(now + 3600), Some(now + 3600), SNAPSHOT_B, None, false);
+        let error = read_one_byte(&harness).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("did not verify the query snapshot identity"),
+            "{error}"
+        );
+        assert_eq!(harness.resolves.load(Ordering::SeqCst), 2);
+        assert_eq!(harness.objects.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn open_blob_file_refresh_propagates_auth_rejection() {
+        let now = unix_now_secs();
+        let harness = refresh_harness(
+            Some(now + 3600),
+            Some(now + 3600),
+            SNAPSHOT_A,
+            Some(StatusCode::FORBIDDEN),
+            false,
+        );
+        let error = read_one_byte(&harness).await.unwrap_err();
+        assert!(error.to_string().contains("403"), "{error}");
+        assert_eq!(harness.resolves.load(Ordering::SeqCst), 2);
+        assert_eq!(harness.objects.load(Ordering::SeqCst), 1);
     }
 }
