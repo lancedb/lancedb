@@ -973,6 +973,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("Function columns are supported only in LanceDB Enterprise"),
         })
     }
+    /// Declare multiple immutable registered-Function bindings in one schema commit.
+    async fn add_function_bindings(
+        &self,
+        _bindings: &[(crate::function::FunctionApplication, Option<String>)],
+        _options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: DocLink::Functions
+                .append_to("Batch Function declarations require LanceDB Enterprise support"),
+        })
+    }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed.
     ///

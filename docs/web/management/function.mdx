@@ -435,10 +435,22 @@ Calling the registered version binds each parameter, by name, to a column with
 {FunctionApply}
 </CodeBlock>
 
-The column is declared empty; the function has not run yet. A mapping with one
-function application keeps its scalar or named-struct result in the named
-column. A bare named-struct application expands its result fields as one atomic
-binding, with aliases from `rename(columns=...)`.
+On Enterprise deployments with batch Function declarations, pass several
+applications in one mapping to add all their columns in one schema commit.
+Each key names the column that holds that application's scalar or whole struct
+result. An application can read another output in the same declaration. For
+example, using the registered `double` Function on the `value` column:
+
+```python
+table.add_columns({
+    "twice": version(value=col("value")),
+    "four_times": version(value=col("twice")),
+})
+```
+
+Declaration creates empty columns. Refresh fills their values. A bare
+named-struct application expands its result fields as one binding, with
+aliases from `rename(columns=...)`.
 
 {/* Draft for the Function literal binding release.
 
