@@ -48,6 +48,7 @@ from .permutation import (
     _table_from_pickle_state,
     _table_to_pickle_state,
 )
+from .table import LanceTable
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ DEFAULT_WINDOW_BLOCKS = 8
 _UNSET = object()
 # Checkpoint keys pinning the 2-phase read order; absent in 1-phase checkpoints.
 _TWO_PHASE_CHECKPOINT_KEYS = (
+    "shuffle",
     "block_size",
     "max_shuffle_distance",
     "reshuffle_blocks_per_epoch",
@@ -1256,12 +1258,15 @@ class StreamingDataset(IterableDataset):
         if self._connection_factory is not None:
             # The factory may hand back a cached, caller-owned handle, and
             # checkout() pins whatever handle it is called on, so pin a copy.
-            pinned = self._connection_factory(self._table.name)
-            pinned_state = _table_to_pickle_state(pinned)
-            if pinned_state["kind"] == "remote":
-                pinned = deepcopy(pinned)
+            # Copy over the live connection rather than through pickle state:
+            # the factory exists so workers can hold unpicklable connections
+            # (e.g. with a Session), and an in-memory table must keep its
+            # version history for the checkout to find the snapshot.
+            handle = self._connection_factory(self._table.name)
+            if isinstance(handle, LanceTable):
+                pinned = handle._private_copy()
             else:
-                pinned = _table_from_pickle_state(pinned_state)
+                pinned = deepcopy(handle)
             pinned.checkout(self._pinned_version)
             return pinned
 
@@ -2603,7 +2608,7 @@ class StreamingDataset(IterableDataset):
         continue to rely on ``shuffle_seed``/``num_splits`` alone as before.
         Packed checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
         ``blocks_per_epoch``, and ``epoch``. Checkpoints from a ``block_size``
-        dataset pin ``block_size``, ``max_shuffle_distance`` and
+        dataset pin ``shuffle``, ``block_size``, ``max_shuffle_distance`` and
         ``reshuffle_blocks_per_epoch``, and are rejected by a 1-phase dataset
         and vice versa.
         """

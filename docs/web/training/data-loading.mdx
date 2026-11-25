@@ -54,7 +54,7 @@ ds = StreamingDataset(
 
 ## Shuffling Rows {#shuffling-rows}
 
-In model training, model quality can be hurt by unintentionally learning patterns in the ordering of the source data. Shuffling the dataset before training alleviates this problem. However, fetching rows with scattered sparse reads across object storage can be dramatically slower than fetching contiguous batches. `StreamingDataset` shuffles at one of two granularities, selected by the `shuffle_clump_size` parameter.
+In model training, model quality can be hurt by unintentionally learning patterns in the ordering of the source data. Shuffling the dataset before training alleviates this problem. However, fetching rows with scattered sparse reads across object storage can be dramatically slower than fetching contiguous batches. `StreamingDataset` shuffles rows individually by default; `shuffle_clump_size` and `block_size` each trade some randomness for more contiguous reads.
 
 <Note>
 `StreamingDataset` shuffle seeds combine `shuffle_seed` with `epoch`; each epoch produces a different permutation while runs
@@ -106,6 +106,28 @@ for epoch in range(num_epochs):
 eval_ds = StreamingDataset(table, shuffle=False)
 for sample in eval_ds:
     eval_step(sample)
+```
+</CodeGroup>
+
+### Block Shuffle {#block-shuffle}
+
+Setting `block_size` enables a two-phase shuffled read. First, contiguous blocks of `block_size` rows are shuffled and read with range scans. Then each split shuffles rows across a rolling window of `window_blocks` blocks (default `8`). Unlike a clump, a block does not stay together: a row can move up to `max_shuffle_distance` positions (default `window_blocks * block_size`) from its place in the block order. Every split serves the same number of rows, so a split can start or end partway through a block, and fewer than `num_splits` rows are left out per epoch. `block_size=512` is a good starting point. Use DataLoader workers, with `num_splits` at least the worker count, because throughput comes from reading many splits in parallel. `shuffle_clump_size` is ignored when `block_size` is set.
+
+<CodeGroup>
+```py Python icon=Python
+# Block shuffle: shuffle contiguous blocks, then rows within a bounded window.
+for epoch in range(num_epochs):
+    ds = StreamingDataset(
+        table,
+        shuffle_seed=42,
+        epoch=epoch,
+        num_splits=64,
+        block_size=512,      # rows per contiguous block read
+        window_blocks=8,     # blocks per split whose rows are mixed together
+    )
+    loader = StreamingDataLoader(ds, batch_size=32, num_workers=16)
+    for batch in loader:
+        train_step(batch)
 ```
 </CodeGroup>
 

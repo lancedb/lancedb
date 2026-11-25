@@ -4430,16 +4430,21 @@ class LanceTable(Table):
             )
         return connection.serialize()
 
-    def _namespace_client_for_pickle(self) -> Optional[Any]:
-        """Keep a table-level namespace client only when pickle can carry it."""
+    def _table_namespace_client(self) -> Optional[Any]:
+        """The namespace client set on this table rather than its connection."""
         namespace_client = self._namespace_client
-        if namespace_client is None:
-            return None
         if namespace_client is getattr(self._conn, "_namespace_client", None):
-            # The serialized connection rebuilds its own namespace client.
+            # The connection rebuilds its own namespace client.
             return None
         if namespace_client is getattr(self._conn, "_cached_namespace_client", None):
             # Local manifest-mode connections cache their namespace client here.
+            return None
+        return namespace_client
+
+    def _namespace_client_for_pickle(self) -> Optional[Any]:
+        """Keep a table-level namespace client only when pickle can carry it."""
+        namespace_client = self._table_namespace_client()
+        if namespace_client is None:
             return None
 
         import pickle
@@ -4509,13 +4514,20 @@ class LanceTable(Table):
             # Keep the established behavior of exporting the visible table.
             return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
 
+        return {
+            "kind": "lance",
+            "connection_state": self._pickle_connection_state(),
+            "namespace_client": self._namespace_client_for_pickle(),
+            **self._reopen_state(),
+        }
+
+    def _reopen_state(self) -> dict[str, Any]:
+        """Arguments for ``_open_from_pickle_state``, minus the connection."""
         # The native handle is authoritative: a tag checkout can move this
         # wrapper onto another branch, so never trust the branch captured at
         # construction time.
         self._branch = self.current_branch()
         return {
-            "kind": "lance",
-            "connection_state": self._pickle_connection_state(),
             "name": self.name,
             "namespace_path": list(self._namespace_path),
             # Only caller-supplied overrides are safe to replay. Namespace-provided
@@ -4524,13 +4536,29 @@ class LanceTable(Table):
             "storage_options": self._storage_options,
             "index_cache_size": self._index_cache_size,
             "location": self._location,
-            "namespace_client": self._namespace_client_for_pickle(),
             "managed_versioning": self._managed_versioning,
             "pushdown_operations": set(self._pushdown_operations),
             "route_pushdown_to_rust": self._route_pushdown_to_rust,
             "branch": self._branch,
             "checkout_version": self._checkout_version,
         }
+
+    def _private_copy(self) -> "LanceTable":
+        """A new handle on the same table, branch and checkout, over this
+        handle's own connection.
+
+        ``checkout()`` on the copy leaves this handle untouched. Unlike a
+        pickle round trip, the connection need not be serializable (for
+        example, one created with a ``Session``), and an in-memory table keeps
+        its version history.
+        """
+        return type(self)._open_from_pickle_state(
+            self._conn,
+            {
+                **self._reopen_state(),
+                "namespace_client": self._table_namespace_client(),
+            },
+        )
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Rebuild a table from ``__getstate__`` in the current process."""

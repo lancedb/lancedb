@@ -3754,19 +3754,49 @@ def _cached_open_table(uri, name):
     return lancedb.connect(uri).open_table(name)
 
 
-def test_two_phase_does_not_pin_cached_factory_handle(tmp_path):
-    """A connection_factory may return a cached, caller-owned handle; pinning
-    the dataset's snapshot must not check that handle out (read-only)."""
-    lancedb.connect(tmp_path).create_table("t", pa.table({"id": list(range(8))}))
-    factory = functools.partial(_cached_open_table, str(tmp_path))
-    table = factory("t")
+@functools.lru_cache
+def _cached_open_table_with_session(uri, name):
+    return lancedb.connect(uri, session=lancedb.Session()).open_table(name)
+
+
+class _ReturnsTable:
+    def __init__(self, table):
+        self.table = table
+
+    def __call__(self, name):
+        return self.table
+
+
+@pytest.mark.parametrize("connection", ["local", "session", "memory"])
+def test_two_phase_does_not_pin_cached_factory_handle(tmp_path, connection):
+    """A connection_factory may return a cached, caller-owned handle: pinning
+    the dataset's snapshot must leave that handle writable, must not need a
+    picklable connection, and must keep reading the construction snapshot
+    after the handle's table changes."""
+    if connection == "memory":
+        table = lancedb.connect("memory://").create_table(
+            "t", pa.table({"id": list(range(8))})
+        )
+        table.add(pa.table({"id": [100]}))
+        table.delete("id = 100")  # the snapshot is at a version above 1
+        factory = _ReturnsTable(table)
+    else:
+        lancedb.connect(tmp_path).create_table("t", pa.table({"id": list(range(8))}))
+        open_table = (
+            _cached_open_table_with_session
+            if connection == "session"
+            else _cached_open_table
+        )
+        factory = functools.partial(open_table, str(tmp_path))
+        table = factory("t")
 
     ds = StreamingDataset(
         table, block_size=4, shuffle=False, connection_factory=factory
     )
+    table.delete("id = 0")
     table.add(pa.table({"id": [8]}))
 
-    assert table.count_rows() == 9
+    assert table.count_rows() == 8
     assert [row["id"] for row in ds] == list(range(8))
 
 
@@ -3992,6 +4022,11 @@ def test_two_phase_resume_checkpoint_round_trip(lance_table):
             {"block_size": 10},
             {"block_size": 10, "reshuffle_blocks_per_epoch": False},
             id="reshuffle_blocks_per_epoch",
+        ),
+        pytest.param(
+            {"block_size": 10},
+            {"block_size": 10, "shuffle": False},
+            id="shuffle",
         ),
     ],
 )
