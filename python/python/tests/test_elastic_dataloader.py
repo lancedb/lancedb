@@ -4008,31 +4008,43 @@ def test_two_phase_resume_checkpoint_round_trip(lance_table):
 
 
 @pytest.mark.parametrize(
-    "saved,resumed",
+    "saved,resumed,mismatched_key",
     [
-        pytest.param({"block_size": 10}, {"block_size": 5}, id="block_size"),
-        pytest.param({"block_size": 10}, {}, id="two_phase_into_one_phase"),
-        pytest.param({}, {"block_size": 10}, id="one_phase_into_two_phase"),
+        pytest.param(
+            {"block_size": 10}, {"block_size": 5}, "block_size", id="block_size"
+        ),
+        pytest.param(
+            {"block_size": 10}, {}, "block_size", id="two_phase_into_one_phase"
+        ),
+        pytest.param(
+            {}, {"block_size": 10}, "block_size", id="one_phase_into_two_phase"
+        ),
         pytest.param(
             {"block_size": 10},
             {"block_size": 10, "max_shuffle_distance": 15},
+            "max_shuffle_distance",
             id="max_shuffle_distance",
         ),
         pytest.param(
             {"block_size": 10},
             {"block_size": 10, "reshuffle_blocks_per_epoch": False},
+            "reshuffle_blocks_per_epoch",
             id="reshuffle_blocks_per_epoch",
         ),
         pytest.param(
             {"block_size": 10},
             {"block_size": 10, "shuffle": False},
+            "shuffle",
             id="shuffle",
         ),
     ],
 )
-def test_two_phase_checkpoint_rejects_different_read_order(lance_table, saved, resumed):
+def test_two_phase_checkpoint_rejects_different_read_order(
+    lance_table, saved, resumed, mismatched_key
+):
     """Saved positions index one 2-phase read order; resuming them under
-    another would replay consumed rows and skip unread ones."""
+    another would replay consumed rows and skip unread ones. The error names
+    the setting to change."""
 
     def make(options):
         return StreamingDataset(
@@ -4045,9 +4057,9 @@ def test_two_phase_checkpoint_rejects_different_read_order(lance_table, saved, r
         next(it)
     checkpoint = source.state_dict()
 
-    with pytest.raises(ValueError, match="mismatch"):
+    with pytest.raises(ValueError, match=f"^{mismatched_key} mismatch: checkpoint"):
         make(resumed).load_state_dict(checkpoint)
-    with pytest.raises(ValueError, match="mismatch across state dicts"):
+    with pytest.raises(ValueError, match=f"^{mismatched_key} mismatch across"):
         StreamingDataset.merge_state_dicts([checkpoint, make(resumed).state_dict()])
 
 

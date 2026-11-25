@@ -71,9 +71,10 @@ DEFAULT_PREFETCH_BATCHES = 4
 DEFAULT_WINDOW_BLOCKS = 8
 _UNSET = object()
 # Checkpoint keys pinning the 2-phase read order; absent in 1-phase checkpoints.
+# block_size comes first so a 1-phase/2-phase mix reports the mode setting.
 _TWO_PHASE_CHECKPOINT_KEYS = (
-    "shuffle",
     "block_size",
+    "shuffle",
     "max_shuffle_distance",
     "reshuffle_blocks_per_epoch",
 )
@@ -861,7 +862,7 @@ class StreamingDataset(IterableDataset):
                 raise ValueError("split_strategy cannot be combined with block_size")
             if shuffle_clump_size is not None:
                 raise ValueError(
-                    "shuffle_clump_size is ignored when block_size is set "
+                    "shuffle_clump_size cannot be combined with block_size "
                     "(2-phase mode uses window_blocks/max_shuffle_distance "
                     "instead); remove one of them"
                 )
