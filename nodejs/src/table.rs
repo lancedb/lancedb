@@ -685,14 +685,24 @@ impl Table {
         &self,
         column: String,
         options: Option<RefreshColumnOptions>,
+        recovery: Option<FunctionRecoveryOptions>,
     ) -> napi::Result<crate::job::Job> {
-        let options = options.unwrap_or_default().try_into()?;
+        let mut options: lancedb::table::RefreshColumnOptions =
+            options.unwrap_or_default().try_into()?;
+        let typed_result = recovery.is_some();
+        if let Some(recovery) = recovery {
+            recovery.apply(&mut options)?;
+        }
         let job = self
             .inner_ref()?
             .refresh_column_async_with_options(column, options)
             .await
             .default_error()?;
-        Ok(crate::job::Job::new(job))
+        Ok(if typed_result {
+            crate::job::Job::new_typed(job)
+        } else {
+            crate::job::Job::new(job)
+        })
     }
 
     #[napi(catch_unwind)]
@@ -701,18 +711,11 @@ impl Table {
         options: Option<FunctionErrorsOptions>,
     ) -> napi::Result<FunctionErrors> {
         let options = options.unwrap_or_default();
-        let limit = options
-            .limit
-            .map(|limit| {
-                usize::try_from(limit)
-                    .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))
-            })
-            .transpose()?;
         let request = lancedb::function::FunctionErrorsRequest {
-            history: false,
+            history: options.history.unwrap_or_default(),
             job_id: options.job_id,
             column: options.column,
-            limit,
+            limit: function_listing_limit(options.limit)?,
             page_token: options.page_token,
         };
         let errors = self
@@ -721,6 +724,62 @@ impl Table {
             .await
             .default_error()?;
         Ok(errors.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn quarantine_function_errors(
+        &self,
+        column: String,
+        options: Option<FunctionQuarantineOptions>,
+    ) -> napi::Result<f64> {
+        let options = options.unwrap_or_default();
+        let options = lancedb::function::FunctionQuarantineOptions {
+            quarantined: options.quarantined.unwrap_or(true),
+            job_id: options.job_id,
+            error_type: options.error_type,
+            after_attempts: positive_u32(options.after_attempts, "afterAttempts")?,
+        };
+        let affected = self
+            .inner_ref()?
+            .quarantine_function_errors(&column, options)
+            .await
+            .default_error()?;
+        Ok(affected as f64)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn function_provenance(
+        &self,
+        column: String,
+        options: Option<FunctionProvenanceOptions>,
+    ) -> napi::Result<FunctionProvenance> {
+        let options = options.unwrap_or_default();
+        let version = match options.version {
+            None => None,
+            Some(Either::A(number)) => Some(positive_safe_integer(number, "version")?),
+            Some(Either::B(bigint)) => {
+                let (negative, value, lossless) = bigint.get_u64();
+                if negative || !lossless || value == 0 {
+                    return Err(napi::Error::from_reason(
+                        "version must be a positive lossless u64 bigint",
+                    ));
+                }
+                Some(value)
+            }
+        };
+        let options = lancedb::function::FunctionProvenanceOptions {
+            version,
+            limit: function_listing_limit(options.limit)?,
+        };
+        let provenance = self
+            .inner_ref()?
+            .function_provenance(&column, options)
+            .await
+            .default_error()?;
+        Ok(FunctionProvenance {
+            records: provenance.records.into_iter().map(Into::into).collect(),
+            truncated: provenance.truncated,
+        })
     }
 
     #[napi(catch_unwind)]
@@ -1946,8 +2005,76 @@ pub struct FunctionErrorsOptions {
     pub column: Option<String>,
     /// At most this many records (server default 10000, cap 100000).
     pub limit: Option<i64>,
+    /// Include retained historical attempts, including repaired rows. Requires workflow version 1 or later.
+    pub history: Option<bool>,
     /// Empty starts retained history, including repaired rows, for an exact jobId; otherwise continue that page.
     pub page_token: Option<String>,
+}
+
+fn function_listing_limit(limit: Option<i64>) -> napi::Result<Option<usize>> {
+    limit
+        .map(|limit| {
+            usize::try_from(limit)
+                .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))
+        })
+        .transpose()
+}
+
+/// Select current failures to quarantine or release.
+#[napi(object)]
+#[derive(Default)]
+pub struct FunctionQuarantineOptions {
+    /// Quarantine by default. Set false to release failures for later refreshes.
+    pub quarantined: Option<bool>,
+    /// Only failures recorded by this job.
+    pub job_id: Option<String>,
+    /// Only failures with this exception class.
+    pub error_type: Option<String>,
+    /// Only failures with at least this many attempts. Defaults to 1.
+    pub after_attempts: Option<f64>,
+}
+
+/// Snapshot and record limit for a producing-version listing.
+#[napi(object)]
+#[derive(Default)]
+pub struct FunctionProvenanceOptions {
+    /// An exact table version. Defaults to the table handle's read version.
+    pub version: Option<Either<f64, BigInt>>,
+    /// Maximum records to return (server default 10000, cap 100000).
+    pub limit: Option<i64>,
+}
+
+#[napi(object)]
+pub struct FunctionRecoveryOptions {
+    pub retry_errors: Option<bool>,
+    pub retry_job_id: Option<String>,
+    pub retry_error_type: Option<String>,
+    pub include_quarantined: Option<bool>,
+    pub function_version: Option<String>,
+    pub recompute: Option<String>,
+}
+
+impl FunctionRecoveryOptions {
+    fn apply(self, options: &mut lancedb::table::RefreshColumnOptions) -> napi::Result<()> {
+        use lancedb::function::FunctionRecompute;
+        options.retry_errors = self.retry_errors;
+        options.retry_job_id = self.retry_job_id;
+        options.retry_error_type = self.retry_error_type;
+        options.include_quarantined = self.include_quarantined;
+        options.function_version = self.function_version;
+        options.recompute = match self.recompute.as_deref() {
+            None => None,
+            Some("failed") => Some(FunctionRecompute::Failed),
+            Some("all") => Some(FunctionRecompute::All),
+            Some("none") => Some(FunctionRecompute::None),
+            Some(_) => {
+                return Err(napi::Error::from_reason(
+                    "recompute must be 'failed', 'all', or 'none'",
+                ));
+            }
+        };
+        Ok(())
+    }
 }
 
 /// CPU, memory, and ephemeral-storage limits for one Function refresh
@@ -2063,8 +2190,8 @@ pub struct RefreshColumnOptions {
     pub total_gpu_count: Option<f64>,
     /// Override retries of failed user-code calls for this refresh.
     pub retry_policy: Option<FunctionRetryPolicy>,
-    /// `"fail"` (default) stops on a row error; `"skip"` writes null and
-    /// records the error, subject to the failure limits.
+    /// `"fail"` stops on a row error; `"skip"` records it and continues,
+    /// subject to the failure limits. The default is server-dependent.
     pub error_policy: Option<String>,
     /// Under a skip policy, fail the job once more than this share of rows
     /// (0 to 1) has failed.
@@ -2234,33 +2361,111 @@ pub struct FunctionErrorRecord {
     /// The row's offset within the fragment; absent when the fragment's
     /// detail was capped.
     pub row_offset: Option<i64>,
+    /// Stable row identity when recorded. It survives compaction and rewrite.
+    pub row_id: Option<BigInt>,
+    /// Physical row address at the recorded version. A rewrite can change it.
+    pub row_address: Option<BigInt>,
     pub column: String,
     pub function: String,
     pub function_version: String,
     pub table_version: i64,
     pub error_type: String,
     pub error_message: String,
+    /// Number of failed invocation attempts, when recorded.
+    pub attempts: Option<u32>,
     /// User-code traceback, possibly truncated by the server.
     pub traceback: Option<String>,
     pub created_at_millis: i64,
+    /// First failure time for this row, when recorded.
+    pub first_seen_at_millis: Option<i64>,
+    /// Latest failure time for this row, when recorded.
+    pub last_seen_at_millis: Option<i64>,
+    /// Whether the failure is quarantined. Absent on older listings.
+    pub quarantined: Option<bool>,
+    /// Source identities for a materialized-view Function invocation.
+    #[napi(ts_type = "unknown")]
+    pub input: Option<serde_json::Value>,
 }
 
-impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
-    fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
+impl FunctionErrorRecord {
+    fn from_record(record: lancedb::function::FunctionErrorRecord, has_workflow: bool) -> Self {
         Self {
             job_id: record.job_id,
             fragment_id: record.fragment_id as i64,
             row_offset: record.row_offset.map(i64::from),
+            row_id: record.row_id.map(BigInt::from),
+            row_address: record.row_address.map(BigInt::from),
             column: record.column,
             function: record.function,
             function_version: record.function_version,
             table_version: record.table_version as i64,
             error_type: record.error_type,
             error_message: record.error_message,
+            attempts: record.attempts,
             traceback: record.traceback,
             created_at_millis: record.created_at_millis,
+            first_seen_at_millis: record.first_seen_at_millis,
+            last_seen_at_millis: record.last_seen_at_millis,
+            quarantined: has_workflow.then_some(record.quarantined),
+            input: record.input,
         }
     }
+}
+
+/// One cause among the returned Function errors.
+#[napi(object)]
+pub struct FunctionErrorGroup {
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub rows_failed: BigInt,
+}
+
+impl From<lancedb::function::FunctionErrorGroup> for FunctionErrorGroup {
+    fn from(group: lancedb::function::FunctionErrorGroup) -> Self {
+        Self {
+            column: group.column,
+            error_type: group.error_type,
+            error_message: group.error_message,
+            rows_failed: BigInt::from(group.rows_failed),
+        }
+    }
+}
+
+/// The Function and job that produced one stored value.
+#[napi(object)]
+pub struct FunctionValueProvenance {
+    pub column: String,
+    pub job_id: String,
+    pub function_name: String,
+    pub function_version: String,
+    pub row_id: Option<BigInt>,
+    pub row_address: Option<BigInt>,
+    pub source_version: BigInt,
+    pub published_version: BigInt,
+}
+
+impl From<lancedb::function::FunctionValueProvenance> for FunctionValueProvenance {
+    fn from(record: lancedb::function::FunctionValueProvenance) -> Self {
+        Self {
+            column: record.column,
+            job_id: record.job_id,
+            function_name: record.function_name,
+            function_version: record.function_version,
+            row_id: record.row_id.map(BigInt::from),
+            row_address: record.row_address.map(BigInt::from),
+            source_version: BigInt::from(record.source_version),
+            published_version: BigInt::from(record.published_version),
+        }
+    }
+}
+
+/// A bounded producing-version listing for a table snapshot.
+#[napi(object)]
+pub struct FunctionProvenance {
+    pub records: Vec<FunctionValueProvenance>,
+    /// Whether the listing stopped at its limit.
+    pub truncated: bool,
 }
 
 /// A fragment whose per-row error detail was capped: `rowsSkipped` rows
@@ -2287,8 +2492,12 @@ impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
 
 /// A table's per-row Function errors.
 #[napi(object)]
-#[derive(Clone, Debug)]
 pub struct FunctionErrors {
+    /// Version of the Enterprise row-failure workflow, if advertised by the server.
+    pub workflow_version: Option<u16>,
+    /// Grouped causes over the returned records, if the server supports the workflow.
+    /// Counts can be incomplete. Check `truncated` and `fragments` before using them as totals.
+    pub error_groups: Option<Vec<FunctionErrorGroup>>,
     /// The recorded rows, newest job first.
     pub records: Vec<FunctionErrorRecord>,
     /// Fragments whose detail was capped.
@@ -2411,8 +2620,16 @@ impl From<lancedb::table::FunctionColumnStatus> for FunctionColumnStatus {
 
 impl From<lancedb::function::FunctionErrors> for FunctionErrors {
     fn from(errors: lancedb::function::FunctionErrors) -> Self {
+        let has_workflow = errors.workflow_version.is_some_and(|version| version >= 1);
         Self {
-            records: errors.records.into_iter().map(Into::into).collect(),
+            workflow_version: errors.workflow_version,
+            error_groups: has_workflow
+                .then(|| errors.error_groups.into_iter().map(Into::into).collect()),
+            records: errors
+                .records
+                .into_iter()
+                .map(|record| FunctionErrorRecord::from_record(record, has_workflow))
+                .collect(),
             fragments: errors.fragments.into_iter().map(Into::into).collect(),
             truncated: errors.truncated,
             page_token: errors.page_token,

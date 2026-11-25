@@ -28,8 +28,8 @@ Maximum rows per Function call; must be greater than zero.
 optional errorPolicy: string;
 ```
 
-`"fail"` (default) stops on a row error; `"skip"` writes null and
-records the error, subject to the failure limits.
+`"fail"` stops on a row error; `"skip"` records it and continues,
+subject to the failure limits. The default is server-dependent.
 
 ***
 
