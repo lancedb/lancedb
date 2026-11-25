@@ -3618,6 +3618,32 @@ impl NativeTable {
         .await
     }
 
+    /// Open a native table at a retained version of the dataset at `uri`.
+    ///
+    /// The version is selected during the dataset open. The returned handle is
+    /// read-only until it checks out the latest version. `params` supplies the
+    /// session, storage options, and commit handler for the dataset.
+    pub async fn open_at_version(
+        uri: &str,
+        name: &str,
+        version: u64,
+        params: ReadParams,
+    ) -> Result<Self> {
+        Self::open_native(
+            uri,
+            name,
+            Vec::new(),
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+            Some(version),
+        )
+        .await
+    }
+
     /// Opens an existing Table
     ///
     /// # Arguments
@@ -3644,6 +3670,34 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         managed_versioning: Option<bool>,
+    ) -> Result<Self> {
+        Self::open_native(
+            uri,
+            name,
+            namespace,
+            write_store_wrapper,
+            params,
+            read_consistency_interval,
+            namespace_client,
+            pushdown_operations,
+            managed_versioning,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_native(
+        uri: &str,
+        name: &str,
+        namespace: Vec<String>,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: Option<ReadParams>,
+        read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+        managed_versioning: Option<bool>,
+        version: Option<u64>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -3682,6 +3736,9 @@ impl NativeTable {
         };
 
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+        if let Some(version) = version {
+            builder = builder.with_version(version);
+        }
 
         // Set up commit handler when managed_versioning is enabled
         if managed_versioning && let Some(ref ns_client) = namespace_client {
@@ -3709,9 +3766,12 @@ impl NativeTable {
             Err(e) => return Err(e.into()),
         };
 
-        crate::docs::check_table_maintenance_warnings(&dataset, uri).await;
-
-        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+        let dataset = if version.is_some() {
+            DatasetConsistencyWrapper::new_time_travel(dataset, read_consistency_interval)
+        } else {
+            crate::docs::check_table_maintenance_warnings(&dataset, uri).await;
+            DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval)
+        };
         let id = Self::build_id(&namespace, name);
 
         Ok(Self {
@@ -5306,6 +5366,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(table.name, "test")
+    }
+
+    #[tokio::test]
+    async fn opens_a_retained_native_version_with_an_unreadable_latest_manifest() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.lance");
+        let uri = path.to_str().unwrap();
+        let batch = make_test_batches();
+        let rows = batch.num_rows();
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new([Ok(batch.clone())], batch.schema()),
+            uri,
+            None,
+        )
+        .await
+        .unwrap();
+        let retained = dataset.version().version;
+        dataset
+            .append(
+                RecordBatchIterator::new([Ok(batch.clone())], batch.schema()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(dataset.count_rows(None).await.unwrap(), rows * 2);
+        let latest = dataset.manifest_location().path.filename().unwrap();
+        std::fs::write(path.join("_versions").join(latest), b"unreadable manifest").unwrap();
+        assert!(NativeTable::open(uri).await.is_err());
+
+        let pinned = NativeTable::open_at_version(uri, "events", retained, ReadParams::default())
+            .await
+            .unwrap();
+        assert_eq!(pinned.version().await.unwrap(), retained);
+        assert_eq!(pinned.count_rows(None).await.unwrap(), rows);
+        assert!(pinned.dataset.ensure_mutable().is_err());
     }
 
     /// The per-row error store is a server feature; a LanceDB Embedded table says so
