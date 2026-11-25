@@ -541,6 +541,12 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
     supports_btree_field(&Field::new("value", dtype.clone(), true))
 }
 
+/// Whether a ZoneMap index can be trained on `dtype`.
+///
+/// Validation is delegated to the pinned Lance `ZoneMapIndexPlugin` trainer, whose
+/// request only parses params, so every non-`Null` type passes -- including `List`
+/// and `Struct` columns, where the index tracks just the parent null counts. `Null`
+/// is still rejected because these min/max indexes would lose `IS NULL` matches.
 pub fn supported_zonemap_data_type(dtype: &DataType) -> bool {
     supports_zonemap_field(&Field::new("value", dtype.clone(), true))
 }
@@ -1157,6 +1163,56 @@ mod tests {
         let string = "int32";
         let expected = DataType::Int32;
         assert_eq!(string_to_datatype(string), Some(expected));
+    }
+
+    #[test]
+    fn test_supported_zonemap_data_type_accepts_every_non_null_type() {
+        // The delegated Lance trainer only parses params, so every non-`Null` type
+        // passes -- including `List` and `Struct` columns, where the index tracks
+        // just the parent null counts.
+        let struct_type = DataType::Struct(vec![Field::new("x", DataType::Int32, true)].into());
+        for dtype in [
+            DataType::Boolean,
+            DataType::Int32,
+            DataType::Float32,
+            DataType::Utf8,
+            DataType::LargeUtf8,
+            DataType::Binary,
+            DataType::LargeBinary,
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+            DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, true))),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 3),
+            struct_type,
+        ] {
+            assert!(supported_zonemap_data_type(&dtype), "{dtype}");
+        }
+        assert!(!supported_zonemap_data_type(DataType::Null));
+    }
+
+    #[test]
+    fn test_supported_label_list_data_type_rejects_fixed_size_list() {
+        // The delegated Lance trainer accepts `List` / `LargeList` with a non-nested
+        // item type and rejects everything else -- `FixedSizeList`, which the previous
+        // client-side policy allowed, no longer passes.
+        for dtype in [
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, true))),
+        ] {
+            assert!(supported_label_list_data_type(&dtype), "{dtype}");
+        }
+        for dtype in [
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 3),
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::List(Arc::new(Field::new("inner", DataType::Int32, true))),
+                true,
+            ))),
+            DataType::Int32,
+            DataType::Utf8,
+        ] {
+            assert!(!supported_label_list_data_type(&dtype), "{dtype}");
+        }
     }
 
     fn sample_batch(num_rows: i32) -> RecordBatch {
