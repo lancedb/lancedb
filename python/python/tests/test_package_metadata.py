@@ -5,6 +5,7 @@ import importlib
 import importlib.metadata
 import re
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -99,14 +100,12 @@ def test_cargo_profiles_preserve_abi3_and_enable_native_free_threading():
     assert "abi3-py311" not in pyo3_dependency.group(1)
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows wheel regression test")
-def test_windows_wheel_tag_and_native_import():
-    project_dir = Path(__file__).parents[2]
-    wheels = list((project_dir.parent / "target" / "wheels").glob("lancedb-*.whl"))
-    if not wheels:
-        pytest.skip("no wheel artifact is available in this development environment")
+def _expected_windows_wheel_suffix(project_dir):
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        major, minor = sys.version_info[:2]
+        return f"-cp{major}{minor}-cp{major}{minor}t-win_amd64.whl"
 
-    # The wheel is tagged with the abi3 floor, which follows requires-python.
+    # The regular wheel follows the package's minimum supported Python.
     minimum_python = re.search(
         r'^requires-python\s*=\s*">=(\d+)\.(\d+)"$',
         (project_dir / "pyproject.toml").read_text(),
@@ -114,9 +113,36 @@ def test_windows_wheel_tag_and_native_import():
     )
     assert minimum_python is not None
     major, minor = minimum_python.groups()
+    return f"-cp{major}{minor}-abi3-win_amd64.whl"
+
+
+@pytest.mark.parametrize(
+    ("gil_disabled", "expected"),
+    [
+        (None, "-cp311-abi3-win_amd64.whl"),
+        (0, "-cp311-abi3-win_amd64.whl"),
+        (1, "-cp315-cp315t-win_amd64.whl"),
+    ],
+)
+def test_windows_wheel_suffix_for_interpreter(
+    tmp_path, monkeypatch, gil_disabled, expected
+):
+    (tmp_path / "pyproject.toml").write_text('requires-python = ">=3.11"\n')
+    with monkeypatch.context() as patch:
+        patch.setattr(sysconfig, "get_config_var", lambda name: gil_disabled)
+        patch.setattr(sys, "version_info", (3, 15, 0))
+        assert _expected_windows_wheel_suffix(tmp_path) == expected
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows wheel regression test")
+def test_windows_wheel_tag_and_native_import():
+    project_dir = Path(__file__).parents[2]
+    wheels = list((project_dir.parent / "target" / "wheels").glob("lancedb-*.whl"))
+    if not wheels:
+        pytest.skip("no wheel artifact is available in this development environment")
 
     assert len(wheels) == 1
-    assert wheels[0].name.endswith(f"-cp{major}{minor}-abi3-win_amd64.whl")
+    assert wheels[0].name.endswith(_expected_windows_wheel_suffix(project_dir))
 
     native_module = importlib.import_module("lancedb._lancedb")
     assert Path(native_module.__file__).suffix == ".pyd"
