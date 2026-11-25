@@ -2857,7 +2857,9 @@ mod tests {
         let mut bytes = vec![0; 128 * 72 * 1024];
         SmallRng::seed_from_u64(4977).fill_bytes(&mut bytes);
         let strings: Vec<String> = bytes
-            .chunks_exact(72 * 1024)
+            .as_chunks::<{ 72 * 1024 }>()
+            .0
+            .iter()
             .map(|chunk| chunk.iter().map(|b| char::from(b'!' + b % 90)).collect())
             .collect();
         let mut batches = Vec::new();

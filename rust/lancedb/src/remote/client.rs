@@ -19,7 +19,7 @@ const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
 /// M1 prototype routing threshold for direct Blob reads. It stays internal
 /// until the acceptance benchmark establishes the right default.
-pub(crate) const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
+const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 
 pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
     const SENSITIVE_HEADERS: [&str; 5] = [
