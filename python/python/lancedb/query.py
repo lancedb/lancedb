@@ -2409,7 +2409,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         metric: "l2" or "cosine" or "dot"
-            The distance metric to use. By default "l2" is used.
+            The distance metric to use. "l2" is the default only when no vector
+            index supplies a metric.
 
         Returns
         -------
@@ -2427,14 +2428,21 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         to some kind of distance metric. This parameter controls which distance metric
         to use.
 
-        Note: if there is a vector index then the distance type used MUST match the
-        distance type used to train the vector index. If this is not done then the
-        results will be invalid.
+        Note: on an Embedded table, an ordinary query keeps the exact-scan
+        fallback when no vector index on the column was trained with this
+        metric. ``fast_search`` raises ``ValueError`` when this metric matches
+        no covering index. Lance uses the first index with this metric and
+        does not search a later index when the first covers no rows. A table
+        with no covering index is not rejected. Omit the distance type to use the index
+        metric when only one covering metric exists, or remove ``fast_search``
+        for an exact scan. Enterprise, namespace, and RTE searches are not
+        checked.
 
         Parameters
         ----------
         distance_type: "l2" or "cosine" or "dot"
-            The distance metric to use. By default "l2" is used.
+            The distance metric to use. "l2" is the default only when no vector
+            index supplies a metric.
 
         Returns
         -------
@@ -2858,7 +2866,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
     def bypass_vector_index(self) -> LanceVectorQueryBuilder:
         """
-        If this is called then any vector index is skipped
+        If this is called then any vector index is skipped.
+
+        This is an exact scan only when ``fast_search`` is off. With
+        ``fast_search`` still enabled the query returns no rows.
 
         An exhaustive (flat) search will be performed.  The query vector will
         be compared to every vector in the table.  At high scales this can be
@@ -3773,7 +3784,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         metric: "l2" or "cosine" or "dot"
-            The distance metric to use. By default "l2" is used.
+            The distance metric to use. "l2" is the default only when no vector
+            index supplies a metric.
 
         Returns
         -------
@@ -3791,14 +3803,21 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         to some kind of distance metric. This parameter controls which distance metric
         to use.
 
-        Note: if there is a vector index then the distance type used MUST match the
-        distance type used to train the vector index. If this is not done then the
-        results will be invalid.
+        Note: on an Embedded table, an ordinary query keeps the exact-scan
+        fallback when no vector index on the column was trained with this
+        metric. ``fast_search`` raises ``ValueError`` when this metric matches
+        no covering index. Lance uses the first index with this metric and
+        does not search a later index when the first covers no rows. A table
+        with no covering index is not rejected. Omit the distance type to use the index
+        metric when only one covering metric exists, or remove ``fast_search``
+        for an exact scan. Enterprise, namespace, and RTE searches are not
+        checked.
 
         Parameters
         ----------
         distance_type: "l2" or "cosine" or "dot"
-            The distance metric to use. By default "l2" is used.
+            The distance metric to use. "l2" is the default only when no vector
+            index supplies a metric.
 
         Returns
         -------
@@ -3848,7 +3867,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def bypass_vector_index(self) -> LanceHybridQueryBuilder:
         """
-        If this is called then any vector index is skipped
+        If this is called then any vector index is skipped.
+
+        This is an exact scan only when ``fast_search`` is off. With
+        ``fast_search`` still enabled the query returns no rows.
 
         An exhaustive (flat) search will be performed.  The query vector will
         be compared to every vector in the table.  At high scales this can be
@@ -5550,18 +5572,27 @@ class AsyncVectorQueryBase:
         to use.  See @see {@link IvfPqOptions.distanceType} for more details on the
         different distance metrics available.
 
-        Note: if there is a vector index then the distance type used MUST match the
-        distance type used to train the vector index.  If this is not done then the
-        results will be invalid.
+        Note: on an Embedded table, an ordinary query keeps the exact-scan
+        fallback when no vector index on the column was trained with this
+        metric. ``fast_search`` raises ``ValueError`` when this metric matches
+        no covering index. Lance uses the first index with this metric and
+        does not search a later index when the first covers no rows. A table
+        with no covering index is not rejected. Omit the distance type to use the index
+        metric when only one covering metric exists, or remove ``fast_search``
+        for an exact scan. Enterprise, namespace, and RTE searches are not
+        checked.
 
-        By default "l2" is used.
+        "l2" is the default only when no vector index supplies a metric.
         """
         self._inner.distance_type(distance_type)
         return self
 
     def bypass_vector_index(self) -> Self:
         """
-        If this is called then any vector index is skipped
+        If this is called then any vector index is skipped.
+
+        This is an exact scan only when ``fast_search`` is off. With
+        ``fast_search`` still enabled the query returns no rows.
 
         An exhaustive (flat) search will be performed.  The query vector will
         be compared to every vector in the table.  At high scales this can be

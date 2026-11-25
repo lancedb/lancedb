@@ -815,6 +815,9 @@ async fn resolve_distance_type(
     column: &str,
 ) -> Result<DistanceType> {
     if let Some(dt) = query.distance_type {
+        // Lance's mem_wal planner ignores a base index whose metric does not
+        // match and flat-scans that arm. `use_index(false)` is rejected above,
+        // so this path cannot offer bypass_vector_index.
         return Ok(dt);
     }
     // Inherit the column's vector-index metric so cross-source distances match

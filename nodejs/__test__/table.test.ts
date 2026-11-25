@@ -1183,7 +1183,8 @@ describe("When creating an index", () => {
     const stats = await tbl.indexStats("vec_idx");
     expect(stats).toBeDefined();
 
-    // Search without specifying the column
+    // Search without specifying the column. Dot does not match the default L2
+    // index, so this ordinary query falls back to an exact scan.
     let rst = await tbl
       .query()
       .limit(2)
@@ -1600,7 +1601,8 @@ describe("When creating an index", () => {
       }),
     );
 
-    // Search without specifying the column
+    // Search without specifying the column. Dot does not match the default L2
+    // index, so this ordinary query falls back to an exact scan.
     let rst = await tbl
       .query()
       .limit(2)

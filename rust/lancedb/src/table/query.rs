@@ -32,9 +32,11 @@ use datafusion_physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
+use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
 use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
+use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
@@ -335,6 +337,9 @@ pub async fn create_plan(
     }
 
     let mut scanner: Scanner = ds_ref.scan();
+    // Set only when this plan runs a vector search, so a distance type on a
+    // non-vector request is left alone.
+    let mut searched_column = None;
 
     if let Some(query_vector) = query_vector {
         let column = if let Some(col) = column {
@@ -343,6 +348,7 @@ pub async fn create_plan(
             let arrow_schema = Schema::from(schema);
             default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
         };
+        searched_column = Some(column.clone());
 
         let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
         let is_binary = matches!(element_type, DataType::UInt8);
@@ -464,6 +470,15 @@ pub async fn create_plan(
     }
 
     if let Some(distance_type) = query.distance_type {
+        // Ordinary queries keep Lance's exact-scan fallback. fast_search does
+        // not read unindexed rows, so a distance type with no matching covering
+        // index would return nothing.
+        if query.base.fast_search
+            && query.use_index
+            && let Some(column) = searched_column.as_deref()
+        {
+            reject_fast_search_metric_mismatch(&ds_ref, column, distance_type).await?;
+        }
         scanner.distance_metric(distance_type.into());
     }
 
@@ -510,6 +525,218 @@ pub async fn create_plan(
     }
 
     Ok(plan)
+}
+
+/// Reject `fast_search` when the index Lance would select does not cover rows.
+///
+/// Selection follows Lance's scanner (`dataset/scanner/vector.rs`): candidates
+/// are keyed by `fields[0]`, not `keyed_field()`. The metric comes from
+/// manifest `VectorIndexDetails` when that message is populated. A segment
+/// whose details are missing or empty is opened, the same fallback Lance uses.
+/// The first candidate with the requested metric wins. If that index covers no
+/// rows, Lance brute-forces and does not consider a later index, so
+/// `fast_search` would return nothing. A missing fragment bitmap is full
+/// coverage. With no covering index the check does nothing, so an unindexed
+/// table is not rejected. If the index listing cannot be read, the check is
+/// skipped.
+async fn reject_fast_search_metric_mismatch(
+    dataset: &lance::dataset::Dataset,
+    column: &str,
+    query_metric: crate::DistanceType,
+) -> Result<()> {
+    // `describe_indices` errors when a segment has no fragment bitmap. Those
+    // indexes are still searchable, so use the scanner's own listing.
+    let Ok(indices) = dataset.load_indices().await else {
+        log::debug!("skipping vector metric check; index listing failed for column {column}");
+        return Ok(());
+    };
+    // On this Lance, `load_indices` normally infers legacy details before the
+    // scanner runs. The open below mirrors the scanner's residual branch for a
+    // listing that still has missing or empty details.
+    fast_search_index_decision(dataset, column, query_metric, indices.as_ref()).await?;
+    Ok(())
+}
+
+/// Metric of the index `fast_search` would use, or `None` when nothing covers.
+///
+/// `indices` is the listing to select from. Callers that already loaded it can
+/// pass that slice; tests can pass metadata `load_indices` would have inferred.
+async fn fast_search_index_decision(
+    dataset: &lance::dataset::Dataset,
+    column: &str,
+    query_metric: crate::DistanceType,
+    indices: &[lance_table::format::IndexMetadata],
+) -> Result<Option<crate::DistanceType>> {
+    let Ok(column_id) = dataset.schema().field_id(column) else {
+        return Ok(None);
+    };
+
+    let mut covering_metrics = Vec::new();
+    for index in indices {
+        if index.fields.first() != Some(&column_id) || !is_vector_index_segment(index) {
+            continue;
+        }
+        // Metadata first. Open only when this segment has no metric. Stop at
+        // the first match so a later segment that cannot be opened does not
+        // fail a query Lance would already have answered.
+        let metric = match metric_from_index_metadata(index) {
+            Some(metric) => metric,
+            None => dataset
+                .open_vector_index(column, &index.uuid, &NoOpMetricsCollector)
+                .await?
+                .metric_type()
+                .into(),
+        };
+        if metric == query_metric {
+            if index_name_covers(dataset, indices, &index.name) {
+                return Ok(Some(metric));
+            }
+            return Err(Error::InvalidInput {
+                message: uncovered_match_message(column, query_metric),
+            });
+        }
+        if segment_covers_rows(dataset, index) && !covering_metrics.contains(&metric) {
+            covering_metrics.push(metric);
+        }
+    }
+
+    // No candidate has this metric. A covering index of another metric makes
+    // fast_search return nothing; with no covering index, leave it to Lance.
+    if covering_metrics.is_empty() {
+        return Ok(None);
+    }
+    covering_metrics.sort_by_key(|metric| metric.to_string());
+    Err(Error::InvalidInput {
+        message: mismatch_message(column, query_metric, &covering_metrics),
+    })
+}
+
+/// Metric recorded in manifest `VectorIndexDetails`, without opening the index.
+///
+/// `None` means the segment is missing details or the value bytes are empty.
+/// Callers open the index, matching Lance's scanner.
+fn metric_from_index_metadata(
+    index: &lance_table::format::IndexMetadata,
+) -> Option<crate::DistanceType> {
+    let details = index.index_details.as_ref()?;
+    if details.value.is_empty() {
+        return None;
+    }
+    let decoded = details
+        .to_msg::<lance_index::pb::VectorIndexDetails>()
+        .ok()?;
+    let metric = lance_index::pb::VectorMetricType::try_from(decoded.metric_type).ok()?;
+    Some(lance_linalg::distance::DistanceType::from(metric).into())
+}
+
+/// Whether this segment is a vector index Lance's scanner can select.
+///
+/// A missing `index_details` is a legacy vector segment (`index_type_is_known`
+/// is true). A declared type matches Lance's `index_details_have_reader`: the
+/// name after the last `/` equals the protobuf full name, case-insensitively,
+/// including the pre-`pb` package name.
+fn is_vector_index_segment(index: &lance_table::format::IndexMetadata) -> bool {
+    match index.index_details.as_ref() {
+        Some(details) => vector_details_type_is_known(&details.type_url),
+        None => true,
+    }
+}
+
+/// Lance compares the type URL's final component to these names without
+/// regard to case (`index_details_have_reader`).
+fn vector_details_type_is_known(type_url: &str) -> bool {
+    let Some((_, name)) = type_url.rsplit_once('/') else {
+        return false;
+    };
+    name.eq_ignore_ascii_case("lance.index.pb.VectorIndexDetails")
+        || name.eq_ignore_ascii_case("lance.index.VectorIndexDetails")
+}
+
+fn uncovered_match_message(column: &str, query_metric: crate::DistanceType) -> String {
+    format!(
+        "cannot use fast_search on column '{column}' with distance type {query_metric} \
+         because the first matching index covers no rows. Lance does not search a later \
+         index. Remove fast_search for an exact scan with {query_metric}."
+    )
+}
+
+/// Whether any segment of this logical index covers a current fragment.
+///
+/// This is Lance's `get_indexed_frags` for the segments of one name: a missing
+/// bitmap is full coverage, and an empty bitmap covers nothing.
+fn index_name_covers(
+    dataset: &lance::dataset::Dataset,
+    indices: &[lance_table::format::IndexMetadata],
+    name: &str,
+) -> bool {
+    indices
+        .iter()
+        .filter(|index| index.name == name)
+        .any(|index| segment_covers_rows(dataset, index))
+}
+
+fn mismatch_message(
+    column: &str,
+    query_metric: crate::DistanceType,
+    covering_metrics: &[crate::DistanceType],
+) -> String {
+    let trained = if covering_metrics.len() == 1 {
+        format!("it was trained with {}", covering_metrics[0])
+    } else {
+        format!(
+            "those indexes were trained with {}",
+            format_distance_types(covering_metrics)
+        )
+    };
+    // Name the index metric only when there is one covering metric to use.
+    let omit = if let [metric] = covering_metrics {
+        format!(" Omit distance_type or distanceType to use the index metric ({metric}).")
+    } else {
+        String::new()
+    };
+    format!(
+        "cannot use fast_search on column '{column}' with distance type {query_metric} \
+         because {trained}.{omit} Remove fast_search for an exact scan with {query_metric}."
+    )
+}
+
+fn format_distance_types(metrics: &[crate::DistanceType]) -> String {
+    match metrics {
+        [] => String::new(),
+        [metric] => metric.to_string(),
+        [first, rest @ ..] => {
+            let mut message = first.to_string();
+            for (index, metric) in rest.iter().enumerate() {
+                if index + 1 == rest.len() {
+                    message.push_str(" and ");
+                } else {
+                    message.push_str(", ");
+                }
+                message.push_str(&metric.to_string());
+            }
+            message
+        }
+    }
+}
+
+/// Whether this segment covers a fragment in the current dataset.
+///
+/// A missing fragment bitmap is full coverage, matching Lance's
+/// `get_indexed_frags`. An empty bitmap covers nothing, so the scan is flat.
+fn segment_covers_rows(
+    dataset: &lance::dataset::Dataset,
+    index: &lance_table::format::IndexMetadata,
+) -> bool {
+    let fragments = dataset.get_fragments();
+    if fragments.is_empty() {
+        return false;
+    }
+    match &index.fragment_bitmap {
+        None => true,
+        Some(bitmap) => fragments
+            .iter()
+            .any(|fragment| bitmap.contains(fragment.id() as u32)),
+    }
 }
 
 /// Replace DataFusion's top-level field candidates with qualified leaf paths.
@@ -2199,6 +2426,911 @@ mod tests {
         find_ann_plans(plan.as_ref(), &mut ann);
         assert_eq!(ann.len(), 1);
         assert_eq!(ann[0].query().metric_type, Some(LanceDistanceType::Cosine));
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_metric_mismatch_falls_back_unless_fast_search() {
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        let table = distinct_metric_table("memory://", "metric_mismatch").await;
+        let cosine = Some(crate::DistanceType::Cosine);
+        let l2 = Some(crate::DistanceType::L2);
+
+        // No index: an explicit metric is a flat search.
+        assert_eq!(top_id(&table, cosine, false).await, 1);
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // The L2 index would return id 0. An ordinary cosine query must keep
+        // the exact neighbor instead.
+        assert_eq!(top_id(&table, cosine, false).await, 1);
+        let query = [1.0_f32, 0.0, 0.0, 0.0];
+        let bypass = table
+            .vector_search(query.as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .bypass_vector_index()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&bypass), vec![1]);
+
+        let Err(fast_search) = table
+            .vector_search(query.as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(1)
+            .execute()
+            .await
+        else {
+            panic!("fast_search with a mismatched distance type should be rejected");
+        };
+        match &fast_search {
+            Error::InvalidInput { message } => {
+                assert!(message.contains("fast_search"), "{message}");
+                assert!(message.contains("l2"), "{message}");
+                assert!(message.contains("cosine"), "{message}");
+                assert!(message.contains("exact scan"), "{message}");
+                assert!(!message.contains("bypass"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+
+        assert_eq!(top_id(&table, l2, false).await, 0);
+        assert_eq!(top_id(&table, l2, true).await, 0);
+        assert_eq!(top_id(&table, None, false).await, 0);
+    }
+
+    async fn vector_table(name: &str) -> crate::Table {
+        use crate::connect;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let num_rows = 8i32;
+        let values = (0..num_rows)
+            .flat_map(|id| [id as f32 + 1.0, 0.0, 0.0, 0.0])
+            .collect::<Vec<_>>();
+        let vectors = Arc::new(fixed_size_list_array(values, 4));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows)), vectors],
+        )
+        .unwrap();
+        conn.create_table(name, batch).execute().await.unwrap()
+    }
+
+    /// Rows whose nearest neighbor depends on the metric.
+    ///
+    /// The query is `[1, 0, 0, 0]`. Id 0 is nearest by L2, id 1 by cosine, and
+    /// id 2 by dot. The other rows are far under every metric.
+    async fn distinct_metric_table(uri: &str, name: &str) -> crate::Table {
+        use crate::connect;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let rows = [
+            [1.0_f32, 0.1, 0.0, 0.0],
+            [0.2, 0.0, 0.0, 0.0],
+            [3.0, 1.5, 0.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0],
+        ];
+        let values = rows.into_iter().flatten().collect::<Vec<_>>();
+        let vectors = Arc::new(fixed_size_list_array(values, 4));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..rows.len() as i32)),
+                vectors,
+            ],
+        )
+        .unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+        conn.create_table(name, batch).execute().await.unwrap()
+    }
+
+    async fn top_id(
+        table: &crate::Table,
+        metric: Option<crate::DistanceType>,
+        fast_search: bool,
+    ) -> i32 {
+        let mut search = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap();
+        if let Some(metric) = metric {
+            search = search.distance_type(metric);
+        }
+        if fast_search {
+            search = search.fast_search();
+        }
+        let batches = search
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        collect_i32(&batches)[0]
+    }
+
+    #[tokio::test]
+    async fn test_matching_metric_selects_that_index() {
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        let table = distinct_metric_table("memory://", "two_metrics").await;
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
+            .name("vector_l2".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1),
+                ),
+            )
+            .name("vector_cosine".to_string())
+            .replace(false)
+            .execute()
+            .await
+            .unwrap();
+
+        // fast_search returns this row only when the cosine index is used.
+        // The L2 index's neighbor is id 0, and a flat scan returns nothing.
+        assert_eq!(
+            top_id(&table, Some(crate::DistanceType::Cosine), true).await,
+            1
+        );
+        // Dot matches neither index, so the ordinary query is an exact scan.
+        assert_eq!(
+            top_id(&table, Some(crate::DistanceType::Dot), false).await,
+            2
+        );
+
+        let Err(mismatch) = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Dot)
+            .fast_search()
+            .limit(1)
+            .execute()
+            .await
+        else {
+            panic!("fast_search dot should match neither index");
+        };
+        match &mismatch {
+            Error::InvalidInput { message } => {
+                assert!(message.contains("dot"), "{message}");
+                assert!(message.contains("l2"), "{message}");
+                assert!(message.contains("cosine"), "{message}");
+                assert!(message.contains("fast_search"), "{message}");
+                assert!(!message.contains("bypass"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nested_vector_distance_mismatch_is_rejected() {
+        use crate::connect;
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let num_rows = 8i32;
+        let values = (0..num_rows)
+            .flat_map(|id| [id as f32 + 1.0, 0.0, 0.0, 0.0])
+            .collect::<Vec<_>>();
+        let embeddings = fixed_size_list_array(values, 4);
+        let image = StructArray::from(vec![(
+            Arc::new(Field::new(
+                "embedding",
+                embeddings.data_type().clone(),
+                false,
+            )),
+            Arc::new(embeddings) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("image", image.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..num_rows)),
+                Arc::new(image),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("nested_metric", batch)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["image.embedding"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let ordinary = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .column("image.embedding")
+            .distance_type(crate::DistanceType::Cosine)
+            .limit(2)
+            .execute()
+            .await
+            .expect("an ordinary nested mismatch falls back to an exact scan")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            ordinary.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2
+        );
+
+        let Err(mismatch) = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .column("image.embedding")
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(2)
+            .execute()
+            .await
+        else {
+            panic!("nested L2 index should reject fast_search cosine");
+        };
+        match &mismatch {
+            Error::InvalidInput { message } => {
+                assert!(message.contains("image.embedding"), "{message}");
+                assert!(message.contains("cosine"), "{message}");
+                assert!(message.contains("fast_search"), "{message}");
+                assert!(!message.contains("bypass"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rte_mismatched_distance_type_still_searches() {
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use crate::table::RTEWriteSpec;
+
+        let table = vector_table("rte_metric").await;
+        let query = [1.0_f32, 0.0, 0.0, 0.0];
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
+            .name("vector_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["vector_idx".to_string()]),
+            )
+            .await
+            .unwrap();
+
+        let batches = table
+            .vector_search(query.as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .limit(2)
+            .execute()
+            .await
+            .expect("RTE flat-scans a metric the base index was not trained with")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>();
+        assert_eq!(rows, 2);
+    }
+
+    #[tokio::test]
+    async fn test_pre_bitmap_index_accepts_matching_distance_type() {
+        use crate::connect;
+        use arrow_schema::{Field, Schema};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::{IndexFileVersion, VectorIndexParams};
+        use lance_index::IndexType;
+        use lance_linalg::distance::MetricType;
+        use lance_table::io::commit::write_manifest_file_to_path;
+        use object_store::ObjectStoreExt;
+
+        const INDEX_NAME: &str = "legacy_ivf_pq";
+        const ROWS: i32 = 128;
+        const DIMENSION: i32 = 8;
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..ROWS).flat_map(|row| {
+                (0..DIMENSION).map(move |offset| (row * DIMENSION + offset) as f32)
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors)]).unwrap();
+        let table = conn
+            .create_table("pre_bitmap_metric", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch.clone()).execute().await.unwrap();
+        table.add(batch).execute().await.unwrap();
+        let mut dataset = (*table.dataset().unwrap().get().await.unwrap()).clone();
+        let mut params = VectorIndexParams::ivf_pq(1, 8, 1, MetricType::L2, 10);
+        params.version(IndexFileVersion::Legacy);
+        dataset
+            .create_index(
+                &["vector"],
+                IndexType::Vector,
+                Some(INDEX_NAME.to_string()),
+                &params,
+                true,
+            )
+            .await
+            .unwrap();
+        table.dataset().unwrap().update(dataset);
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut segments = dataset.load_indices_by_name(INDEX_NAME).await.unwrap();
+        assert_eq!(segments.len(), 1);
+        let mut legacy = segments.pop().unwrap();
+        legacy.fragment_bitmap = None;
+        let object_store = dataset.object_store(None).await.unwrap();
+        let mut manifest = dataset.manifest().clone();
+        manifest.index_section = None;
+        manifest.transaction_section = None;
+        let manifest_path = dataset.manifest_location().path.clone();
+        object_store.inner.delete(&manifest_path).await.unwrap();
+        write_manifest_file_to_path(
+            object_store.as_ref(),
+            &mut manifest,
+            Some(vec![legacy]),
+            &manifest_path,
+            None,
+        )
+        .await
+        .unwrap();
+        let legacy_dataset = lance::Dataset::open(dataset.uri()).await.unwrap();
+        table.dataset().unwrap().update(legacy_dataset);
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let Err(description_error) = dataset.describe_indices(None).await else {
+            panic!("legacy coverage should be unknown to index descriptions");
+        };
+        assert!(
+            description_error
+                .to_string()
+                .contains("Fragment bitmap is required"),
+            "the regression needs an index description that cannot be built, got {description_error}"
+        );
+
+        let query = vec![0.0_f32; DIMENSION as usize];
+        // fast_search uses the index without asking for unindexed fragments.
+        // A missing bitmap is full coverage there; a normal scan asks
+        // `unindexed_fragments`, which rejects this legacy shape.
+        let matched = table
+            .vector_search(query.as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::L2)
+            .fast_search()
+            .limit(2)
+            .execute()
+            .await
+            .expect("a matching distance type must still search a pre-bitmap index")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let rows = matched.iter().map(|batch| batch.num_rows()).sum::<usize>();
+        assert_eq!(rows, 2);
+
+        let Err(mismatch) = table
+            .vector_search(query.as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(2)
+            .execute()
+            .await
+        else {
+            panic!(
+                "a missing bitmap is full coverage, so fast_search cosine must not use the L2 index"
+            );
+        };
+        match &mismatch {
+            Error::InvalidInput { message } => {
+                assert!(message.contains("l2"), "{message}");
+                assert!(message.contains("cosine"), "{message}");
+                assert!(message.contains("fast_search"), "{message}");
+                assert!(!message.contains("bypass"), "{message}");
+            }
+            other => panic!("expected a metric mismatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_legacy_carried_fields_cosine_index_remains_usable() {
+        use crate::connect;
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use arrow_schema::Field;
+        use lance::index::DatasetIndexExt;
+        use lance_table::io::commit::write_manifest_file_to_path;
+        use object_store::ObjectStoreExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let vectors = fixed_size_list_array(
+            (0..8)
+                .flat_map(|i| [i as f32 + 1.0, 0.0, 0.0, 0.0])
+                .collect(),
+            4,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("vector", vectors.data_type().clone(), false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..8)) as ArrayRef,
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = conn.create_table("vectors", batch).execute().await.unwrap();
+        for (name, metric) in [
+            ("l2", crate::DistanceType::L2),
+            ("cosine", crate::DistanceType::Cosine),
+        ] {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfFlat(
+                        IvfFlatIndexBuilder::default()
+                            .distance_type(metric)
+                            .num_partitions(1),
+                    ),
+                )
+                .name(name.to_string())
+                .replace(false)
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut indices = dataset.load_indices().await.unwrap().as_ref().clone();
+        let id = dataset.schema().field_id("id").unwrap();
+        let cosine = indices
+            .iter_mut()
+            .find(|index| index.name == "cosine")
+            .unwrap();
+        // Older writers can keep carried columns in `fields` and drop
+        // `covering_fields`. `keyed_field()` then returns None, while Lance
+        // still selects the index from `fields[0]`.
+        cosine.fields.push(id);
+        cosine.covering_fields.clear();
+        let store = dataset.object_store(None).await.unwrap();
+        let mut manifest = dataset.manifest().clone();
+        manifest.index_section = None;
+        manifest.transaction_section = None;
+        let path = dataset.manifest_location().path.clone();
+        store.inner.delete(&path).await.unwrap();
+        write_manifest_file_to_path(store.as_ref(), &mut manifest, Some(indices), &path, None)
+            .await
+            .unwrap();
+        let reopened = lance::Dataset::open(dataset.uri()).await.unwrap();
+        table.dataset().unwrap().update(reopened);
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let query = Float32Array::from(vec![1.0, 0.0, 0.0, 0.0]);
+        let mut scanner = dataset.scan();
+        scanner.nearest("vector", &query, 2).unwrap();
+        scanner.distance_metric(lance_linalg::distance::DistanceType::Cosine);
+        scanner.fast_search();
+        let plan = scanner.create_plan().await.unwrap();
+        let batches = super::execute_plan(plan, Default::default())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2,
+            "Lance must still search the cosine index"
+        );
+
+        let stream = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(2)
+            .execute()
+            .await
+            .expect("the cosine index remains searchable when fields[0] is the vector column");
+        let rows = stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        assert_eq!(rows, 2);
+    }
+
+    async fn rewrite_manifest(
+        table: &crate::Table,
+        indices: Vec<lance_table::format::IndexMetadata>,
+    ) {
+        use lance_table::io::commit::write_manifest_file_to_path;
+        use object_store::ObjectStoreExt;
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let store = dataset.object_store(None).await.unwrap();
+        let mut manifest = dataset.manifest().clone();
+        manifest.index_section = None;
+        manifest.transaction_section = None;
+        let path = dataset.manifest_location().path.clone();
+        store.inner.delete(&path).await.unwrap();
+        write_manifest_file_to_path(store.as_ref(), &mut manifest, Some(indices), &path, None)
+            .await
+            .unwrap();
+        let reopened = lance::Dataset::open(dataset.uri()).await.unwrap();
+        table.dataset().unwrap().update(reopened);
+    }
+
+    fn empty_coverage(index: &mut lance_table::format::IndexMetadata) {
+        index.fragment_bitmap = Some(roaring::RoaringBitmap::new());
+    }
+
+    async fn l2_beside_cosine(path: &str, name: &str) -> crate::Table {
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        let table = distinct_metric_table(path, name).await;
+        for (index_name, metric) in [
+            ("l2", crate::DistanceType::L2),
+            ("cosine", crate::DistanceType::Cosine),
+        ] {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfFlat(
+                        IvfFlatIndexBuilder::default()
+                            .distance_type(metric)
+                            .num_partitions(1),
+                    ),
+                )
+                .name(index_name.to_string())
+                .replace(false)
+                .execute()
+                .await
+                .unwrap();
+        }
+        table
+    }
+
+    #[tokio::test]
+    async fn test_open_fallback_reads_legacy_cosine_metric() {
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let table = l2_beside_cosine(dir.path().to_str().unwrap(), "open_fallback").await;
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let indices = dataset.load_indices().await.unwrap();
+        let cosine = indices
+            .iter()
+            .find(|index| index.name == "cosine")
+            .unwrap()
+            .clone();
+        let l2 = indices
+            .iter()
+            .find(|index| index.name == "l2")
+            .unwrap()
+            .clone();
+        // These listings never pass through `load_indices`, so inference cannot
+        // refill them. The helper has to open the cosine segment.
+        let mut missing_details = cosine.clone();
+        missing_details.index_details = None;
+        let mut empty_details = cosine.clone();
+        let mut details = (**cosine.index_details.as_ref().unwrap()).clone();
+        details.type_url = "/lance.index.pb.VectorIndexDetails".to_string();
+        details.value.clear();
+        empty_details.index_details = Some(Arc::new(details));
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        for legacy in [missing_details, empty_details] {
+            assert!(
+                super::metric_from_index_metadata(&legacy).is_none(),
+                "the fixture must not already record a metric"
+            );
+            assert_eq!(
+                super::fast_search_index_decision(
+                    &dataset,
+                    "vector",
+                    crate::DistanceType::Cosine,
+                    &[l2.clone(), legacy],
+                )
+                .await
+                .unwrap(),
+                Some(crate::DistanceType::Cosine),
+                "opening the legacy cosine segment must beat the modern L2 index"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fast_search_legacy_cosine_beside_modern_l2() {
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let table = l2_beside_cosine(dir.path().to_str().unwrap(), "mixed_legacy").await;
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut stored = dataset.load_indices().await.unwrap().as_ref().clone();
+        // The real legacy shape is `index_details: None`. `load_indices`
+        // infers cosine from the index file; fast_search must use that index.
+        stored
+            .iter_mut()
+            .find(|index| index.name == "cosine")
+            .unwrap()
+            .index_details = None;
+        rewrite_manifest(&table, stored).await;
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let loaded = dataset.load_indices().await.unwrap();
+        let cosine = loaded.iter().find(|index| index.name == "cosine").unwrap();
+        assert_eq!(
+            super::metric_from_index_metadata(cosine),
+            Some(crate::DistanceType::Cosine),
+            "inference should restore the cosine metric, got {:?}",
+            cosine
+                .index_details
+                .as_ref()
+                .map(|details| details.type_url.as_str())
+        );
+        // fast_search returns rows only through an index. A flat fallback is
+        // empty, and the L2 neighbor is id 0.
+        assert_eq!(
+            top_id(&table, Some(crate::DistanceType::Cosine), true).await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fast_search_stops_at_first_uncovered_same_metric_index() {
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let table = distinct_metric_table(dir.path().to_str().unwrap(), "first_uncovered").await;
+        for name in ["cosine_empty", "cosine_full"] {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfFlat(
+                        IvfFlatIndexBuilder::default()
+                            .distance_type(crate::DistanceType::Cosine)
+                            .num_partitions(1),
+                    ),
+                )
+                .name(name.to_string())
+                .replace(false)
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut indices = dataset.load_indices().await.unwrap().as_ref().clone();
+        indices.sort_by_key(|index| match index.name.as_str() {
+            "cosine_empty" => 0,
+            "cosine_full" => 1,
+            _ => 2,
+        });
+        empty_coverage(
+            indices
+                .iter_mut()
+                .find(|index| index.name == "cosine_empty")
+                .unwrap(),
+        );
+        rewrite_manifest(&table, indices).await;
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let indices = dataset.load_indices().await.unwrap();
+        assert_eq!(indices[0].name, "cosine_empty");
+        assert!(!super::segment_covers_rows(&dataset, &indices[0]));
+        assert!(super::index_name_covers(
+            &dataset,
+            indices.as_ref(),
+            "cosine_full"
+        ));
+
+        // Lance selects cosine_empty and then brute-forces. fast_search is empty.
+        // A later covering cosine index must not make this succeed.
+        let Err(error) = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(1)
+            .execute()
+            .await
+        else {
+            panic!("fast_search must not use the later covering cosine index");
+        };
+        match &error {
+            Error::InvalidInput { message } => {
+                assert!(message.contains("covers no rows"), "{message}");
+                assert!(message.contains("fast_search"), "{message}");
+                assert!(!message.contains("bypass"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+        assert_eq!(
+            top_id(&table, Some(crate::DistanceType::Cosine), false).await,
+            1,
+            "an ordinary query still exact-scans"
+        );
+
+        // The covering index is first, so Lance serves it.
+        let mut swapped = indices.as_ref().clone();
+        swapped.sort_by_key(|index| match index.name.as_str() {
+            "cosine_full" => 0,
+            "cosine_empty" => 1,
+            _ => 2,
+        });
+        rewrite_manifest(&table, swapped).await;
+        assert_eq!(
+            top_id(&table, Some(crate::DistanceType::Cosine), true).await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fast_search_noncovering_match_beside_other_metric_errors() {
+        use crate::index::Index;
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let table = distinct_metric_table(dir.path().to_str().unwrap(), "noncovering_match").await;
+        for (name, metric) in [
+            ("cosine", crate::DistanceType::Cosine),
+            ("l2", crate::DistanceType::L2),
+        ] {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfFlat(
+                        IvfFlatIndexBuilder::default()
+                            .distance_type(metric)
+                            .num_partitions(1),
+                    ),
+                )
+                .name(name.to_string())
+                .replace(false)
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut indices = dataset.load_indices().await.unwrap().as_ref().clone();
+        empty_coverage(
+            indices
+                .iter_mut()
+                .find(|index| index.name == "cosine")
+                .unwrap(),
+        );
+        indices.sort_by_key(|index| match index.name.as_str() {
+            "cosine" => 0,
+            "l2" => 1,
+            _ => 2,
+        });
+        rewrite_manifest(&table, indices).await;
+
+        let Err(error) = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(1)
+            .execute()
+            .await
+        else {
+            panic!("a non-covering cosine index must not fall through to the L2 index");
+        };
+        match &error {
+            Error::InvalidInput { message } => {
+                assert!(message.contains("covers no rows"), "{message}");
+                assert!(message.contains("fast_search"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+
+        // The covering L2 index is first. Lance skips it and still stops on the
+        // non-covering cosine index.
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut swapped = dataset.load_indices().await.unwrap().as_ref().clone();
+        swapped.sort_by_key(|index| match index.name.as_str() {
+            "l2" => 0,
+            "cosine" => 1,
+            _ => 2,
+        });
+        rewrite_manifest(&table, swapped).await;
+        let Err(error) = table
+            .vector_search([1.0_f32, 0.0, 0.0, 0.0].as_slice())
+            .unwrap()
+            .distance_type(crate::DistanceType::Cosine)
+            .fast_search()
+            .limit(1)
+            .execute()
+            .await
+        else {
+            panic!("Lance still selects the non-covering cosine index after L2");
+        };
+        assert!(
+            matches!(&error, Error::InvalidInput { message } if message.contains("covers no rows")),
+            "expected uncovered match, got {error:?}"
+        );
     }
 
     #[rstest::rstest]
