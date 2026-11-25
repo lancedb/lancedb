@@ -10,6 +10,17 @@ A table's per-row Function errors.
 
 ## Properties
 
+### errorGroups?
+
+```ts
+optional errorGroups: FunctionErrorGroup[];
+```
+
+Grouped causes over the returned records, if the server supports the workflow.
+Counts can be incomplete. Check `truncated` and `fragments` before using them as totals.
+
+***
+
 ### fragments
 
 ```ts
@@ -47,3 +58,13 @@ truncated: boolean;
 ```
 
 Whether the listing stopped at its limit.
+
+***
+
+### workflowVersion?
+
+```ts
+optional workflowVersion: number;
+```
+
+Version of the Enterprise row-failure workflow, if advertised by the server.
