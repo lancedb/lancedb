@@ -2214,6 +2214,7 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_schema<S: HttpSend>(
     client: &RestfulLanceDbClient<S>,
     identifier: &str,

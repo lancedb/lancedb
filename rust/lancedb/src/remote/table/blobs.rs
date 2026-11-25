@@ -1435,14 +1435,12 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         if let Some(proxy_array) = proxy_array {
-            let mut proxy_offset = 0;
-            for index in proxy_indices {
+            for (proxy_offset, index) in proxy_indices.into_iter().enumerate() {
                 if proxy_array.is_null(proxy_offset) {
                     nulls[index] = true;
                 } else {
                     values[index] = Some(Bytes::copy_from_slice(proxy_array.value(proxy_offset)));
                 }
-                proxy_offset += 1;
             }
         }
 
