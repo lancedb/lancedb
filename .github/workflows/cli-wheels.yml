@@ -13,6 +13,10 @@ on:
         description: Published CLI release to package
         required: true
         default: v0.42.0-beta.30
+      publish:
+        description: Request approval to publish these stable wheels to PyPI
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,6 +34,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Test stable publishing checks
+        run: bash ci/cli_wheel/test_publish_checks.sh
       - run: python -m pip install wheel==0.48.0
       - name: Build wheels from published release archives
         env:
@@ -66,3 +72,48 @@ jobs:
       - run: python -m pip install uv==0.13.9 pipx==1.19.0
       - name: Install and exercise the native CLI with uvx and pipx
         run: bash ci/cli_wheel/test_install.sh "$CLI_TAG" "$PWD/wheels"
+
+  check-publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify stable release and required environment approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/cli_wheel/check_publish.sh "$CLI_TAG"
+
+  publish:
+    name: Publish ${{ inputs.tag }} to PyPI
+    needs: [install, check-publish]
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi-cli
+      url: https://pypi.org/project/lancedb-tools/
+    concurrency: pypi-lancedb-tools-${{ inputs.tag }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: lancedb-tools-wheels
+          path: dist
+      - name: Upload tested wheels
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          # A retry of this job can finish a partially uploaded release.
+          skip-existing: true
+      - name: Verify the published wheel checksums
+        working-directory: dist
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            "https://pypi.org/pypi/lancedb-tools/${CLI_TAG#v}/json" -o "$RUNNER_TEMP/pypi.json"
+          for wheel in *.whl; do
+            digest=$(jq -er --arg wheel "$wheel" '.urls[] | select(.filename == $wheel) | .digests.sha256' "$RUNNER_TEMP/pypi.json")
+            echo "$digest  $wheel" | sha256sum --check
+          done
