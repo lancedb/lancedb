@@ -250,6 +250,10 @@ impl PyAsyncPermutationBuilder {
         slf.modify(|builder| builder.with_filter(filter))
     }
 
+    pub fn with_row_addresses(slf: PyRefMut<'_, Self>) -> PyResult<Self> {
+        slf.modify(|builder| builder.with_row_addresses())
+    }
+
     /// Store the permutation table in a database.
     ///
     /// This is only supported for embedded databases. The destination table is

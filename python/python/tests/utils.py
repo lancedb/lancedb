@@ -44,8 +44,15 @@ def arrow_file_bytes(table: pa.Table) -> bytes:
     return sink.getvalue().to_pybytes()
 
 
+# The two shapes of the permutation build scan. A dataset that may use a
+# prewarm run also asks where each row is stored.
+BUILD_SCAN_COLUMNS = (["_rowid"], ["_rowid", "_rowaddr"])
+
+
 class MockPermutationServer:
     """A stand-in LanceDB server hosting one table whose ``id`` equals its ``_rowid``.
+
+    The table has no stable row ids, so a row's ``_rowaddr`` equals its ``_rowid``.
 
     Records every ``/query/`` body so tests can assert on the request shapes sent to
     the server, which is the part that has to stay compatible.
@@ -111,8 +118,9 @@ class MockPermutationServer:
 
     @property
     def scans(self):
-        """Bodies of the permutation build scan: the row id column, nothing else."""
-        return [b for b in self.query_bodies if b.get("columns") == ["_rowid"]]
+        """Bodies of the permutation build scan: the row id column, and the
+        row address column when asked for, nothing else."""
+        return [b for b in self.query_bodies if b.get("columns") in BUILD_SCAN_COLUMNS]
 
     @property
     def takes(self):
@@ -164,15 +172,20 @@ class MockPermutationServer:
                 ),
             )
 
-        if body.get("columns") == ["_rowid"]:
-            # The permutation build scan: row ids and nothing else.
+        if body.get("columns") in BUILD_SCAN_COLUMNS:
+            # The permutation build scan: row ids, and addresses when asked for.
             row_ids = list(version_rows)
             if self.vary_scan_order and self.scan_calls % 2:
                 row_ids.reverse()
             self.scan_calls += 1
             return self._arrow(
                 request,
-                pa.table({"_rowid": pa.array(row_ids, pa.uint64())}),
+                pa.table(
+                    {
+                        column: pa.array(row_ids, pa.uint64())
+                        for column in body["columns"]
+                    }
+                ),
             )
 
         # The schema probe: filtered to nothing, so it carries schema and no rows.

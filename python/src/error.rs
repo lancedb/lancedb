@@ -237,6 +237,27 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                         .getattr(intern!(py, "JobCancelledError"))?;
                     Err(PyErr::from_value(cls.call1((err.to_string(),))?))
                 }),
+                LanceError::NotResident { request_id, .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "NotResidentError"))?;
+                    let error = cls.call1((err.to_string(), request_id.clone()))?;
+                    Err(PyErr::from_value(error))
+                }),
+                LanceError::PlanExecutorUnavailable { request_id, .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "PlanExecutorUnavailableError"))?;
+                    let error = cls.call1((err.to_string(), request_id.clone()))?;
+                    Err(PyErr::from_value(error))
+                }),
+                LanceError::PrewarmRun { run_id, code, .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "PrewarmRunError"))?;
+                    let error = cls.call1((err.to_string(), run_id.clone(), code.clone()))?;
+                    Err(PyErr::from_value(error))
+                }),
                 LanceError::JobNotFound { .. } => Python::attach(|py| {
                     let cls = py
                         .import(intern!(py, "lancedb.exceptions"))?

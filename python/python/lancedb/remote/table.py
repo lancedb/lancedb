@@ -50,6 +50,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
+from lancedb.prewarm_run import PrewarmRun
 from lancedb.cleanup import CleanupPlan, CleanupResult
 from lancedb.job import Job
 from lancedb.functions import (
@@ -136,6 +137,8 @@ class RemoteTable(Table):
         # The branch this handle is scoped to (None == main). Persisted so a
         # fork/pickle reopen restores the branch instead of reverting to main.
         self._branch: Optional[str] = None
+        # Persisted so a fork/pickle reopen keeps queries cache-only.
+        self._cache_only = False
         self._pid = os.getpid()
 
     def _serialized_connection_state(self) -> str:
@@ -179,7 +182,10 @@ class RemoteTable(Table):
             version=self._checkout_version,
         )
 
-        self._table_handle = table._table
+        async_table = table._table
+        if self._cache_only:
+            async_table = LOOP.run(async_table.cache_only())
+        self._table_handle = async_table
         self.db_name = table.db_name
         self._pid = pid
 
@@ -191,6 +197,7 @@ class RemoteTable(Table):
             "namespace_path": self._namespace_path,
             "checkout_version": self._checkout_version,
             "branch": self._branch,
+            "cache_only": self._cache_only,
         }
 
     def __setstate__(self, state: dict) -> None:
@@ -201,6 +208,7 @@ class RemoteTable(Table):
         self._namespace_path = state["namespace_path"]
         self._checkout_version = state["checkout_version"]
         self._branch = state.get("branch")
+        self._cache_only = state.get("cache_only", False)
         self._pid = None
 
     @property
@@ -1566,6 +1574,51 @@ class RemoteTable(Table):
         return LOOP.run(
             self._table.explain_prewarm_data(
                 columns, filter=filter, concurrency=concurrency, parameters=parameters
+            )
+        )
+
+    def attach_prewarm_run(self, run_id: str, version: int) -> PrewarmRun:
+        """A handle to a prewarm run another process opened. Makes no server call.
+
+        See [Table.attach_prewarm_run][lancedb.table.Table.attach_prewarm_run].
+        """
+        return PrewarmRun(self._table.attach_prewarm_run(run_id, version))
+
+    def cache_only(self) -> "RemoteTable":
+        """A handle to this table whose queries read only from the cache.
+
+        See [Table.cache_only][lancedb.table.Table.cache_only].
+        """
+        handle = self._wrap_branch_handle(
+            LOOP.run(self._table.cache_only()), version=self._checkout_version
+        )
+        handle._cache_only = True
+        return handle
+
+    def open_prewarm_run(
+        self,
+        run_key: str,
+        *,
+        version: int,
+        world_size: int,
+        columns: Optional[List[str]] = None,
+        row_addresses: bool = False,
+        num_splits: Optional[int] = None,
+    ) -> PrewarmRun:
+        """Open a prewarm run for a training job reading this table.
+
+        See [Table.open_prewarm_run][lancedb.table.Table.open_prewarm_run].
+        """
+        return PrewarmRun(
+            LOOP.run(
+                self._table.open_prewarm_run(
+                    run_key,
+                    version=version,
+                    world_size=world_size,
+                    columns=columns,
+                    row_addresses=row_addresses,
+                    num_splits=num_splits,
+                )
             )
         )
 

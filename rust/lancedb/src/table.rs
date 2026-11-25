@@ -717,6 +717,32 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "data prewarm previews are only supported on remote tables".into(),
         })
     }
+    /// A handle to a prewarm run opened elsewhere, by its id.
+    fn attach_prewarm_run(
+        &self,
+        _run_id: &str,
+        _version: u64,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        Err(Error::NotSupported {
+            message: "prewarm runs are only supported on remote tables".into(),
+        })
+    }
+    /// A handle to the same table version whose queries read only from the
+    /// server's cache.
+    async fn cache_only(&self) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "cache-only reads are only supported on remote tables".into(),
+        })
+    }
+    /// Open a prewarm run, or find the one already open for its `run_key`.
+    async fn open_prewarm_run(
+        &self,
+        _options: crate::prewarm_run::PrewarmRunOptions,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        Err(Error::NotSupported {
+            message: "prewarm runs are only supported on remote tables".into(),
+        })
+    }
 
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
@@ -3383,6 +3409,93 @@ impl Table {
         options: PrewarmDataOptions,
     ) -> Result<PrewarmDataPlan> {
         self.inner.explain_prewarm_data(options).await
+    }
+
+    /// Open a prewarm run for a training job reading this table, or find the
+    /// one already open for `options.run_key`.
+    ///
+    /// Every rank calls this with the same options, then joins with its own
+    /// rank. Only supported by LanceDB Enterprise; a server without run
+    /// support returns [`Error::NotSupported`].
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use lancedb::Table;
+    /// # use lancedb::prewarm_run::PrewarmRunOptions;
+    /// # async fn run(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let run = table
+    ///     .open_prewarm_run(
+    ///         PrewarmRunOptions::new("job-1234-attempt-0-epoch-0", 42, 8)
+    ///             .with_columns(["image", "label"]),
+    ///     )
+    ///     .await?;
+    /// let rank = run.join(0, 0).await?;
+    /// rank.wait_ready(0, Duration::from_secs(600)).await?;
+    /// // ... read wave 0 ...
+    /// rank.close().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_prewarm_run(
+        &self,
+        options: crate::prewarm_run::PrewarmRunOptions,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        self.inner.open_prewarm_run(options).await
+    }
+
+    /// A handle to a prewarm run another process opened, by its id and
+    /// version. Makes no server call.
+    ///
+    /// Processes that read for a rank use this with
+    /// [`PrewarmRun::reader`](crate::prewarm_run::PrewarmRun::reader), since a
+    /// joined rank's heartbeat cannot move between processes.
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use lancedb::Table;
+    /// # async fn read(table: &Table, run_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// let reader = table.attach_prewarm_run(run_id, 42)?.reader(3);
+    /// reader.wait_ready(0, Duration::from_secs(600)).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn attach_prewarm_run(
+        &self,
+        run_id: impl AsRef<str>,
+        version: u64,
+    ) -> Result<crate::prewarm_run::PrewarmRun> {
+        self.inner.attach_prewarm_run(run_id.as_ref(), version)
+    }
+
+    /// A handle to this table whose queries read only what LanceDB
+    /// Enterprise already holds in its cache.
+    ///
+    /// A query that needs data the cache does not hold fails with
+    /// [`Error::NotResident`] instead of reading storage. A training job in a
+    /// prewarm run reads through this handle, re-warms the rows a failed read
+    /// asked for, waits for them, and retries. The handle must be checked out
+    /// at the run's version.
+    ///
+    /// Every query on the handle asks to be served from the cache, and the
+    /// server decides which kinds it can serve that way. Today that is takes
+    /// by row id or offset; it refuses a scan or search on this handle
+    /// instead of reading storage for it. Calls that are not queries behave
+    /// as usual.
+    ///
+    /// The handle is fixed to the version and branch it was made from:
+    /// [`checkout`](Self::checkout), [`checkout_tag`](Self::checkout_tag),
+    /// [`checkout_latest`](Self::checkout_latest),
+    /// [`checkout_branch`](Self::checkout_branch) and
+    /// [`create_branch`](Self::create_branch) fail on it with
+    /// [`Error::InvalidInput`]. The one exception is `checkout_branch` to the
+    /// branch and version the handle already reads, which returns another
+    /// cache-only handle there. The table it was made from is not affected.
+    pub async fn cache_only(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.cache_only().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns

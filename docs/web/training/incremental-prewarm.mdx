@@ -1,0 +1,295 @@
+---
+title: "Incremental Prewarm"
+tag: "Early access"
+sidebarTitle: "Incremental Prewarm"
+description: "LanceDB Enterprise warms a training job's data just ahead of where StreamingDataset is reading, so the first epoch does not read cold from object storage."
+icon: "forward"
+keywords: ["training", "prewarm", "cache", "data page cache", "StreamingDataset", "epoch", "distributed training"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+{/* Draft until incremental prewarm reaches early access. The page is listed in .mintignore and left out of docs.json. */}
+
+<Badge color="purple">Early access</Badge>
+
+When [`StreamingDataset`](/training/data-loading) reads a table through
+LanceDB Enterprise, the service warms rows just ahead of the reader.
+Training reads then come from the
+[data page cache](/enterprise/data-page-cache) instead of object storage,
+from the first step of the first epoch.
+
+You do not turn this on. `StreamingDataset` starts a **prewarm run**
+whenever the [requirements](#requirements) hold, and otherwise reads as
+usual.
+
+## Why not warm the whole table first? {#why}
+
+The first epoch reads cold; [Training Cache](/training/training-cache#why)
+explains why. An
+[on-demand data prewarm](/enterprise/cache-prewarm#on-demand-data-prewarm)
+fixes that by filling the cache before training starts, at two costs: the
+job waits for the whole table to warm, and the table has to fit in the
+cache.
+
+Incremental prewarm warms only what the job needs next. Training starts
+once the first rows are warm, and the cache holds a moving window of the
+table, so the table can be larger than the cache.
+
+## How it works {#how-it-works}
+
+`StreamingDataset` knows its read order in advance, because
+[`shuffle_seed` and `epoch`](/training/data-loading#shuffling-rows) fix
+it. It uses that order to tell the service what is coming. Rank, world
+size and split are defined in
+[Distributed Training](/training/distributed-training).
+
+1. **The data is cut into waves.** A wave is the same span of positions in
+   every [split](/training/distributed-training#parallelism-and-elasticity).
+   Waves depend only on the table, the shuffle and `num_splits`, so every
+   rank computes the same waves.
+2. **Rank 0 announces waves ahead of the readers.** The service warms each
+   announced wave on the executors that hold the
+   [data page cache](/enterprise/data-page-cache). It keeps only a few
+   waves warm ahead of the slowest rank. Rows warmed further ahead would
+   be evicted to make room before they are read.
+3. **Each rank waits for a wave before reading it.** Only the first wave
+   is a real wait. After that the service is normally ahead of the
+   readers.
+4. **Each rank reports where it is.** Once every rank has moved past a
+   wave, the service stops keeping it warm.
+5. **The run ends with the iteration.** A new run starts for the next
+   epoch.
+
+A run reads the table version the dataset was
+[pinned to](/training/permutation#version-pinning) when it was built. Rows
+added later are not part of the run.
+
+Reads during a run are served only from the cache. If a row has been
+evicted, the read does not fall back to object storage. The rank asks the
+service to warm the rows again, waits, and retries. A slow cold read
+cannot hide inside a training step.
+
+## Shuffle and I/O cost {#shuffle}
+
+The shuffle decides which rows make up each wave, and so how much the
+service reads to warm it.
+
+`StreamingDataset` shuffles in one step, over the whole table:
+
+1. The table is cut into **clumps**: runs of `shuffle_clump_size`
+   contiguous rows. By default a clump is a single row.
+2. The order of the clumps is shuffled. Rows inside a clump are not
+   shuffled; they stay in storage order and move together.
+3. The shuffled sequence is cut into `num_splits` equal pieces, one per
+   split.
+
+There is no second shuffle, within a clump or within a split. A wave
+draws clumps from anywhere in the table, so the clump size decides how
+scattered its rows are. The two
+[shuffle granularities](/training/data-loading#shuffling-rows) differ
+sharply.
+
+| | Row-level shuffle (default) | Clumped shuffle (`shuffle_clump_size`) |
+|---|---|---|
+| Clump size | One row | A run of contiguous rows |
+| Order inside a clump | Not applicable | Storage order, never shuffled |
+| Rows of one wave | Scattered across the whole table | A set of contiguous runs |
+| Reads to warm a wave | About one per row | About one per clump |
+| Cache used per row read | A whole [cache page](/enterprise/data-page-cache), mostly for neighbours that are not in the wave | Close to the rows themselves |
+| Randomness | Best | Rows of a clump always arrive together, in the same order |
+
+With a row-level shuffle on a table much larger than the cache, each wave
+pulls in pages from all over the table and uses one row from each.
+Warming is slow, the warm waves do not fit in the cache, and pages are
+evicted before they are read. The service re-warms them, and if that
+keeps happening it [ends the run](#failures).
+
+A clumped shuffle fixes this: each wave is a set of contiguous runs,
+which the service reads and caches whole. If the table does not fit in
+the cache, set `shuffle_clump_size`. Larger clumps cost less I/O and give
+less randomness. The right size depends on the row size and on how much
+mixing the model needs.
+
+`num_splits` matters too. A wave holds the same span of positions from
+every split, so the wave, and the warm window the cache holds, grow with
+`num_splits`. Choose it for
+[the topologies you need](/training/distributed-training#parallelism-and-elasticity),
+not larger.
+
+<CodeGroup>
+```py Python icon=Python
+dataset = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    shuffle_clump_size=1024,   # contiguous rows that move, and warm, together
+    rank=rank,
+    world_size=world_size,
+)
+```
+</CodeGroup>
+
+## Requirements {#requirements}
+
+A prewarm run starts when all of these hold:
+
+- The table is opened through a
+  [connection to LanceDB Enterprise](/basics/embedded-vs-enterprise#1-connection-model),
+  on a version of the service that supports prewarm runs.
+- The ranks share an id for the job. They do when
+  [`torch.distributed`](https://pytorch.org/docs/stable/distributed.html)
+  is initialized before the dataset is iterated, or when the job is
+  launched with
+  [`torchrun --rdzv-id`](https://pytorch.org/docs/stable/elastic/run.html). A
+  single-process job (`world_size=1`) needs neither.
+- [DataLoader worker processes](/training/data-loading#dataloader-workers),
+  if any, come from
+  [`StreamingDataLoader`](/training/checkpointing#checkpointing-with-multiple-dataloader-workers),
+  not from `torch.utils.data.DataLoader`.
+- `columns`, if set, names top-level columns, as `StreamingDataset`
+  always requires. A struct column is read whole.
+
+<CodeGroup>
+```py Python icon=Python
+import lancedb
+import torch.distributed as dist
+from lancedb.streaming import StreamingDataLoader, StreamingDataset
+
+dist.init_process_group("nccl")
+
+db = lancedb.connect(
+    "db://your-database",
+    api_key="your-api-key",
+    region="us-east-1",
+    host_override="https://your-api-endpoint",
+)
+table = db.open_table("training_data")
+
+dataset = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=dist.get_rank(),
+    world_size=dist.get_world_size(),
+    columns=["image", "label"],
+)
+dataloader = StreamingDataLoader(dataset, batch_size=128, num_workers=4)
+
+for batch in dataloader:
+    train_step(batch)
+```
+</CodeGroup>
+
+Nothing here asks for a prewarm run. It is the same code as in
+[Distributed Training](/training/distributed-training).
+
+## Checking that a run is in use {#checking}
+
+`StreamingDataset` logs under the `lancedb` logger. Turn on `INFO` to see
+it:
+
+<CodeGroup>
+```py Python icon=Python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+```
+</CodeGroup>
+
+With a run, each rank logs its wait for the first wave:
+
+```text
+prewarm run <run id>: waiting for wave 0 to warm before reading
+prewarm run <run id>: wave 0 is warm after 4.2s; reading while later waves warm
+```
+
+The pipeline counters in [Observability](/training/observability) show
+whether the job is waiting on I/O, with or without a run.
+
+Without a run, it logs one warning that says why, then reads as usual:
+
+```text
+StreamingDataset is reading without a prewarm run: <reason>
+```
+
+| Reason in the warning | What to do |
+|---|---|
+| The server does not support prewarm runs | Upgrade LanceDB Enterprise. |
+| The ranks have no shared id for this training attempt | Initialize `torch.distributed` before iterating, or launch with `torchrun --rdzv-id`. |
+| A DataLoader with workers has no main-process iteration to own the run | Use `StreamingDataLoader` in place of `torch.utils.data.DataLoader`. |
+| The table cannot be read cache-only | The table is not supported; see [Limits](#limits). |
+
+A table opened with [LanceDB Embedded](/basics/embedded-vs-enterprise)
+never uses a run, and logs no warning about it.
+
+## Resuming from a checkpoint {#resuming}
+
+A job that saves a [checkpoint](/training/checkpointing) and
+[resumes from it](/training/resuming) starts a new prewarm run. The run
+begins at the wave holding the first unread row, so the service does not
+warm rows the job has already trained on. Waves do not depend on the
+world size, so this also works when the job resumes on a different number
+of ranks.
+
+## When a run fails {#failures}
+
+A prewarm run fails the training job in two cases. Both mean reads are
+no longer coming from the cache, so neither is retried silently.
+
+- **The service cannot keep the data warm.** If one wave's rows keep
+  being evicted before they are read, the service ends the run and every
+  rank raises `PrewarmRunError`. The usual cause is a shuffle that
+  scatters each wave across the table. Set or raise `shuffle_clump_size`;
+  see [Shuffle and I/O cost](#shuffle).
+- **A wave does not become warm in time.** The read raises a timeout
+  error.
+
+If the service restarts the component that runs the prewarm run, ranks
+wait and reconnect, and the run continues.
+
+## Limits {#limits}
+
+- **Python only.** Only `StreamingDataset` in the LanceDB Python SDK uses
+  prewarm runs.
+- **One rank announces.** If rank 0 stops, the other ranks wait until
+  their reads time out.
+- **Tables with stable row ids need a service that accepts them.**
+  `StreamingDataset` records where each row is stored, so it can warm
+  such a table. It reads without a run, and logs a warning, when the
+  version of the service does not accept these tables or when the dataset
+  is built with `split_strategy`.
+- **External blob payloads are not cached.** When a
+  [Blob v2](/management/table#managed-blobs) value is stored at an external
+  location, its payload is read from that location directly, not through
+  the data page cache. A run does not warm it.
+- **Other queries are unaffected.** A run changes only the reads
+  `StreamingDataset` makes.
+
+## Driving a run yourself {#advanced}
+
+A data loader not built on `StreamingDataset` can drive a prewarm run
+through the table API: `Table.open_prewarm_run`, the rank handle it
+returns, and `Table.cache_only`. See
+[Prewarm runs](https://lancedb.github.io/lancedb/python/python/#prewarm-runs)
+in the Python API reference.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Training Cache" icon="gauge-high" href="/training/training-cache">
+    How training reads use the data page cache.
+  </Card>
+  <Card title="Cache Prewarm" icon="fire" href="/enterprise/cache-prewarm">
+    Warming a whole table before training starts.
+  </Card>
+  <Card title="Distributed Training" icon="server" href="/training/distributed-training">
+    Ranks, splits and elastic determinism.
+  </Card>
+  <Card title="Resuming" icon="rotate-left" href="/training/resuming">
+    Loading a checkpoint back, on the same or a different topology.
+  </Card>
+</CardGroup>
