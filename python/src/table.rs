@@ -2708,12 +2708,11 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None))]
+    #[pyo3(signature = (bindings, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn add_function_columns<'py>(
         self_: PyRef<'py, Self>,
-        application_json: String,
-        output_name: Option<String>,
+        bindings: Vec<(String, Option<String>)>,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<u64>,
         total_cpu_millis: Option<u64>,
@@ -2722,8 +2721,15 @@ impl Table {
         gpu_class: Option<String>,
         gpu_count: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let application =
-            lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
+        let bindings = bindings
+            .into_iter()
+            .map(|(json, name)| {
+                Ok((
+                    lancedb::function::FunctionApplication::from_json(&json).infer_error()?,
+                    name,
+                ))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         let inner = self_.inner_ref()?.clone();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
@@ -2736,11 +2742,9 @@ impl Table {
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
-            let builder = match output_name {
-                Some(name) => inner.add_columns().function_as(name, application),
-                None => inner.add_columns().function(application),
-            };
-            let result = builder
+            let result = inner
+                .add_columns()
+                .function_bindings(bindings)
                 .computed_options(options)
                 .execute()
                 .await

@@ -2887,6 +2887,11 @@ class Table(ABC):
         ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
         resulting ``_rowid`` values.
 
+        On Enterprise clusters that enable direct Blob reads, large values and
+        ranges may be fetched from short-lived object-store URLs. The client then
+        needs network access to the object-store endpoint, including private
+        endpoint routing, DNS, TLS trust and egress rules, in addition to the
+        LanceDB endpoint. Small reads stay on the LanceDB proxy.
         Blobs inside lists cannot be fetched by row id yet.
 
         LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
@@ -2921,6 +2926,11 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         results are returned.
 
+        On Enterprise clusters that enable direct Blob reads, large values and
+        ranges may be fetched from short-lived object-store URLs. The client then
+        needs network access to the object-store endpoint, including private
+        endpoint routing, DNS, TLS trust and egress rules, in addition to the
+        LanceDB endpoint. Small reads stay on the LanceDB proxy.
         Row IDs can be obtained from a query with ``with_row_id(True)``.
         LanceDB Enterprise uses the batched endpoint when the server advertises
         support, partitioning at 1024 ranges and 64 MiB, including individual
@@ -2949,6 +2959,11 @@ class Table(ABC):
         ``buffer_size`` controls sequential read-ahead in bytes (default 512 KiB).
         Set it to 0 for sparse reads. Explicit range reads bypass this buffer.
 
+        On Enterprise clusters that enable direct Blob reads, large values and
+        ranges may be fetched from short-lived object-store URLs. The client then
+        needs network access to the object-store endpoint, including private
+        endpoint routing, DNS, TLS trust and egress rules, in addition to the
+        LanceDB endpoint. Small reads stay on the LanceDB proxy.
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
         One missing or deleted row ID rejects the entire batch; no partial
@@ -3480,10 +3495,11 @@ class Table(ABC):
             new columns with the specified data types. The new columns will
             be initialized with null values.
 
-            A mapping with one ``FunctionApplication`` value keeps its scalar
-            or named-struct result in the named table column. A bare
-            named-struct application expands its ordered result fields as one
-            atomic binding; aliases come from ``rename(columns=...)``.
+            A mapping of column names to ``FunctionApplication`` values declares
+            all bindings in one schema commit. Each column holds its scalar
+            or entire named-struct result. A bare named-struct application expands
+            its ordered result fields as one atomic binding. Set field aliases
+            with ``rename(columns=...)``.
             Function columns are supported only in LanceDB
             Enterprise.
 
@@ -4432,16 +4448,21 @@ class LanceTable(Table):
             )
         return connection.serialize()
 
-    def _namespace_client_for_pickle(self) -> Optional[Any]:
-        """Keep a table-level namespace client only when pickle can carry it."""
+    def _table_namespace_client(self) -> Optional[Any]:
+        """The namespace client set on this table rather than its connection."""
         namespace_client = self._namespace_client
-        if namespace_client is None:
-            return None
         if namespace_client is getattr(self._conn, "_namespace_client", None):
-            # The serialized connection rebuilds its own namespace client.
+            # The connection rebuilds its own namespace client.
             return None
         if namespace_client is getattr(self._conn, "_cached_namespace_client", None):
             # Local manifest-mode connections cache their namespace client here.
+            return None
+        return namespace_client
+
+    def _namespace_client_for_pickle(self) -> Optional[Any]:
+        """Keep a table-level namespace client only when pickle can carry it."""
+        namespace_client = self._table_namespace_client()
+        if namespace_client is None:
             return None
 
         import pickle
@@ -4511,13 +4532,20 @@ class LanceTable(Table):
             # Keep the established behavior of exporting the visible table.
             return {"kind": "memory", "name": self.name, "data": self.to_arrow()}
 
+        return {
+            "kind": "lance",
+            "connection_state": self._pickle_connection_state(),
+            "namespace_client": self._namespace_client_for_pickle(),
+            **self._reopen_state(),
+        }
+
+    def _reopen_state(self) -> dict[str, Any]:
+        """Arguments for ``_open_from_pickle_state``, minus the connection."""
         # The native handle is authoritative: a tag checkout can move this
         # wrapper onto another branch, so never trust the branch captured at
         # construction time.
         self._branch = self.current_branch()
         return {
-            "kind": "lance",
-            "connection_state": self._pickle_connection_state(),
             "name": self.name,
             "namespace_path": list(self._namespace_path),
             # Only caller-supplied overrides are safe to replay. Namespace-provided
@@ -4526,13 +4554,29 @@ class LanceTable(Table):
             "storage_options": self._storage_options,
             "index_cache_size": self._index_cache_size,
             "location": self._location,
-            "namespace_client": self._namespace_client_for_pickle(),
             "managed_versioning": self._managed_versioning,
             "pushdown_operations": set(self._pushdown_operations),
             "route_pushdown_to_rust": self._route_pushdown_to_rust,
             "branch": self._branch,
             "checkout_version": self._checkout_version,
         }
+
+    def _private_copy(self) -> "LanceTable":
+        """A new handle on the same table, branch and checkout, over this
+        handle's own connection.
+
+        ``checkout()`` on the copy leaves this handle untouched. Unlike a
+        pickle round trip, the connection need not be serializable (for
+        example, one created with a ``Session``), and an in-memory table keeps
+        its version history.
+        """
+        return type(self)._open_from_pickle_state(
+            self._conn,
+            {
+                **self._reopen_state(),
+                "namespace_client": self._table_namespace_client(),
+            },
+        )
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Rebuild a table from ``__getstate__`` in the current process."""
@@ -9110,10 +9154,11 @@ class AsyncTable:
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
 
-            A mapping with one ``FunctionApplication`` value keeps its scalar
-            or named-struct result in the named table column. A bare
-            named-struct application expands its ordered result fields as one
-            atomic binding; aliases come from ``rename(columns=...)``.
+            A mapping of column names to ``FunctionApplication`` values declares
+            all bindings in one schema commit. Each column holds its scalar
+            or entire named-struct result. A bare named-struct application expands
+            its ordered result fields as one atomic binding. Set field aliases
+            with ``rename(columns=...)``.
             Function columns are supported only in LanceDB
             Enterprise.
 
@@ -9207,31 +9252,30 @@ class AsyncTable:
             or gpu_class is not None
             or gpu_count is not None
         )
-        function_application = None
-        function_output_name = None
+        bindings: list[tuple[FunctionApplication, str | None]] = []
         if isinstance(transforms, FunctionApplication):
-            function_application = transforms
+            bindings.append((transforms, None))
         elif isinstance(transforms, Mapping) and any(
             isinstance(value, FunctionApplication) for value in transforms.values()
         ):
-            if len(transforms) != 1 or not all(
-                isinstance(value, FunctionApplication) for value in transforms.values()
-            ):
-                raise ValueError(
-                    "one add_columns call declares exactly one Function binding"
-                )
-            function_output_name, function_application = next(iter(transforms.items()))
+            for name, application in transforms.items():
+                if not isinstance(application, FunctionApplication):
+                    raise ValueError(
+                        "add_columns cannot mix Function applications and SQL "
+                        "expressions"
+                    )
+                bindings.append((application, name))
 
-        if function_application is not None:
+        if bindings:
             if computed:
                 raise ValueError(
                     "add_columns cannot mix a Function application with SQL "
                     "computed columns"
                 )
-            function_application._ensure_declarable()
+            for application, _ in bindings:
+                application._ensure_declarable()
             return await self._inner.add_function_columns(
-                function_application.to_canonical_json(),
-                function_output_name,
+                [(app.to_canonical_json(), name) for app, name in bindings],
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
                 total_cpu_millis,

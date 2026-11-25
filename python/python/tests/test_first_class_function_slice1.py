@@ -611,8 +611,7 @@ class _FunctionDeclarationInner:
 
     async def add_function_columns(
         self,
-        application_json,
-        output_name,
+        bindings,
         auto_refresh_enabled,
         auto_refresh_interval_seconds,
         total_cpu_millis,
@@ -623,8 +622,7 @@ class _FunctionDeclarationInner:
     ):
         self.calls.append(
             (
-                json.loads(application_json),
-                output_name,
+                [(json.loads(app), name) for app, name in bindings],
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
                 total_cpu_millis,
@@ -654,8 +652,9 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
         mapping_type({"features": application._copy(update={"columns": {}})})
     )
     assert result == "declared"
-    assert inner.calls[-1][1] == "features"
-    assert inner.calls[-1][2:] == (None, None, None, None, None)
+    [(_, name)], *options = inner.calls[-1]
+    assert name == "features"
+    assert options == [None, None, None, None, None]
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
@@ -668,19 +667,30 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
         total_gpu_count=0,
     )
     assert result == "declared"
-    assert inner.calls[-1][1] is None
-    assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
-    assert inner.calls[-1][2:] == (False, 300, 8000, None, 0)
+    [(payload, name)], *options = inner.calls[-1]
+    assert name is None
+    assert payload["columns"] == {"normalized_text": "search_text"}
+    assert options == [False, 300, 8000, None, 0]
 
 
 @pytest.mark.asyncio
-async def test_add_columns_rejects_multiple_bindings_and_unknown_newer_application():
+async def test_add_columns_routes_multiple_bindings_in_one_call():
+    inner = _FunctionDeclarationInner()
+    table = AsyncTable(inner)
+    application = known_application()._copy(update={"columns": {}})
+    assert await table.add_columns({"a": application, "b": application}) == "declared"
+    assert len(inner.calls) == 1
+    assert [name for _, name in inner.calls[0][0]] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_add_columns_rejects_mixed_bindings_and_unknown_newer_application():
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
 
-    with pytest.raises(ValueError, match="exactly one Function binding"):
-        await table.add_columns({"a": application, "b": application})
+    with pytest.raises(ValueError, match="cannot mix Function applications"):
+        await table.add_columns({"a": application, "b": "1+1"})
 
     future = json.loads(fixture("remote_function_application.json"))
     application = FunctionApplication(**future)

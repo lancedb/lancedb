@@ -1814,6 +1814,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.sql_client.clone(),
             ));
             table.seed_blob_ranges_capability(rsp.headers());
+            table.seed_blob_locations_capability(rsp.headers());
             Ok(table)
         } else {
             // Describe the table to confirm it exists before moving on.
@@ -1837,6 +1838,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.sql_client.clone(),
             ));
             table.seed_blob_ranges_capability(&describe_headers);
+            table.seed_blob_locations_capability(&describe_headers);
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
             // branch pin applied after this invalidates the cache.
@@ -2855,7 +2857,9 @@ mod tests {
         let mut bytes = vec![0; 128 * 72 * 1024];
         SmallRng::seed_from_u64(4977).fill_bytes(&mut bytes);
         let strings: Vec<String> = bytes
-            .chunks_exact(72 * 1024)
+            .as_chunks::<{ 72 * 1024 }>()
+            .0
+            .iter()
             .map(|chunk| chunk.iter().map(|b| char::from(b'!' + b % 90)).collect())
             .collect();
         let mut batches = Vec::new();

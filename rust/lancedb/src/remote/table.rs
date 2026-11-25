@@ -701,6 +701,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     schema_cache: BackgroundCache<SchemaRef, Error>,
     // Only a successful describe can opt into the batched range protocol.
     blob_ranges_supported: Arc<AtomicBool>,
+    // Only a successful describe can opt into presigned direct Blob reads.
+    blob_locations_supported: Arc<AtomicBool>,
     // WAL-PK-FUSION: delete, with its initializers below.
     wal_pk_fusion: PkFusionMemory,
     freshness: Arc<Mutex<FreshnessState>>,
@@ -1006,6 +1008,7 @@ impl<S: HttpSend> RemoteTable<S> {
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+            blob_locations_supported: Arc::new(AtomicBool::new(false)),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
@@ -1020,6 +1023,20 @@ impl<S: HttpSend> RemoteTable<S> {
                 .is_some_and(|value| value == "1"),
             AtomicOrdering::Relaxed,
         );
+    }
+
+    pub(super) fn seed_blob_locations_capability(&self, headers: &http::HeaderMap) {
+        self.blob_locations_supported.store(
+            headers
+                .get("x-lancedb-blob-locations")
+                .is_some_and(|value| value == "1"),
+            AtomicOrdering::Relaxed,
+        );
+    }
+
+    fn seed_blob_capabilities(&self, headers: &http::HeaderMap) {
+        self.seed_blob_ranges_capability(headers);
+        self.seed_blob_locations_capability(headers);
     }
 
     /// Seed the schema cache from a `describe` body the caller already fetched.
@@ -1053,6 +1070,7 @@ impl<S: HttpSend> RemoteTable<S> {
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             blob_ranges_supported: self.blob_ranges_supported.clone(),
+            blob_locations_supported: self.blob_locations_supported.clone(),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
@@ -1076,6 +1094,75 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(branch) = &self.branch {
             body["branch"] = serde_json::Value::String(branch.clone());
         }
+    }
+
+    async fn submit_function_declarations(
+        &self,
+        plans: Vec<crate::table::computed_columns::FunctionDeclarationPlan>,
+        options: crate::table::computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        let new_columns = plans
+            .iter()
+            .flat_map(|plan| &plan.outputs)
+            .map(|output| serde_json::json!({"name": output.output_name, "all_null": true}))
+            .collect::<Vec<_>>();
+        let mut body = serde_json::json!({
+            "new_columns": new_columns,
+            "auto_refresh_enabled": options.auto_refresh_enabled,
+        });
+        if let [plan] = plans.as_slice() {
+            body["function"] = serde_json::json!(plan);
+        } else {
+            body["functions"] = serde_json::json!(plans);
+        }
+        if let Some(interval) = options.auto_refresh_interval_seconds {
+            body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
+        }
+        for (key, value) in [
+            ("total_cpu_millis", options.total_cpu_millis),
+            ("total_memory_bytes", options.total_memory_bytes),
+            ("total_gpu_count", options.total_gpu_count.map(u64::from)),
+        ] {
+            if let Some(value) = value {
+                body[key] = serde_json::json!(value);
+            }
+        }
+        if let Some(class) = &options.gpu_class {
+            body["gpu_class"] = serde_json::json!(class);
+        }
+        if let Some(count) = options.gpu_count {
+            body["gpu_count"] = serde_json::json!(count);
+        }
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/add_columns/", self.identifier))
+            .json(&body);
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
+        // A Function declaration can return 404 for the Function rather than the table.
+        let response = self
+            .client
+            .check_response(&request_id, response)
+            .await
+            .inspect_err(|error| self.handle_error_invalidation(error))?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() {
+            return Ok(AddColumnsResult { version: 0 });
+        }
+
+        let result: AddColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add Function columns response: {e}").into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        self.invalidate_schema_cache();
+        self.track_write_version(freshness_request, result.version);
+        Ok(result)
     }
 
     async fn require_function_failure_workflow(&self) -> Result<()> {
@@ -1229,11 +1316,15 @@ impl<S: HttpSend> RemoteTable<S> {
         };
 
         let response = self.check_table_response(&request_id, response).await?;
-        self.seed_blob_ranges_capability(response.headers());
+        self.seed_blob_capabilities(response.headers());
+        let batch_function_declaration = response
+            .headers()
+            .get("x-lancedb-batch-function-declaration")
+            .is_some_and(|value| value == "1");
 
         match response.text().await {
             Ok(body) => {
-                let description: TableDescription =
+                let mut description: TableDescription =
                     serde_json::from_str(&body).map_err(|e| Error::Http {
                         source: format!("Failed to parse table description: {}", e).into(),
                         request_id,
@@ -1242,6 +1333,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 if let Some(freshness_request) = freshness_request {
                     freshness_request.observe_version(&self.freshness, description.version);
                 }
+                description.batch_function_declaration = batch_function_declaration;
                 Ok(description)
             }
             Err(err) => {
@@ -2016,6 +2108,8 @@ struct TableDescription {
     version: u64,
     schema: JsonSchema,
     location: Option<String>,
+    #[serde(skip)]
+    batch_function_declaration: bool,
 }
 
 /// Keep server-owned Function assignment columns out of client schemas.
@@ -2120,6 +2214,7 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_schema<S: HttpSend>(
     client: &RestfulLanceDbClient<S>,
     identifier: &str,
@@ -2128,6 +2223,7 @@ async fn fetch_schema<S: HttpSend>(
     branch: Option<String>,
     freshness: Arc<Mutex<FreshnessState>>,
     blob_ranges_supported: Arc<AtomicBool>,
+    blob_locations_supported: Arc<AtomicBool>,
 ) -> Result<SchemaRef> {
     let mut body = serde_json::json!({ "version": read_snapshot.version });
     if let Some(branch) = &branch {
@@ -2149,6 +2245,13 @@ async fn fetch_schema<S: HttpSend>(
         response
             .headers()
             .get("x-lancedb-blob-ranges")
+            .is_some_and(|value| value == "1"),
+        AtomicOrdering::Relaxed,
+    );
+    blob_locations_supported.store(
+        response
+            .headers()
+            .get("x-lancedb-blob-locations")
             .is_some_and(|value| value == "1"),
         AtomicOrdering::Relaxed,
     );
@@ -2210,6 +2313,7 @@ mod test_utils {
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
                 blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+                blob_locations_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2239,6 +2343,7 @@ mod test_utils {
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
                 blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+                blob_locations_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2277,6 +2382,7 @@ mod test_utils {
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
                 blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+                blob_locations_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2935,6 +3041,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             version,
             schema,
             location,
+            ..
         } = description;
         let schema = schema_from_description(schema)?;
         let snapshot = self.with_branch(self.branch.clone());
@@ -2953,6 +3060,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             version,
             schema,
             location,
+            ..
         } = description;
         let schema = schema_from_description(schema)?;
         let snapshot = self.with_branch(self.branch.clone());
@@ -3131,6 +3239,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             let branch = self.branch.clone();
             let freshness = self.freshness.clone();
             let blob_ranges_supported = self.blob_ranges_supported.clone();
+            let blob_locations_supported = self.blob_locations_supported.clone();
 
             match self
                 .schema_cache
@@ -3143,6 +3252,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         branch,
                         freshness,
                         blob_ranges_supported,
+                        blob_locations_supported,
                     )
                     .await
                 })
@@ -4496,76 +4606,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             application,
             output_name,
         )?;
-        let new_columns = plan
-            .outputs
-            .iter()
-            .map(|output| {
-                serde_json::json!({
-                    "name": output.output_name,
-                    "all_null": true,
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut body = serde_json::json!({
-            "new_columns": new_columns,
-            "auto_refresh_enabled": options.auto_refresh_enabled,
-            "function": {
-                "application": plan.application,
-                "binding_metadata_version": plan.binding_metadata_version,
-                "input_bindings": plan.input_bindings,
-                "input_schema": plan.input_schema,
-                "output_schema": plan.output_schema,
-                "outputs": plan.outputs,
-            },
-        });
-        if let Some(interval) = options.auto_refresh_interval_seconds {
-            body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
-        }
-        for (key, value) in [
-            ("total_cpu_millis", options.total_cpu_millis),
-            ("total_memory_bytes", options.total_memory_bytes),
-            ("total_gpu_count", options.total_gpu_count.map(u64::from)),
-        ] {
-            if let Some(value) = value {
-                body[key] = serde_json::json!(value);
-            }
-        }
-        if let Some(class) = &options.gpu_class {
-            body["gpu_class"] = serde_json::json!(class);
-        }
-        if let Some(count) = options.gpu_count {
-            body["gpu_count"] = serde_json::json!(count);
-        }
-        self.apply_branch_body(&mut body);
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/add_columns/", self.identifier))
-            .json(&body);
-        let freshness_request = self.snapshot_freshness_headers();
-        let (request_id, response) = self
-            .send_with_freshness(request, true, freshness_request)
-            .await?;
-        // A Function declaration can return 404 for the Function rather than the table.
-        let response = self
-            .client
-            .check_response(&request_id, response)
-            .await
-            .inspect_err(|error| self.handle_error_invalidation(error))?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
+        self.submit_function_declarations(vec![plan], options).await
+    }
 
-        if body.trim().is_empty() {
-            return Ok(AddColumnsResult { version: 0 });
+    async fn add_function_bindings(
+        &self,
+        bindings: &[(crate::function::FunctionApplication, Option<String>)],
+        options: crate::table::computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        self.check_mutable().await?;
+        let description = self.describe().await?;
+        if !description.batch_function_declaration {
+            return Err(Error::NotSupported {
+                message: "This LanceDB Enterprise server does not support declaring multiple Function bindings in one call".into(),
+            });
         }
-
-        let result: AddColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse add Function columns response: {e}").into(),
-            request_id,
-            status_code: None,
-        })?;
-
-        self.invalidate_schema_cache();
-        self.track_write_version(freshness_request, result.version);
-        Ok(result)
+        let schema = schema_from_description(description.schema)?;
+        let plans = crate::table::computed_columns::plan_function_bindings(&schema, bindings)?;
+        self.submit_function_declarations(plans, options).await
     }
 
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
@@ -11505,6 +11563,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 8);
+    }
+
+    #[rstest]
+    #[case::supported(Some("1"))]
+    #[case::older_server(None)]
+    #[case::unknown_version(Some("2"))]
+    #[tokio::test]
+    async fn test_declare_function_bindings_in_one_request(
+        #[case] capability: Option<&'static str>,
+    ) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let mut response = http::Response::builder().status(200);
+                    if let Some(value) = capability {
+                        response = response.header("x-lancedb-batch-function-declaration", value);
+                    }
+                    response.body(r#"{"version":1,"schema":{"fields":[{"name":"text","nullable":true,"type":{"type":"string"}}]}}"#).unwrap()
+                }
+                "/v1/table/my_table/add_columns/" => {
+                    assert_eq!(capability, Some("1"));
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert!(body.get("function").is_none());
+                    assert_eq!(
+                        body["new_columns"],
+                        serde_json::json!([
+                            {"name":"leaf","all_null":true}, {"name":"root","all_null":true}
+                        ])
+                    );
+                    let functions = body["functions"].as_array().unwrap();
+                    assert_eq!(functions.len(), 2);
+                    for (plan, (input, output, nullable)) in functions
+                        .iter()
+                        .zip([("root", "leaf", false), ("text", "root", true)])
+                    {
+                        assert_eq!(
+                            plan["input_bindings"][0],
+                            serde_json::json!({
+                                "parameter":"x", "field_path":input, "arrow_type":"utf8", "nullable":nullable
+                            })
+                        );
+                        assert_eq!(plan["outputs"][0]["output_name"], output);
+                        assert_eq!(plan["output_schema"]["fields"][0]["name"], output);
+                    }
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":2}"#)
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {path}"),
+            }
+        });
+        let bindings = [("root", "leaf"), ("text", "root")].map(|(input, output)| {
+            let value = serde_json::json!({
+                "function":{"name":"normalize","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
+                "inputs":[{"parameter":"x","kind":"column","value":{"path":input}}],
+                "output":{"kind":"scalar","arrow_type":"utf8","nullable":false}
+            });
+            (crate::function::FunctionApplication::from_json(&value.to_string()).unwrap(), Some(output.to_string()))
+        });
+        let result = table
+            .add_columns()
+            .function_bindings(bindings)
+            .execute()
+            .await;
+        if capability == Some("1") {
+            assert_eq!(result.unwrap().version, 2);
+        } else {
+            assert!(matches!(result, Err(crate::Error::NotSupported { .. })));
+        }
     }
 
     #[tokio::test]

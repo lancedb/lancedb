@@ -6474,18 +6474,35 @@ describe("durable compaction validation", () => {
 });
 
 describe("Enterprise table overrides", () => {
-  it("keeps override methods optional for existing custom Table subclasses", async () => {
-    // Declare the old Table surface; only the new methods must be inherited.
-    // Keeping these override methods abstract must fail type checking here.
+  it("keeps added operations optional for existing custom Table subclasses", async () => {
+    // Declare the old Table surface; the new methods must be inherited.
     // biome-ignore lint/correctness/noUnusedVariables: declaration merging supplies the legacy members
     interface LegacyTable
       extends Omit<
         Table,
-        "getTableOverrides" | "updateTableOverrides" | "resetTableOverrides"
+        | "getTableOverrides"
+        | "updateTableOverrides"
+        | "resetTableOverrides"
+        | "functionErrors"
+        | "functionErrorRows"
+        | "retryFailed"
+        | "upgradeColumn"
+        | "quarantineFailed"
+        | "functionProvenance"
       > {}
-    class LegacyTable extends Table {}
+    class LegacyTable extends Table {
+      async functionErrors() {
+        return { records: [], fragments: [], truncated: false };
+      }
+    }
 
     const table = new LegacyTable();
+    await expect(table.functionErrorRows()).rejects.toThrow(
+      "Function row-failure workflow",
+    );
+    await expect(table.retryFailed("embedding")).rejects.toThrow(
+      "retryFailed is not supported on this table type",
+    );
     await expect(table.delta(1)).rejects.toThrow(
       "table.delta is only supported on LanceDB Embedded tables",
     );

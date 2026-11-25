@@ -170,6 +170,27 @@ the publishing job replaces assets with matching names on an existing release.
 Verify beta releases remain marked as prereleases and do not take the latest
 release designation.
 
+### Python CLI wheels
+
+Run the **CLI Python wheels** workflow with a published CLI tag to build the
+`lancedb-tools` wheels. It verifies the release archives against `SHA256SUMS`,
+bundles the native executable and its notices, and saves the three wheels as
+the `lancedb-tools-wheels` Actions artifact. Python package versions follow
+PEP 440 (for example, CLI `v0.42.0-beta.30` becomes `0.42.0b30`).
+
+The workflow tests `uvx` and `pipx` against the artifact on each supported
+platform. To try a downloaded wheel on a matching machine, substitute its
+local path for `"$wheel"`:
+
+```sh
+uvx --from "$wheel" lancedb --version
+pipx install "$wheel"
+lancedb profile list
+```
+
+This workflow produces review artifacts. Publishing the first stable wheels
+to PyPI is a separate release step.
+
 ### Homebrew tap updates
 
 After a stable GitHub release publishes, the `homebrew` job reads its

@@ -1057,6 +1057,124 @@ mod x86 {
             sum + tail
         }
     }
+
+    /// Targets whose sums one block of the prepared L2 kernels holds in
+    /// registers across every dimension: 4 AVX-512 or 8 AVX registers.
+    const PREPARED_BLOCK: usize = 64;
+
+    lance_core::target_kernel! {
+        #[target_features("avx512f", "fma")]
+        #[candidate(pub(super) L2_PREPARED_AVX512: super::PreparedKernel)]
+        pub(super) fn l2_prepared_avx512(
+            transposed: &[f32],
+            query: &[f32],
+            num_targets: usize,
+            out: &mut [f32],
+        ) {
+            let wide_end = num_targets / PREPARED_BLOCK * PREPARED_BLOCK;
+            let narrow_end = num_targets / 16 * 16;
+            prepared_blocks_avx512::<{ PREPARED_BLOCK / 16 }>(transposed, query, num_targets, 0..wide_end, out);
+            prepared_blocks_avx512::<1>(transposed, query, num_targets, wide_end..narrow_end, out);
+            prepared_tail_fma(transposed, query, num_targets, narrow_end, out);
+        }
+    }
+
+    lance_core::target_kernel! {
+        #[target_features("avx", "fma")]
+        #[candidate(pub(super) L2_PREPARED_AVX_FMA: super::PreparedKernel)]
+        pub(super) fn l2_prepared_avx_fma(
+            transposed: &[f32],
+            query: &[f32],
+            num_targets: usize,
+            out: &mut [f32],
+        ) {
+            let wide_end = num_targets / PREPARED_BLOCK * PREPARED_BLOCK;
+            let narrow_end = num_targets / 8 * 8;
+            prepared_blocks_avx::<{ PREPARED_BLOCK / 8 }>(transposed, query, num_targets, 0..wide_end, out);
+            prepared_blocks_avx::<1>(transposed, query, num_targets, wide_end..narrow_end, out);
+            prepared_tail_fma(transposed, query, num_targets, narrow_end, out);
+        }
+    }
+
+    /// Writes the distances of `targets`, whose length is a multiple of
+    /// `REGS * 16`, keeping each block's sums in `REGS` registers.
+    #[target_feature(enable = "avx512f,fma")]
+    #[inline]
+    fn prepared_blocks_avx512<const REGS: usize>(
+        transposed: &[f32],
+        query: &[f32],
+        num_targets: usize,
+        targets: std::ops::Range<usize>,
+        out: &mut [f32],
+    ) {
+        for start in targets.step_by(REGS * 16) {
+            let mut sums = [_mm512_setzero_ps(); REGS];
+            for (d, &q) in query.iter().enumerate() {
+                let q = _mm512_set1_ps(q);
+                let row = &transposed[d * num_targets + start..][..REGS * 16];
+                for (i, sum) in sums.iter_mut().enumerate() {
+                    // SAFETY: `row` holds `REGS * 16` values.
+                    let diff =
+                        _mm512_sub_ps(q, unsafe { _mm512_loadu_ps(row.as_ptr().add(i * 16)) });
+                    *sum = _mm512_fmadd_ps(diff, diff, *sum);
+                }
+            }
+            let block = &mut out[start..][..REGS * 16];
+            for (i, sum) in sums.iter().enumerate() {
+                // SAFETY: `block` holds `REGS * 16` values.
+                unsafe { _mm512_storeu_ps(block.as_mut_ptr().add(i * 16), *sum) };
+            }
+        }
+    }
+
+    /// [`prepared_blocks_avx512`] with 8-lane AVX registers.
+    #[target_feature(enable = "avx,fma")]
+    #[inline]
+    fn prepared_blocks_avx<const REGS: usize>(
+        transposed: &[f32],
+        query: &[f32],
+        num_targets: usize,
+        targets: std::ops::Range<usize>,
+        out: &mut [f32],
+    ) {
+        for start in targets.step_by(REGS * 8) {
+            let mut sums = [_mm256_setzero_ps(); REGS];
+            for (d, &q) in query.iter().enumerate() {
+                let q = _mm256_set1_ps(q);
+                let row = &transposed[d * num_targets + start..][..REGS * 8];
+                for (i, sum) in sums.iter_mut().enumerate() {
+                    // SAFETY: `row` holds `REGS * 8` values.
+                    let diff =
+                        _mm256_sub_ps(q, unsafe { _mm256_loadu_ps(row.as_ptr().add(i * 8)) });
+                    *sum = _mm256_fmadd_ps(diff, diff, *sum);
+                }
+            }
+            let block = &mut out[start..][..REGS * 8];
+            for (i, sum) in sums.iter().enumerate() {
+                // SAFETY: `block` holds `REGS * 8` values.
+                unsafe { _mm256_storeu_ps(block.as_mut_ptr().add(i * 8), *sum) };
+            }
+        }
+    }
+
+    /// The distances of the targets from `start` on, one at a time, with the
+    /// same fused sums as the register blocks.
+    #[target_feature(enable = "fma")]
+    #[inline]
+    fn prepared_tail_fma(
+        transposed: &[f32],
+        query: &[f32],
+        num_targets: usize,
+        start: usize,
+        out: &mut [f32],
+    ) {
+        for (target, distance) in out.iter_mut().enumerate().take(num_targets).skip(start) {
+            *distance = query.iter().enumerate().fold(0.0, |sum, (d, &q)| {
+                let diff = q - transposed[d * num_targets + target];
+                diff.mul_add(diff, sum)
+            });
+        }
+    }
 }
 
 /// Accumulate squared differences for one dimension into per-target results.
@@ -1069,6 +1187,42 @@ fn accumulate_l2_dimension(q: f32, row: &[f32], result: &mut [f32]) {
     for (dist, &target) in result.iter_mut().zip(row.iter()) {
         let diff = q - target;
         *dist += diff * diff;
+    }
+}
+
+/// Writes the L2 distance from `query` to each of `num_targets` targets into
+/// `out`, from targets stored as `query.len()` rows of `num_targets` values.
+type PreparedKernel = unsafe fn(&[f32], &[f32], usize, &mut [f32]);
+
+lance_core::dispatch! {
+    /// The x86 kernels hold a block of targets' sums in registers across all
+    /// dimensions and fuse each square into its sum; the portable kernel adds
+    /// separately rounded squares, one dimension at a time.
+    static L2_PREPARED: Dispatch<PreparedKernel> = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            &[
+                x86::L2_PREPARED_AVX512,
+                x86::L2_PREPARED_AVX_FMA,
+                L2_PREPARED_PORTABLE,
+            ]
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            &[L2_PREPARED_PORTABLE]
+        }
+    };
+}
+
+lance_core::target_kernel! {
+    #[target_features()]
+    #[candidate(L2_PREPARED_PORTABLE: PreparedKernel)]
+    fn l2_prepared_portable(transposed: &[f32], query: &[f32], num_targets: usize, out: &mut [f32]) {
+        out.fill(0.0);
+        for (d, &q) in query.iter().enumerate() {
+            let row = &transposed[d * num_targets..][..num_targets];
+            accumulate_l2_dimension(q, row, out);
+        }
     }
 }
 
@@ -1132,11 +1286,9 @@ impl L2Prepared {
         debug_assert_eq!(query.len(), self.dimension);
         debug_assert_eq!(out.len(), self.num_targets);
 
-        out.fill(0.0);
-        for (d, &q) in query.iter().enumerate() {
-            let row = &self.transposed[d * self.num_targets..][..self.num_targets];
-            accumulate_l2_dimension(q, row, out);
-        }
+        L2_PREPARED
+            .get()
+            .call(&self.transposed, query, self.num_targets, out);
     }
 
     /// Compute L2 distances from `query` to every target.
@@ -1866,6 +2018,63 @@ mod tests {
     fn test_l2_targets_nearest(#[case] targets: Vec<f32>, #[case] expected: Option<u32>) {
         let prepared = L2Prepared::new(&targets, 1);
         assert_eq!(prepared.nearest(&[0.0]), expected);
+    }
+
+    /// Every prepared kernel the host runs matches an f64 reference, at target
+    /// counts that fill whole register blocks, leave a partial block, or leave
+    /// targets for the scalar tail, and keeps NaN and infinite distances.
+    #[rstest::rstest]
+    fn test_l2_prepared_kernels_match_reference(
+        #[values(1, 3, 8, 16)] dimension: usize,
+        #[values(1, 7, 8, 15, 16, 17, 64, 65, 100, 256, 258)] num_targets: usize,
+    ) {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64 ^ (dimension * 1000 + num_targets) as u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / (1u64 << 24) as f32 * 4.0 - 2.0
+        };
+        let query: Vec<f32> = (0..dimension).map(|_| next()).collect();
+        let mut targets: Vec<f32> = (0..dimension * num_targets).map(|_| next()).collect();
+        if num_targets > 2 {
+            targets[dimension] = f32::NAN;
+            targets[2 * dimension] = f32::INFINITY;
+        }
+        let want: Vec<f64> = targets
+            .chunks_exact(dimension)
+            .map(|target| {
+                target
+                    .iter()
+                    .zip(&query)
+                    .map(|(&t, &q)| (q as f64 - t as f64).powi(2))
+                    .sum()
+            })
+            .collect();
+        let prepared = L2Prepared::new(&targets, dimension);
+
+        for candidate in L2_PREPARED.candidates() {
+            let Some(kernel) = candidate.kernel() else {
+                continue;
+            };
+            // Distances are never negative, so a slot left unwritten fails.
+            let mut got = vec![-1.0f32; num_targets];
+            kernel.call(&prepared.transposed, &query, num_targets, &mut got);
+            for (target, (&got, &want)) in got.iter().zip(&want).enumerate() {
+                let matches = if want.is_nan() {
+                    got.is_nan()
+                } else if want.is_infinite() {
+                    got == want as f32
+                } else {
+                    approx::relative_eq!(got, want as f32, max_relative = 1e-5)
+                };
+                assert!(
+                    matches,
+                    "{} at dimension {dimension}, target {target} of {num_targets}: {got} != {want}",
+                    candidate.name()
+                );
+            }
+        }
     }
 
     /// `l2_batch_into` must agree with the per-vector `l2` for the f32 batch

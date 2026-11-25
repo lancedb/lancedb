@@ -973,6 +973,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("Function columns are supported only in LanceDB Enterprise"),
         })
     }
+    /// Declare multiple immutable registered-Function bindings in one schema commit.
+    async fn add_function_bindings(
+        &self,
+        _bindings: &[(crate::function::FunctionApplication, Option<String>)],
+        _options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: DocLink::Functions
+                .append_to("Batch Function declarations require LanceDB Enterprise support"),
+        })
+    }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed.
     ///
@@ -1541,6 +1552,12 @@ impl Table {
     /// # }
     /// ```
     ///
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
+    /// values and individual ranges may be fetched from short-lived object-store
+    /// URLs instead of the LanceDB proxy. Clients then need network access to
+    /// the object-store endpoint, including private endpoint routing, DNS, TLS
+    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
+    /// stay on the LanceDB proxy.
     /// Blobs inside lists cannot be fetched by row id. Returns
     /// [`Error::InvalidInput`] for those paths, when the column does not exist,
     /// or when it is not a blob column. Returns [`Error::NotSupported`] on
@@ -1592,6 +1609,12 @@ impl Table {
     /// # }
     /// ```
     ///
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
+    /// values and individual ranges may be fetched from short-lived object-store
+    /// URLs instead of the LanceDB proxy. Clients then need network access to
+    /// the object-store endpoint, including private endpoint routing, DNS, TLS
+    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
+    /// stay on the LanceDB proxy.
     /// Returns an error when a range is invalid, a requested row id does not
     /// exist, or the column is not a blob column. Returns
     /// [`Error::NotSupported`] on table types without blob support.
@@ -1619,6 +1642,12 @@ impl Table {
     /// `ClientConfig::blob_request_concurrency` or the
     /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` environment variable to tune it.
     ///
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
+    /// values and individual ranges may be fetched from short-lived object-store
+    /// URLs instead of the LanceDB proxy. Clients then need network access to
+    /// the object-store endpoint, including private endpoint routing, DNS, TLS
+    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
+    /// stay on the LanceDB proxy.
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
     /// partial handles are returned.
@@ -1646,7 +1675,10 @@ impl Table {
     ///
     /// The descriptor carries its table version, branch, column and row identity.
     /// Opening does not materialize the payload or change this table's checkout.
-    /// Remote reads use the table's authenticated HTTP byte-range endpoint.
+    /// On Enterprise clusters that enable direct Blob reads, large range reads
+    /// may use a short-lived object-store URL; the client needs network access
+    /// to that endpoint in addition to the LanceDB endpoint. Small reads stay
+    /// on the authenticated LanceDB byte-range endpoint.
     ///
     /// ```
     /// use lancedb::{Table, blob::BlobDescriptor};

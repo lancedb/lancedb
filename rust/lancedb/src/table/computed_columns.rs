@@ -1629,6 +1629,56 @@ pub(crate) fn plan_function_application(
     output_name: Option<&str>,
 ) -> Result<FunctionDeclarationPlan> {
     ensure_supported_function_metadata(schema)?;
+    let (outputs, output_schema) = plan_function_outputs(schema, application, output_name)?;
+    plan_function_inputs(schema, &HashSet::new(), application, outputs, output_schema)
+}
+
+/// All output types are known from the registered signatures. Resolve inputs
+/// against the complete set so an application can read a later sibling.
+pub(crate) fn plan_function_bindings(
+    schema: &ArrowSchema,
+    bindings: &[(FunctionApplication, Option<String>)],
+) -> Result<Vec<FunctionDeclarationPlan>> {
+    ensure_supported_function_metadata(schema)?;
+    let mut fields = schema.fields().to_vec();
+    let mut destinations = HashSet::new();
+    let mut plans = Vec::with_capacity(bindings.len());
+    for (application, name) in bindings {
+        let (outputs, output_schema) = plan_function_outputs(schema, application, name.as_deref())?;
+        for field in &output_schema.fields {
+            if !destinations.insert(field.name.clone()) {
+                return Err(Error::ColumnAlreadyExists {
+                    name: field.name.clone(),
+                });
+            }
+            let field =
+                lance_namespace::schema::convert_json_arrow_field(field).map_err(|error| {
+                    invalid_function(format!("invalid Function output schema: {error}"))
+                })?;
+            fields.push(Arc::new(field));
+        }
+        plans.push((application, outputs, output_schema));
+    }
+    let candidate = ArrowSchema::new(fields);
+    plans
+        .into_iter()
+        .map(|(application, outputs, output_schema)| {
+            plan_function_inputs(
+                &candidate,
+                &destinations,
+                application,
+                outputs,
+                output_schema,
+            )
+        })
+        .collect()
+}
+
+fn plan_function_outputs(
+    schema: &ArrowSchema,
+    application: &FunctionApplication,
+    output_name: Option<&str>,
+) -> Result<(Vec<FunctionOutputTarget>, JsonArrowSchema)> {
     if application.has_unknown_fields() {
         return Err(Error::NotSupported {
             message: "Function application contains fields from a newer contract".into(),
@@ -1639,71 +1689,6 @@ pub(crate) fn plan_function_application(
             "Function application requires an exact version",
         ));
     }
-
-    let mut parameters = BTreeSet::new();
-    let mut input_bindings = Vec::with_capacity(application.inputs().len());
-    let mut input_fields = Vec::with_capacity(application.inputs().len());
-    for input in application.inputs() {
-        if !parameters.insert(input.parameter.as_str()) {
-            return Err(invalid_function(format!(
-                "duplicate Function parameter '{}'",
-                input.parameter
-            )));
-        }
-        if input.kind == "literal" {
-            crate::function::validate_literal(&input.value)?;
-            continue;
-        }
-        if input.kind != "column" {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "Function input kind '{}' is not supported for column declaration",
-                    input.kind
-                ),
-            });
-        }
-        let source = input.value.as_object().ok_or_else(|| {
-            invalid_function(format!(
-                "Function parameter '{}' has an invalid column source",
-                input.parameter
-            ))
-        })?;
-        if source.len() != 1 {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "Function parameter '{}' uses a newer column source contract",
-                    input.parameter
-                ),
-            });
-        }
-        let path = source.get("path").and_then(Value::as_str).ok_or_else(|| {
-            invalid_function(format!(
-                "Function parameter '{}' requires a column path",
-                input.parameter
-            ))
-        })?;
-        let resolved = resolve_field_path(schema, path)?;
-        let nullable = function_input_nullability(&resolved, path)?;
-        let field = resolved.leaf;
-        let parameter_field =
-            ArrowField::new(input.parameter.clone(), field.data_type().clone(), nullable)
-                .with_metadata(function_input_metadata(field));
-        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            parameter_field.clone(),
-        ]))
-        .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
-        let json_field = input_schema.fields.into_iter().next().unwrap();
-        input_bindings.push(FunctionInputTarget {
-            parameter: input.parameter.clone(),
-            field_path: path.to_string(),
-            arrow_type: canonical_input_arrow_type(&json_field)?,
-            nullable,
-        });
-        input_fields.push(parameter_field);
-    }
-    let input_schema =
-        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(input_fields))
-            .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
 
     let output = application.output();
     let mut outputs = Vec::new();
@@ -1830,6 +1815,82 @@ pub(crate) fn plan_function_application(
         }
     }
 
+    Ok((outputs, JsonArrowSchema::new(output_fields)))
+}
+
+fn plan_function_inputs(
+    schema: &ArrowSchema,
+    new_outputs: &HashSet<String>,
+    application: &FunctionApplication,
+    outputs: Vec<FunctionOutputTarget>,
+    output_schema: JsonArrowSchema,
+) -> Result<FunctionDeclarationPlan> {
+    let mut parameters = BTreeSet::new();
+    let mut input_bindings = Vec::with_capacity(application.inputs().len());
+    let mut input_fields = Vec::with_capacity(application.inputs().len());
+    for input in application.inputs() {
+        if !parameters.insert(input.parameter.as_str()) {
+            return Err(invalid_function(format!(
+                "duplicate Function parameter '{}'",
+                input.parameter
+            )));
+        }
+        if input.kind == "literal" {
+            crate::function::validate_literal(&input.value)?;
+            continue;
+        }
+        if input.kind != "column" {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "Function input kind '{}' is not supported for column declaration",
+                    input.kind
+                ),
+            });
+        }
+        let source = input.value.as_object().ok_or_else(|| {
+            invalid_function(format!(
+                "Function parameter '{}' has an invalid column source",
+                input.parameter
+            ))
+        })?;
+        if source.len() != 1 {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "Function parameter '{}' uses a newer column source contract",
+                    input.parameter
+                ),
+            });
+        }
+        let path = source.get("path").and_then(Value::as_str).ok_or_else(|| {
+            invalid_function(format!(
+                "Function parameter '{}' requires a column path",
+                input.parameter
+            ))
+        })?;
+        let resolved = resolve_field_path(schema, path)?;
+        let nullable = !new_outputs.contains(resolved.root.name())
+            && function_input_nullability(&resolved, path)?;
+        let field = resolved.leaf;
+        let parameter_field =
+            ArrowField::new(input.parameter.clone(), field.data_type().clone(), nullable)
+                .with_metadata(function_input_metadata(field));
+        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            parameter_field.clone(),
+        ]))
+        .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
+        let json_field = input_schema.fields.into_iter().next().unwrap();
+        input_bindings.push(FunctionInputTarget {
+            parameter: input.parameter.clone(),
+            field_path: path.to_string(),
+            arrow_type: canonical_input_arrow_type(&json_field)?,
+            nullable,
+        });
+        input_fields.push(parameter_field);
+    }
+    let input_schema =
+        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(input_fields))
+            .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
+
     Ok(FunctionDeclarationPlan {
         application: application.clone(),
         binding_metadata_version: if application
@@ -1843,7 +1904,7 @@ pub(crate) fn plan_function_application(
         },
         input_bindings,
         input_schema,
-        output_schema: JsonArrowSchema::new(output_fields),
+        output_schema,
         outputs,
     })
 }

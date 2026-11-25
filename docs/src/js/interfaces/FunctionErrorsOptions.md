@@ -20,6 +20,16 @@ Only errors on this column.
 
 ***
 
+### history?
+
+```ts
+optional history: boolean;
+```
+
+Include retained historical attempts, including repaired rows. Requires workflow version 1 or later.
+
+***
+
 ### jobId?
 
 ```ts
