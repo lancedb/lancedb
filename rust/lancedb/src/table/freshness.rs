@@ -687,7 +687,9 @@ fn decode_legacy_sidecar(bytes: &[u8]) -> Result<FreshnessState> {
         return Err(malformed());
     }
     let signatures = body
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|entry| {
             let fragment_id = u32::from_le_bytes(entry[..4].try_into().unwrap());
             let hash = u64::from_le_bytes(entry[4..].try_into().unwrap());

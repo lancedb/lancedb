@@ -1282,7 +1282,8 @@ mod tests {
         use rand::{RngCore, SeedableRng, rngs::SmallRng};
         let mut bytes = vec![0; 128 * 1024];
         SmallRng::seed_from_u64(7).fill_bytes(&mut bytes);
-        let values = arrow_array::LargeBinaryArray::from_iter_values(bytes.chunks_exact(1024));
+        let values =
+            arrow_array::LargeBinaryArray::from_iter_values(bytes.as_chunks::<1024>().0.iter());
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
             "payload",
             DataType::LargeBinary,
@@ -1735,7 +1736,8 @@ mod tests {
         let mut batches = Vec::new();
         for shift in [0, 1] {
             let values = BinaryArray::from_iter(
-                std::iter::once(None).chain(bytes.chunks_exact(1024).skip(shift).map(Some)),
+                std::iter::once(None)
+                    .chain(bytes.as_chunks::<1024>().0.iter().skip(shift).map(Some)),
             );
             let keys = UInt8Array::from(vec![
                 Some(120),
