@@ -62,6 +62,7 @@ from lance_namespace import (
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
+from ..resources import _resource_options
 
 
 def _duration_seconds(value: Optional[timedelta]) -> Optional[float]:
@@ -822,7 +823,19 @@ class RemoteDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         from .table import RemoteTable
 
         view = LOOP.run(
@@ -837,6 +850,11 @@ class RemoteDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return MaterializedView(
@@ -862,7 +880,19 @@ class RemoteDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         job = LOOP.run(
             self._conn.create_materialized_view_async(
                 name,
@@ -875,6 +905,11 @@ class RemoteDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return Job(job)
@@ -1115,6 +1150,9 @@ class RemoteDBConnection(DBConnection):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -1133,6 +1171,7 @@ class RemoteDBConnection(DBConnection):
                 azure_tenant_id_secret=azure_tenant_id_secret,
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
+                azure_storage_account_access_key_secret=azure_storage_account_access_key_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
                 exist_ok=exist_ok,
@@ -1421,6 +1460,9 @@ class RemoteDBConnection(DBConnection):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery:
         """Start executing SQL through this LanceDB Enterprise connection.
 
@@ -1436,6 +1478,9 @@ class RemoteDBConnection(DBConnection):
                     query,
                     default_namespace_path=default_namespace_path,
                     parameters=parameters,
+                    timeout=timeout,
+                    read_timeout=read_timeout,
+                    cancel_on_drop=cancel_on_drop,
                 )
             )
         )

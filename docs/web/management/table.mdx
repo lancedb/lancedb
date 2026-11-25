@@ -89,6 +89,7 @@ import {
 } from '/snippets/tables.mdx';
 import {
     PyVersioningCheckpointDelta as VersioningCheckpointDelta,
+    TsVersioningCheckpointDelta as TsVersioningCheckpointDelta,
     RsVersioningCheckpointDelta as RsVersioningCheckpointDelta,
 } from '/snippets/table_delta_docs.mdx';
 import {
@@ -1518,6 +1519,12 @@ but following the conventions keeps your tables consistent with Enterprise tooli
 You can remove columns using the [`drop_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.drop_columns)
  method in Python, [`dropColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#dropcolumns) in TypeScript/JavaScript, or `drop_columns` in Rust.
 
+If a data file still stores other columns, the table keeps it and its ordinary
+Blob v2 sidecar files when you drop a column or add a new one with the same name.
+Compaction can rewrite the current columns into new data files. Cleanup can
+reclaim the superseded data files and their sidecars once the applicable retention
+window has passed and no retained version, including any tagged version, references
+those files. See [Garbage Collection](/maintenance/cleanup).
 
 #### Set Up the example table {#schema-set-up-the-example-table-3}
 
@@ -1786,10 +1793,11 @@ with stable row IDs enabled, as shown below. If a table does not have them, the
 row-level readers explain how to recreate it with the option. `list_transactions()`
 reports the transactions in the range and works without stable row IDs.
 
-This preview supports Python and Rust for LanceDB Embedded. TypeScript support
-is a follow-up. The API accepts versions and tags on the current branch only,
-and rejects tags that belong to another branch. LanceDB Enterprise tables do
-not support row-level deltas.
+This preview supports Python, TypeScript, and Rust for LanceDB Embedded. The
+API accepts versions and tags on the current branch only, and rejects tags that
+belong to another branch. TypeScript exposes endpoint and transaction
+`readVersion` values as `bigint`, and reader schemas are available before
+streaming. LanceDB Enterprise tables do not support row-level deltas.
 
 A `Restore` can reintroduce rows with older row-version metadata that the delta
 readers do not report as changed. For that reason, the row-level readers reject
@@ -1802,6 +1810,10 @@ range. Branch-vs-main summaries remain a separate `branches.diff()` API.
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {VersioningCheckpointDelta}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckpointDelta}
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">

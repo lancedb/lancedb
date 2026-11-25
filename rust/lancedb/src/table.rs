@@ -1021,6 +1021,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         }
         self.refresh_column_async(column).await
     }
+    /// Resume a failed Function refresh on this table and branch.
+    async fn resume_refresh(
+        &self,
+        _job_id: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "resuming a Function refresh requires LanceDB Enterprise".into(),
+        })
+    }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
     async fn function_errors(
@@ -2363,10 +2372,10 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] sets an opt-in
     /// row-count publication threshold for completed Function outputs; unset
     /// keeps whole-fragment publication.
-    /// [`RefreshColumnOptions::resource_budget()`] sets the aggregate CPU,
+    /// [`RefreshColumnOptions::total_memory_bytes()`] sets the aggregate CPU,
     /// memory, and GPU budget for a Function refresh.
     /// [`RefreshColumnOptions::gpu_class()`] selects a GPU pool and
-    /// [`RefreshColumnOptions::gpu_count()`] sets the aggregate GPU budget
+    /// [`RefreshColumnOptions::total_gpu_count()`] sets the aggregate GPU budget
     /// without changing the deployment's CPU and memory defaults.
     /// Batch-size and GPU options have no effect on expression-backed columns
     /// in LanceDB Embedded; a resource budget and publication threshold are
@@ -2423,6 +2432,25 @@ impl Table {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
+    /// Resume a failed Function refresh on this table and its current branch.
+    /// Returns the successor attempt. Its result includes the published table version.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn resume(table: &Table, failed_job_id: &str) -> lancedb::Result<()> {
+    /// let job = table.resume_refresh(failed_job_id).await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn resume_refresh(
+        &self,
+        job_id: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.resume_refresh(job_id.as_ref()).await
+    }
+
     /// Like [`Table::refresh_column_async`], with explicit refresh options.
     ///
     /// Set [`RefreshColumnOptions::batch_size()`] to cap the rows each remote
@@ -2431,9 +2459,9 @@ impl Table {
     /// [`RefreshColumnOptions::publication_interval_rows()`] to publish
     /// completed Function outputs at a row-count threshold; unset keeps
     /// whole-fragment publication. Set
-    /// [`RefreshColumnOptions::resource_budget()`] to pass a complete aggregate
+    /// [`RefreshColumnOptions::total_memory_bytes()`] to pass a complete aggregate
     /// CPU, memory, and GPU budget for a Function refresh. The standalone
-    /// [`RefreshColumnOptions::gpu_count()`] shorthand and
+    /// [`RefreshColumnOptions::total_gpu_count()`] shorthand and
     /// [`RefreshColumnOptions::gpu_class()`] placement remain available; a
     /// resource budget cannot be combined with the gpu-count shorthand. Unset
     /// values use the Function and server defaults; invalid counts and malformed
@@ -2473,7 +2501,7 @@ impl Table {
     ///     RefreshColumnOptions::default()
     ///         .batch_size(8)
     ///         .gpu_class("a10g")
-    ///         .gpu_count(2),
+    ///         .total_gpu_count(2),
     /// ).await?;
     /// let result = job.wait().await?;
     /// # Ok(())

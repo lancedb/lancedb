@@ -87,7 +87,9 @@ pub struct ClientConfig {
     /// Maximum concurrent blob HTTP requests for this connection, shared by all
     /// tables and blob handles. Defaults to 8. The environment variable
     /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` can also set this limit.
-    /// The value must be greater than zero.
+    /// The value must be between 1 and [`Semaphore::MAX_PERMITS`], inclusive.
+    /// Values outside that range are rejected with [`Error::InvalidInput`] when
+    /// the connection is created.
     pub blob_request_concurrency: Option<usize>,
     /// User agent to use for requests. The default provides the library
     /// name and version.
@@ -646,6 +648,14 @@ impl RestfulLanceDbClient<Sender> {
         if value == 0 {
             return Err(Error::InvalidInput {
                 message: "blob request concurrency must be greater than zero".into(),
+            });
+        }
+        if value > Semaphore::MAX_PERMITS {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "blob request concurrency must be at most {}, got {value}",
+                    Semaphore::MAX_PERMITS
+                ),
             });
         }
         Ok(value)
@@ -1502,6 +1512,29 @@ mod tests {
         assert_eq!(
             RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(3)).unwrap(),
             3
+        );
+    }
+
+    /// A semaphore cannot hold more than `MAX_PERMITS`, so a larger configured
+    /// value is refused where it was set instead of panicking when the
+    /// connection is created.
+    #[test]
+    fn test_blob_request_concurrency_must_fit_a_semaphore() {
+        let error = RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(
+            super::Semaphore::MAX_PERMITS + 1,
+        ))
+        .expect_err("a concurrency above the semaphore limit must be refused");
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(
+            error.to_string().contains("blob request concurrency"),
+            "{error}"
+        );
+        assert_eq!(
+            RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(
+                super::Semaphore::MAX_PERMITS
+            ))
+            .unwrap(),
+            super::Semaphore::MAX_PERMITS
         );
     }
 

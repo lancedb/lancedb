@@ -631,6 +631,38 @@ def test_permutation_torch_dict_dataloader_spawn(tmp_db):
     assert sorted(seen) == list(range(11))
 
 
+def _map_add_scaled(row):
+    return {**row, "scaled": row["a"] * 2}
+
+
+def _map_add_total(batch):
+    total = [a + scaled for a, scaled in zip(batch["a"], batch["scaled"])]
+    return {**batch, "total": total}
+
+
+def test_permutation_map_dataloader_spawn(tmp_db):
+    """A map chain must be picklable so spawned DataLoader workers can run it."""
+    table = tmp_db.create_table("test_table", pa.table({"a": range(100)}))
+    permutation = (
+        Permutation.identity(table)
+        .map(_map_add_scaled)
+        .map(_map_add_total, batched=True)
+    )
+
+    dataloader = torch.utils.data.DataLoader(
+        permutation,
+        batch_size=10,
+        num_workers=1,
+        multiprocessing_context="spawn",
+    )
+    seen = []
+    for batch in dataloader:
+        assert set(batch) == {"a", "scaled", "total"}
+        assert torch.equal(batch["total"], batch["a"] * 3)
+        seen.extend(batch["a"].tolist())
+    assert seen == list(range(100))
+
+
 def test_batch_to_tensor_columns_zero_copy_and_slice_offsets():
     vectors = [[float(i), float(i) + 0.5, float(i) + 1.0] for i in range(5)]
     nested_values = np.arange(5 * 3 * 2, dtype=np.float32).reshape(5, 3, 2)

@@ -27,6 +27,7 @@ from .index import (
     NGram,
     ZoneMap,
     RTree,
+    ScalarPlugin,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -324,6 +325,9 @@ class Connection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[pa.RecordBatch] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery: ...
     async def describe_query(self, query_id: UUID) -> QueryDescription: ...
     async def create_table(
@@ -385,6 +389,11 @@ class Connection(object):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         *,
         query: Optional[str] = None,
         exist_ok: bool = False,
@@ -399,6 +408,11 @@ class Connection(object):
         with_no_data: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
         *,
         query: Optional[str] = None,
         exist_ok: bool = False,
@@ -440,6 +454,20 @@ class BlobFile:
 
 class Job:
     @property
+    def job_id(self) -> Optional[str]: ...
+    @property
+    def operation_id(self) -> Optional[str]: ...
+    @property
+    def attempt(self) -> Optional[int]: ...
+    @property
+    def retry_of(self) -> Optional[str]: ...
+    @property
+    def lifecycle_state(self) -> Optional[str]: ...
+    @property
+    def source_table_version(self) -> Optional[int]: ...
+    @property
+    def execution_epoch(self) -> Optional[int]: ...
+    @property
     def id(self) -> Optional[str]: ...
     @property
     def job_type(self) -> Optional[str]: ...
@@ -453,15 +481,34 @@ class Job:
         progress: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> Optional[str]: ...
     async def cancel(self) -> None: ...
+    async def retry(self) -> Job: ...
     async def refresh(self) -> None: ...
     async def timeline(self) -> str: ...
     async def stack(self, worker_id: str) -> str: ...
+    async def capture_profile(
+        self,
+        worker_id: str,
+        *,
+        kind: str = "cpu",
+        duration_seconds: Optional[float] = None,
+        session_slot: int = 0,
+    ) -> str: ...
+    async def profile_status(self, profile_id: str) -> str: ...
+    async def wait_for_profile(
+        self,
+        profile_id: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+        poll_interval_seconds: Optional[float] = None,
+    ) -> str: ...
+    async def profile_artifact(self, profile_id: str) -> str: ...
     async def stats(self) -> Optional[str]: ...
     async def events(
         self,
         *,
         limit: Optional[int] = None,
         filter: Optional[str] = None,
+        page_token: Optional[str] = None,
     ) -> pa.Table: ...
 
 class JobInfo:
@@ -475,6 +522,18 @@ class JobInfo:
     def state(self) -> str: ...
     @property
     def created_at_millis(self) -> int: ...
+    @property
+    def completed_at_millis(self) -> Optional[int]: ...
+    @property
+    def duration_millis(self) -> Optional[int]: ...
+    @property
+    def columns(self) -> list[str]: ...
+    @property
+    def function_name(self) -> Optional[str]: ...
+    @property
+    def function_version(self) -> Optional[str]: ...
+    @property
+    def failure(self) -> Optional[JobFailureInfo]: ...
     @property
     def progress(self) -> Optional[dict[str, Any]]: ...
     @property
@@ -526,6 +585,18 @@ class JobFailureInfo:
     def sql_job_id(self) -> Optional[str]: ...
 
 class JobDescription:
+    @property
+    def operation_id(self) -> Optional[str]: ...
+    @property
+    def attempt(self) -> Optional[int]: ...
+    @property
+    def retry_of(self) -> Optional[str]: ...
+    @property
+    def lifecycle_state(self) -> Optional[str]: ...
+    @property
+    def source_table_version(self) -> Optional[int]: ...
+    @property
+    def execution_epoch(self) -> Optional[int]: ...
     @property
     def job_id(self) -> str: ...
     @property
@@ -612,6 +683,7 @@ class Table:
             NGram,
             ZoneMap,
             RTree,
+            ScalarPlugin,
             FTS,
         ],
         replace: Optional[bool],
@@ -638,6 +710,7 @@ class Table:
             NGram,
             ZoneMap,
             RTree,
+            ScalarPlugin,
             FTS,
         ],
         replace: Optional[bool],
@@ -694,7 +767,11 @@ class Table:
         columns: list[tuple[str, str]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
-        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
@@ -702,7 +779,11 @@ class Table:
         output_name: Optional[str],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
-        auto_refresh_resource_budget: Optional[dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(
         self,
@@ -712,11 +793,13 @@ class Table:
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[dict[str, int]] = None,
         planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
         error_policy: Optional[str] = None,
         max_failed_fraction: Optional[float] = None,
@@ -724,6 +807,7 @@ class Table:
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -740,11 +824,13 @@ class Table:
         batch_size: Optional[int] = None,
         max_concurrency: Optional[int] = None,
         publication_interval_rows: Optional[int] = None,
-        resource_budget: Optional[dict[str, int]] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
         supervisor_resources: Optional[dict[str, int]] = None,
         planning_workers: Optional[dict[str, Any]] = None,
         gpu_class: Optional[str] = None,
         gpu_count: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         retry_policy: Optional[str] = None,
         error_policy: Optional[str] = None,
         max_failed_fraction: Optional[float] = None,
@@ -752,6 +838,7 @@ class Table:
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -760,12 +847,14 @@ class Table:
         function_version: Optional[str] = None,
         recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job: ...
+    async def resume_refresh(self, job_id: str) -> Job: ...
     async def function_errors(
         self,
         job_id: Optional[str] = None,
         column: Optional[str] = None,
         limit: Optional[int] = None,
         history: bool = False,
+        page_token: Optional[str] = None,
     ) -> FunctionErrors: ...
     async def quarantine_function_errors(
         self,
@@ -795,20 +884,22 @@ class Table:
         source_version: Optional[int] = None,
         *,
         full: bool = False,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
         self,
         source_version: Optional[int] = None,
         *,
         full: bool = False,
-        cpu_millis: Optional[int] = None,
-        memory_bytes: Optional[int] = None,
-        gpu_count: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
         gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -1250,6 +1341,7 @@ class FunctionErrorRecord:
     input: Optional[str]
     attempts: Optional[int]
     job_id: str
+    attempt_job_id: Optional[str]
     fragment_id: int
     row_offset: Optional[int]
     row_id: Optional[int]
@@ -1273,6 +1365,8 @@ class FunctionErrorFragment:
 class FunctionErrors:
     workflow_version: Optional[int]
     error_groups_json: str
+    @property
+    def page_token(self) -> Optional[str]: ...
     records: list[FunctionErrorRecord]
     fragments: list[FunctionErrorFragment]
     truncated: bool

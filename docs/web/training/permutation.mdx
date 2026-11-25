@@ -35,6 +35,9 @@ By default a permutation table is stored in memory. Call `persist` before `execu
 LanceDB connection backed by local files or object storage. The plan becomes an ordinary table, so another process
 with access to the same storage can open it and use `Permutation.from_tables` to read the same split.
 
+Only the plan destination must be embedded. The base table can be Embedded or Enterprise; an Enterprise base is
+pinned through the plan's recorded base branch and version.
+
 <CodeGroup>
 ```py Python icon=Python
 from lancedb.permutation import Permutation, permutation_builder
@@ -57,9 +60,9 @@ reopened directly in a worker process.
 
 `mode="create"` is the default and fails when the destination table already exists. Pass `mode="overwrite"` to
 replace it explicitly. Overwriting writes a new table version; readers that already opened the previous version keep
-reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting to LanceDB Enterprise
-connections is not supported yet, because reproducible Enterprise plan ordering requires deterministic remote row
-ordering.
+reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting the plan itself to a
+LanceDB Enterprise connection is not supported yet, because reproducible Enterprise plan ordering requires
+deterministic remote row ordering.
 
 The plan records the base table version and branch in its schema metadata. `Permutation.base_version` and
 `Permutation.base_branch` read those values without querying the base table; both are `None` for older plans that did
@@ -161,6 +164,49 @@ permutation = Permutation.identity(table).with_format("torch_col")
 dataloader = torch.utils.data.DataLoader(permutation, collate_fn=lambda x: x)
 ```
 </CodeGroup>
+
+## Transforming rows with map {#transforming-rows-with-map}
+
+To change rows in Python as they are read, call `map()` with a function that takes a row as a dict and returns a dict.
+Calls can be chained, and the functions run in order. Pass `batched=True` to receive the whole batch as a dict of
+column lists instead; the function must then return one value per input row for every column.
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+import pyarrow as pa
+from lancedb.permutation import Permutation
+
+db = lancedb.connect("memory://")
+reviews = db.create_table(
+    "reviews",
+    pa.table({"text": ["Great", "Awful", "Fine"], "stars": [5, 1, 3]}),
+)
+
+
+def lowercase(row):
+    return {"text": row["text"].lower(), "stars": row["stars"]}
+
+
+def add_label(batch):
+    return {**batch, "label": [int(stars >= 3) for stars in batch["stars"]]}
+
+
+permutation = Permutation.identity(reviews).map(lowercase).map(add_label, batched=True)
+
+print(permutation.take_offsets([0, 1]))
+# [{'text': 'great', 'stars': 5, 'label': 1}, {'text': 'awful', 'stars': 1, 'label': 0}]
+```
+</CodeGroup>
+
+The dict a function returns replaces the row. A column the function does not return is dropped, so return every
+column you want to keep. A mapped `Permutation` always produces a list of dicts, like the default format, whether or
+not `batched` is set, so PyTorch's default collate function can batch it. `select_columns()` and `schema` still
+describe the columns read from the table, which are the input of the first function.
+
+`map()` cannot be combined with `with_format()` or `with_transform()`. Calling one after the other, in either order,
+raises a `ValueError`. To build tensors from mapped rows, convert them in the DataLoader's `collate_fn`. When
+`num_workers > 0`, pass picklable top-level functions to `map()`, not lambdas.
 
 ## Selecting columns {#selecting-columns}
 

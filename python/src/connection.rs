@@ -375,19 +375,29 @@ impl Connection {
         self.get_inner().map(|inner| inner.uri().to_string())
     }
 
-    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None, timeout=None, read_timeout=None, cancel_on_drop=false))]
     pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
         parameters: Option<PyArrowType<RecordBatch>>,
+        timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
+        cancel_on_drop: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
             let mut operation = inner
                 .execute_query_async(query)
-                .default_namespace_path(default_namespace_path);
+                .default_namespace_path(default_namespace_path)
+                .cancel_on_drop(cancel_on_drop);
+            if let Some(timeout) = timeout {
+                operation = operation.timeout(timeout);
+            }
+            if let Some(timeout) = read_timeout {
+                operation = operation.read_timeout(timeout);
+            }
             if let Some(PyArrowType(parameters)) = parameters {
                 operation = operation.parameters(parameters);
             }
@@ -655,7 +665,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -666,6 +676,12 @@ impl Connection {
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
         query: Option<String>,
         exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
@@ -685,6 +701,22 @@ impl Connection {
             if let Some(seconds) = auto_refresh_interval_seconds {
                 builder = builder.auto_refresh_interval_seconds(seconds);
             }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -701,7 +733,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None, exist_ok=false))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -712,6 +744,12 @@ impl Connection {
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
         query: Option<String>,
         exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
@@ -731,6 +769,22 @@ impl Connection {
             if let Some(seconds) = auto_refresh_interval_seconds {
                 builder = builder.auto_refresh_interval_seconds(seconds);
             }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }

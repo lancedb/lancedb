@@ -333,7 +333,7 @@ too slow or too expensive:
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
-  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+  WITH (total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2)
 ```
 </CodeGroup>
 
@@ -342,75 +342,65 @@ up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
 per-worker allocations or a guaranteed worker count. `num_workers` is only
 accepted for SQL-expression columns; registered Function columns reject it.
 
-In particular, `gpu_count = 2` does not request two devices inside one Python
+In particular, `total_gpu_count = 2` does not request two devices inside one Python
 process or enable tensor parallelism. Inspect configured GPU classes and their
 per-worker limits with `db.list_gpu_classes()` or `SHOW GPU CLASSES`. Choose a
 model that fits the worker shape supported by your deployment; see
 [GPU placement and budgets](/enterprise/function-operations#gpu).
 
-The SDKs accept the same nested budget. CPU and memory are required; the GPU
-count inside the budget defaults to zero, so a CPU-only Function can omit it:
+The SDKs expose the same independent total limits:
 
 <CodeGroup>
 ```python Python icon="python"
 job = table.refresh_column_async(
     "embedding",
-    resource_budget={
-        "cpu_millis": 8000,
-        "memory_bytes": 16 * 1024**3,
-    },
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=2,
 )
 job.wait()
 ```
 
 ```rust Rust icon="rust"
-use lancedb::table::{
-    FunctionWorkerResourceBudget,
-    RefreshColumnOptions,
-};
+use lancedb::table::RefreshColumnOptions;
 
 let _job = table
     .refresh_column_async_with_options(
         "embedding",
-        RefreshColumnOptions::default().resource_budget(
-            FunctionWorkerResourceBudget::new(8000, 17_179_869_184),
-        ),
+        RefreshColumnOptions::default()
+            .total_cpu_millis(8000)
+            .total_memory_bytes(17_179_869_184)
+            .total_gpu_count(2),
     )
     .await?;
 ```
 
 ```typescript TypeScript icon="typescript"
 const job = await table.refreshColumnAsync("embedding", {
-  resourceBudget: {
-    cpuMillis: 8000,
-    memoryBytes: 16 * 1024 ** 3,
-  },
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  totalGpuCount: 2,
 });
 await job.wait();
 ```
 </CodeGroup>
 
-On current SQL servers, the equivalent `REFRESH COLUMN ... WITH (...)` form
-still takes all three fields when CPU or memory is set; use `gpu_count = 0`
-for a CPU-only Function. The SDK normalizes an omitted nested GPU count to a
-numeric zero before sending the request.
-
-The existing top-level `gpu_count` / `gpuCount` option remains the shorthand
-for changing only the aggregate GPU budget. It cannot be combined with the
-complete resource budget. Omitting both preserves the server's existing
-defaults.
+Each supplied `total_*` value overrides that resource for this refresh.
+Unspecified values inherit the column's `total_*` settings, then the
+pinned Function's defaults, then the deployment defaults. `total_gpu_count=0`
+limits the refresh to CPU workers and cannot run a GPU Function.
 
 {/*
 Draft for the Function refresh control-plane resource release.
 
-`resource_budget` above sizes the Function workers. Two independent options
+`total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count` above sizes the Function workers. Two independent options
 size the refresh control plane for a registered Function.
 `supervisor_resources` sets the CPU, memory and ephemeral-storage limits of
 the supervisor pod. `planning_workers` sets the resources of one planning
 worker and the sizing of the CPU-only planning fleet: `max_workers`,
 `rows_per_worker` and `fragments_per_worker`. Every field is required and
 must be positive. Omitting either option leaves the server's configured
-defaults unchanged, and either can be combined with `resource_budget`.
+defaults unchanged, and either can be combined with `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count`.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -495,11 +485,11 @@ The SDK validates the shape and sends these values only with this explicit
 refresh request. A supporting LanceDB Enterprise server is required.
 */}
 
-These examples configure only the explicit refresh shown. A registered
-Function declaration can separately set `auto_refresh_resource_budget` on
-`add_columns`; that declaration controls the budget for its automatic
-refreshes. SQL-expression columns reject the automatic resource-budget option
-because they do not use Function workers.
+A Function column may set `total_cpu_millis`,
+`total_memory_bytes`, and `total_gpu_count` on `add_columns`.
+These override the Function defaults for both manual and automatic refreshes.
+The settings apply to registered Function columns; SQL-expression columns use
+`num_workers` instead.
 
 To override the registered Function's call concurrency for this logical
 execution only:
@@ -531,7 +521,7 @@ await job.wait();
 
 `max_concurrency` caps user-code calls in flight for one Function within one
 logical execution. It is not an account-wide quota and does not resize or
-rewrite `resource_budget`. Omitting it uses the registration default; a
+rewrite `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count`. Omitting it uses the registration default; a
 refresh value overrides that default for this execution only.
 
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
@@ -613,7 +603,7 @@ gpu_class = next(gpu.name for gpu in classes if gpu.gpu_model == "NVIDIA H100")
 job = table.refresh_column_async(
     "embedding",
     gpu_class=gpu_class,
-    gpu_count=4,
+    total_gpu_count=4,
     batch_size=32,
 )
 ```
@@ -637,7 +627,7 @@ async fn refresh(
             "embedding",
             RefreshColumnOptions::default()
                 .gpu_class(gpu_class)
-                .gpu_count(4)
+                .total_gpu_count(4)
                 .batch_size(32),
         )
         .await?;
@@ -646,19 +636,21 @@ async fn refresh(
 ```
 </CodeGroup>
 
-`gpu_count` is the aggregate GPU budget for the refresh's Function workers,
-not a request for that many GPUs per worker. It must be positive and preserves
-the deployment's CPU and memory defaults.
+`total_gpu_count` is the aggregate GPU budget for the refresh's Function workers,
+and `gpu_count` is the positive number of devices allocated together to each
+worker. The total budget must fit at least one worker. Omitted CPU and memory
+values inherit column settings, then Function settings, then deployment defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
-are lowercase DNS labels. Omit either option to use the Function's registered
-class or the server's configured budget. `list_gpu_classes()` requires System
+are lowercase DNS labels; `"any"` accepts any eligible configured class. Each
+omitted setting inherits the column's setting, then the Function's setting.
+If no layer specifies a GPU class, omission is equivalent to `"any"`. `list_gpu_classes()` requires System
 Usage permission, and raises `NotImplementedError` when the server predates
 GPU class discovery.
 
 <Note>
 The Rust GPU discovery and refresh controls are not in the latest Rust
 release. TypeScript does not expose GPU class discovery; pass `gpuClass`
-and `gpuCount` in the `refreshColumnAsync` options.
+and `totalGpuCount` in the `refreshColumnAsync` options.
 </Note>
 
 Completed Function outputs publish with their fragment by default. To opt into
@@ -750,8 +742,8 @@ The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
 timeout that is not a positive number and a zero worker or process count
 before sending the request; the server validates everything else. A LanceDB
 Embedded refresh rejects every option other than `batch_size`, `gpu_class`
-and `gpu_count`; in particular, it rejects `resource_budget` rather than
-silently ignoring it.
+and `total_gpu_count`; in particular, it rejects `total_cpu_millis` and
+`total_memory_bytes` rather than silently ignoring them.
 
 ## When a refresh fails {#failures}
 

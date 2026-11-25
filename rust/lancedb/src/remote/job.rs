@@ -3,6 +3,8 @@
 
 //! Tracking for server-side jobs through the `/v1/jobs` API.
 
+mod profile;
+
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
@@ -13,7 +15,10 @@ use serde::Deserialize;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
-use crate::job::{JobEventsRequest, JobHandle, JobProgressCallback, TerminalResult};
+use crate::job::{
+    FunctionProfile, FunctionProfileOptions, JobEventsRequest, JobHandle, JobProgressCallback,
+    TerminalResult,
+};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
 /// Delay before the second job-state poll; doubles up to [`MAX_POLL_INTERVAL`].
@@ -49,13 +54,15 @@ impl JobState {
 impl From<&str> for JobState {
     fn from(state: &str) -> Self {
         match state {
-            "IN_PROGRESS" | "in_progress" => Self::InProgress,
-            "CANCELLED" | "cancelled" | "canceled" => Self::Cancelled,
+            "IN_PROGRESS" | "in_progress" | "created" | "CREATED" | "queued" | "QUEUED" => {
+                Self::InProgress
+            }
+            "CANCELLED" | "cancelled" | "canceled" | "CANCELED" => Self::Cancelled,
             // The server reports a timed-out job as FAILED on describe;
             // accept the raw registry state too in case a future server
             // stops folding it.
             "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => Self::Failed,
-            "DONE" | "done" | "succeeded" => Self::Done,
+            "DONE" | "done" | "succeeded" | "SUCCEEDED" => Self::Done,
             other => Self::Other(other.to_string()),
         }
     }
@@ -109,6 +116,20 @@ pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) job_id: String,
     #[serde(default)]
+    pub(super) attempt_job_id: Option<String>,
+    #[serde(default)]
+    pub(super) operation_id: Option<String>,
+    #[serde(default)]
+    pub(super) attempt: Option<u32>,
+    #[serde(default)]
+    pub(super) retry_of: Option<String>,
+    #[serde(default)]
+    pub(super) lifecycle_state: Option<String>,
+    #[serde(default)]
+    pub(super) source_table_version: Option<u64>,
+    #[serde(default)]
+    pub(super) execution_epoch: Option<i64>,
+    #[serde(default)]
     pub(super) job_type: String,
     pub(super) job_state: String,
     #[serde(default)]
@@ -148,7 +169,7 @@ impl ReportedFailure {
 
 impl DescribeJobResponse {
     fn state(&self) -> JobState {
-        JobState::from(self.job_state.as_str())
+        JobState::from(self.lifecycle_state.as_deref().unwrap_or(&self.job_state))
     }
 
     fn into_terminal_result(self, request_id: String) -> TerminalResult {
@@ -157,10 +178,21 @@ impl DescribeJobResponse {
 
     /// The public description this wire envelope stands for.
     pub(super) fn into_description(self) -> JobDescription {
+        let state = self.state().client_label();
         JobDescription {
             job_id: self.job_id,
+            attempt_job_id: self.attempt_job_id,
+            operation_id: self.operation_id,
+            attempt: self.attempt,
+            retry_of: self.retry_of,
+            lifecycle_state: self
+                .lifecycle_state
+                .as_deref()
+                .map(crate::job::JobState::from),
+            source_table_version: self.source_table_version,
+            execution_epoch: self.execution_epoch,
             job_type: self.job_type,
-            state: JobState::from(self.job_state.as_str()).client_label(),
+            state,
             creation_ms: self.creation_ms,
             progress: self.operation_progress.or(self.progress),
             phase: self.phase,
@@ -202,6 +234,32 @@ pub struct RemoteJob<S: HttpSend> {
 impl<S: HttpSend> RemoteJob<S> {
     pub fn new(client: RestfulLanceDbClient<S>, job_id: String) -> Self {
         Self { client, job_id }
+    }
+
+    pub async fn retry_attempt(&self) -> Result<Self> {
+        let request = self
+            .client
+            .post("/v1/jobs/retry")
+            .json(&serde_json::json!({"job_id": self.job_id}));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let response: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| Error::Http {
+                source: format!("invalid job retry response: {error}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+        let job_id = response
+            .get("job_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| Error::Http {
+                source: "job retry response omitted the successor job_id".into(),
+                request_id,
+                status_code: None,
+            })?;
+        Ok(Self::new(self.client.clone(), job_id.to_string()))
     }
 
     /// One `/v1/jobs/describe` round trip.
@@ -303,6 +361,22 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(evidence)
     }
 
+    async fn capture_profile(
+        &self,
+        worker_id: &str,
+        options: FunctionProfileOptions,
+    ) -> Result<FunctionProfile> {
+        self.capture_profile_inner(worker_id, options).await
+    }
+
+    async fn profile_status(&self, profile_id: &str) -> Result<FunctionProfile> {
+        self.profile_status_inner(profile_id).await
+    }
+
+    async fn profile_artifact(&self, profile_id: &str) -> Result<serde_json::Value> {
+        self.profile_artifact_inner(profile_id).await
+    }
+
     async fn stats(&self) -> Result<Option<String>> {
         let request = self
             .client
@@ -339,6 +413,9 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         }
         if let Some(filter) = request.filter {
             body["filter"] = serde_json::Value::String(filter);
+        }
+        if let Some(token) = request.page_token {
+            body["page_token"] = serde_json::Value::String(token);
         }
         fetch_job_events(&self.client, body).await
     }
@@ -417,6 +494,10 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             .check_response(&request_id, response)
             .await
             .map(|_| ())
+    }
+
+    async fn retry(&self) -> Result<Box<dyn JobHandle>> {
+        Ok(Box::new(self.retry_attempt().await?))
     }
 }
 
@@ -596,6 +677,202 @@ mod tests {
                 .to_string()
                 .contains("403")
         );
+    }
+
+    #[tokio::test]
+    async fn wait_preserves_a_timed_out_attempt_without_an_extra_status_request() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let client = client_with_handler(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_state":"FAILED","lifecycle_state":"timed_out"}"#.to_string())
+                .unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "attempt-1".to_string())));
+        for _ in 0..2 {
+            assert!(matches!(
+                job.wait().await,
+                Err(crate::Error::JobFailed { .. })
+            ));
+            assert_eq!(job.state().as_deref(), Some("failed"));
+            assert_eq!(job.lifecycle_state(), Some(crate::JobState::TimedOut));
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn local_and_remote_jobs_share_terminal_state_contract() {
+        for remote in [false, true] {
+            for state in [
+                crate::JobState::Succeeded,
+                crate::JobState::Failed,
+                crate::JobState::Canceled,
+            ] {
+                let job = if remote {
+                    let response_state = state.as_str().to_string();
+                    let client = client_with_handler(move |request| {
+                        let body = if request.url().path() == "/v1/jobs/cancel" {
+                            "{}".to_string()
+                        } else {
+                            serde_json::json!({
+                                "job_id": "attempt-2", "operation_id": "attempt-1", "attempt": 2,
+                                "retry_of": "attempt-1", "job_state": "IN_PROGRESS",
+                                "lifecycle_state": response_state, "source_table_version": 7, "execution_epoch": 3,
+                            }).to_string()
+                        };
+                        http::Response::builder().status(200).body(body).unwrap()
+                    });
+                    Job::new(Box::new(RemoteJob::new(client, "attempt-2".to_string())))
+                } else {
+                    match state {
+                        crate::JobState::Succeeded => Job::spawned(tokio::spawn(async { Ok(()) })),
+                        crate::JobState::Failed => Job::spawned(tokio::spawn(async {
+                            Err::<(), _>(crate::Error::Runtime {
+                                message: "failed".to_string(),
+                            })
+                        })),
+                        _ => Job::spawned(tokio::spawn(std::future::pending::<Result<()>>())),
+                    }
+                };
+                if state == crate::JobState::Canceled {
+                    job.cancel().await.unwrap();
+                }
+                for _ in 0..2 {
+                    let result = job.wait().await;
+                    match state {
+                        crate::JobState::Succeeded => result.unwrap(),
+                        crate::JobState::Failed => {
+                            assert!(matches!(result, Err(crate::Error::JobFailed { .. })))
+                        }
+                        _ => assert!(matches!(result, Err(crate::Error::JobCancelled { .. }))),
+                    }
+                    assert_eq!(job.lifecycle_state(), Some(state.clone()));
+                    assert_eq!(job.status_typed().await.unwrap(), state);
+                }
+                let identity = job.job_id().unwrap();
+                let operation = job.operation_id();
+                let mapped = job.map(|()| 7);
+                assert_eq!(mapped.job_id().as_deref(), Some(identity.as_str()));
+                assert_eq!(mapped.operation_id(), operation);
+                if remote {
+                    assert_eq!(mapped.retry_of().as_deref(), Some("attempt-1"));
+                    assert_eq!(mapped.attempt(), Some(2));
+                    assert_eq!(mapped.source_table_version(), Some(7));
+                } else {
+                    uuid::Uuid::parse_str(&identity).unwrap();
+                    assert_eq!(mapped.attempt(), Some(1));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_detailed_state_never_inherits_legacy_success() {
+        let client = client_with_handler(|_| {
+            http::Response::builder().status(200).body(
+            r#"{"job_id":"job-1","job_state":"DONE","lifecycle_state":"publishing_in_future","result":null}"#
+        ).unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "job-1".to_string())));
+        assert_eq!(job.status().await.unwrap(), "publishing_in_future");
+        let state = job.status_typed().await.unwrap();
+        assert_eq!(state.as_str(), "publishing_in_future");
+        assert!(!state.is_success());
+        assert!(!state.is_terminal());
+        assert!(matches!(
+            job.wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(1)))
+                .await,
+            Err(crate::Error::Timeout { .. })
+        ));
+        assert_eq!(job.lifecycle_state(), Some(state));
+    }
+
+    #[tokio::test]
+    async fn operation_handles_report_the_selected_attempt_without_changing_id() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({"job_id":"operation-1", "attempt_job_id":"attempt-2",
+                    "operation_id":"operation-1", "attempt":2, "retry_of":"operation-1",
+                    "job_state":"IN_PROGRESS", "lifecycle_state":"queued"})
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let job = Job::new(Box::new(RemoteJob::new(client, "operation-1".into())));
+        assert_eq!(job.status_typed().await.unwrap(), crate::JobState::Queued);
+        assert_eq!(job.id(), Some("operation-1"));
+        assert_eq!(job.job_id().as_deref(), Some("attempt-2"));
+        assert_eq!(job.operation_id().as_deref(), Some("operation-1"));
+        assert_eq!(job.attempt(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn retry_preserves_the_typed_result_decoder_and_exact_predecessor() {
+        let client = client_with_handler(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let response = if request.url().path() == "/v1/jobs/retry" {
+                assert_eq!(body["job_id"], "attempt-1");
+                serde_json::json!({"job_id": "attempt-2"})
+            } else {
+                assert_eq!(body["job_id"], "attempt-2");
+                serde_json::json!({"job_id": "attempt-2", "operation_id": "attempt-1", "attempt": 2,
+                    "retry_of": "attempt-1", "job_state": "DONE", "lifecycle_state": "succeeded", "result": 41})
+            };
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        let job = Job::<u64>::new_typed(Box::new(RemoteJob::new(client, "attempt-1".to_string())))
+            .map(|value| value + 1);
+        let successor = job.retry().await.unwrap();
+        assert_eq!(successor.id(), Some("attempt-2"));
+        assert_eq!(successor.wait().await.unwrap(), 42);
+        successor.refresh().await.unwrap();
+        assert_eq!(successor.operation_id().as_deref(), Some("attempt-1"));
+        assert_eq!(successor.attempt(), Some(2));
+        assert_eq!(successor.retry_of().as_deref(), Some("attempt-1"));
+    }
+
+    #[tokio::test]
+    async fn local_and_remote_wait_timeouts_leave_jobs_waitable() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let local = Job::spawned(tokio::spawn(async move {
+            receiver.await.map_err(|error| crate::Error::Runtime {
+                message: error.to_string(),
+            })
+        }));
+        assert!(matches!(
+            local
+                .wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(1)))
+                .await,
+            Err(crate::Error::Timeout { .. })
+        ));
+        sender.send(7).unwrap();
+        assert_eq!(local.wait().await.unwrap(), 7);
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = done.clone();
+        let client = client_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder().status(200).body(serde_json::json!({
+                "job_state": if observed.load(Ordering::SeqCst) { "DONE" } else { "IN_PROGRESS" }, "result": 7
+            }).to_string()).unwrap()
+        });
+        let remote = Job::<u64>::new_typed(Box::new(RemoteJob::new(client, "job-1".to_string())));
+        assert!(matches!(
+            remote
+                .wait_with_options(JobWaitOptions::new().timeout(Duration::from_millis(1)))
+                .await,
+            Err(crate::Error::Timeout { .. })
+        ));
+        done.store(true, Ordering::SeqCst);
+        assert_eq!(remote.wait().await.unwrap(), 7);
     }
 
     #[tokio::test]

@@ -14,8 +14,8 @@ A LanceDB extension with no DataFusion equivalent.
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH MATERIALIZED VIEW <name>
-  [WITH (full = <boolean>, cpu_millis = <integer>, memory_bytes = <integer>,
-         gpu_count = <integer>, gpu_class = '<class>')]
+  [WITH (full = <boolean>, total_cpu_millis = <integer>, total_memory_bytes = <integer>,
+         total_gpu_count = <integer>, gpu_class = '<class>')]
 ```
 </CodeGroup>
 
@@ -43,20 +43,20 @@ Set budgets for one refresh execution:
 
 ```sql
 REFRESH MATERIALIZED VIEW curated_training_set WITH (
-  cpu_millis = 8000,
-  memory_bytes = 17179869184,
-  gpu_count = 2,
+  total_cpu_millis = 8000,
+  total_memory_bytes = 17179869184,
+  total_gpu_count = 2,
   gpu_class = 'h100'
 );
 ```
 
-`cpu_millis` is CPU capacity in millicores (1000 = one core), not CPU time.
-`memory_bytes` caps memory in bytes. `gpu_count` caps concurrent GPUs for the
+`total_cpu_millis` is CPU capacity in millicores (1000 = one core), not CPU time.
+`total_memory_bytes` caps memory in bytes. `total_gpu_count` caps concurrent GPUs for the
 refresh. These are aggregate caps across its SQL execution and Function
 processes; they are not multiplied by the number of Functions in the query.
 
-CPU or memory requires all three budget fields. CPU and memory must be positive;
-`gpu_count = 0` is allowed for CPU-only views. A GPU budget alone is also accepted.
+Each resource may be overridden independently. CPU and memory must be positive;
+`total_gpu_count = 0` is allowed for CPU-only views. A GPU budget alone is also accepted.
 A cap does not reserve all of its GPUs or increase refresh parallelism. Current
 MV refreshes use at most one GPU, shared by their GPU Function calls.
 

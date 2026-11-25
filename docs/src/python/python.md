@@ -306,7 +306,8 @@ call or return a polling continuation that the SDK follows automatically.
 This behavior is the same with and without parameters. Open the reader directly;
 a directly streamed query needs its reader to make progress. Dropping an unread
 handle or its reader stops direct streaming. Deferred execution continues until
-explicitly cancelled.
+explicitly cancelled by default; use `cancel_on_drop=True` to attempt cancellation
+when its unread handle or reader is dropped.
 
 For example:
 
@@ -358,6 +359,26 @@ reader = db.execute_query(
 # async for batch in await query.reader():
 #     print(batch.num_rows)
 # await query.cancel()
+```
+
+Set `timeout` to bound submission and result consumption together, including
+any time before opening a reader. Set `read_timeout` to limit each server read.
+Both accept `datetime.timedelta` and apply to one execution. An expired timeout
+or failed result read stops reading and attempts to cancel Flight execution.
+Cancellation on drop requires the submitting runtime to remain alive. Durable
+server-side jobs require explicit `db.cancel_job(query.job_id)`.
+
+```python
+from datetime import timedelta
+
+query = db.execute_query_async(
+    "SELECT * FROM events",
+    timeout=timedelta(seconds=30),
+    read_timeout=timedelta(seconds=5),
+    cancel_on_drop=True,
+)
+# To stop this execution explicitly:
+query.cancel()
 ```
 
 ## Namespaces (Synchronous)
@@ -452,6 +473,53 @@ identifiers. `fn.image` has a concise representation; `describe()` exposes Pytho
 and CUDA requirements without inspecting Pydantic internals. Platforms, base image
 and size are `None` until the service reports them. The full image descriptor and
 canonical JSON remain available.
+Jobs retain an attempt identity through `job_id()`, and explicit server retries
+report `operation_id()`, `attempt()`, and `retry_of()` when the server supports
+them.
+`lifecycle_state()` and `status_typed()` expose detailed `JobState` values while
+the existing string `status()` remains available. Unknown future states retain
+their value and never imply success. `source_table_version()` identifies the
+attempt's pinned input snapshot when reported.
+
+```python
+from datetime import timedelta
+from lancedb import JobState
+
+job = db.open_job(job_id)
+state = job.status_typed()
+if state is JobState.SUCCEEDED:
+    print(job.operation_id(), job.attempt(), job.source_table_version())
+job.wait(timeout=timedelta(seconds=5))
+for page in job.history(limit=1000):
+    print(page)
+```
+
+A wait timeout leaves execution running and the handle reusable. Cancellation
+can be refused when publication has already acquired its commit claim; inspect
+the job again to learn that attempt's outcome. LanceDB Embedded handles have a
+stable identity for their lifetime and share typed lifecycle and wait semantics;
+their IDs cannot be reopened after a process restart. Event history, durable
+retries, and per-row Function errors require a backend that records them.
+
+Explicit retries name the exact failed attempt and preserve its resolved
+Function version and source snapshot. Repeating `job.retry()` selects the same
+successor; call `retry()` on that successor to request another attempt. Safely
+retryable states and publication outcomes are validated by the backend.
+
+```python
+retry = failed_job.retry()
+retry.refresh()
+attempt_job_id = retry.job_id()
+token = ""
+while token is not None:
+    errors = table.function_errors(job_id=attempt_job_id, limit=1000, page_token=token)
+    print(errors.records, errors.fragments)
+    token = errors.page_token
+```
+
+An empty error page can still carry a continuation. Keep the table, branch,
+job, and column filters unchanged while paging. Diagnose a terminal attempt for
+its complete retained row errors; an executing attempt is a partial observation.
 
 A `@function` definition is also a local callable. Call a decorated function
 directly with row inputs, or call a decorated class with its initialization fields
@@ -608,6 +676,8 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.BlobReader
 
+::: lancedb.functions.BlobWriter
+
 ::: lancedb.functions.FunctionArtifact
 
 ::: lancedb.functions.FunctionParameter
@@ -698,6 +768,8 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.job.Job
 
+::: lancedb.job.JobState
+
 ::: lancedb.job.AsyncJob
 
 ::: lancedb.job.JobInfo
@@ -705,6 +777,12 @@ with BlobReader(read_range, len(payload)) as reader:
 ::: lancedb.job.JobDescription
 
 ::: lancedb.job.JobFailureInfo
+
+::: lancedb.profiling.FunctionProfile
+
+::: lancedb.profiling.FunctionProfileKind
+
+::: lancedb.profiling.FunctionProfileStatus
 
 ::: lancedb.sql.Query
 
@@ -1444,7 +1522,7 @@ integration = db.create_storage_integration(
 print(integration.configuration_instructions)
 ```
 
-Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal client credentials; managed identity, account key and SAS authentication are not integration modes.
+Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal credentials and storage account access keys.
 
 The equivalent SQL is:
 
@@ -1460,6 +1538,23 @@ DESCRIBE STORAGE INTEGRATION customer_blobs;
 SHOW STORAGE INTEGRATIONS;
 DROP STORAGE INTEGRATION customer_blobs;
 ```
+
+For Shared Key authorization, store the storage account access key in one
+Secret and pass its reference as the only credential option:
+
+```python
+integration = db.create_storage_integration(
+    "customer_blobs_key",
+    "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_storage_account_access_key_secret="azure_key",
+)
+```
+
+The equivalent SQL credential option is
+`STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = public.azure_key`. Shared
+Key authorization must be enabled on the Azure storage account.
 
 Registration returns setup instructions and leaves `access_verified` false. It stores an account-qualified prefix such as `az://customer-data@customeraccount.blob.core.windows.net/raw/`.
 

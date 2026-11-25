@@ -2354,13 +2354,11 @@ def test_remote_create_index_async_returns_job():
         {"batch_size": 8},
         {"max_concurrency": 3},
         {"publication_interval_rows": 60},
-        {"resource_budget": {"cpu_millis": 2000, "memory_bytes": 4 * 1024**3}},
+        {"total_cpu_millis": 2000, "total_memory_bytes": 4 * 1024**3},
         {
-            "resource_budget": {
-                "cpu_millis": 8000,
-                "memory_bytes": 16 * 1024**3,
-                "gpu_count": 2,
-            }
+            "total_cpu_millis": 8000,
+            "total_memory_bytes": 16 * 1024**3,
+            "total_gpu_count": 2,
         },
         {
             "supervisor_resources": {
@@ -2379,7 +2377,7 @@ def test_remote_create_index_async_returns_job():
                 "fragments_per_worker": 8,
             },
         },
-        {"gpu_class": "a10g", "gpu_count": 2},
+        {"gpu_class": "a10g", "total_gpu_count": 2},
         {
             "retry_policy": {"transient": True, "max_attempts": 3},
             "error_policy": "skip",
@@ -2393,6 +2391,7 @@ def test_remote_create_index_async_returns_job():
             "row_timeout_seconds": 30,
             "init_timeout_seconds": 120,
             "num_workers": 4,
+            "max_job_attempts": 4,
             "max_executor_processes_per_worker": 2,
         },
     ],
@@ -2417,14 +2416,11 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 expected["batch_size"] = refresh_kwargs["batch_size"]
             if refresh_kwargs.get("gpu_class") is not None:
                 expected["gpu_class"] = refresh_kwargs["gpu_class"]
-            if refresh_kwargs.get("gpu_count") is not None:
-                expected["gpu_count"] = refresh_kwargs["gpu_count"]
-            if refresh_kwargs.get("resource_budget") is not None:
-                budget = refresh_kwargs["resource_budget"]
-                expected["resource_budget"] = {
-                    **budget,
-                    "gpu_count": budget.get("gpu_count", 0),
-                }
+            if refresh_kwargs.get("total_gpu_count") is not None:
+                expected["total_gpu_count"] = refresh_kwargs["total_gpu_count"]
+            for key in ("total_cpu_millis", "total_memory_bytes"):
+                if refresh_kwargs.get(key) is not None:
+                    expected[key] = refresh_kwargs[key]
             for key in ("supervisor_resources", "planning_workers"):
                 if refresh_kwargs.get(key) is not None:
                     expected[key] = refresh_kwargs[key]
@@ -2443,6 +2439,7 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 "row_timeout_seconds",
                 "init_timeout_seconds",
                 "num_workers",
+                "max_job_attempts",
                 "max_executor_processes_per_worker",
             ):
                 if refresh_kwargs.get(key) is not None:
@@ -2513,6 +2510,56 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
     assert result.model_dump(exclude_defaults=True) == terminal_result
     assert result.rows_filled == 12
     assert result.version == 8
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_table", [True, False])
+async def test_resume_refresh_returns_typed_successor(async_table):
+    terminal = {
+        "rows_assigned": 12,
+        "rows_failed": 0,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+    }
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 1, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/resume_refresh":
+            assert body == {"job_id": "failed"}
+            response = {"job_id": "successor"}
+        elif request.path == "/v1/jobs/describe":
+            assert body["job_id"] == "successor"
+            response = {
+                "job_id": "successor",
+                "job_type": "function_refresh",
+                "job_state": "DONE",
+                "result": terminal,
+            }
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            job = await table.resume_refresh("failed")
+            result = await job.wait(timeout=timedelta(seconds=30))
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            job = table.resume_refresh("failed")
+            result = job.wait(timeout=timedelta(seconds=30))
+
+    assert job.id() == "successor"
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.model_dump(exclude_defaults=True) == terminal
 
 
 def test_remote_refresh_async_forwards_progress_from_submitted_handle():
@@ -2606,8 +2653,7 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"gpu_class": "H100"}, "gpu_class"),
         ({"gpu_class": "-a10g"}, "gpu_class"),
         ({"gpu_class": "a_b"}, "gpu_class"),
-        ({"gpu_count": 0}, "gpu_count"),
-        ({"gpu_count": -1}, "gpu_count"),
+        ({"total_gpu_count": -1}, "total_gpu_count"),
         ({"retry_policy": {"transient": True, "max_attempts": 0}}, "retry_policy"),
         ({"error_policy": "retry"}, "error_policy"),
         ({"where": "  "}, "where"),
@@ -2624,37 +2670,8 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
         ({"max_concurrency": 2**32}, "max_concurrency"),
         ({"num_workers": 0}, "num_workers"),
         (
-            {"resource_budget": {"cpu_millis": 1000}},
-            "resource_budget.memory_bytes",
-        ),
-        (
-            {
-                "resource_budget": {
-                    "cpu_millis": 0,
-                    "memory_bytes": 1,
-                }
-            },
-            "resource_budget.cpu_millis",
-        ),
-        (
-            {
-                "resource_budget": {
-                    "cpu_millis": 1000,
-                    "memory_bytes": 1,
-                },
-                "gpu_count": 1,
-            },
-            "gpu_count cannot be combined with resource_budget",
-        ),
-        (
-            {
-                "resource_budget": {
-                    "cpu_millis": 1000,
-                    "memory_bytes": 1,
-                    "unknown": 1,
-                }
-            },
-            "unsupported key 'unknown'",
+            {"total_cpu_millis": 0, "total_memory_bytes": 1},
+            "total_cpu_millis",
         ),
         (
             {
@@ -2674,17 +2691,6 @@ def test_remote_refresh_async_forwards_progress_from_submitted_handle():
                 }
             },
             "supervisor_resources.ephemeral_storage_bytes",
-        ),
-        (
-            {
-                "supervisor_resources": {
-                    "cpu_millis": 1,
-                    "memory_bytes": 1,
-                    "ephemeral_storage_bytes": 1,
-                    "unknown": 1,
-                }
-            },
-            "unsupported key 'unknown'",
         ),
         (
             {
@@ -3516,6 +3522,74 @@ def test_remote_create_rtree_index():
             "index_type": "RTREE",
             "name": "geom_rtree",
             "page_size": 1024,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_scalar_plugin_nests_params(use_async):
+    from lancedb.index import ScalarPlugin
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            fields = [{"name": "id", "type": {"type": "int32"}, "nullable": False}]
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": fields}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    cases = [
+        (ScalarPlugin(" ZoneMap "), {}),
+        (
+            ScalarPlugin("bloomfilter", {"number_of_items": 4096, "column": "not_id"}),
+            {"name": "id_bloom", "replace": False},
+        ),
+        (ScalarPlugin("bloomfilter", '{"probability": 0.01}'), {}),
+        (ScalarPlugin("zonemap", {}), {}),
+    ]
+
+    if use_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            for config, options in cases:
+                await table.create_index("id", config=config, **options)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            for config, options in cases:
+                table.create_index("id", config=config, **options)
+
+    assert received_requests == [
+        {"column": "id", "index_type": "PLUGIN", "plugin_type": "ZONEMAP"},
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
+            "name": "id_bloom",
+            "replace": False,
+            "params": {"number_of_items": 4096, "column": "not_id"},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
+            "params": {"probability": 0.01},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "ZONEMAP",
+            "params": {},
         },
     ]
 
@@ -6984,10 +7058,29 @@ def test_remote_connection_jobs_surface():
                         dict(
                             job_id="job-2",
                             table="t2",
-                            job_type="create_index",
+                            job_type="function_refresh",
                             state="succeeded",
                             created_at_millis=2000,
-                        )
+                            completed_at_millis=2000,
+                            duration_millis=0,
+                            columns=["embedding"],
+                            function_name="features$embed",
+                            function_version="7",
+                        ),
+                        dict(
+                            job_id="job-3",
+                            table="t2",
+                            job_type="function_refresh",
+                            state="failed",
+                            created_at_millis=3000,
+                            completed_at_millis=3200,
+                            duration_millis=200,
+                            failure=dict(
+                                phase="execute",
+                                message="worker failed",
+                                retryable=False,
+                            ),
+                        ),
                     ]
                 )
             request.send_response(200)
@@ -7085,7 +7178,7 @@ def test_remote_connection_jobs_surface():
 
     with mock_lancedb_connection(handler) as db:
         jobs = list(db.list_jobs())
-        assert [job.job_id for job in jobs] == ["job-1", "job-2"]
+        assert [job.job_id for job in jobs] == ["job-1", "job-2", "job-3"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
         assert jobs[0].progress == {
@@ -7099,6 +7192,24 @@ def test_remote_connection_jobs_surface():
         }
         assert jobs[0].paused is True
         assert jobs[1].state == "finished"
+        assert jobs[0].completed_at_millis is None
+        assert jobs[0].duration_millis is None
+        assert jobs[0].columns == []
+        assert jobs[0].function_name is None
+        assert jobs[0].function_version is None
+        assert jobs[0].failure is None
+        assert jobs[1].completed_at_millis == 2000
+        assert jobs[1].duration_millis == 0
+        assert jobs[1].columns == ["embedding"]
+        assert jobs[1].function_name == "features$embed"
+        assert jobs[1].function_version == "7"
+        assert jobs[1].failure is None
+        assert jobs[2].state == "failed"
+        assert jobs[2].duration_millis == 200
+        assert jobs[2].failure.phase == "execute"
+        assert jobs[2].failure.message == "worker failed"
+        assert jobs[2].failure.retryable is False
+        assert jobs[2].failure.traceback is None
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
@@ -7636,28 +7747,31 @@ async def test_remote_add_function_columns_forwards_auto_refresh_resource_budget
             request.send_response(404)
             request.end_headers()
 
-    budget = {"cpu_millis": 2_000, "memory_bytes": 4 * 1024**3}
+    budget = {"total_cpu_millis": 2_000, "total_memory_bytes": 4 * 1024**3}
     with mock_lancedb_connection(handler) as db:
         table = db.open_table("test")
         table.add_columns(
             {"embedding": application},
-            auto_refresh_resource_budget=budget,
+            total_cpu_millis=(budget).get("total_cpu_millis"),
+            total_memory_bytes=(budget).get("total_memory_bytes"),
+            total_gpu_count=(budget).get("total_gpu_count"),
         )
 
     async with mock_lancedb_connection_async(handler) as db:
         table = await db.open_table("test")
         await table.add_columns(
             {"embedding": application},
-            auto_refresh_resource_budget=budget,
+            total_cpu_millis=(budget).get("total_cpu_millis"),
+            total_memory_bytes=(budget).get("total_memory_bytes"),
+            total_gpu_count=(budget).get("total_gpu_count"),
         )
 
     assert len(bodies) == 2
     for body in bodies:
         assert body["auto_refresh_enabled"] is True
-        assert body["auto_refresh_resource_budget"] == {
-            **budget,
-            "gpu_count": 0,
-        }
+        for key, value in budget.items():
+            assert body[key] == value
+        assert "total_gpu_count" not in body
         assert body["new_columns"] == [{"name": "embedding", "all_null": True}]
 
 
@@ -9034,3 +9148,186 @@ def test_remote_prewarm_preview_reports_old_server_format_support():
         ):
             table.explain_prewarm_data()
     assert len(server.tickets) == 1
+
+
+@pytest.mark.parametrize("async_table", [False, True])
+@pytest.mark.asyncio
+async def test_paged_function_errors_retain_history_and_expose_continuation(
+    async_table,
+):
+    received = []
+
+    def handler(request):
+        length = int(request.headers.get("content-length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 8, "schema": {"fields": []}}
+        else:
+            assert request.path == "/v1/table/test/errors"
+            received.append(body)
+            response = {
+                "records": [],
+                "fragments": [],
+                "truncated": False,
+                "workflow_version": 1,
+                "page_token": "next",
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            errors = await table.function_errors(job_id="attempt-1", page_token="")
+            assert errors.page_token == "next"
+            with pytest.raises(ValueError, match="current failures"):
+                await errors.rows()
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            errors = table.function_errors(job_id="attempt-1", page_token="")
+            assert errors.page_token == "next"
+            with pytest.raises(ValueError, match="current failures"):
+                errors.rows()
+    assert received == [{"job_id": "attempt-1", "page_token": "", "history": True}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_api", [False, True])
+@pytest.mark.parametrize("kind", ["cpu", "memory", "gpu"])
+@pytest.mark.parametrize("submitted_job", [False, True])
+async def test_function_profile_capture_wait_and_retained_export(
+    sync_api, kind, submitted_job, tmp_path
+):
+    state = {"polls": 0, "finished": False}
+    paths = []
+    profile = {
+        "profile_id": "profile-1",
+        "job_id": "job-1",
+        "worker_id": "worker-1",
+        "execution_epoch": 3,
+        "session_slot": 2,
+        "kind": kind,
+        "duration_seconds": 2,
+        "status": "pending",
+        "requested_at_millis": 1000,
+        "deadline_at_millis": 46000,
+        "expires_at_millis": 3601000,
+        "completed_at_millis": None,
+        "error": None,
+        "artifact_id": None,
+    }
+    artifacts = {
+        "cpu": {
+            "$schema": "https://www.speedscope.app/file-format-schema.json",
+            "shared": {"frames": [{"name": "work"}]},
+            "profiles": [],
+        },
+        "memory": {
+            "format": "lancedb.tracemalloc.v1",
+            "allocations": [{"size_bytes": 4096}],
+            "truncated": False,
+        },
+        "gpu": {
+            "format": "lancedb.cuda.v1",
+            "traceEvents": [{"name": "compute", "ph": "X", "ts": 10, "dur": 2}],
+            "truncated": True,
+        },
+    }
+
+    def handler(request):
+        paths.append(request.path)
+        assert request.headers["x-api-key"] == "fake"
+        assert request.headers["x-lancedb-database"] == "dev"
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            result = {"version": 1, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/backfill_column":
+            assert body["column"] == "result"
+            result = {"job_id": "job-1"}
+        elif request.path == "/v1/jobs/describe":
+            result = {
+                "job_id": "job-1",
+                "job_type": "function_refresh",
+                "job_state": "DONE" if state["finished"] else "IN_PROGRESS",
+            }
+        elif request.path == "/v1/jobs/profile/capture":
+            assert body == {
+                "job_id": "job-1",
+                "worker_id": "worker-1",
+                "session_slot": 2,
+                "kind": kind,
+                "duration_seconds": 2.0,
+            }
+            result = profile
+        elif request.path == "/v1/jobs/profile/status":
+            assert body == {"job_id": "job-1", "profile_id": "profile-1"}
+            state["polls"] += 1
+            result = dict(
+                profile,
+                status="complete" if state["polls"] > 1 else "capturing",
+                artifact_id="profile-1" if state["polls"] > 1 else None,
+            )
+        elif request.path == "/v1/jobs/profile/artifact":
+            assert body == {"job_id": "job-1", "profile_id": "profile-1"}
+            result = artifacts[kind]
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+        request.send_response(
+            200 if request.path != "/v1/jobs/profile/capture" else 202
+        )
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(result).encode())
+
+    async def exercise(db):
+        async def invoke(function, *args, **kwargs):
+            if sync_api:
+                return await asyncio.to_thread(function, *args, **kwargs)
+            return await function(*args, **kwargs)
+
+        if submitted_job:
+            table = await invoke(db.open_table, "test")
+            job = await invoke(table.refresh_column_async, "result")
+            await invoke(job.refresh)
+        else:
+            job = await invoke(db.open_job, "job-1")
+        capture = await invoke(
+            job.capture_profile,
+            "worker-1",
+            kind=kind,
+            duration=timedelta(seconds=2),
+            session_slot=2,
+        )
+        assert capture.profile_id == "profile-1"
+        assert capture.worker_id == "worker-1"
+        assert capture.session_slot == 2
+        assert capture.execution_epoch == 3
+        assert capture.status == "pending"
+        completed = await invoke(
+            job.wait_for_profile,
+            capture.profile_id,
+            timeout=timedelta(seconds=2),
+            poll_interval=timedelta(milliseconds=10),
+        )
+        assert completed.status == "complete"
+        assert job.state() == "running"
+        state["finished"] = True
+        await invoke(job.refresh)
+        assert job.state() == "finished"
+        assert await invoke(job.profile_artifact, capture.profile_id) == artifacts[kind]
+        path = tmp_path / "profile.json"
+        await invoke(job.export_profile, capture.profile_id, path)
+        assert json.loads(path.read_text()) == artifacts[kind]
+        assert paths.count("/v1/jobs/describe") == 2
+        assert not any(path.endswith("/cancel") for path in paths)
+
+    if sync_api:
+        with mock_lancedb_connection(handler) as db:
+            await exercise(db)
+    else:
+        async with mock_lancedb_connection_async(handler) as db:
+            await exercise(db)
