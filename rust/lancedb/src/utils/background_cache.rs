@@ -51,8 +51,9 @@ impl<V: Clone, E> State<V, E> {
 
 struct CacheInner<V, E> {
     state: State<V, E>,
-    /// Incremented on invalidation. Background fetches check this to avoid
-    /// overwriting with stale data after a concurrent invalidation.
+    /// Monotonic state-transition counter. Advanced on invalidation, seeding,
+    /// starting a fetch, and consuming a completed fetch via `peek()`, so
+    /// delayed background tasks cannot overwrite or clear a newer cache state.
     generation: u64,
 }
 
@@ -168,9 +169,12 @@ where
     /// Pre-populate the cache with an initial value.
     ///
     /// This avoids a blocking fetch on the first [`get()`](Self::get) call.
+    /// Any in-flight background fetch from before this call will not overwrite
+    /// or clear the seeded value.
     pub fn seed(&self, value: V) {
         let mut cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         cache.state = State::Current(value, clock::now());
+        cache.generation = cache.generation.wrapping_add(1);
     }
 
     /// Invalidate the cache. The next [`get()`](Self::get) will start a fresh fetch.
@@ -180,7 +184,7 @@ where
     pub fn invalidate(&self) {
         let mut cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         cache.state = State::Empty;
-        cache.generation += 1;
+        cache.generation = cache.generation.wrapping_add(1);
     }
 
     fn determine_action<F, Fut>(
@@ -239,6 +243,7 @@ where
                             };
                         }
                     }
+                    cache.generation = cache.generation.wrapping_add(1);
                     return self.determine_action(cache, fetch);
                 }
 
@@ -265,6 +270,7 @@ where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<V, E>> + Send + 'static,
     {
+        cache.generation = cache.generation.wrapping_add(1);
         let generation = cache.generation;
         let shared = async move { (fetch)().await.map_err(Arc::new) }
             .boxed()
@@ -276,7 +282,7 @@ where
         tokio::spawn(async move {
             let result = fut_for_spawn.await;
             let mut cache = inner.lock().unwrap_or_else(|e| e.into_inner());
-            // Only update if no invalidation has happened since we started
+            // Only update if the cache state has not moved on since this fetch started
             if cache.generation != generation {
                 return;
             }
@@ -669,5 +675,126 @@ mod tests {
 
         // invalidate() should not panic
         cache.invalidate();
+    }
+
+    #[tokio::test]
+    async fn test_seed_during_inflight_fetch_prevents_stale_overwrite() {
+        let cache = new_cache();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, TestError>>();
+
+        let mut in_flight = std::pin::pin!(cache.get(move || async move { rx.await.unwrap() }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(in_flight.as_mut().poll(&mut cx).is_pending());
+
+        // Yield so the spawned background task begins polling the in-flight fetch.
+        tokio::task::yield_now().await;
+
+        // Seed a newer value while the earlier fetch is still in flight.
+        cache.seed("seeded".to_string());
+
+        // Complete the stale fetch and let its spawned task run.
+        tx.send(Ok("stale".to_string())).unwrap();
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(cache.try_get().as_deref(), Some("seeded"));
+    }
+
+    #[tokio::test]
+    async fn test_seed_during_inflight_fetch_error_preserves_seeded_value() {
+        let cache = new_cache();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, TestError>>();
+
+        let mut in_flight = std::pin::pin!(cache.get(move || async move { rx.await.unwrap() }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(in_flight.as_mut().poll(&mut cx).is_pending());
+
+        tokio::task::yield_now().await;
+
+        cache.seed("seeded".to_string());
+
+        tx.send(Err(TestError("stale error".to_string()))).unwrap();
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(cache.try_get().as_deref(), Some("seeded"));
+    }
+
+    #[tokio::test]
+    async fn test_peek_transition_prevents_delayed_task_from_clobbering_next_fetch() {
+        let cache = new_cache();
+        let count = Arc::new(AtomicUsize::new(0));
+        clock::pin();
+
+        // Fetch #1 completes inline; its spawned task is queued but has not run yet.
+        let v1 = cache.get(ok_fetcher(count.clone(), "v1")).await.unwrap();
+        assert_eq!(v1, "v1");
+
+        // Second call consumes fetch #1 via peek() and transitions to Current("v1", t0).
+        let v1_cached = cache
+            .get(ok_fetcher(count.clone(), "unused"))
+            .await
+            .unwrap();
+        assert_eq!(v1_cached, "v1");
+
+        // Advance past TTL and start fetch #2 before fetch #1's spawned task runs.
+        clock::advance_by(Duration::from_secs(31));
+        let (tx2, rx2) = tokio::sync::oneshot::channel::<Result<String, TestError>>();
+        let mut fetch2 = std::pin::pin!(cache.get(move || async move { rx2.await.unwrap() }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(fetch2.as_mut().poll(&mut cx).is_pending());
+
+        // Let fetch #1's delayed spawned task run while fetch #2 is in flight.
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
+        // Fetch #1's delayed task must not overwrite the in-flight fetch #2 with stale "v1".
+        assert!(cache.try_get().is_none());
+
+        // Complete fetch #2 and verify callers observe "v2".
+        tx2.send(Ok("v2".to_string())).unwrap();
+        let v2 = fetch2.await.unwrap();
+        assert_eq!(v2, "v2");
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(cache.try_get().as_deref(), Some("v2"));
+    }
+
+    #[tokio::test]
+    async fn test_peek_transition_prevents_delayed_error_task_from_wiping_next_fetch() {
+        let cache = new_cache();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        // Fetch #1 fails inline; its spawned task is queued but has not run yet.
+        let err = cache.get(err_fetcher(count.clone(), "err1")).await;
+        assert!(err.is_err());
+
+        // Next call consumes the failed fetch via peek() and starts fetch #2.
+        let (tx2, rx2) = tokio::sync::oneshot::channel::<Result<String, TestError>>();
+        let mut fetch2 = std::pin::pin!(cache.get(move || async move { rx2.await.unwrap() }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(fetch2.as_mut().poll(&mut cx).is_pending());
+
+        // Let fetch #1's delayed spawned task run while fetch #2 is in flight.
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
+        // A concurrent caller must still coalesce onto fetch #2 rather than starting fetch #3.
+        let mut coalesced = std::pin::pin!(cache.get(ok_fetcher(count.clone(), "duplicate")));
+        assert!(coalesced.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        tx2.send(Ok("v2".to_string())).unwrap();
+        assert_eq!(fetch2.await.unwrap(), "v2");
+        assert_eq!(coalesced.await.unwrap(), "v2");
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(cache.try_get().as_deref(), Some("v2"));
     }
 }
