@@ -402,18 +402,68 @@ def _is_non_retryable_error(error: Exception) -> bool:
     return True
 
 
-def url_retrieve(url: str):
-    """
+DEFAULT_MAX_IMAGE_BYTES = 50 * 1024 * 1024  # 50 MB default safety ceiling
+DEFAULT_URL_TIMEOUT_SECONDS = 15
+
+
+def url_retrieve(
+    url: str,
+    timeout: float = DEFAULT_URL_TIMEOUT_SECONDS,
+    max_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+) -> bytes:
+    """Download an image URL safely with explicit timeout, size bounds, and scheme checks.
+
     Parameters
     ----------
     url: str
-        URL to download from
+        URL to download from (http or https only)
+    timeout: float, optional
+        Socket timeout in seconds (default: 15s)
+    max_bytes: int, optional
+        Maximum allowed byte size to prevent memory bloat (default: 50 MB)
+
+    Returns
+    -------
+    bytes
+        Downloaded image binary payload
     """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(
+            f"Unsupported URL scheme '{parsed.scheme}'. Only 'http' and 'https' are permitted."
+        )
+
     try:
-        with urllib.request.urlopen(url) as conn:
-            return conn.read()
-    except (socket.gaierror, urllib.error.URLError) as err:
-        raise ConnectionError("could not download {} due to {}".format(url, err))
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "LanceDB-ImageEmbedding/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as conn:
+            # Check Content-Length header if present
+            content_length = conn.headers.get("Content-Length")
+            if content_length and content_length.isdigit():
+                if int(content_length) > max_bytes:
+                    raise ValueError(
+                        f"Image from {url} exceeds maximum allowed size ({content_length} > {max_bytes} bytes)."
+                    )
+
+            # Stream read in chunks to prevent unbounded memory allocation
+            chunks = []
+            downloaded = 0
+            chunk_size = 64 * 1024  # 64 KB chunks
+            while True:
+                chunk = conn.read(chunk_size)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > max_bytes:
+                    raise ValueError(
+                        f"Image stream from {url} exceeded maximum allowed size of {max_bytes} bytes."
+                    )
+                chunks.append(chunk)
+
+            return b"".join(chunks)
+    except (socket.gaierror, socket.timeout, urllib.error.URLError, TimeoutError) as err:
+        raise ConnectionError(f"could not download {url} due to {err}")
 
 
 class MissingApiKeyError(ValueError):
