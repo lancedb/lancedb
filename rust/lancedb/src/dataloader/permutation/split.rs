@@ -136,11 +136,20 @@ impl SplitStrategy {
     pub fn validate(&self, num_rows: u64) -> Result<()> {
         match self {
             Self::NoSplit => Ok(()),
-            Self::Random { sizes, .. } => sizes.validate(num_rows),
+            Self::Random {
+                sizes, clump_size, ..
+            } => {
+                if *clump_size == Some(0) {
+                    return Err(Error::InvalidInput {
+                        message: "clump size must be greater than 0".to_string(),
+                    });
+                }
+                sizes.validate(num_rows)
+            }
             Self::Hash {
                 split_weights,
+                discard_weight,
                 columns,
-                ..
             } => {
                 if columns.is_empty() {
                     return Err(Error::InvalidInput {
@@ -157,6 +166,13 @@ impl SplitStrategy {
                         message: "Split weights must be greater than 0".to_string(),
                     });
                 }
+                split_weights
+                    .iter()
+                    .try_fold(0u64, |acc, &w| acc.checked_add(w))
+                    .and_then(|sum| sum.checked_add(*discard_weight))
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "Hash split weights and discard weight overflowed u64".to_string(),
+                    })?;
                 Ok(())
             }
             Self::Sequential { sizes } => sizes.validate(num_rows),
@@ -620,8 +636,13 @@ impl SplitSizes {
     pub fn validate(&self, num_rows: u64) -> Result<()> {
         match self {
             Self::Percentages(percentages) => {
+                if percentages.is_empty() {
+                    return Err(Error::InvalidInput {
+                        message: "Split percentages must not be empty".to_string(),
+                    });
+                }
                 for percentage in percentages {
-                    if *percentage < 0.0 || *percentage > 1.0 {
+                    if !(0.0..=1.0).contains(percentage) {
                         return Err(Error::InvalidInput {
                             message: "Split percentages must be between 0.0 and 1.0".to_string(),
                         });
@@ -643,12 +664,22 @@ impl SplitSizes {
                 }
             }
             Self::Counts(counts) => {
-                if counts.iter().sum::<u64>() > num_rows {
+                if counts.is_empty() {
+                    return Err(Error::InvalidInput {
+                        message: "Split counts must not be empty".to_string(),
+                    });
+                }
+                let total_rows = counts
+                    .iter()
+                    .try_fold(0u64, |acc, &c| acc.checked_add(c))
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "Split counts overflowed u64".to_string(),
+                    })?;
+                if total_rows > num_rows {
                     return Err(Error::InvalidInput {
                         message: format!(
                             "Split counts specified {} rows but only {} are available",
-                            counts.iter().sum::<u64>(),
-                            num_rows
+                            total_rows, num_rows
                         ),
                     });
                 }
@@ -659,6 +690,11 @@ impl SplitSizes {
                 }
             }
             Self::Fixed(num_splits) => {
+                if *num_splits == 0 {
+                    return Err(Error::InvalidInput {
+                        message: "Split fixed config must specify at least 1 split".to_string(),
+                    });
+                }
                 if *num_splits > num_rows {
                     return Err(Error::InvalidInput {
                         message: format!(
@@ -1167,5 +1203,107 @@ mod tests {
             panic!("expected Bootstrap over an empty scan to fail cleanly, not panic");
         };
         assert!(err.to_string().contains("no eligible rows"));
+    }
+
+    #[test]
+    fn test_split_sizes_rejects_zero_empty_nan_and_overflow() {
+        assert!(matches!(
+            SplitSizes::Fixed(0).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Fixed(0).validate(0),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Percentages(vec![]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Counts(vec![]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Percentages(vec![f64::NAN]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Percentages(vec![0.5, f64::NAN]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Percentages(vec![f64::INFINITY]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Percentages(vec![f64::NEG_INFINITY]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Counts(vec![u64::MAX, 1]).validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+
+    #[test]
+    fn test_split_strategy_rejects_zero_clump_size_and_weight_overflow() {
+        let random_zero_clump = SplitStrategy::Random {
+            seed: None,
+            sizes: SplitSizes::Fixed(2),
+            clump_size: Some(0),
+        };
+        assert!(matches!(
+            random_zero_clump.validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+
+        let hash_weights_overflow = SplitStrategy::Hash {
+            columns: vec![ID_COLUMN.to_string()],
+            split_weights: vec![u64::MAX, 1],
+            discard_weight: 0,
+        };
+        assert!(matches!(
+            hash_weights_overflow.validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+
+        let hash_discard_overflow = SplitStrategy::Hash {
+            columns: vec![ID_COLUMN.to_string()],
+            split_weights: vec![u64::MAX],
+            discard_weight: 1,
+        };
+        assert!(matches!(
+            hash_discard_overflow.validate(100),
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_splitter_apply_rejects_invalid_configs_cleanly() {
+        let invalid_strategies = vec![
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Fixed(0),
+            },
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Percentages(vec![]),
+            },
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Counts(vec![]),
+            },
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Percentages(vec![f64::NAN]),
+            },
+            SplitStrategy::Random {
+                seed: Some(42),
+                sizes: SplitSizes::Fixed(2),
+                clump_size: Some(0),
+            },
+        ];
+
+        for strategy in invalid_strategies {
+            let splitter = Splitter::new(TemporaryDirectory::None, strategy);
+            let result = splitter.apply(test_data(), 50).await;
+            assert!(matches!(result, Err(Error::InvalidInput { .. })));
+        }
     }
 }
