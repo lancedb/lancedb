@@ -215,18 +215,6 @@ class MockPermutationServer:
                 request, pa.table({"_rowoffset": pa.array(row_offsets, pa.uint64())})
             )
 
-        if "offset" in body and not body.get("filter"):
-            # A plain offset/limit scan (2-phase's unfiltered contiguous
-            # block reads): a positional, sequential slice of storage order.
-            start = body["offset"]
-            end = start + body["k"]
-            row_ids = list(range(self.num_rows))[start:end]
-            columns = body.get("columns") or ["id"]
-            return self._arrow(
-                request,
-                pa.table({col: pa.array(row_ids, pa.int64()) for col in columns}),
-            )
-
         # The schema probe: filtered to nothing, so it carries schema and no rows.
         return self._arrow(request, pa.table({"id": pa.array([], pa.int64())}))
 

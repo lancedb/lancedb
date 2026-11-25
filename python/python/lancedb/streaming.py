@@ -69,6 +69,12 @@ DEFAULT_PREFETCH_BATCHES = 4
 # was flat across window sizes.
 DEFAULT_WINDOW_BLOCKS = 8
 _UNSET = object()
+# Checkpoint keys pinning the 2-phase read order; absent in 1-phase checkpoints.
+_TWO_PHASE_CHECKPOINT_KEYS = (
+    "block_size",
+    "max_shuffle_distance",
+    "reshuffle_blocks_per_epoch",
+)
 
 
 def _build_bounded_permutation(n: int, max_distance: int, seed: int) -> np.ndarray:
@@ -159,7 +165,6 @@ class _TwoPhaseSplitReader:
         self._loaded: dict[int, pa.Table] = {}
         self._pending: dict[int, Future] = {}
         self._prefetch_depth = max(1, prefetch_depth)
-        self._executor = ThreadPoolExecutor(max_workers=self._prefetch_depth)
 
         counts = np.asarray(block_live_counts, dtype=np.int64)
         total_rows = int(counts.sum())
@@ -245,6 +250,8 @@ class _TwoPhaseSplitReader:
         # returned by any call.
         self._served = np.zeros(self.num_rows, dtype=bool)
         self._served_prefix = 0
+        # Created last so a failed construction leaves no threads behind.
+        self._executor = ThreadPoolExecutor(max_workers=self._prefetch_depth)
 
     def _load_block(self, block_id: Any) -> pa.Table:
         # A block read can arrive as several record batches. Table.take on a
@@ -1078,58 +1085,21 @@ class StreamingDataset(IterableDataset):
                 else None
             )
 
-            block_live_offsets: Optional[list[np.ndarray]] = None
-            self._all_columns: Optional[list[str]] = None
+            pinned_for_setup = self._open_pinned_table()
+            # Remote block reads go through take_offsets, which doesn't
+            # guarantee its output order, so they additionally select
+            # "_rowoffset" and sort locally by it (see _read_block); when the
+            # caller didn't narrow columns, that means explicitly listing
+            # every column, hence caching the full list once here.
+            self._all_columns: Optional[list[str]] = (
+                pinned_for_setup.schema.names if columns is None else None
+            )
+            self._live_offsets: Optional[np.ndarray] = None
             if filter is None:
-                num_rows = self._open_pinned_table().count_rows()
+                num_rows = pinned_for_setup.count_rows()
             else:
-                # One pass, computed once here and never repeated at read
-                # time: a filtered scan over the whole table asks Lance to
-                # evaluate `filter` natively (pushed down against each
-                # fragment's own data) and hand back only each live row's
-                # "_rowoffset" -- a system column giving its 0-indexed
-                # dataset-wide position -- without materializing any real
-                # column data.  Blocks are then just contiguous chunks of
-                # this live-offset array (exactly block_size live rows
-                # each; no more approximating by snapping to fragment
-                # edges), and at read time each block's exact live offsets
-                # are already known, so a sparse take() can fetch just
-                # those rows -- see _read_block in _iter_owned.  Goes
-                # through the table's own query builder (search/select),
-                # not pylance's to_lance(), so this also works against a
-                # remote (Cloud) table.
-                pinned_for_setup = self._open_pinned_table()
-                # take_offsets doesn't guarantee its output order, so
-                # filtered block reads always additionally select
-                # "_rowoffset" and sort locally by it (see _read_block);
-                # when the caller didn't narrow columns, that means
-                # explicitly listing every column instead of relying on an
-                # implicit "everything", hence caching the full list once
-                # here rather than re-querying the schema per block.
-                self._all_columns: Optional[list[str]] = (
-                    pinned_for_setup.schema.names if columns is None else None
-                )
-                live_offsets = (
-                    pinned_for_setup.search()
-                    .where(filter)
-                    .select(["_rowoffset"])
-                    .to_arrow()
-                    .column("_rowoffset")
-                    .to_numpy()
-                )
-                # Defensive: guarantee ascending order regardless of scan
-                # execution order, since block/row semantics below assume
-                # it (a no-op when already ascending, the common case).
-                if live_offsets.size and not np.all(
-                    live_offsets[:-1] <= live_offsets[1:]
-                ):
-                    live_offsets = np.sort(live_offsets)
-
-                num_rows = int(live_offsets.size)
-                block_live_offsets = [
-                    live_offsets[start : start + block_size]
-                    for start in range(0, num_rows, block_size)
-                ]
+                self._live_offsets = self._scan_live_offsets(pinned_for_setup)
+                num_rows = int(self._live_offsets.size)
 
             # Every block holds exactly block_size live rows except a
             # trailing runt, so no per-block range or count list is kept:
@@ -1137,7 +1107,6 @@ class StreamingDataset(IterableDataset):
             # shipped to each DataLoader worker (see __getstate__).
             self._num_rows = num_rows
             self._num_blocks = -(-num_rows // block_size)
-            self._block_live_offsets: Optional[list[np.ndarray]] = block_live_offsets
             full_blocks = num_rows // block_size
             if full_blocks < num_splits:
                 raise ValueError(
@@ -1285,7 +1254,14 @@ class StreamingDataset(IterableDataset):
           is exactly the pinned snapshot by construction.
         """
         if self._connection_factory is not None:
+            # The factory may hand back a cached, caller-owned handle, and
+            # checkout() pins whatever handle it is called on, so pin a copy.
             pinned = self._connection_factory(self._table.name)
+            pinned_state = _table_to_pickle_state(pinned)
+            if pinned_state["kind"] == "remote":
+                pinned = deepcopy(pinned)
+            else:
+                pinned = _table_from_pickle_state(pinned_state)
             pinned.checkout(self._pinned_version)
             return pinned
 
@@ -1329,53 +1305,66 @@ class StreamingDataset(IterableDataset):
                     self._pinned_lance_ds_cache = None
         return self._pinned_lance_ds_cache
 
+    def _scan_live_offsets(self, pinned_table) -> np.ndarray:
+        """Ascending ``_rowoffset`` of every row matching ``filter``.
+
+        Lance evaluates the filter natively and returns only each live row's
+        dataset-wide position, without materializing column data. Blocks are
+        contiguous chunks of this array, so a block read is a sparse take of
+        exactly its live rows. Goes through the table's own query builder
+        rather than pylance, so this also works against a remote table.
+        """
+        live_offsets = (
+            pinned_table.search()
+            .where(self._filter)
+            .select(["_rowoffset"])
+            .to_arrow()
+            .column("_rowoffset")
+            .to_numpy()
+        )
+        # Block and row semantics assume ascending order, which scan
+        # execution order doesn't guarantee.
+        if live_offsets.size and not np.all(live_offsets[:-1] <= live_offsets[1:]):
+            live_offsets = np.sort(live_offsets)
+        return live_offsets
+
     def _read_block(
         self, pinned_table, block: _BlockSlice, columns: Optional[list[str]]
     ) -> pa.Table:
         """Read one 2-phase block slice's live rows, in natural (ascending) order."""
         lance_ds = self._pinned_lance_dataset(pinned_table)
+        block_start = block.block_id * self._block_size
+        row_start = block_start + block.start
+        row_end = block_start + block.stop
         if self._filter is None:
-            # offset/limit is a positional, sequential read, so its output
-            # order is exactly storage order -- no restoration needed.
-            block_start = block.block_id * self._block_size
-            row_start = block_start + block.start
-            row_end = block_start + block.stop
             if lance_ds is not None:
-                # Local table: pylance's native scanner is a direct,
-                # purpose-built positional range read -- substantially
-                # faster than routing the same offset/limit request through
-                # the generic, backend-agnostic query builder below, which
-                # exists so this also works against a remote (Cloud) table.
+                # Local table: pylance's positional range scan returns rows in
+                # storage order and is much faster than a take.
                 return lance_ds.scanner(
                     offset=row_start, limit=row_end - row_start, columns=columns
                 ).to_table()
-            q = pinned_table.search().offset(row_start).limit(row_end - row_start)
-            if columns is not None:
-                q = q.select(columns)
-            return q.to_arrow()
+            # Remote offset/limit pages don't guarantee a consistent row order
+            # across requests, so independent pages can overlap or skip rows;
+            # explicit offsets name exactly this block's rows.
+            offsets = np.arange(row_start, row_end, dtype=np.int64)
+        else:
+            offsets = self._live_offsets[row_start:row_end]
+            if lance_ds is not None:
+                # Local table: pylance's native take() preserves the requested
+                # offset order already, so no sort-and-rebuild pass is needed.
+                return lance_ds.take(offsets.tolist(), columns=columns)
 
-        # Filtered: this block's exact live-row dataset offsets were
-        # already computed once, up front (from the "_rowoffset" system
-        # column -- see __init__), so a sparse take fetches just the live
-        # rows themselves, skipping any dead-row gaps entirely.
-        offsets = self._block_live_offsets[block.block_id][block.start : block.stop]
-        if lance_ds is not None:
-            # Local table: pylance's native take() preserves the requested
-            # offset order already, unlike the generic take_offsets() path
-            # below, so no extra sort-and-rebuild pass is needed here.
-            return lance_ds.take(offsets.tolist(), columns=columns)
-
-        # Remote table: take_offsets makes no ordering guarantee for an
-        # arbitrary index list, so "_rowoffset" is always also selected
-        # and used to restore the request's ascending order locally.
+        # take_offsets makes no ordering guarantee for an arbitrary index
+        # list, so "_rowoffset" is always also selected and used to restore
+        # the request's ascending order locally.
         select_cols = (columns if columns is not None else self._all_columns) + [
             "_rowoffset"
         ]
-        block = (
+        table = (
             pinned_table.take_offsets(offsets.tolist()).select(select_cols).to_arrow()
         )
-        order = pc.sort_indices(block.column("_rowoffset"))
-        return block.take(order).drop_columns(["_rowoffset"])
+        order = pc.sort_indices(table.column("_rowoffset"))
+        return table.take(order).drop_columns(["_rowoffset"])
 
     def _shuffled_block_order(self) -> list[int]:
         """The epoch's block permutation, derived only from scalar config."""
@@ -1677,11 +1666,17 @@ class StreamingDataset(IterableDataset):
                     if self._pack_sequences is not None
                     else self._resume_positions.get(split_idx, sample_count)
                 )
-                permutations.append(
-                    self._make_two_phase_reader(
+                try:
+                    reader = self._make_two_phase_reader(
                         split_idx, pinned_table, self._columns, skip=start_pos
                     )
-                )
+                except BaseException:
+                    # The consumer loop's finally, which closes the readers'
+                    # prefetch executors, hasn't been entered yet.
+                    for built in permutations:
+                        built.close()
+                    raise
+                permutations.append(reader)
                 initial_samples.append(sample_count)
                 initial_positions.append(start_pos)
 
@@ -2285,6 +2280,10 @@ class StreamingDataset(IterableDataset):
         # startup (minutes at 128 workers with small blocks).
         if state.get("_block_perm") is not None:
             state["_block_perm"] = None
+        # One entry per live row, so it would grow the pickle the same way;
+        # each worker rescans it from the pinned snapshot in __setstate__.
+        if state.get("_live_offsets") is not None:
+            state["_live_offsets"] = None
         # Non-picklable Rust-backed handle (see _pinned_lance_dataset);
         # dropped rather than set to None so the worker's first _read_block
         # call recomputes it fresh against its own reconnected table instead
@@ -2317,6 +2316,8 @@ class StreamingDataset(IterableDataset):
         else:
             # 2-phase mode never builds a permutation table.
             self._perm_table = None
+        if self._block_size is not None and self._filter is not None:
+            self._live_offsets = self._scan_live_offsets(self._open_pinned_table())
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
@@ -2407,6 +2408,22 @@ class StreamingDataset(IterableDataset):
             self._perm_fingerprint_cache = hasher.hexdigest()
         return self._perm_fingerprint_cache
 
+    def _two_phase_checkpoint_config(self) -> dict:
+        """The 2-phase settings a saved position is only meaningful under."""
+        if self._block_size is None:
+            return {}
+        return {key: getattr(self, f"_{key}") for key in _TWO_PHASE_CHECKPOINT_KEYS}
+
+    def _check_two_phase_checkpoint_config(self, state: dict, source: str) -> None:
+        ours = self._two_phase_checkpoint_config()
+        for key in _TWO_PHASE_CHECKPOINT_KEYS:
+            if state.get(key) != ours.get(key):
+                raise ValueError(
+                    f"{key} mismatch: {source} has {state.get(key)}, "
+                    f"current dataset has {ours.get(key)}; saved positions "
+                    "index a different 2-phase read order"
+                )
+
     def _checkpoint_snapshot(self) -> dict:
         # Only recorded for split_strategy: split_random/split_sequential are
         # already fully pinned by shuffle_seed/num_splits below, and row ids are not
@@ -2422,6 +2439,7 @@ class StreamingDataset(IterableDataset):
                 "shuffle_seed": self._shuffle_seed,
                 "num_splits": self._num_splits,
                 **perm_fingerprint,
+                **self._two_phase_checkpoint_config(),
                 "epoch": self._epoch,
                 "pack_sequences": self._pack_sequences,
                 "eos_id": self._eos_id,
@@ -2443,6 +2461,7 @@ class StreamingDataset(IterableDataset):
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
             **perm_fingerprint,
+            **self._two_phase_checkpoint_config(),
             "epoch": self._epoch,
             "samples_consumed_per_split": samples,
             "positions_consumed_per_split": positions,
@@ -2513,6 +2532,7 @@ class StreamingDataset(IterableDataset):
                     f"{key} mismatch in worker checkpoint: "
                     f"{state.get(key)} != {expected}"
                 )
+        self._check_two_phase_checkpoint_config(state, "worker checkpoint")
         packed = "pack_buffers" in state
         if packed != (self._pack_sequences is not None):
             raise ValueError("worker checkpoint mode does not match the dataset")
@@ -2582,7 +2602,10 @@ class StreamingDataset(IterableDataset):
         across compaction, so it would reject an otherwise-valid resume), and
         continue to rely on ``shuffle_seed``/``num_splits`` alone as before.
         Packed checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
-        ``blocks_per_epoch``, and ``epoch``.
+        ``blocks_per_epoch``, and ``epoch``. Checkpoints from a ``block_size``
+        dataset pin ``block_size``, ``max_shuffle_distance`` and
+        ``reshuffle_blocks_per_epoch``, and are rejected by a 1-phase dataset
+        and vice versa.
         """
         if state["num_splits"] != self._num_splits:
             raise ValueError(
@@ -2612,6 +2635,7 @@ class StreamingDataset(IterableDataset):
                 "Resuming would apply saved per-split positions to the wrong "
                 "rows."
             )
+        self._check_two_phase_checkpoint_config(state, "checkpoint")
         self._consumer_checkpoint_requires_uniform = False
 
         if "pack_buffers" in state or self._pack_sequences is not None:
@@ -2725,6 +2749,13 @@ class StreamingDataset(IterableDataset):
         for state in states[1:]:
             if ("pack_buffers" in state) != packed:
                 raise ValueError("cannot merge packed and unpacked state dicts")
+            # Absent on purpose in 1-phase states, so compare presence too.
+            for key in _TWO_PHASE_CHECKPOINT_KEYS:
+                if state.get(key) != first.get(key):
+                    raise ValueError(
+                        f"{key} mismatch across state dicts: "
+                        f"{state.get(key)} != {first.get(key)}"
+                    )
             for key in config_keys:
                 if key not in state:
                     continue

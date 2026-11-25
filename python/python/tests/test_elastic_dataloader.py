@@ -31,6 +31,7 @@ Parameters used throughout:
 """
 
 import dataclasses
+import functools
 import logging
 import multiprocessing as mp
 import pickle
@@ -1206,9 +1207,10 @@ def test_block_size_dataloader_workers_reconnect(tmp_path):
     assert sorted(row for batch in batches for row in batch) == list(range(8))
 
 
+@pytest.mark.parametrize("filter", [None, "id % 2 = 0"])
 @pytest.mark.parametrize("reshuffle_blocks_per_epoch", [True, False])
 def test_block_size_pickle_does_not_grow_with_block_count(
-    tmp_path, reshuffle_blocks_per_epoch
+    tmp_path, reshuffle_blocks_per_epoch, filter
 ):
     """Spawned workers start serially once the pickle outgrows a pipe buffer."""
     db = lancedb.connect(tmp_path)
@@ -1222,6 +1224,7 @@ def test_block_size_pickle_does_not_grow_with_block_count(
             epoch=3,
             block_size=block_size,
             reshuffle_blocks_per_epoch=reshuffle_blocks_per_epoch,
+            filter=filter,
         )
 
     def pickled_state(dataset):
@@ -1236,11 +1239,15 @@ def test_block_size_pickle_does_not_grow_with_block_count(
     few_size = len(pickled_state(few_blocks))
     many_size = len(pickled_state(many_blocks))
     assert many_size - few_size < 1024, (few_size, many_size)
+    # A filter's per-live-row offsets must not ride along either.
+    assert many_size < 64 * 1024, many_size
 
     restored = StreamingDataset.__new__(StreamingDataset)
     restored.__setstate__(pickle.loads(pickled_state(many_blocks)))
     assert restored._block_perm == many_blocks._block_perm
     assert restored._block_perm != sorted(restored._block_perm)
+    if filter is not None:
+        np.testing.assert_array_equal(restored._live_offsets, many_blocks._live_offsets)
 
 
 def test_distributed_checkpoint_uses_rank_local_worker_boundary(tmp_path):
@@ -3666,10 +3673,27 @@ def test_streaming_dataset_over_remote_table():
     assert_server_safe_row_id_requests(server)
 
 
+class _ReorderingOffsetScanServer(MockPermutationServer):
+    """Answers offset/limit pages as if the table's two fragments complete in a
+    different order on each request, which remote scans are allowed to do."""
+
+    def _query(self, request, body):
+        if "offset" in body and not body.get("filter"):
+            rows = list(range(self.num_rows))
+            half = self.num_rows // 2
+            if body["offset"] >= half:
+                rows = rows[half:] + rows[:half]
+            start = body["offset"]
+            return self._arrow(
+                request, pa.table({"id": rows[start : start + body["k"]]})
+            )
+        return super()._query(request, body)
+
+
 def test_two_phase_over_remote_table():
-    """2-phase (block_size) reads a remote table via offset/limit scans,
-    not pylance's to_lance() (which only works locally)."""
-    server = MockPermutationServer(num_rows=16)
+    """Unfiltered 2-phase reads of a remote table name each block's rows by
+    _rowoffset: offset/limit pages have no cross-request order guarantee."""
+    server = _ReorderingOffsetScanServer(num_rows=16)
 
     with mock_remote_table(server) as table:
         ds = StreamingDataset(table, num_splits=2, block_size=4, shuffle=False)
@@ -3723,6 +3747,27 @@ def test_two_phase_over_remote_table_does_not_pin_callers_handle():
             "iterating a 2-phase dataset must not pin the caller's own "
             "table handle to a fixed version"
         )
+
+
+@functools.lru_cache
+def _cached_open_table(uri, name):
+    return lancedb.connect(uri).open_table(name)
+
+
+def test_two_phase_does_not_pin_cached_factory_handle(tmp_path):
+    """A connection_factory may return a cached, caller-owned handle; pinning
+    the dataset's snapshot must not check that handle out (read-only)."""
+    lancedb.connect(tmp_path).create_table("t", pa.table({"id": list(range(8))}))
+    factory = functools.partial(_cached_open_table, str(tmp_path))
+    table = factory("t")
+
+    ds = StreamingDataset(
+        table, block_size=4, shuffle=False, connection_factory=factory
+    )
+    table.add(pa.table({"id": [8]}))
+
+    assert table.count_rows() == 9
+    assert [row["id"] for row in ds] == list(range(8))
 
 
 # ---------------------------------------------------------------------------
@@ -3930,6 +3975,68 @@ def test_two_phase_resume_checkpoint_round_trip(lance_table):
     assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
         "Consumed + remaining must cover every row exactly once"
     )
+
+
+@pytest.mark.parametrize(
+    "saved,resumed",
+    [
+        pytest.param({"block_size": 10}, {"block_size": 5}, id="block_size"),
+        pytest.param({"block_size": 10}, {}, id="two_phase_into_one_phase"),
+        pytest.param({}, {"block_size": 10}, id="one_phase_into_two_phase"),
+        pytest.param(
+            {"block_size": 10},
+            {"block_size": 10, "max_shuffle_distance": 15},
+            id="max_shuffle_distance",
+        ),
+        pytest.param(
+            {"block_size": 10},
+            {"block_size": 10, "reshuffle_blocks_per_epoch": False},
+            id="reshuffle_blocks_per_epoch",
+        ),
+    ],
+)
+def test_two_phase_checkpoint_rejects_different_read_order(lance_table, saved, resumed):
+    """Saved positions index one 2-phase read order; resuming them under
+    another would replay consumed rows and skip unread ones."""
+
+    def make(options):
+        return StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, **options
+        )
+
+    source = make(saved)
+    it = iter(source)
+    for _ in range(2 * NUM_SPLITS):
+        next(it)
+    checkpoint = source.state_dict()
+
+    with pytest.raises(ValueError, match="mismatch"):
+        make(resumed).load_state_dict(checkpoint)
+    with pytest.raises(ValueError, match="mismatch across state dicts"):
+        StreamingDataset.merge_state_dicts([checkpoint, make(resumed).state_dict()])
+
+
+def test_two_phase_failed_reader_build_closes_built_readers(lance_table, monkeypatch):
+    """A resume position past a split's end fails while building readers; the
+    readers built before it must still release their prefetch executors."""
+    ds = StreamingDataset(
+        lance_table, num_splits=2, shuffle_seed=SHUFFLE_SEED, block_size=10
+    )
+    checkpoint = ds.state_dict()
+    checkpoint["positions_consumed_per_split"] = [0, NUM_ROWS]
+    ds.load_state_dict(checkpoint)
+
+    closed = []
+    close = streaming._TwoPhaseSplitReader.close
+
+    def counting_close(reader):
+        closed.append(reader)
+        close(reader)
+
+    monkeypatch.setattr(streaming._TwoPhaseSplitReader, "close", counting_close)
+    with pytest.raises(ValueError, match="out of range"):
+        list(ds)
+    assert len(closed) == 1
 
 
 def test_two_phase_pinned_version_survives_concurrent_write(tmp_path):
