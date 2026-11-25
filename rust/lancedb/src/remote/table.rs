@@ -701,6 +701,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     schema_cache: BackgroundCache<SchemaRef, Error>,
     // Only a successful describe can opt into the batched range protocol.
     blob_ranges_supported: Arc<AtomicBool>,
+    // Only a successful describe can opt into presigned direct Blob reads.
+    blob_locations_supported: Arc<AtomicBool>,
     // WAL-PK-FUSION: delete, with its initializers below.
     wal_pk_fusion: PkFusionMemory,
     freshness: Arc<Mutex<FreshnessState>>,
@@ -1006,6 +1008,7 @@ impl<S: HttpSend> RemoteTable<S> {
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+            blob_locations_supported: Arc::new(AtomicBool::new(false)),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
@@ -1020,6 +1023,20 @@ impl<S: HttpSend> RemoteTable<S> {
                 .is_some_and(|value| value == "1"),
             AtomicOrdering::Relaxed,
         );
+    }
+
+    pub(super) fn seed_blob_locations_capability(&self, headers: &http::HeaderMap) {
+        self.blob_locations_supported.store(
+            headers
+                .get("x-lancedb-blob-locations")
+                .is_some_and(|value| value == "1"),
+            AtomicOrdering::Relaxed,
+        );
+    }
+
+    fn seed_blob_capabilities(&self, headers: &http::HeaderMap) {
+        self.seed_blob_ranges_capability(headers);
+        self.seed_blob_locations_capability(headers);
     }
 
     /// Seed the schema cache from a `describe` body the caller already fetched.
@@ -1053,6 +1070,7 @@ impl<S: HttpSend> RemoteTable<S> {
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             blob_ranges_supported: self.blob_ranges_supported.clone(),
+            blob_locations_supported: self.blob_locations_supported.clone(),
             wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
@@ -1298,7 +1316,7 @@ impl<S: HttpSend> RemoteTable<S> {
         };
 
         let response = self.check_table_response(&request_id, response).await?;
-        self.seed_blob_ranges_capability(response.headers());
+        self.seed_blob_capabilities(response.headers());
         let batch_function_declaration = response
             .headers()
             .get("x-lancedb-batch-function-declaration")
@@ -2204,6 +2222,7 @@ async fn fetch_schema<S: HttpSend>(
     branch: Option<String>,
     freshness: Arc<Mutex<FreshnessState>>,
     blob_ranges_supported: Arc<AtomicBool>,
+    blob_locations_supported: Arc<AtomicBool>,
 ) -> Result<SchemaRef> {
     let mut body = serde_json::json!({ "version": read_snapshot.version });
     if let Some(branch) = &branch {
@@ -2225,6 +2244,13 @@ async fn fetch_schema<S: HttpSend>(
         response
             .headers()
             .get("x-lancedb-blob-ranges")
+            .is_some_and(|value| value == "1"),
+        AtomicOrdering::Relaxed,
+    );
+    blob_locations_supported.store(
+        response
+            .headers()
+            .get("x-lancedb-blob-locations")
             .is_some_and(|value| value == "1"),
         AtomicOrdering::Relaxed,
     );
@@ -2286,6 +2312,7 @@ mod test_utils {
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
                 blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+                blob_locations_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2315,6 +2342,7 @@ mod test_utils {
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
                 blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+                blob_locations_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -2353,6 +2381,7 @@ mod test_utils {
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
                 blob_ranges_supported: Arc::new(AtomicBool::new(false)),
+                blob_locations_supported: Arc::new(AtomicBool::new(false)),
                 wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
@@ -3209,6 +3238,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             let branch = self.branch.clone();
             let freshness = self.freshness.clone();
             let blob_ranges_supported = self.blob_ranges_supported.clone();
+            let blob_locations_supported = self.blob_locations_supported.clone();
 
             match self
                 .schema_cache
@@ -3221,6 +3251,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         branch,
                         freshness,
                         blob_ranges_supported,
+                        blob_locations_supported,
                     )
                     .await
                 })

@@ -1814,6 +1814,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.sql_client.clone(),
             ));
             table.seed_blob_ranges_capability(rsp.headers());
+            table.seed_blob_locations_capability(rsp.headers());
             Ok(table)
         } else {
             // Describe the table to confirm it exists before moving on.
@@ -1837,6 +1838,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.sql_client.clone(),
             ));
             table.seed_blob_ranges_capability(&describe_headers);
+            table.seed_blob_locations_capability(&describe_headers);
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
             // branch pin applied after this invalidates the cache.
