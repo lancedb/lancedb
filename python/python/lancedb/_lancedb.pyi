@@ -775,8 +775,7 @@ class Table:
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
-        application_json: str,
-        output_name: Optional[str],
+        bindings: list[tuple[str, Optional[str]]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
         total_cpu_millis: Optional[int] = None,

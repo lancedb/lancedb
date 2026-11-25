@@ -3480,10 +3480,11 @@ class Table(ABC):
             new columns with the specified data types. The new columns will
             be initialized with null values.
 
-            A mapping with one ``FunctionApplication`` value keeps its scalar
-            or named-struct result in the named table column. A bare
-            named-struct application expands its ordered result fields as one
-            atomic binding; aliases come from ``rename(columns=...)``.
+            A mapping of column names to ``FunctionApplication`` values declares
+            all bindings in one schema commit. Each column holds its scalar
+            or entire named-struct result. A bare named-struct application expands
+            its ordered result fields as one atomic binding. Set field aliases
+            with ``rename(columns=...)``.
             Function columns are supported only in LanceDB
             Enterprise.
 
@@ -9110,10 +9111,11 @@ class AsyncTable:
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
 
-            A mapping with one ``FunctionApplication`` value keeps its scalar
-            or named-struct result in the named table column. A bare
-            named-struct application expands its ordered result fields as one
-            atomic binding; aliases come from ``rename(columns=...)``.
+            A mapping of column names to ``FunctionApplication`` values declares
+            all bindings in one schema commit. Each column holds its scalar
+            or entire named-struct result. A bare named-struct application expands
+            its ordered result fields as one atomic binding. Set field aliases
+            with ``rename(columns=...)``.
             Function columns are supported only in LanceDB
             Enterprise.
 
@@ -9207,31 +9209,30 @@ class AsyncTable:
             or gpu_class is not None
             or gpu_count is not None
         )
-        function_application = None
-        function_output_name = None
+        bindings: list[tuple[FunctionApplication, str | None]] = []
         if isinstance(transforms, FunctionApplication):
-            function_application = transforms
+            bindings.append((transforms, None))
         elif isinstance(transforms, Mapping) and any(
             isinstance(value, FunctionApplication) for value in transforms.values()
         ):
-            if len(transforms) != 1 or not all(
-                isinstance(value, FunctionApplication) for value in transforms.values()
-            ):
-                raise ValueError(
-                    "one add_columns call declares exactly one Function binding"
-                )
-            function_output_name, function_application = next(iter(transforms.items()))
+            for name, application in transforms.items():
+                if not isinstance(application, FunctionApplication):
+                    raise ValueError(
+                        "add_columns cannot mix Function applications and SQL "
+                        "expressions"
+                    )
+                bindings.append((application, name))
 
-        if function_application is not None:
+        if bindings:
             if computed:
                 raise ValueError(
                     "add_columns cannot mix a Function application with SQL "
                     "computed columns"
                 )
-            function_application._ensure_declarable()
+            for application, _ in bindings:
+                application._ensure_declarable()
             return await self._inner.add_function_columns(
-                function_application.to_canonical_json(),
-                function_output_name,
+                [(app.to_canonical_json(), name) for app, name in bindings],
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
                 total_cpu_millis,
