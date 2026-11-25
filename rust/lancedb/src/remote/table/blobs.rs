@@ -724,13 +724,22 @@ impl<S: HttpSend> BlobLocationsContext<S> {
                 status_code: None,
             });
         }
-        let identity = response
-            .headers()
-            .get(QUERY_SNAPSHOT_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| valid_query_snapshot_identity(value))
-            .map(str::to_owned)
-            .or_else(|| self.expected_query_snapshot.clone());
+        let identity = match &self.expected_query_snapshot {
+            Some(expected) => Some(expected.clone()),
+            None => Some(
+                response
+                    .headers()
+                    .get(QUERY_SNAPSHOT_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .filter(|value| valid_query_snapshot_identity(value))
+                    .map(str::to_owned)
+                    .ok_or_else(|| Error::NotSupported {
+                        message:
+                            "Blob locations require a snapshot identity; upgrade every serving node"
+                                .into(),
+                    })?,
+            ),
+        };
 
         let body = response.text().await.err_to_http(request_id.clone())?;
         let parsed: BlobLocationsBody =
@@ -1253,6 +1262,7 @@ impl<S: HttpSend> RemoteTable<S> {
                                 ids,
                                 read_snapshot,
                                 allow_direct_fallback,
+                                identity.clone(),
                             )
                             .await?;
                         let blob = match files.pop().unwrap() {
@@ -1395,7 +1405,12 @@ impl<S: HttpSend> RemoteTable<S> {
                 let row_id = row_ids[index];
                 let identity = identity.map(str::to_owned);
                 async move {
-                    let proxy = self.blob_range_requester(column, row_id, &read_snapshot);
+                    let proxy = self.blob_range_requester_with_identity(
+                        column,
+                        row_id,
+                        &read_snapshot,
+                        identity.as_deref(),
+                    );
                     let context = self.blob_locations_context(
                         column,
                         Some(resolved.version),
@@ -1492,7 +1507,13 @@ impl<S: HttpSend> RemoteTable<S> {
                 }
                 Err(error) if is_fetch_blobs_byte_limit_error(&error) => {
                     let mut files = self
-                        .fetch_blob_files_with_snapshot(column, ids, read_snapshot, false)
+                        .fetch_blob_files_with_snapshot(
+                            column,
+                            ids,
+                            read_snapshot,
+                            false,
+                            identity.clone(),
+                        )
                         .await?;
                     let blob = match files.pop().unwrap() {
                         Some(file) => Some(file.read().await?),
@@ -1823,7 +1844,12 @@ impl<S: HttpSend> RemoteTable<S> {
         let direct_futures = direct
             .into_iter()
             .map(|(index, request, source, offset, size)| {
-                let proxy = self.blob_range_requester(column, request.row_id, &snapshot);
+                let proxy = self.blob_range_requester_with_identity(
+                    column,
+                    request.row_id,
+                    &snapshot,
+                    identity.as_deref(),
+                );
                 let context = self.blob_locations_context(
                     column,
                     snapshot.version,
@@ -1979,7 +2005,13 @@ impl<S: HttpSend> RemoteTable<S> {
             .map(|request| request.row_id)
             .collect::<Vec<_>>();
         let files = self
-            .fetch_blob_files_with_route(column, &row_ids, false)
+            .fetch_blob_files_with_route(
+                column,
+                &row_ids,
+                false,
+                None,
+                self.expected_query_snapshot.clone(),
+            )
             .await?;
         let mut builder = LargeBinaryBuilder::with_capacity(requests.len(), 0);
         for (file, request) in files.into_iter().zip(requests) {
@@ -2165,8 +2197,14 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
-        self.fetch_blob_files_with_route(column, row_ids, true)
-            .await
+        self.fetch_blob_files_with_route(
+            column,
+            row_ids,
+            true,
+            None,
+            self.expected_query_snapshot.clone(),
+        )
+        .await
     }
 
     async fn fetch_blob_files_with_route(
@@ -2174,6 +2212,8 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
         use_direct: bool,
+        read_snapshot: Option<ReadSnapshot>,
+        identity: Option<String>,
     ) -> Result<Vec<Option<BlobFile>>> {
         self.reject_list_blob_path_if_known(column).await?;
         // Empty requests do not require blob-route support.
@@ -2182,8 +2222,11 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         self.ensure_blob_files_supported()?;
 
-        let mut read_snapshot = self.snapshot_read_state().await;
-        let mut identity = self.expected_query_snapshot.clone();
+        let mut read_snapshot = match read_snapshot {
+            Some(read_snapshot) => read_snapshot,
+            None => self.snapshot_read_state().await,
+        };
+        let mut identity = identity.or_else(|| self.expected_query_snapshot.clone());
         let sizes = match self
             .take_blob_descriptor_sizes(column, row_ids, &mut read_snapshot)
             .await
@@ -2424,7 +2467,7 @@ impl<S: HttpSend> RemoteTable<S> {
             && is_direct_blob_kind(descriptor_kind);
         if direct_candidate
             && let Some(file) = self
-                .open_blob_file_from_locations(descriptor, source, proxy_requester.clone())
+                .open_blob_file_from_locations(descriptor, source, snapshot)
                 .await?
         {
             return Ok(file);
@@ -2457,7 +2500,7 @@ impl<S: HttpSend> RemoteTable<S> {
         &self,
         descriptor: &BlobDescriptor,
         source: &BlobDescriptorSource,
-        proxy_requester: Arc<dyn BlobRangeRequester>,
+        snapshot: ReadSnapshot,
     ) -> Result<Option<BlobFile>> {
         let context = self.blob_locations_context_for_source(source);
         let resolved = match context.resolve(&[source.row_reference], false).await {
@@ -2473,6 +2516,16 @@ impl<S: HttpSend> RemoteTable<S> {
             }
             Err(error) => return Err(error),
         };
+        let proxy_requester = self.blob_range_requester_with_source_and_identity(
+            &source.column,
+            source.row_reference,
+            &snapshot,
+            Some(source),
+            resolved
+                .identity
+                .clone()
+                .or_else(|| self.expected_query_snapshot.clone()),
+        );
         let item =
             resolved
                 .items
@@ -2539,15 +2592,23 @@ impl<S: HttpSend> RemoteTable<S> {
         row_ids: &[u64],
         read_snapshot: ReadSnapshot,
         prefer_direct: bool,
+        identity: Option<String>,
     ) -> Result<Vec<Option<BlobFile>>> {
         if prefer_direct && self.blob_locations_supported.load(Ordering::Relaxed) {
             return self
-                .fetch_blob_files_with_route(column, row_ids, true)
+                .fetch_blob_files_with_route(column, row_ids, true, Some(read_snapshot), identity)
                 .await;
         }
         let requesters = row_ids
             .iter()
-            .map(|row_id| self.blob_range_requester(column, *row_id, &read_snapshot))
+            .map(|row_id| {
+                self.blob_range_requester_with_identity(
+                    column,
+                    *row_id,
+                    &read_snapshot,
+                    identity.as_deref(),
+                )
+            })
             .collect();
         match probe_blob_files(requesters).await {
             Ok(files) => Ok(files),
@@ -2654,6 +2715,18 @@ impl<S: HttpSend> RemoteTable<S> {
             .get(&VERSION_HEADER)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse().ok());
+        if let (Some(expected), Some(actual)) = (read_snapshot.version, response_version)
+            && expected != actual
+        {
+            return Err(Error::Http {
+                source: format!(
+                    "blob descriptor take read version {actual}, expected pinned version {expected}"
+                )
+                .into(),
+                request_id,
+                status_code: None,
+            });
+        }
         let mut stream = self.read_arrow_response(&request_id, response).await?;
 
         let mut sizes = HashMap::with_capacity(row_ids.len());
@@ -2742,15 +2815,6 @@ impl<S: HttpSend> RemoteTable<S> {
             self.expected_query_snapshot.clone(),
             None,
         )
-    }
-
-    fn blob_range_requester(
-        &self,
-        column: &str,
-        row_id: u64,
-        read_snapshot: &ReadSnapshot,
-    ) -> Arc<dyn BlobRangeRequester> {
-        self.blob_range_requester_with_source(column, row_id, read_snapshot, None)
     }
 
     fn blob_range_requester_with_identity(
@@ -3013,6 +3077,10 @@ mod tests {
     use super::*;
 
     const PAYLOAD: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    const TEST_SNAPSHOT_IDENTITY: &str =
+        "v1:0000000000000000000000000000000000000000000000000000000000000000";
+    const SNAPSHOT_A: &str = "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SNAPSHOT_B: &str = "v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     fn null_blob_response() -> http::Response<Vec<u8>> {
         http::Response::builder()
@@ -3230,7 +3298,7 @@ mod tests {
             row_ids: &[u64],
         ) -> Result<Vec<Option<BlobFile>>> {
             let read_snapshot = self.snapshot_read_state().await;
-            self.fetch_blob_files_with_snapshot(column, row_ids, read_snapshot, false)
+            self.fetch_blob_files_with_snapshot(column, row_ids, read_snapshot, false, None)
                 .await
         }
     }
@@ -3282,6 +3350,7 @@ mod tests {
                     assert_eq!(body["with_row_id"], serde_json::json!(true));
                     assert_eq!(body["use_rte"], serde_json::json!(false));
                     let requested = filter_row_ids(body["filter"].as_str().unwrap());
+                    let requested_version = body["version"].as_u64();
                     captured.lock().unwrap().push(TakeMockRequest::Query {
                         row_ids: requested.clone(),
                         version: body["version"].as_u64(),
@@ -3313,7 +3382,9 @@ mod tests {
                     writer.finish().unwrap();
                     drop(writer);
                     let mut response = http::Response::builder().status(200);
-                    if let Some(version) = query_version {
+                    if let Some(version) = requested_version {
+                        response = response.header(VERSION_HEADER, version.to_string());
+                    } else if let Some(version) = query_version {
                         response = response.header(VERSION_HEADER, version);
                     }
                     return response.body(body).unwrap();
@@ -4937,6 +5008,7 @@ mod tests {
         http::Response::builder()
             .status(200)
             .header(VERSION_HEADER, version.to_string())
+            .header(QUERY_SNAPSHOT_HEADER, TEST_SNAPSHOT_IDENTITY)
             .body(body.to_string().into_bytes())
             .unwrap()
     }
@@ -5012,7 +5084,15 @@ mod tests {
                             .map(|(_, value)| value.into_owned()),
                         Some("7".to_string())
                     );
-                    return range_response(&request, PAYLOAD);
+                    let response = range_response(&request, PAYLOAD);
+                    let content_range = response.headers()[header::CONTENT_RANGE].clone();
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, content_range)
+                        .header(QUERY_SNAPSHOT_HEADER, TEST_SNAPSHOT_IDENTITY)
+                        .header(VERSION_HEADER, "7")
+                        .body(response.into_body())
+                        .unwrap();
                 }
                 panic!("unexpected request: {path}");
             },
@@ -5325,6 +5405,7 @@ mod tests {
                     return http::Response::builder()
                         .status(200)
                         .header(VERSION_HEADER, "7")
+                        .header(QUERY_SNAPSHOT_HEADER, TEST_SNAPSHOT_IDENTITY)
                         .body(
                             serde_json::json!({
                                 "sources": [{
@@ -5349,6 +5430,7 @@ mod tests {
                         .status(200)
                         .header("content-type", "application/vnd.apache.arrow.stream")
                         .header(VERSION_HEADER, "7")
+                        .header(QUERY_SNAPSHOT_HEADER, TEST_SNAPSHOT_IDENTITY)
                         .body(body)
                         .unwrap();
                 }
@@ -5801,6 +5883,7 @@ mod tests {
                     return http::Response::builder()
                         .status(200)
                         .header(VERSION_HEADER, "7")
+                        .header(QUERY_SNAPSHOT_HEADER, TEST_SNAPSHOT_IDENTITY)
                         .body(
                             serde_json::json!({
                                 "sources": [{
@@ -5841,5 +5924,368 @@ mod tests {
         let error = table.fetch_blobs_impl("image", &[10]).await.unwrap_err();
         assert_eq!(error.status_code(), Some(StatusCode::SERVICE_UNAVAILABLE));
         assert_eq!(proxy_calls.load(Ordering::SeqCst), 0);
+    }
+
+    fn location_response(
+        identity: Option<&str>,
+        item: serde_json::Value,
+    ) -> http::Response<Vec<u8>> {
+        location_response_count(identity, item, 1)
+    }
+
+    fn location_response_count(
+        identity: Option<&str>,
+        item: serde_json::Value,
+        count: usize,
+    ) -> http::Response<Vec<u8>> {
+        let mut response = http::Response::builder()
+            .status(200)
+            .header(VERSION_HEADER, "7");
+        if let Some(identity) = identity {
+            response = response.header(QUERY_SNAPSHOT_HEADER, identity);
+        }
+        response
+            .body(
+                serde_json::json!({
+                    "sources": [{"url": "https://objects.example/object"}],
+                    "items": vec![item; count],
+                })
+                .to_string()
+                .into_bytes(),
+            )
+            .unwrap()
+    }
+
+    fn descriptor_take_response(version: u8, row_id: u64) -> http::Response<Vec<u8>> {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "image",
+                Arc::new(descriptors(&[Some((BlobKind::Packed, 1))])) as Arc<dyn Array>,
+            ),
+            (
+                ROW_ID,
+                Arc::new(UInt64Array::from_iter_values([row_id])) as Arc<dyn Array>,
+            ),
+        ])
+        .unwrap();
+        let mut body = Vec::new();
+        let mut writer =
+            arrow_ipc::writer::FileWriter::try_new(&mut body, &batch.schema()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        http::Response::builder()
+            .status(200)
+            .header(VERSION_HEADER, version.to_string())
+            .body(body)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn resolver_rejects_a_response_without_a_snapshot_identity() {
+        let object_calls = Arc::new(AtomicUsize::new(0));
+        let captured_object = object_calls.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                if request.url().host_str() == Some("objects.example") {
+                    captured_object.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, "bytes 0-0/1")
+                        .body(b"A".to_vec())
+                        .unwrap();
+                }
+                if request.url().path() == "/v1/table/my_table/blob_locations/" {
+                    return location_response(
+                        None,
+                        serde_json::json!({
+                            "kind": "presigned", "source_index": 0, "offset": 0, "size": 1
+                        }),
+                    );
+                }
+                panic!("unexpected request: {}", request.url().path());
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        let mut table = table;
+        table.client.blob_presign_threshold_bytes = 1;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        headers.insert("x-lancedb-blob-ranges", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        table.seed_blob_ranges_capability(&headers);
+
+        let error = table
+            .fetch_blob_ranges_impl("image", &[BlobRangeRequest::new(10, 0, 1)])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("snapshot identity"), "{error}");
+        assert_eq!(object_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn resolver_rejects_a_different_identity_in_a_later_partition() {
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let captured_resolves = resolves.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                if request.url().host_str() == Some("objects.example") {
+                    panic!("no object read should happen after an identity mismatch");
+                }
+                if request.url().path() == "/v1/table/my_table/blob_locations/" {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    let count = body["row_ids"].as_array().unwrap().len();
+                    let call = captured_resolves.fetch_add(1, Ordering::SeqCst);
+                    let identity = if call == 0 { SNAPSHOT_A } else { SNAPSHOT_B };
+                    return location_response_count(
+                        Some(identity),
+                        serde_json::json!({
+                            "kind": "presigned", "source_index": 0, "offset": 0, "size": 1
+                        }),
+                        count,
+                    );
+                }
+                panic!("unexpected request: {}", request.url().path());
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        let mut table = table;
+        table.client.blob_presign_threshold_bytes = 1;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        headers.insert("x-lancedb-blob-ranges", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        table.seed_blob_ranges_capability(&headers);
+        let requests = (0..=MAX_FETCH_BLOBS_ROW_IDS as u64)
+            .map(|row_id| BlobRangeRequest::new(row_id, 0, 1))
+            .collect::<Vec<_>>();
+        let error = table
+            .fetch_blob_ranges_impl("image", &requests)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("did not verify the query snapshot identity"),
+            "{error}"
+        );
+    }
+
+    fn refresh_503_table() -> RemoteTable<crate::remote::client::test_utils::MockSender> {
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let mut table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                if request.url().host_str() == Some("objects.example") {
+                    return http::Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Vec::new())
+                        .unwrap();
+                }
+                let path = request.url().path();
+                if path == "/v1/table/my_table/blob_locations/" {
+                    if resolves.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return location_response(
+                            Some(SNAPSHOT_A),
+                            serde_json::json!({
+                                "kind": "presigned", "source_index": 0, "offset": 0, "size": 1
+                            }),
+                        );
+                    }
+                    return http::Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .body(Vec::new())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/blob/image/10/bytes" {
+                    assert_eq!(request.headers()[QUERY_SNAPSHOT_HEADER], SNAPSHOT_A);
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, "bytes 0-0/1")
+                        .header(VERSION_HEADER, "7")
+                        .header(QUERY_SNAPSHOT_HEADER, SNAPSHOT_B)
+                        .body(b"B".to_vec())
+                        .unwrap();
+                }
+                panic!("unexpected request: {path}");
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        table.client.blob_presign_threshold_bytes = 1;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        headers.insert("x-lancedb-blob-ranges", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        table.seed_blob_ranges_capability(&headers);
+        table
+    }
+
+    #[tokio::test]
+    async fn whole_read_proxy_fallback_after_refresh_503_keeps_resolver_identity() {
+        let error = refresh_503_table()
+            .fetch_blobs_impl("image", &[10])
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("did not verify the query snapshot identity"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn range_read_proxy_fallback_after_refresh_503_keeps_resolver_identity() {
+        let error = refresh_503_table()
+            .fetch_blob_ranges_impl("image", &[BlobRangeRequest::new(10, 0, 1)])
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("did not verify the query snapshot identity"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_proxy_fallback_keeps_resolver_identity() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let path = request.url().path();
+                if path == "/v1/table/my_table/describe/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":7,"schema":{"fields":[]}}"#.as_bytes().to_vec())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/fetch_blobs/" {
+                    assert_eq!(request.headers()[QUERY_SNAPSHOT_HEADER], SNAPSHOT_A);
+                    return http::Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(
+                            b"fetch_blobs accepts at most 64 MiB of total blob bytes per request"
+                                .to_vec(),
+                        )
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/blob/image/10/bytes" {
+                    assert_eq!(request.headers()[QUERY_SNAPSHOT_HEADER], SNAPSHOT_A);
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, "bytes 0-0/1")
+                        .header(VERSION_HEADER, "7")
+                        .header(QUERY_SNAPSHOT_HEADER, SNAPSHOT_B)
+                        .body(b"B".to_vec())
+                        .unwrap();
+                }
+                panic!("unexpected request: {path}");
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        let snapshot = ReadSnapshot {
+            version: Some(7),
+            ..Default::default()
+        };
+        let error = table
+            .fetch_blobs_proxy_array("image", &[10], snapshot, Some(SNAPSHOT_A.into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("did not verify the query snapshot identity"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_open_keeps_the_supplied_snapshot_when_capability_appears() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                if request.url().path() == "/v1/table/my_table/query/" {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["version"], serde_json::json!(7));
+                    return descriptor_take_response(8, 20);
+                }
+                panic!("unexpected request: {}", request.url().path());
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        let mut table = table;
+        table.client.blob_presign_threshold_bytes = 1;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        let snapshot = ReadSnapshot {
+            version: Some(7),
+            ..Default::default()
+        };
+        let error = table
+            .fetch_blob_files_with_snapshot("image", &[20], snapshot, true, Some(SNAPSHOT_A.into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("expected pinned version 7"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_open_succeeds_at_the_supplied_snapshot() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                if request.url().host_str() == Some("objects.example") {
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, "bytes 0-0/1")
+                        .body(b"A".to_vec())
+                        .unwrap();
+                }
+                let path = request.url().path();
+                if path == "/v1/table/my_table/query/" {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["version"], serde_json::json!(7));
+                    return descriptor_take_response(7, 20);
+                }
+                if path == "/v1/table/my_table/blob_locations/" {
+                    assert_eq!(request.headers()[QUERY_SNAPSHOT_HEADER], SNAPSHOT_A);
+                    return location_response(
+                        Some(SNAPSHOT_A),
+                        serde_json::json!({
+                            "kind": "presigned", "source_index": 0, "offset": 0, "size": 1
+                        }),
+                    );
+                }
+                panic!("unexpected request: {path}");
+            },
+            Some(Version::new(1, 15, 0)),
+        );
+        let mut table = table;
+        table.client.blob_presign_threshold_bytes = 1;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        let snapshot = ReadSnapshot {
+            version: Some(7),
+            ..Default::default()
+        };
+        let mut files = table
+            .fetch_blob_files_with_snapshot("image", &[20], snapshot, true, Some(SNAPSHOT_A.into()))
+            .await
+            .unwrap();
+        let file = files.pop().unwrap().unwrap();
+        assert_eq!(file.read_range(0..1).await.unwrap().as_ref(), b"A");
     }
 }
