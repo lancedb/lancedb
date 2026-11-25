@@ -117,7 +117,7 @@ export {
 } from "./connection";
 
 export type {
-  FunctionErrorListing,
+  FunctionErrorRowsOptions,
   FunctionFailedRow,
   FunctionRecompute,
   RefreshColumnJobResult,

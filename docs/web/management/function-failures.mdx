@@ -16,11 +16,12 @@ The recipes that follow it remain available for older deployments.
 
 ## Native workflow: server contract version 1 {#native}
 
-This section uses the native recovery APIs in the Python, Rust, and TypeScript
-SDKs. It requires an Enterprise deployment advertising `workflow_version >= 1`
-in its Function error response. The SDK checks this capability before
-submitting native retry, upgrade, quarantine, history or provenance requests,
-and rejects unsupported servers before changing the column.
+This section uses the native recovery APIs in Python SDK 0.42.0b19 or later and
+in Rust and TypeScript SDKs that expose them. It requires an Enterprise
+deployment advertising `workflow_version >= 1` in its Function error response.
+The SDK checks this capability before submitting native retry, upgrade,
+quarantine, history or provenance requests and rejects unsupported servers
+before changing the column.
 
 New Function refreshes default to `error_policy="skip"` with a 5% failed-row
 ceiling. Successful outputs are published before a threshold failure is
@@ -44,8 +45,11 @@ print(history.records)  # Retained attempts, including repaired failures.
 
 ```typescript TypeScript
 const errors = await table.functionErrors({ column: "embedding" });
-console.log(errors.summary());
-for (const { input, error } of await errors.rows(["text"])) {
+if (!errors.truncated && errors.fragments.length === 0) {
+  console.log(errors.errorGroups);
+}
+const inputs = await table.functionErrorRows({ column: "embedding", columns: ["text"] });
+for (const { input, error } of inputs) {
   console.log(input.text, error.rowId, error.errorType);
 }
 
@@ -56,9 +60,11 @@ console.log(history.records);
 </CodeGroup>
 
 The default listing deduplicates failures by row and Function column, retaining
-attempt counts and first/last failure times. `summary()` and `rows()` refuse
-incomplete selections; narrow a truncated request before inspecting it.
-Historical records cannot be joined to current inputs through `rows()`.
+attempt counts and first/last failure times. In Python, `summary()` and `rows()`
+require a complete listing. In TypeScript, `errorGroups` counts the returned
+records and `functionErrorRows()` requires a complete current listing. Narrow a
+truncated request before using its counts as totals. Read historical attempts
+through the returned records.
 Stable row IDs survive compaction. TypeScript exposes row IDs and physical
 addresses as `bigint`. Older physical-only records are rejected for exact
 retry if their fragments have been rewritten.

@@ -855,12 +855,11 @@ describe("remote connection", () => {
         ]);
         expect(errors.records[0].rowOffset).toBe(9);
         expect(errors.fragments[0].rowsSkipped).toBe(500);
-        expect(Object.keys(errors)).not.toContain("summary");
         expect(errors.workflowVersion).toBeUndefined();
-        expect(() => errors.summary()).toThrow("Function row-failure workflow");
-        await expect(errors.rows(["text"])).rejects.toThrow(
-          "Function row-failure workflow",
-        );
+        expect(errors.errorGroups).toBeUndefined();
+        await expect(
+          table.functionErrorRows({ columns: ["text"] }),
+        ).rejects.toThrow("Function row-failure workflow");
         await table.functionErrors({ history: false });
         await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
           "limit must be a non-negative integer",
@@ -881,6 +880,7 @@ describe("remote connection", () => {
     );
     expect(bodies).toEqual([
       JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
+      {},
       {},
       ...Array.from({ length: 6 }, () => ({ limit: 1 })),
     ]);
@@ -969,7 +969,7 @@ describe("remote connection", () => {
           quarantined: true,
         });
         expect(errors.records[1].rowAddress).toBe(physicalAddress);
-        expect(errors.summary()).toEqual([
+        expect(errors.errorGroups).toEqual([
           {
             column: "embedding",
             errorType: "ValueError",
@@ -983,36 +983,31 @@ describe("remote connection", () => {
             rowsFailed: 1n,
           },
         ]);
-        const rows = await errors.rows(["text"]);
+        const rows = await table.functionErrorRows({ columns: ["text"] });
         expect(rows.map(({ input, error }) => [input, error.column])).toEqual([
           [{ text: "moved stable row" }, "embedding"],
           [{ text: "physical failure" }, "embedding"],
           [{ text: "moved stable row" }, "score"],
         ]);
-        await expect(errors.rows(["text"])).rejects.toThrow(
-          "no longer addressable",
-        );
+        await expect(
+          table.functionErrorRows({ columns: ["text"] }),
+        ).rejects.toThrow("no longer addressable");
         const history = await table.functionErrors({
           history: true,
           jobId: "j-7",
         });
         expect(history.records[0].rowId).toBe(stableId);
-        await expect(history.rows(["text"])).rejects.toThrow(
-          "requires current Function failures",
-        );
-        const incomplete = await table.functionErrors({ limit: 2 });
-        expect(() => incomplete.summary()).toThrow(
-          "Function errors are incomplete",
-        );
-        await expect(incomplete.rows(["text"])).rejects.toThrow(
-          "Function errors are incomplete",
-        );
-        const empty = await table.functionErrors({ column: "empty" });
-        expect(empty.summary()).toEqual([]);
-        await expect(empty.rows()).resolves.toEqual([]);
+        await expect(
+          table.functionErrorRows({ columns: ["text"], limit: 2 }),
+        ).rejects.toThrow("Function errors are incomplete");
+        await expect(
+          table.functionErrorRows({ column: "empty" }),
+        ).resolves.toEqual([]);
       },
     );
     expect(errorRequests).toEqual([
+      {},
+      {},
       {},
       { limit: 1 },
       { history: true, ["job_id"]: "j-7" },
@@ -1141,6 +1136,8 @@ describe("remote connection", () => {
         await expect(
           table.functionProvenance("embedding", { version: -(2n ** 64n) }),
         ).rejects.toThrow("positive lossless u64 bigint");
+        const ordinary = await table.refreshColumnAsync("embedding");
+        await expect(ordinary.wait()).resolves.toBeUndefined();
       },
     );
     const probe = ["/v1/table/docs/errors", { limit: 1 }];
@@ -1199,6 +1196,8 @@ describe("remote connection", () => {
         "/v1/table/docs/function_provenance",
         { column: "embedding", version: 8, limit: 1 },
       ],
+      ["/v1/table/docs/backfill_column", { column: "embedding" }],
+      ["/v1/jobs/describe", { ["job_id"]: "refresh-1" }],
     ]);
   });
 

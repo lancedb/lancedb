@@ -5,6 +5,7 @@ import type {
   FunctionErrorGroup,
   FunctionErrorRecord,
   FunctionErrors,
+  FunctionErrorsOptions,
   RefreshColumnOptions,
 } from "./native";
 import type { Table } from "./table";
@@ -102,46 +103,19 @@ export interface FunctionFailedRow {
   error: FunctionErrorRecord;
 }
 
-/** A Function error listing with grouped causes and current source-row lookup. */
-export interface FunctionErrorListing extends FunctionErrors {
-  /** Group by column, exception class and message. Requires a complete workflow-v1 listing. */
-  summary(): FunctionErrorGroup[];
-  /**
-   * Read current failing inputs, one result per error record. Defaults to all
-   * source columns. Requires a complete current listing with row identities.
-   * Throws if a failed row is no longer addressable in the table's read snapshot.
-   */
-  rows(columns?: string[]): Promise<FunctionFailedRow[]>;
+/** Filters and projection for current failing inputs. */
+export interface FunctionErrorRowsOptions
+  extends Pick<FunctionErrorsOptions, "column" | "jobId" | "limit"> {
+  /** Source columns to return. Defaults to all source columns. */
+  columns?: string[];
 }
 
 /** @internal */
-export function functionErrorListing(
+export async function readFailedRows(
   table: Table,
   errors: FunctionErrors,
-  historical: boolean,
-): FunctionErrorListing {
-  const listing: FunctionErrorListing = {
-    ...errors,
-    summary() {
-      requireCompleteListing(errors);
-      return errors.errorGroups ?? [];
-    },
-    async rows(columns) {
-      requireCompleteListing(errors);
-      if (historical) {
-        throw new Error("Source-row lookup requires current Function failures");
-      }
-      return readFailedRows(table, errors.records, columns);
-    },
-  };
-  // Keep the enumerable listing fields compatible with existing callers.
-  return Object.defineProperties(listing, {
-    summary: { enumerable: false },
-    rows: { enumerable: false },
-  });
-}
-
-function requireCompleteListing(errors: FunctionErrors): void {
+  columns?: string[],
+): Promise<FunctionFailedRow[]> {
   if ((errors.workflowVersion ?? 0) < 1) {
     throw new Error(
       "The server does not support the Function row-failure workflow",
@@ -158,13 +132,7 @@ function requireCompleteListing(errors: FunctionErrors): void {
       "Function errors are incomplete; narrow the request or raise limit",
     );
   }
-}
-
-async function readFailedRows(
-  table: Table,
-  records: FunctionErrorRecord[],
-  columns?: string[],
-): Promise<FunctionFailedRow[]> {
+  const { records } = errors;
   if (records.length === 0) return [];
 
   const stableIds = new Set<bigint>();
