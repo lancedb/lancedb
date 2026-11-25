@@ -17,6 +17,9 @@ use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
+/// M1 prototype routing threshold for direct Blob reads. It stays internal
+/// until the acceptance benchmark establishes the right default.
+pub(crate) const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 
 pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
     const SENSITIVE_HEADERS: [&str; 5] = [
@@ -312,9 +315,16 @@ pub struct RetryConfig {
 #[derive(Clone)]
 pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
+    /// A separate client for presigned object-store traffic. It deliberately
+    /// carries none of the Enterprise default headers, so service credentials
+    /// never reach object storage.
+    object_store_client: reqwest::Client,
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) blob_request_semaphore: Arc<Semaphore>,
+    /// Logical blob/range size at which a handle prefers a presigned direct
+    /// read over the existing proxy byte-range route.
+    pub(crate) blob_presign_threshold_bytes: u64,
     pub(crate) sender: S,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
     /// Connection-level read consistency interval. Drives the
@@ -599,7 +609,7 @@ impl RestfulLanceDbClient<Sender> {
 
         let client = client_builder
             .default_headers(default_headers)
-            .user_agent(client_config.user_agent)
+            .user_agent(client_config.user_agent.clone())
             .build()
             .map_err(|err| Error::Other {
                 message: "Failed to build HTTP client".into(),
@@ -620,11 +630,29 @@ impl RestfulLanceDbClient<Sender> {
             Self::resolve_max_bytes_per_request(client_config.max_bytes_per_request)?;
         let max_request_duration =
             Self::resolve_max_request_duration(client_config.max_request_duration, read_timeout)?;
+
+        let mut object_store_builder = reqwest::Client::builder()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .pool_idle_timeout(pool_idle_timeout);
+        if let Some(timeout) = timeout {
+            object_store_builder = object_store_builder.timeout(timeout);
+        }
+        let object_store_client = object_store_builder
+            .user_agent(client_config.user_agent)
+            .build()
+            .map_err(|err| Error::Other {
+                message: "Failed to build object-store HTTP client".into(),
+                source: Some(Box::new(err)),
+            })?;
+
         Ok(Self {
             client,
+            object_store_client,
             host,
             retry_config,
             blob_request_semaphore: Arc::new(Semaphore::new(blob_request_concurrency)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: client_config.header_provider,
             read_consistency_interval,
@@ -822,6 +850,34 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.post(full_uri)
+    }
+
+    /// Start a presigned object-store request. This client has no Enterprise
+    /// default headers and no dynamic header provider.
+    pub(crate) fn object_store_get(&self, url: &str) -> RequestBuilder {
+        self.object_store_client.get(url)
+    }
+
+    /// Send presigned object-store traffic without request logging, request
+    /// ids, service headers, or signed URLs in returned errors.
+    pub(crate) async fn send_object_store(
+        &self,
+        req: RequestBuilder,
+    ) -> Result<(String, Response)> {
+        let request_id = "blob-direct".to_string();
+        let (client, request) = req.build_split();
+        let request = request.map_err(|err| Error::Http {
+            source: Box::new(err.without_url()),
+            request_id: request_id.clone(),
+            status_code: None,
+        })?;
+        let response = self
+            .sender
+            .send(&client, request)
+            .await
+            .map_err(|err| err.without_url())
+            .err_to_http(request_id.clone())?;
+        Ok((request_id, response))
     }
 
     pub fn put(&self, uri: &str) -> RequestBuilder {
@@ -1190,9 +1246,11 @@ pub mod test_utils {
 
         RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
@@ -1217,6 +1275,7 @@ pub mod test_utils {
 
         RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: config.retry_config.try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(
@@ -1224,6 +1283,7 @@ pub mod test_utils {
                     .blob_request_concurrency
                     .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
             )),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
@@ -1868,9 +1928,11 @@ mod tests {
         // Create client with header provider
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
@@ -1907,9 +1969,11 @@ mod tests {
         // Create client with header provider
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
@@ -1972,9 +2036,11 @@ mod tests {
 
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
