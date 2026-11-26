@@ -2648,7 +2648,9 @@ def test_function_version_reads_requested_and_resolved_environments():
         {},
         {"build": None},
         {"build": {}},
-        {"build": {"index_url": None, "env": {"UV_INDEX": "fixture"}}},
+        {"build": {"index_url": None}},
+        {"build": {"index_url": 1}},
+        {"build": "invalid-build"},
         {
             "build": {
                 "index_url": "https://requested.example/simple/",
@@ -2668,10 +2670,11 @@ async def test_get_pinned_function_preserves_only_the_requested_index_url(build)
     assert catalog.requested_versions == ["1"]
     assert version.version == "1"
     requested = version.runtime.environment.build
-    index_url = (build.get("build") or {}).get("index_url")
+    raw_build = build.get("build")
+    index_url = raw_build.get("index_url") if isinstance(raw_build, dict) else None
     canonical = version.to_canonical_json()
     encoded = json.loads(canonical)["runtime"]["environment"]
-    if index_url is None:
+    if not isinstance(index_url, str):
         assert requested is None
         assert "build" not in encoded
     else:
