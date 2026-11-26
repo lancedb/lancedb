@@ -39,11 +39,23 @@ pub fn convert_error(err: &(dyn StdError + 'static)) -> napi::Error {
 fn convert_error_at(err: &(dyn StdError + 'static), depth: usize) -> napi::Error {
     let mut napi_err = napi::Error::from_reason(format_message(err));
     if depth < MAX_CAUSE_DEPTH
-        && let Some(source) = err.source()
+        && let Some(source) = error_cause(err)
     {
         napi_err.set_cause(convert_error_at(source, depth + 1));
     }
     napi_err
+}
+
+/// The next error in the chain. `JobFailed` keeps its underlying error, such as
+/// the `Sql` error of a failed isolated Flight SQL job, in `failure.source`
+/// rather than in [`StdError::source`].
+fn error_cause<'a>(err: &'a (dyn StdError + 'static)) -> Option<&'a (dyn StdError + 'static)> {
+    if let Some(LanceError::JobFailed { failure, .. }) = err.downcast_ref::<LanceError>()
+        && let Some(source) = failure.source.as_deref()
+    {
+        return Some(source);
+    }
+    err.source()
 }
 
 fn format_message(err: &(dyn StdError + 'static)) -> String {
@@ -234,5 +246,87 @@ fn insert_remote_metadata(err: &LanceError, meta: &mut Map<String, Value>) {
     }
     if let Some(job_request_id) = metadata.job_request_id.as_deref() {
         meta.insert("jobRequestId".to_owned(), json!(job_request_id));
+    }
+    // `x-lancedb-resource` identity; structured body details take precedence.
+    if let Some(resource) = metadata.resource.as_ref() {
+        meta.entry("resourceKind".to_owned())
+            .or_insert(json!(resource.kind));
+        meta.entry("resourceName".to_owned())
+            .or_insert(json!(resource.name));
+        meta.entry("namespacePath".to_owned())
+            .or_insert(json!(resource.namespace_path));
+    }
+}
+
+#[cfg(all(test, feature = "remote"))]
+mod tests {
+    use std::sync::Arc;
+
+    use lancedb::error::{JobFailure, RemoteErrorMetadata, RemoteResourceIdentity};
+
+    use super::*;
+
+    fn header(err: &napi::Error) -> Value {
+        let line = err.reason.lines().next().unwrap();
+        serde_json::from_str(line.strip_prefix(HEADER_PREFIX).unwrap()).unwrap()
+    }
+
+    fn sql_error(resource: Option<RemoteResourceIdentity>) -> LanceError {
+        let mut metadata = RemoteErrorMetadata::default();
+        metadata.job_id = Some("sql-job".into());
+        metadata.resource = resource;
+        LanceError::Sql {
+            message: "table 'docs' was not found".into(),
+            request_id: "worker-request".into(),
+            grpc_code: 5,
+            metadata: Box::new(metadata),
+        }
+    }
+
+    #[test]
+    fn job_failed_keeps_its_failure_source_as_cause() {
+        let err = LanceError::JobFailed {
+            job_id: Some("sql-job".into()),
+            failure: Box::new(JobFailure {
+                sql_job_id: Some("sql-job".into()),
+                source: Some(Arc::new(sql_error(None))),
+                ..Default::default()
+            }),
+        };
+
+        let converted = convert_error(&err);
+
+        assert_eq!(header(&converted)["code"], "JobFailed");
+        let cause = converted.cause.as_deref().expect("JobFailed cause");
+        let cause_header = header(cause);
+        assert_eq!(cause_header["code"], "Sql");
+        assert_eq!(cause_header["requestId"], "worker-request");
+        assert_eq!(cause_header["grpcCode"], 5);
+        assert!(
+            cause
+                .reason
+                .ends_with("table 'docs' was not found (request_id=worker-request)")
+        );
+    }
+
+    #[test]
+    fn resource_header_populates_resource_fields() {
+        let resource = RemoteResourceIdentity::new("table", "docs", vec!["ns".into()]);
+
+        let converted = convert_error(&sql_error(Some(resource)));
+
+        let header = header(&converted);
+        assert_eq!(header["code"], "Sql");
+        assert_eq!(header["resourceKind"], "table");
+        assert_eq!(header["resourceName"], "docs");
+        assert_eq!(header["namespacePath"], json!(["ns"]));
+    }
+
+    #[test]
+    fn absent_resource_header_leaves_resource_fields_unset() {
+        let header = header(&convert_error(&sql_error(None)));
+        assert!(header.get("resourceKind").is_none());
+        assert!(header.get("resourceName").is_none());
+        assert!(header.get("namespacePath").is_none());
     }
 }

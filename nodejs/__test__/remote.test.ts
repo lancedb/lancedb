@@ -819,6 +819,34 @@ describe("remote connection", () => {
     );
   });
 
+  it("reports resource identity supplied only by x-lancedb-resource", async () => {
+    const resource = Buffer.from(
+      // biome-ignore lint/style/useNamingConvention: Flight resource wire format
+      JSON.stringify({ kind: "table", name: "docs", namespace_path: ["ns"] }),
+    ).toString("base64url");
+    await withMockDatabase(
+      (_req, res) => {
+        res
+          .writeHead(400, { "x-lancedb-resource": resource })
+          .end("bad request");
+      },
+      async (db) => {
+        const error = await db.tableNames().then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(error).toBeInstanceOf(HttpError);
+        if (!(error instanceof HttpError)) {
+          throw error;
+        }
+        expect(error.statusCode).toBe(400);
+        expect(error.resourceKind).toBe("table");
+        expect(error.resourceName).toBe("docs");
+        expect(error.namespacePath).toEqual(["ns"]);
+      },
+    );
+  });
+
   it("lists the rows a Function refresh skipped", async () => {
     const bodies: unknown[] = [];
     await withMockDatabase(

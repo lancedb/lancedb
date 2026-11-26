@@ -10,7 +10,9 @@ import {
   HttpError,
   InvalidInputError,
   InvalidTableNameError,
+  JobFailedError,
   LanceError,
+  SqlError,
   TableAlreadyExistsError,
   TableNotFoundError,
   connect,
@@ -57,6 +59,28 @@ describe("materializeLanceError", () => {
     expect(error.stack).toContain(
       "TableNotFoundError: Table 'missing' was not found",
     );
+  });
+
+  it("keeps the SQL error of a failed isolated job as its cause", () => {
+    const raw = new Error(
+      'LanceError {"code":"JobFailed","jobId":"sql-job","sqlJobId":"sql-job"}\nJob sql-job failed',
+    );
+    raw.cause = new Error(
+      'LanceError {"code":"Sql","requestId":"worker-request","grpcCode":5}\nmissing (request_id=worker-request)',
+    );
+
+    const error = materializeLanceError(raw);
+
+    expect(error).toBeInstanceOf(JobFailedError);
+    if (!(error instanceof JobFailedError)) {
+      throw error;
+    }
+    expect(error.cause).toBeInstanceOf(SqlError);
+    if (!(error.cause instanceof SqlError)) {
+      throw error.cause;
+    }
+    expect(error.cause.requestId).toBe("worker-request");
+    expect(error.cause.grpcCode).toBe(5);
   });
 
   it("maps field misses onto ColumnNotFoundError and preserves the specific code", () => {

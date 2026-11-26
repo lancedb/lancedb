@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { materializeLanceError } from "./errors";
 import {
   OAuthConfig as NativeOAuthConfig,
   OAuthSession as NativeOAuthSession,
@@ -281,7 +282,14 @@ export class OAuthSession {
 
   /** Create a session manager for the given OAuth configuration. */
   constructor(config: OAuthConfig) {
-    this.inner = new NativeOAuthSession(config as unknown as NativeOAuthConfig);
+    try {
+      this.inner = new NativeOAuthSession(
+        config as unknown as NativeOAuthConfig,
+      );
+    } catch (error) {
+      // The native error translation wraps methods, not constructors.
+      throw materializeLanceError(error);
+    }
   }
 
   /**
