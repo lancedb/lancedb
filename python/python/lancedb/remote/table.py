@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta
 import deprecation
 import logging
 from functools import cached_property, wraps
@@ -331,7 +331,7 @@ class RemoteTable(Table):
             "Use table.search().to_polars() instead."
         )
 
-    def checkout(self, version: Union[int, str]):
+    def checkout(self, version: Union[int, str, datetime]):
         result = LOOP.run(self._table.checkout(version))
         self._checkout_version = self.version
         return result

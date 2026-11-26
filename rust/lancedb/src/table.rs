@@ -3073,6 +3073,34 @@ impl Table {
         self.inner.checkout(version).await
     }
 
+    /// Pin this table to the highest retained version on its branch whose commit
+    /// timestamp is at or before `timestamp`. This scans the retained version history
+    /// and returns an error if none qualifies.
+    /// Use [`Self::checkout_latest`] to resume reading the latest version.
+    ///
+    /// ```
+    /// use chrono::{DateTime, Utc};
+    /// use lancedb::Table;
+    ///
+    /// # async fn read_as_of(table: &Table, cutoff: DateTime<Utc>) -> lancedb::Result<()> {
+    /// table.checkout_as_of(cutoff).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn checkout_as_of(&self, timestamp: chrono::DateTime<chrono::Utc>) -> Result<()> {
+        let version = self
+            .list_versions()
+            .await?
+            .into_iter()
+            .filter(|v| v.timestamp <= timestamp)
+            .map(|v| v.version)
+            .max()
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!("No table version is available at or before {timestamp}"),
+            })?;
+        self.checkout(version).await
+    }
+
     /// Checks out a specific version of the Table by tag
     ///
     /// Any read operation on the table will now access the data at the version referenced by the tag.
@@ -5944,6 +5972,13 @@ mod tests {
         let exp_fork = branch.version().await.unwrap(); // exp's shallow-clone version
         branch.add(sample_rows(vec![1])).execute().await.unwrap(); // exp: {0, 1}
         let exp_v2 = branch.version().await.unwrap();
+        let exp_v2_time = branch
+            .list_versions()
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .timestamp;
         branch.add(sample_rows(vec![2])).execute().await.unwrap(); // exp HEAD: {0, 1, 2}
 
         // main's own commit reaches the SAME version number with different data
@@ -5988,6 +6023,11 @@ mod tests {
         let pinned_direct = table.checkout_branch("exp", Some(exp_v2)).await.unwrap();
         assert_eq!(pinned_direct.current_branch().as_deref(), Some("exp"));
         assert_eq!(pinned_direct.count_rows(None).await.unwrap(), 2);
+
+        branch.checkout_as_of(exp_v2_time).await.unwrap();
+        assert_eq!(branch.current_branch().as_deref(), Some("exp"));
+        assert_eq!(branch.version().await.unwrap(), exp_v2);
+        assert_eq!(branch.count_rows(None).await.unwrap(), 2);
 
         // the HEADs are unaffected
         let head = conn
