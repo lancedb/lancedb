@@ -35,10 +35,12 @@ import {
 } from "./arrow";
 
 import {
+  BlobDescriptor,
   BlobFile,
   BlobRangeRequest,
   BlobReadOptions,
   runWithSignal,
+  toNativeBlobDescriptor,
 } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import {
@@ -870,6 +872,45 @@ export abstract class Table {
     rowIds: readonly (bigint | number)[],
     options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]>;
+
+  /**
+   * Opens a lazy handle from a source-bearing SQL `blob_descriptor` result.
+   *
+   * The descriptor's source pins the table version, branch, column and row
+   * identity, so opening does not change this table's checkout. Null
+   * descriptors return `null`. Payload bytes load only when the returned
+   * handle is read. Pass {@link BlobReadOptions.signal} to cancel the open.
+   *
+   * @example
+   * ```ts
+   * const rows = await table.query().toArray();
+   * const [handle] = await table.openBlobFile(rows[0].video);
+   * if (handle) {
+   *   const header = await handle.readRange(0n, 16n);
+   *   await handle.close();
+   * }
+   * ```
+   */
+  async openBlobFile(
+    _descriptor: BlobDescriptor | null,
+    _options?: BlobReadOptions,
+  ): Promise<BlobFile | null> {
+    throw new Error("openBlobFile is not supported on this table type");
+  }
+
+  /**
+   * Opens source-bearing descriptors in iteration order, preserving nulls.
+   * Handles open lazily as the iterable advances. Close each non-null handle
+   * after use.
+   */
+  async *openBlobFiles(
+    descriptors: Iterable<BlobDescriptor | null>,
+    options?: BlobReadOptions,
+  ): AsyncGenerator<BlobFile | null> {
+    for (const descriptor of descriptors) {
+      yield await this.openBlobFile(descriptor, options);
+    }
+  }
 
   /**
    * Create a search query to find the nearest neighbors
@@ -1934,6 +1975,19 @@ export class LocalTable extends Table {
     return files.map((file) =>
       file == null ? null : BlobFile.fromNative(file),
     );
+  }
+
+  async openBlobFile(
+    descriptor: BlobDescriptor | null,
+    options?: BlobReadOptions,
+  ): Promise<BlobFile | null> {
+    if (descriptor == null) {
+      return null;
+    }
+    const file = await runWithSignal(options?.signal, (signal) =>
+      this.inner.openBlobFile(toNativeBlobDescriptor(descriptor), signal),
+    );
+    return BlobFile.fromNative(file);
   }
 
   query(): Query {

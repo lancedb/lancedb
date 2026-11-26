@@ -1229,6 +1229,64 @@ rows depending on how they match.
 
 ***
 
+### openBlobFile()
+
+```ts
+openBlobFile(_descriptor, _options?): Promise<null | BlobFile>
+```
+
+Opens a lazy handle from a source-bearing SQL `blob_descriptor` result.
+
+The descriptor's source pins the table version, branch, column and row
+identity, so opening does not change this table's checkout. Null
+descriptors return `null`. Payload bytes load only when the returned
+handle is read. Pass BlobReadOptions.signal to cancel the open.
+
+#### Parameters
+
+* **\_descriptor**: `null` \| [`BlobDescriptor`](../interfaces/BlobDescriptor.md)
+
+* **\_options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;`null` \| [`BlobFile`](BlobFile.md)&gt;
+
+#### Example
+
+```ts
+const rows = await table.query().toArray();
+const [handle] = await table.openBlobFile(rows[0].video);
+if (handle) {
+  const header = await handle.readRange(0n, 16n);
+  await handle.close();
+}
+```
+
+***
+
+### openBlobFiles()
+
+```ts
+openBlobFiles(descriptors, options?): AsyncGenerator<null | BlobFile, any, unknown>
+```
+
+Opens source-bearing descriptors in iteration order, preserving nulls.
+Handles open lazily as the iterable advances. Close each non-null handle
+after use.
+
+#### Parameters
+
+* **descriptors**: `Iterable`&lt;`null` \| [`BlobDescriptor`](../interfaces/BlobDescriptor.md)&gt;
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`AsyncGenerator`&lt;`null` \| [`BlobFile`](BlobFile.md), `any`, `unknown`&gt;
+
+***
+
 ### optimize()
 
 ```ts

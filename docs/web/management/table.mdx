@@ -819,11 +819,7 @@ The other fetch methods load bytes directly:
 | Need | Python | TypeScript | Rust |
 | --- | --- | --- | --- |
 | Whole payloads for a set of rows | `fetch_blobs` | `fetchBlobs` | `fetch_blobs` |
-| Byte slices across many rows in one call | `fetch_blob_ranges` | Not available. Use `fetchBlobFiles` and `readRanges`. | `fetch_blob_ranges` |
-
-{/* Draft for the TypeScript cross-row Blob range release. Replace the row above:
 | Byte slices across many rows in one call | `fetch_blob_ranges` | `fetchBlobRanges` | `fetch_blob_ranges` |
-*/}
 
 - `fetch_blobs` returns the full bytes for each row ID in order. Null blobs
   produce null entries, and empty blobs produce empty byte strings.
@@ -848,22 +844,17 @@ The other fetch methods load bytes directly:
     </CodeBlock>
 </CodeGroup>
 
-{/* Draft for the TypeScript cross-row Blob range release.
 <Info>
-Upcoming-release draft: TypeScript adds `fetchBlobRanges` for cross-row slices.
-Until that SDK release is available, use `fetchBlobFiles` and `readRanges`.
-Server-side batching requires a deployment with the validated range capability;
-older servers continue using the descriptor and Range path selected before the
-read. An error from the selected batched endpoint is returned without fallback.
-A batched call keeps the native snapshot identity from its first range response
-across every partition and requires each serving node to verify it. Missing identity
-support or a replaced/deleted snapshot fails the whole call; upgrade all serving
-nodes before selecting the batched endpoint with a new SDK.
-Custom TypeScript `Table` subclasses must implement the new abstract method.
+TypeScript `fetchBlobRanges` uses the batched `/fetch_blob_ranges` endpoint when
+the server advertises the range capability; older servers use descriptor queries
+and Range reads. An error from the selected endpoint is returned without
+fallback. The call keeps the native snapshot identity from its first response
+across every partition, so missing identity support or a replaced snapshot fails
+the whole call. Upgrade every serving node before selecting the batched endpoint
+with a new SDK.
 </Info>
-*/}
 
-Python and Rust read slices across rows with `fetch_blob_ranges`. On a handle,
+All three SDKs read slices across rows with the range API. On a handle,
 `read_ranges` reads more than one slice of one blob. Python takes
 `(offset, length)` pairs, TypeScript takes `{ start, end }` ranges with an
 exclusive `end`, and Rust takes `start..end` ranges:
@@ -874,14 +865,6 @@ exclusive `end`, and Rust takes `start..end` ranges:
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {/* Draft for the TypeScript cross-row Blob range release.
-    {`// Upcoming-release draft: slices from more than one row.
-const slices = await blobTable.fetchBlobRanges("image", [
-  { rowId: rowIds[0]!, offset: 0n, length: 6n },
-  { rowId: rowIds[1]!, offset: 7n, length: 5n },
-]);
-`}{"\n"}
-    */}
     {TsBlobApiRanges}
     </CodeBlock>
 

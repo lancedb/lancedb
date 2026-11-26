@@ -63,6 +63,8 @@
 - [AddDataOptions](interfaces/AddDataOptions.md)
 - [AddResult](interfaces/AddResult.md)
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
+- [BlobDescriptor](interfaces/BlobDescriptor.md)
+- [BlobDescriptorSource](interfaces/BlobDescriptorSource.md)
 - [BranchColumnChange](interfaces/BranchColumnChange.md)
 - [BranchColumnSummary](interfaces/BranchColumnSummary.md)
 - [BranchDiff](interfaces/BranchDiff.md)
