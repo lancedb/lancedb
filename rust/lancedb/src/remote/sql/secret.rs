@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use super::{SqlClient, materialized_view::quote_identifier, objects::strings};
+use super::{SqlClient, materialized_view::quote_identifier, objects::description};
 use crate::{
     database::ExecuteQueryRequest,
-    error::{Error, Result},
+    error::Result,
     listing::{ListingOptions, ListingPage},
     secrets::SecretInfo,
     utils::{validate_namespace, validate_secret_name},
 };
-use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{RecordBatch, StringArray};
 use std::sync::Arc;
 
 pub(in crate::remote) enum SecretWriteOperation {
@@ -18,31 +18,7 @@ pub(in crate::remote) enum SecretWriteOperation {
 }
 
 fn secret_info(batches: Vec<RecordBatch>) -> Result<SecretInfo> {
-    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
-        return Err(Error::Runtime {
-            message: "DESCRIBE SECRET must return exactly one row".into(),
-        });
-    }
-    let batch = batches.iter().find(|batch| batch.num_rows() == 1).unwrap();
-    let timestamp = |name: &str| -> Result<i64> {
-        let values = batch
-            .column_by_name(name)
-            .and_then(|column| column.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| Error::Runtime {
-                message: format!("DESCRIBE SECRET is missing INT64 column '{name}'"),
-            })?;
-        if values.is_null(0) {
-            return Err(Error::Runtime {
-                message: format!("DESCRIBE SECRET contains null '{name}'"),
-            });
-        }
-        Ok(values.value(0))
-    };
-    Ok(SecretInfo {
-        name: strings(&batches, "name")?.remove(0),
-        created_at_millis: timestamp("created_at_millis")?,
-        updated_at_millis: timestamp("updated_at_millis")?,
-    })
+    description(batches)
 }
 
 impl SqlClient {
@@ -100,7 +76,7 @@ impl SqlClient {
         validate_namespace(namespace)?;
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("DESCRIBE SECRET {}", quote_identifier(name)),
+                query: format!("DESCRIBE SECRET {} FORMAT JSON", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
                 options: Default::default(),
@@ -143,36 +119,40 @@ impl SqlClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::ArrayRef;
 
     #[test]
-    fn decodes_native_secret_metadata() {
-        let batch = RecordBatch::try_from_iter(vec![
-            (
-                "name",
-                Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
-            ),
-            (
-                "created_at_millis",
-                Arc::new(Int64Array::from(vec![10])) as ArrayRef,
-            ),
-            (
-                "updated_at_millis",
-                Arc::new(Int64Array::from(vec![20])) as ArrayRef,
-            ),
-        ])
+    fn decodes_secret_json_metadata() {
+        let document = serde_json::json!({"name":"api-key", "created_at_millis":10, "updated_at_millis":20, "history":[{"generation":1,"at_millis":10}]});
+        let schema = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "description",
+            arrow_schema::DataType::Utf8,
+            false,
+        )])
+        .with_metadata(std::collections::HashMap::from([(
+            "lancedb.describe.format".into(),
+            "json".into(),
+        )]));
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+        )
         .unwrap();
         let info = secret_info(vec![batch.clone()]).unwrap();
         assert_eq!(info.name, "api-key");
         assert_eq!(info.created_at_millis, 10);
         assert_eq!(info.updated_at_millis, 20);
         assert!(secret_info(vec![]).is_err());
-        assert!(secret_info(vec![batch.clone(), batch]).is_err());
-        let missing = RecordBatch::try_from_iter(vec![(
-            "name",
-            Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
-        )])
-        .unwrap();
-        assert!(secret_info(vec![missing]).is_err());
+        assert!(secret_info(vec![batch.clone(), batch.clone()]).is_err());
+        for invalid in [
+            serde_json::json!({"name":"api-key"}),
+            serde_json::json!({"name":"api-key","created_at_millis":"10","updated_at_millis":20}),
+        ] {
+            let batch = RecordBatch::try_new(
+                batch.schema(),
+                vec![Arc::new(StringArray::from(vec![invalid.to_string()]))],
+            )
+            .unwrap();
+            assert!(secret_info(vec![batch]).is_err());
+        }
     }
 }
