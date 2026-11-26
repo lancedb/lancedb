@@ -1725,16 +1725,19 @@ First, let's see all the versions we've created:
 {/*
 Draft for the Python timestamp checkout release.
 
-In Python, pass a `datetime` to `table.checkout(cutoff)` to read the highest
-retained version whose recorded commit time is at or before that instant. Capture
-one cutoff with `datetime.now(timezone.utc)` and pass it to each table when
-reading several tables as of the same time. Each table uses its own version
-history. If no retained version qualifies, `checkout()` raises `ValueError`.
+In Python, pass a `datetime` to `table.checkout(cutoff)` to read a table as of
+that instant. The backend reports the commit times in the current branch's
+version history. Checkout selects the highest retained version whose reported
+time is at or before the cutoff. To read several tables as of the same time,
+capture one cutoff with `datetime.now(timezone.utc)` and pass it to each table.
+If no retained version qualifies, `checkout()` raises `ValueError`.
 
 Some Enterprise servers report commit times in whole milliseconds. Two commits
 on opposite sides of the cutoff can then share a timestamp, and `checkout()`
-selects the higher version. For reproducible reports, record each input table's
-version number when you read it and pass that number to `checkout()` on later runs.
+selects the higher version. For reproducible reports, record
+`table.current_branch()` and `table.version` for each input after checkout.
+To read the same snapshot again, pass both values to
+`db.open_table(name, branch=branch, version=version)`.
 */}
 
 #### Restore a Version Snapshot {#versioning-restore-a-version-snapshot}
