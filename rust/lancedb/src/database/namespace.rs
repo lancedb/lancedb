@@ -349,7 +349,8 @@ impl Database for LanceNamespaceDatabase {
         table_id.push(request.name.clone());
         let mut existing_table = None;
 
-        match request.mode {
+        let mut request = request;
+        match &request.mode {
             CreateTableMode::Create => {}
             CreateTableMode::Overwrite => {
                 let describe_request = DescribeTableRequest {
@@ -365,20 +366,30 @@ impl Database for LanceNamespaceDatabase {
                 };
                 let describe_result = self.namespace.describe_table(describe_request).await;
                 if describe_result.is_ok() {
-                    let native_table = NativeTable::open_from_namespace(
-                        self.namespace.clone(),
-                        &request.name,
-                        request.namespace_path.clone(),
-                        None,
-                        None,
-                        self.read_consistency_interval,
-                        self.pushdown_operations.clone(),
-                        self.session.clone(),
-                    )
-                    .await?
-                    .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
-
-                    return Ok(Arc::new(native_table));
+                    let CreateTableMode::ExistOk(callback) =
+                        std::mem::replace(&mut request.mode, CreateTableMode::Create)
+                    else {
+                        unreachable!();
+                    };
+                    let req = OpenTableRequest {
+                        name: request.name.clone(),
+                        namespace_path: request.namespace_path.clone(),
+                        index_cache_size: None,
+                        lance_read_params: None,
+                        location: None,
+                        namespace_client: None,
+                        managed_versioning: None,
+                    };
+                    let req = (callback)(req);
+                    let table = self.open_table(req).await?;
+                    let table_schema = table.schema().await?;
+                    if table_schema.as_ref() != request.data.arrow_schema().as_ref() {
+                        return Err(Error::Schema {
+                            message: "Provided schema does not match existing table schema"
+                                .to_string(),
+                        });
+                    }
+                    return Ok(table);
                 }
             }
         }
@@ -1398,6 +1409,85 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_exist_ok_mismatched_schema_and_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_table("exist_ok_schema_test", create_test_data())
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        // Matching schema should succeed and invoke the OpenTableRequest callback
+        let callback_called = Arc::new(AtomicBool::new(false));
+        let callback_flag = callback_called.clone();
+        let table = conn
+            .create_table("exist_ok_schema_test", create_test_data())
+            .mode(CreateTableMode::exist_ok(move |req| {
+                callback_flag.store(true, Ordering::SeqCst);
+                req
+            }))
+            .execute()
+            .await
+            .expect("Expected matching schema exist_ok to succeed");
+        assert!(callback_called.load(Ordering::SeqCst));
+        assert_eq!(table.schema().await.unwrap(), create_test_data().schema());
+
+        // Mismatched schema via create_table should return Error::Schema
+        let mismatched_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let mismatched_batch = RecordBatch::try_new(
+            mismatched_schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["Alice"])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("exist_ok_schema_test", mismatched_batch)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Schema { ref message } if message == "Provided schema does not match existing table schema"
+            ),
+            "unexpected error: {err:?}"
+        );
+
+        // Mismatched schema via create_empty_table should also return Error::Schema
+        let err_empty = conn
+            .create_empty_table("exist_ok_schema_test", mismatched_schema)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err_empty,
+                Error::Schema { ref message } if message == "Provided schema does not match existing table schema"
+            ),
+            "unexpected error: {err_empty:?}"
+        );
     }
 
     #[tokio::test]
