@@ -154,7 +154,7 @@ pub(super) fn string_lists(batches: &[RecordBatch], name: &str) -> Result<Vec<St
     Ok(values)
 }
 
-pub(super) fn description<T: DeserializeOwned>(batches: Vec<RecordBatch>) -> Result<T> {
+pub(in crate::remote) fn description<T: DeserializeOwned>(batches: Vec<RecordBatch>) -> Result<T> {
     if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
         return Err(Error::Runtime {
             message: "DESCRIBE FORMAT JSON must return exactly one document".into(),
