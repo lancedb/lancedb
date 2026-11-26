@@ -175,8 +175,11 @@ async def test_function_index_inspection_is_separate_from_registration(with_prim
 
         def do_get(self, context, ticket):
             self.requests.append(ticket.ticket)
+            assert b"FORMAT JSON" in ticket.ticket
             return flight.RecordBatchStream(
-                pa.table({"definition": [json.dumps(stored)]})
+                pa.table({"description": [json.dumps(stored)]}).replace_schema_metadata(
+                    {b"lancedb.describe.format": b"json"}
+                )
             )
 
     class IndexedDefinition(FunctionDefinition):
@@ -214,7 +217,8 @@ async def test_function_index_inspection_is_separate_from_registration(with_prim
         version = db.get_function(name, version=1)
         assert await async_db.get_function(name, version="1") == version
         assert all(
-            f"DESCRIBE FUNCTION \"{name}\" WITH (version = '1')".encode() in ticket
+            f"DESCRIBE FUNCTION \"{name}\" WITH (version = '1') FORMAT JSON".encode()
+            in ticket
             for ticket in server.requests
         )
         assert len(server.requests) == 2
