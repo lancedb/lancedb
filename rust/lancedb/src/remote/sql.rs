@@ -38,6 +38,7 @@ use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
 mod function;
 pub(super) mod materialized_view;
 mod objects;
+pub(super) use objects::description;
 pub(super) mod receipt;
 mod secret;
 pub(super) use secret::SecretWriteOperation;

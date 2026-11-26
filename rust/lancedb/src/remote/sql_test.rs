@@ -765,6 +765,17 @@ impl FlightService for TestSqlService {
     }
 }
 
+fn description_batch(document: serde_json::Value) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("description", DataType::Utf8, false)]).with_metadata(
+        HashMap::from([("lancedb.describe.format".into(), "json".into())]),
+    );
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+    )
+    .unwrap()
+}
+
 fn parameter_row() -> RecordBatch {
     let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
         [Some([0.1_f32, 1e-45, -0.0].map(Some))],
@@ -3283,6 +3294,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
             result: RecordBatch::try_from_iter(columns.clone()).unwrap(),
             adaptive: true,
             defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([(
+                "DESCRIBE STORAGE INTEGRATION \"raw\" FORMAT JSON".into(),
+                description_batch(info.clone()),
+            )]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3310,13 +3325,14 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
             created.trust_policy["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"],
             created.aws_external_id
         );
+        let described = database
+            .describe_storage_integration("raw", &namespace)
+            .await
+            .unwrap();
+        assert_eq!(described.aws_external_id, created.aws_external_id);
         assert_eq!(
-            database
-                .describe_storage_integration("raw", &namespace)
-                .await
-                .unwrap()
-                .aws_external_id,
-            created.aws_external_id
+            serde_json::to_value(&described).unwrap(),
+            serde_json::to_value(&created).unwrap()
         );
         assert_eq!(
             database
@@ -3347,7 +3363,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
             .unwrap();
         let statements = statements.lock().unwrap();
         assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
-        assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
+        assert_eq!(
+            statements[1],
+            "DESCRIBE STORAGE INTEGRATION \"raw\" FORMAT JSON"
+        );
         assert_eq!(
             statements[2],
             "SHOW STORAGE INTEGRATIONS IN \"platform$aws\" LIMIT 1000"
