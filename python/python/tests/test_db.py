@@ -410,6 +410,20 @@ def test_create_table_from_iterator_with_mismatched_batches(
         mem_db.create_table("test", data=iter(batches))
 
 
+def test_create_table_from_iterator_with_mismatched_list_width(
+    mem_db: lancedb.DBConnection,
+):
+    batches = [
+        pa.table({"v": pa.array([[1, 2]], type=pa.list_(pa.int64(), 2))}),
+        pa.table({"v": pa.array([[1, 2, 3]], type=pa.list_(pa.int64(), 3))}),
+    ]
+    with pytest.raises(RuntimeError) as exc_info:
+        mem_db.create_table("test", data=iter(batches))
+    expected, _, actual = str(exc_info.value).partition("Got:")
+    assert "v: fixed_size_list<item: int64>[2]" in expected
+    assert "v: fixed_size_list<item: int64>[3]" in actual
+
+
 def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
     db = tmp_db
     data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]

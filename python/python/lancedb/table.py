@@ -605,7 +605,7 @@ def _iterator_to_reader(
             if table.schema != schema:
                 try:
                     table = table.cast(schema)
-                except (ValueError, pa.ArrowNotImplementedError):
+                except (ValueError, pa.ArrowNotImplementedError, pa.ArrowTypeError):
                     raise ValueError(
                         f"Input iterator yielded a batch with schema that "
                         f"does not match the schema of other batches.\n"
