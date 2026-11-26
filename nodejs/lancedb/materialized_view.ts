@@ -45,6 +45,23 @@ export function validateNonNegativeInteger(
   }
 }
 
+/**
+ * Validates a parameter that crosses N-API as a Rust `u32`: it must be an
+ * integer inside the representable range, otherwise the conversion would
+ * silently truncate or wrap it.
+ */
+export function validateU32Integer(
+  value: number | undefined,
+  name: string,
+): void {
+  if (
+    value !== undefined &&
+    !(Number.isSafeInteger(value) && value >= 0 && value <= 4294967295)
+  ) {
+    throw new Error(`${name} must be an integer between 0 and 4294967295`);
+  }
+}
+
 /** @internal Quote a column name as a Lance SQL identifier (backticks). */
 function quoteIdentifier(name: string): string {
   return "`" + name.replace(/`/g, "``") + "`";

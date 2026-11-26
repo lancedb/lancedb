@@ -21,6 +21,10 @@ import { isBlobDescriptorField, isBlobField } from "./blob";
 import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
+  validateNonNegativeInteger,
+  validateU32Integer,
+} from "./materialized_view";
+import {
   JsFullTextQuery,
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
@@ -808,6 +812,9 @@ export class StandardQueryBase<
    * called then every valid row from the table will be returned.
    */
   limit(limit: number): this {
+    // The native side takes a u32; anything fractional or out of range would
+    // be silently truncated or wrapped by the N-API conversion.
+    validateU32Integer(limit, "limit");
     this.doCall((inner: NativeQueryType) => inner.limit(limit));
     return this;
   }
@@ -935,6 +942,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * or maximum settings can override their respective bounds.
    */
   nprobes(nprobes: number): VectorQuery {
+    validateNonNegativeInteger(nprobes, "nprobes");
     this.doVectorCall((inner) => inner.nprobes(nprobes));
 
     return this;
@@ -975,6 +983,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * but will also increase latency.
    */
   minimumNprobes(minimumNprobes: number): VectorQuery {
+    validateNonNegativeInteger(minimumNprobes, "minimumNprobes");
     this.doVectorCall((inner) => inner.minimumNprobes(minimumNprobes));
     return this;
   }
@@ -989,6 +998,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * potential false negatives.
    */
   maximumNprobes(maximumNprobes: number): VectorQuery {
+    validateNonNegativeInteger(maximumNprobes, "maximumNprobes");
     this.doVectorCall((inner) => inner.maximumNprobes(maximumNprobes));
     return this;
   }
@@ -1016,6 +1026,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * also increase the latency of your query. The default value is 1.5*limit.
    */
   ef(ef: number): VectorQuery {
+    validateNonNegativeInteger(ef, "ef");
     this.doVectorCall((inner) => inner.ef(ef));
     return this;
   }
@@ -1106,6 +1117,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * distance between the query vector and the actual uncompressed vector.
    */
   refineFactor(refineFactor: number): VectorQuery {
+    validateNonNegativeInteger(refineFactor, "refineFactor");
     this.doVectorCall((inner) => inner.refineFactor(refineFactor));
     return this;
   }
