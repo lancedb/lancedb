@@ -1722,11 +1722,15 @@ First, let's see all the versions we've created:
     </CodeBlock>
 </CodeGroup>
 
+{/*
+Draft for the Python timestamp checkout release.
+
 In Python, pass a `datetime` to `table.checkout(cutoff)` to read the highest
 retained version committed at or before that instant. Capture one cutoff with
 `datetime.now(timezone.utc)` and pass it to each table when reading several
 tables as of the same time. Each table uses its own version history. If no
 retained version qualifies, `checkout()` raises `ValueError`.
+*/}
 
 #### Restore a Version Snapshot {#versioning-restore-a-version-snapshot}
 
