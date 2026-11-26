@@ -66,6 +66,11 @@ def remote_server(text_type=pa.string()):
                     )
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
+            elif b"DESCRIBE STORAGE INTEGRATION" in command:
+                assert b"FORMAT JSON" in command
+                result = pa.table(
+                    {"description": [json.dumps(info)]}
+                ).replace_schema_metadata({b"lancedb.describe.format": b"json"})
             else:
                 if b"STORAGE_PROVIDER = 'HUGGINGFACE'" in command:
                     info.update(
