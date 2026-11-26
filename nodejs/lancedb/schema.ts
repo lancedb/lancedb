@@ -15,6 +15,7 @@ import {
   List,
   Schema,
   Struct,
+  TimestampMillisecond,
   Utf8,
   util as arrowUtil,
 } from "apache-arrow";
@@ -226,6 +227,9 @@ class SchemaInferrer {
     }
     if (typeof value === "boolean") {
       return new Bool();
+    }
+    if (value instanceof Date) {
+      return new TimestampMillisecond();
     }
     if (value instanceof Buffer) {
       return new Binary();

@@ -127,6 +127,7 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
     Float32,
     FixedSizeList,
     Precision,
+    TimestampMillisecond,
     tableFromIPC,
     DataType,
     Dictionary,
@@ -520,6 +521,26 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
       expect(vectorType.children[0].type.toString()).toEqual(
         new Float32().toString(),
       );
+    });
+
+    it("will infer Timestamp<MILLISECOND> from Date values", function () {
+      const first = new Date("2024-01-02T03:04:05.678Z");
+      const table = makeArrowTable([
+        { id: "a", created: first },
+        { id: "b", created: null },
+        { id: "c", created: new Date(0) },
+      ]);
+
+      const created = table.getChild("created");
+      expect(created?.type.toString()).toEqual(
+        new TimestampMillisecond().toString(),
+      );
+      expect(Number(created?.get(0))).toBe(first.getTime());
+      expect(created?.get(1)).toBeNull();
+      expect(Number(created?.get(2))).toBe(0);
+      expect(() =>
+        makeArrowTable([{ created: first }, { created: "yesterday" }]),
+      ).toThrow("Failed to infer schema for data.");
     });
 
     it("will infer FixedSizeList<Uint8> from Uint8Array values", async function () {
