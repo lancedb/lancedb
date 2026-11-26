@@ -4146,7 +4146,7 @@ describe("when dealing with branches", () => {
       "exp.json",
     );
     const stored = JSON.parse(fs.readFileSync(refPath, "utf8"));
-    stored.metadata = { owner: "test" };
+    stored.metadata = { owner: "test", ["__proto__"]: "kept" };
     stored.createAt = 1700000000;
     fs.writeFileSync(refPath, JSON.stringify(stored));
 
@@ -4171,9 +4171,50 @@ describe("when dealing with branches", () => {
 
     const serialized = JSON.parse(JSON.stringify(list));
     expect(serialized["exp"].createAt).toBe(1700000000);
-    expect(serialized["exp"].metadata).toEqual({ owner: "test" });
+    expect(serialized["exp"].metadata).toEqual({
+      owner: "test",
+      ["__proto__"]: "kept",
+    });
     expect(serialized["exp"].manifestSize).toBeGreaterThan(0);
     expect(serialized["exp"].parentBranch).toBeNull();
+
+    // `__proto__` survives the binding conversion as an own data property
+    // instead of being swallowed by the prototype setter.
+    const metadata = exp.metadata;
+    // The key did not go through the prototype setter ...
+    expect(Object.getPrototypeOf(metadata)).not.toBe("kept");
+    // ... and exists as an own data property.
+    expect(
+      Object.getOwnPropertyDescriptor(metadata, "__proto__"),
+    ).toMatchObject({ value: "kept", enumerable: true, writable: true });
+    const roundTripped = JSON.parse(JSON.stringify(metadata));
+    expect(
+      Object.getOwnPropertyDescriptor(roundTripped, "__proto__")?.value,
+    ).toBe("kept");
+  });
+
+  it("keeps the BranchContents type assignable from the released shape", async () => {
+    // Compile-time contract: values typed against 0.41.0/0.42.0-beta.x, which
+    // only exposed parentBranch/parentVersion/manifestSize, still satisfy the
+    // exported type.
+    const legacy: BranchContents = {
+      parentVersion: 3,
+      manifestSize: 128,
+    };
+    expect(legacy.parentVersion).toBe(3);
+    expect(legacy.parentBranch).toBeUndefined();
+
+    // branches.list() still guarantees both newer fields, in its return type
+    // and at runtime.
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+    await branches.create("exp");
+    const exp = (await branches.list())["exp"];
+    const createAt: number = exp.createAt;
+    const metadata: Record<string, string> = exp.metadata;
+    expect(createAt).toBeGreaterThan(0);
+    expect(metadata).toEqual({});
   });
 
   it("forks from a tag on a branch with the same version as main", async () => {

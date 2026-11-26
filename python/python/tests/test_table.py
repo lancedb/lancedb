@@ -1828,13 +1828,14 @@ def test_branches(tmp_path):
     # non-empty metadata and a known creation time in Unix seconds.
     ref_path = tmp_path / "test.lance" / "_refs" / "branches" / "exp.json"
     stored = json.loads(ref_path.read_text())
-    stored["metadata"] = {"owner": "test"}
+    stored["metadata"] = {"owner": "test", "__proto__": "kept"}
     stored["createAt"] = 1700000000
     ref_path.write_text(json.dumps(stored))
 
     branches = table.branches.list()
     assert branches["exp"]["create_at"] == 1700000000
-    assert branches["exp"]["metadata"] == {"owner": "test"}
+    # every metadata key survives, including "__proto__"
+    assert branches["exp"]["metadata"] == {"owner": "test", "__proto__": "kept"}
     assert branches["exp"]["manifest_size"] > 0
 
     # from_ref="main" is equivalent to the default
