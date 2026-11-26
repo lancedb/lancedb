@@ -73,10 +73,19 @@ class OllamaEmbeddings(TextEmbeddingFunction):
         if isinstance(texts, np.ndarray):
             texts = texts.tolist()
         # Ollama rejects None, so null and empty texts get no embedding
-        valid_indices = [idx for idx, text in enumerate(texts) if text]
+        valid_indices = [
+            idx
+            for idx, text in enumerate(texts)
+            if not (text is None or (isinstance(text, (str, bytes)) and not text))
+        ]
         embeddings: list[Union[np.array, None]] = [None] * len(texts)
         if valid_indices:
             computed = self._compute_embedding([texts[idx] for idx in valid_indices])
+            if len(computed) != len(valid_indices):
+                raise ValueError(
+                    f"Ollama returned {len(computed)} embeddings for "
+                    f"{len(valid_indices)} texts"
+                )
             for idx, embedding in zip(valid_indices, computed):
                 embeddings[idx] = embedding
         return embeddings
