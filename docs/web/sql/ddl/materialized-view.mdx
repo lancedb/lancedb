@@ -68,6 +68,18 @@ automatic execution needs the same server-side switch enabled. Omitting
 `WITH` leaves automatic refresh at the server's default.
 */}
 
+## DESCRIBE MATERIALIZED VIEW {#describe}
+
+```sql
+DESCRIBE MATERIALIZED VIEW document_features [FORMAT TEXT | JSON];
+```
+
+Returns one `description` document containing the defining query, source
+version, refresh policy, observed refresh state and available timestamps or
+dependency diagnostics. TEXT is the default; JSON retains native numbers,
+booleans and nulls, with RFC3339 timestamp strings. See
+[DESCRIBE formats](/sql/describe).
+
 ## SHOW MATERIALIZED VIEWS {#show}
 
 ```sql

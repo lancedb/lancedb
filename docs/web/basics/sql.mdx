@@ -154,6 +154,10 @@ results, or to track and cancel a running query, see
 [Read and manage results](#results). To submit a query and check its status
 separately, use `execute_query_async()`.
 
+To inspect an object, use `DESCRIBE TABLE frames` for readable TEXT or
+`DESCRIBE TABLE frames FORMAT JSON` for application metadata. Both return one
+`description` document; see [DESCRIBE formats](/sql/describe).
+
 ## Parameters in SQL queries {#parameters}
 
 Pass a `parameters` argument to bind values into a query, instead of

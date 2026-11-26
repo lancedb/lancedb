@@ -43,14 +43,14 @@ database.
 
 <CodeGroup>
 ```sql SQL icon="database"
-DESCRIBE DATABASE analytics
+DESCRIBE DATABASE analytics [FORMAT TEXT | JSON]
 DESC DATABASE "team/search"
 ```
 </CodeGroup>
 
-Requires `USAGE` on the database. Returns one row with `name` and
-`properties`. Properties are the catalog's metadata encoded as a JSON
-object; a database without metadata returns `{}`, and a database mid
+Requires `USAGE` on the database. Returns one `description` document with
+`name` and native `properties`, as readable TEXT (the default) or JSON. See
+[DESCRIBE formats](/sql/describe). Properties contain the catalog's metadata; a database without metadata returns `{}`, and a database mid
 `CASCADE` drop reports a transient property marking it as dropping. A
 missing database is an error. `DESCRIBE DATABASE system` returns empty
 properties and requires system `USAGE`.
