@@ -39,6 +39,7 @@ class LanceMergeInsertBuilder(object):
         self._use_index = True
         self._use_rte = None
         self._validate_single_shard = None
+        self._source_collect_threshold_bytes = None
 
     def when_matched_update_all(
         self, *, where: Optional[str] = None
@@ -163,6 +164,7 @@ class LanceMergeInsertBuilder(object):
         timeout: Optional[timedelta] = None,
         *,
         retries: Optional[int] = None,
+        source_collect_threshold_bytes: Optional[int] = None,
     ) -> MergeInsertResult:
         """
         Executes the merge insert operation
@@ -207,6 +209,20 @@ class LanceMergeInsertBuilder(object):
             In particular, 502, ordinary 503, and 504 are never replayed, even if
             configured. Reconcile table contents before manually repeating a merge
             whose commit outcome is unknown.
+        source_collect_threshold_bytes: Optional[int], default None
+            How many bytes of a one-shot source (such as a
+            ``pyarrow.RecordBatchReader`` or an iterator) to read into memory
+            before streaming the rest.
+
+            The merge join picks which side to build its hash table from using
+            the size each input reports. In-memory data (a table, batch, or
+            DataFrame) reports its exact row count. A one-shot source reports
+            nothing, so it is read up to this many bytes: if it ends first it is
+            merged from memory with an exact size; otherwise the rows read so
+            far are reported as a lower bound and the rest is streamed.
+
+            Overrides the ``merge_insert_source_collect_threshold_bytes``
+            connection option. Defaults to 64MiB. Only applies to local tables.
 
         Returns
         -------
@@ -215,6 +231,8 @@ class LanceMergeInsertBuilder(object):
         """
         if timeout is not None:
             self._timeout = timeout
+        if source_collect_threshold_bytes is not None:
+            self._source_collect_threshold_bytes = source_collect_threshold_bytes
         return self._table._do_merge(
             self, new_data, on_bad_vectors, fill_value, retries=retries
         )

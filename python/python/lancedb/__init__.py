@@ -167,6 +167,7 @@ def connect(
     namespace_client_impl: Optional[str] = None,
     namespace_client_properties: Optional[Dict[str, str]] = None,
     namespace_client_pushdown_operations: Optional[List[str]] = None,
+    merge_insert_source_collect_threshold_bytes: Optional[int] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -215,6 +216,11 @@ def connect(
         When true for LanceDB Embedded connections, use directory namespace
         manifests as the source of truth for table metadata. Existing
         directory-listed root tables are migrated into the manifest on access.
+    merge_insert_source_collect_threshold_bytes : int, optional
+        (For LanceDB OSS only)
+        Default for ``source_collect_threshold_bytes`` in
+        [`LanceMergeInsertBuilder.execute`][lancedb.merge.LanceMergeInsertBuilder.execute]
+        on tables from this connection. Defaults to 64MiB.
     session: Session, optional
         (For LanceDB Embedded only)
         A session to use for this connection. Sessions allow you to configure
@@ -368,6 +374,9 @@ def connect(
         session=session,
         manifest_enabled=manifest_enabled,
         namespace_client_properties=namespace_client_properties,
+        merge_insert_source_collect_threshold_bytes=(
+            merge_insert_source_collect_threshold_bytes
+        ),
     )
 
 
@@ -509,6 +518,9 @@ def deserialize_conn(
             storage_options=storage_options,
             manifest_enabled=parsed.get("manifest_enabled", False),
             namespace_client_properties=parsed.get("namespace_client_properties"),
+            merge_insert_source_collect_threshold_bytes=parsed.get(
+                "merge_insert_source_collect_threshold_bytes"
+            ),
         )
     elif connection_type == "remote":
         return RemoteDBConnection(
@@ -538,6 +550,7 @@ async def connect_async(
     manifest_enabled: bool = False,
     namespace_client_properties: Optional[Dict[str, str]] = None,
     oauth_config=None,
+    merge_insert_source_collect_threshold_bytes: Optional[int] = None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -595,6 +608,11 @@ async def connect_async(
         OAuth configuration for LanceDB Enterprise. This is supported by
         ``connect_async`` only; synchronous ``connect`` uses API key
         authentication for ``db://`` URIs.
+    merge_insert_source_collect_threshold_bytes : int, optional
+        (For LanceDB OSS only)
+        Default for ``source_collect_threshold_bytes`` in
+        [`LanceMergeInsertBuilder.execute`][lancedb.merge.LanceMergeInsertBuilder.execute]
+        on tables from this connection. Defaults to 64MiB.
 
     Examples
     --------
@@ -652,6 +670,7 @@ async def connect_async(
             manifest_enabled,
             namespace_client_properties,
             oauth_config,
+            merge_insert_source_collect_threshold_bytes,
         )
     )
 
