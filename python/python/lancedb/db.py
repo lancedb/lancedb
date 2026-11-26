@@ -58,6 +58,7 @@ from lance_namespace import (
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
+from .server_info import ServerInfo
 from ._lancedb import _append_doc_url, connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, FunctionDefinition
 from .graph import (
@@ -67,7 +68,7 @@ from .graph import (
     PropertyGraph,
     _definition_json,
 )
-from .job import AsyncJob, Job, _typed_job
+from .job import AsyncJob, Job, _opened_job, _typed_job
 from .storage_integration import SecretReference, StorageIntegrationInfo
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -78,6 +79,7 @@ from .materialized_view import (
     MaterializedViewSource,
     SelectArg,
     normalize_select,
+    _validate_create_materialized_view,
 )
 from .secrets import (
     EnvVarSecret,
@@ -116,6 +118,7 @@ from .namespace_utils import (
     _normalize_drop_namespace_mode,
     _normalize_drop_namespace_behavior,
 )
+from .resources import _resource_options
 
 
 def _view_description(
@@ -150,6 +153,38 @@ def _normalize_function_version(version: Optional[Union[int, str]]) -> Optional[
     if isinstance(version, str):
         return version
     raise TypeError("version must be an int, str, or None")
+
+
+def _function_registration_decoder():
+    """Parse a registration result and emit its server warnings once.
+
+    The warnings come from the scalar environment or, for a multiarchitecture
+    image, each measured platform entry. They are part of the registration job
+    result, not a new client-side package policy. Catalog get/list readbacks
+    use ``FunctionVersion.from_json`` directly and therefore do not replay
+    them.
+    """
+    warned = False
+
+    def decode(payload: str) -> FunctionVersion:
+        nonlocal warned
+        version = FunctionVersion.from_json(payload)
+        if not warned:
+            environments = [
+                environment
+                for environment in (
+                    version.resolved_environment,
+                    *version.resolved_environments.values(),
+                )
+                if environment is not None
+            ]
+            for environment in environments:
+                for message in environment.warnings:
+                    warnings.warn(message, UserWarning, stacklevel=3)
+            warned = True
+        return version
+
+    return decode
 
 
 class DBConnection(EnforceOverrides):
@@ -322,6 +357,9 @@ class DBConnection(EnforceOverrides):
     def table_exists(self, table_id: List[str]) -> bool:
         """Check if a table exists.
 
+        Use this method instead of checking membership in
+        ``list_tables().tables``, which contains only one page of table names.
+
         Parameters
         ----------
         table_id: List[str]
@@ -331,12 +369,20 @@ class DBConnection(EnforceOverrides):
         Returns
         -------
         bool
-            True if the table exists, False otherwise.
+            True if the table exists, False if it is not found.
+            Other errors, including permission errors, are propagated.
 
         Raises
         ------
         NotImplementedError
-            If the connection type does not support namespace operations.
+            If the connection type does not support table existence checks.
+
+        Examples
+        --------
+        >>> def check_table(conn):
+        ...     root_exists = conn.table_exists(["events"])
+        ...     nested_exists = conn.table_exists(["analytics", "events"])
+        ...     return root_exists, nested_exists
         """
         raise NotImplementedError(
             "Namespace operations are not supported for this connection type"
@@ -348,7 +394,11 @@ class DBConnection(EnforceOverrides):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> TableListing:
-        """List tables in this database, one page at a time.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        ``list_tables().tables`` contains only the first page (100 names by
+        default). Use ``list(list_tables())`` to collect all names, or
+        ``table_exists([name])`` to check whether a particular table exists.
 
         Parameters
         ----------
@@ -413,10 +463,17 @@ class DBConnection(EnforceOverrides):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
+        """Register storage access, preserving existing configuration with
+        ``exist_ok=True``. Existing names are errors by default.
+        """
         raise NotImplementedError
 
     def describe_storage_integration(
@@ -454,6 +511,8 @@ class DBConnection(EnforceOverrides):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -517,6 +576,23 @@ class DBConnection(EnforceOverrides):
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it, so a create with data stays atomic. Each
+            entry can be a [BasePath][lancedb.schema.BasePath], a dict with
+            `path`, `name`, `is_dataset_root`, and `id` keys, or a
+            `lance.DatasetBasePath`. Blob URIs that fall under a registered
+            base are stored relative to it; other URIs need
+            `allow_external_blob_outside_bases=True`. `None` and an empty
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. Set
+            `initial_bases` instead when the URIs share a registered prefix.
+            Defaults to rejecting such URIs. The opt-in applies only to the
+            initial data; a later `add()` must enable it again.
         Returns
         -------
         LanceTable
@@ -682,16 +758,26 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -706,8 +792,12 @@ class DBConnection(EnforceOverrides):
         ----------
         name: str
             The name of the view.
-        source: str
-            The name of the source table.
+        source: str, optional
+            The name of the source table. Required when ``query`` is omitted.
+        query: str, optional
+            The complete defining SQL query, including any GROUP BY or FROM
+            Function. Mutually exclusive with ``source``, ``select``, ``where``
+            and ``limit``. Supported query shapes depend on the backend.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -726,10 +816,32 @@ class DBConnection(EnforceOverrides):
             Positive, finite refresh interval in seconds in LanceDB Enterprise.
             When omitted, the server determines when to refresh.
 
+        total_cpu_millis: int, optional
+            Default total CPU budget in millicores for initial population and
+            refreshes. Overrides Function defaults. LanceDB Enterprise only.
+        total_memory_bytes: int, optional
+            Default total memory budget in bytes. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Default total GPU budget across workers. LanceDB Enterprise only.
+
         Returns
         -------
         MaterializedView
+
+        Examples
+        --------
+        >>> view = db.create_materialized_view(  # doctest: +SKIP
+        ...     "events_by_kind",
+        ...     query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
+        ... )
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         raise NotImplementedError(
             _append_doc_url(
                 "materialized views are not supported on this connection type",
@@ -740,16 +852,26 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
+
+        ``exist_ok=True`` preserves an existing view without refreshing it.
+        A skipped creation returns a completed job without a registry job ID.
 
         The job may already be complete in LanceDB Embedded. In LanceDB
         Distributed, creation submits CREATE MATERIALIZED VIEW through the SQL
@@ -761,6 +883,13 @@ class DBConnection(EnforceOverrides):
         Servers without early registry-handle support return a connection-scoped
         query job instead. Its ID cannot be reopened with :meth:`open_job`.
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         raise NotImplementedError(
             _append_doc_url(
                 "materialized views are not supported on this connection type",
@@ -934,7 +1063,7 @@ class DBConnection(EnforceOverrides):
 
     def __contains__(self, name: str) -> bool:
         """Return whether the root namespace contains the named table."""
-        return name in self._all_table_names()
+        return self.table_exists([name])
 
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
@@ -974,9 +1103,15 @@ class DBConnection(EnforceOverrides):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
+        progress: Any = False,
     ) -> FunctionVersion:
         """Build and register a scalar Python function, then return its version.
+
+        ``exist_ok=True`` returns the existing named Function version unchanged.
+        By default, registration retains its existing version-creation behavior.
 
         The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
@@ -994,6 +1129,16 @@ class DBConnection(EnforceOverrides):
         namespace_path : list of str, optional
             The namespace holding the Function. None or an empty list is the
             root namespace.
+        refresh_lock : bool, default False
+            Ask the server to resolve a fresh environment lock instead of
+            reusing the published version's lock.
+        progress : bool, callable, or tqdm-like object, default False
+            Display lifecycle state and elapsed time, or receive structured
+            snapshots through a callback. See [Job.wait][lancedb.job.Job.wait].
+
+        When the registration job resolves, each resolved-environment warning
+        reported by the server is emitted as a Python ``UserWarning``. Catalog
+        reads do not replay those registration warnings.
 
         Examples
         --------
@@ -1009,23 +1154,40 @@ class DBConnection(EnforceOverrides):
         )
         ```
         """
-        return self.create_function_async(
-            definition, secrets=secrets, namespace_path=namespace_path
-        ).wait()
+        job = self.create_function_async(
+            definition,
+            secrets=secrets,
+            exist_ok=exist_ok,
+            namespace_path=namespace_path,
+            refresh_lock=refresh_lock,
+        )
+        if progress is False or progress is None:
+            return job.wait()
+        return job.wait(progress=progress)
 
     def create_function_async(
         self,
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
+
+        ``exist_ok=True`` preserves an existing named version and its metadata.
+        The default retains the existing version-creation behavior.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
         its ID. Waiting on it returns the immutable Function version.
         LanceDB Embedded connections raise ``NotImplementedError``.
+
+        ``refresh_lock`` asks the server to resolve a fresh environment lock
+        instead of reusing the published version's lock. Waiting on the job
+        emits the server's resolved-environment warnings as Python warnings;
+        reading the same version later does not repeat them.
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -1143,14 +1305,24 @@ class DBConnection(EnforceOverrides):
         )
 
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
         """Create a named Secret in this database.
 
-        Fails if the name is taken, so a create never silently becomes a
-        rotation. Nothing reads the value back: it is bound to a Function by
+        Fails if the name is taken unless ``exist_ok=True``, which leaves the
+        existing value unchanged. Use :meth:`alter_secret` to rotate a Secret.
+        Nothing reads the value back: it is bound to a Function by
         name and resolved by the service when that Function runs. Local
         connections raise ``NotImplementedError``.
+
+        Examples
+        --------
+        >>> db.create_secret("api-key", "credential", exist_ok=True)  # doctest: +SKIP
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -1233,7 +1405,12 @@ class DBConnection(EnforceOverrides):
         )
 
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         """Create a view: a named query the database plans on every read.
 
@@ -1241,9 +1418,10 @@ class DBConnection(EnforceOverrides):
         is refused now rather than at the first read. A view holds no rows, and
         its readers see its sources as they are at read time.
 
-        There is no replace: a name already taken is an error, and changing a
-        view is a drop followed by a create. LanceDB Embedded connections raise
-        ``NotImplementedError``.
+        A name already taken is an error unless ``exist_ok=True``, which returns
+        the existing view's stored query and schema without changing them.
+        Changing a view is a drop followed by a create. LanceDB Embedded
+        connections raise ``NotImplementedError``.
 
         >>> import lancedb
         >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
@@ -1435,6 +1613,12 @@ class DBConnection(EnforceOverrides):
         specification, result, failure and event history, so there is no
         separate connection-level call for any of them.
 
+        For a column refresh, ``wait()`` returns a
+        [RefreshColumnResult][lancedb.functions.RefreshColumnResult], including
+        when the refresh was started through SQL. Other job types return
+        ``None`` from ``wait()``; their persisted result is available through
+        ``job.result()`` after ``job.checkout_latest()``.
+
         Raises `JobNotFoundError` when the server has no such job, the way
         `open_table` does for a missing table.
         """
@@ -1444,6 +1628,22 @@ class DBConnection(EnforceOverrides):
                 "jobs",
             )
         )
+
+    def server_info(self) -> ServerInfo:
+        """Return the responding server's build and Function runtime information.
+
+        This call submits no query, Function, or job. The response is a
+        JSON-compatible dictionary, convenient to include in a bug report::
+
+            info = db.server_info()
+            print(info["query_node"])  # release, git_sha, build_date
+
+        Requires System Usage permission. Embedded connections and older
+        servers without this endpoint raise ``NotImplementedError``.
+        Different calls can reach different builds during a rolling upgrade.
+        Configured images do not identify the version of a running job.
+        """
+        raise NotImplementedError("Server build discovery requires a remote connection")
 
     def list_gpu_classes(self) -> List[GpuClass]:
         """List the operator-configured Function GPU classes.
@@ -1464,13 +1664,39 @@ class DBConnection(EnforceOverrides):
         )
 
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> Listing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = jobs[:5]
         """
         raise NotImplementedError(
             _append_doc_url(
@@ -1527,6 +1753,9 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> pa.RecordBatchReader:
         """Execute SQL and return a blocking Arrow reader.
 
@@ -1541,6 +1770,9 @@ class DBConnection(EnforceOverrides):
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         ).reader()
 
     def execute_query_async(
@@ -1549,6 +1781,9 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery:
         """Start executing SQL and return its query handle.
 
@@ -1567,16 +1802,30 @@ class DBConnection(EnforceOverrides):
                 parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
             )
 
-        Parameters are supported in queries, not in DDL or DML. With or
-        without parameters, the server chooses whether to stream rows on the
+        Parameters are supported in queries and, on compatible Enterprise servers,
+        scalar filter values in ``PREWARM`` and ``EXPLAIN PREWARM``. Support for
+        other statement types depends on the server.
+
+        With or without parameters, the server chooses whether to stream rows on the
         initial call or return a polling continuation. The reader follows
         either path transparently. Dropping an unread handle or its reader
-        stops a directly streamed query; deferred execution requires explicit
-        cancellation. Open ``reader()`` directly: a streamed query needs its
-        reader to make progress and reports ``running`` until the stream ends.
+        stops a directly streamed query. Set ``cancel_on_drop=True`` to also
+        attempt cancellation of deferred Flight execution when its unread handle
+        or reader is dropped. By default, deferred queries can be detached.
+        Open ``reader()`` directly: a streamed query needs its reader to make
+        progress and reports ``running`` until the stream ends.
         Once a server-side SQL job exists, ``describe().job_id`` exposes its
         durable Job Registry id while the query is still running. This is
         separate from the connection-scoped query ``id``.
+
+        ``timeout`` limits submission and result consumption together, starting
+        when the query is submitted. It also applies before a reader is opened.
+        ``read_timeout`` overrides the connection's limit for each server read.
+        Both accept ``datetime.timedelta``. On expiry or a failed result read,
+        the SDK stops reading and attempts to cancel Flight execution.
+        Cancellation on drop is best effort and requires the connection's runtime
+        to remain alive. Durable server-side jobs require explicit
+        ``cancel_job(query.job_id)`` regardless of these options.
 
         LanceDB Embedded connections do not support SQL.
         """
@@ -1762,10 +2011,39 @@ class LanceDBConnection(DBConnection):
                 "manifest_enabled": self._manifest_enabled,
                 "namespace_client_properties": self._namespace_client_properties,
                 "read_consistency_interval_seconds": (
-                    rci.total_seconds() if rci else None
+                    rci.total_seconds() if rci is not None else None
                 ),
             }
         )
+
+    def _pickle_state(self) -> str:
+        """Serialize this connection for pickle-based workers."""
+        if self._session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceDBConnection created with a Session; "
+                "Session objects are not serializable. Create the Session in "
+                "each worker process instead."
+            )
+        if self.uri.startswith("memory://"):
+            raise TypeError(
+                "Cannot pickle an in-memory LanceDBConnection because its tables "
+                "exist only in this process. Pickle a LanceTable instead to "
+                "export its data, or connect to a persistent URI."
+            )
+        return self.serialize()
+
+    def __getstate__(self) -> dict[str, str]:
+        return {"serialized": self._pickle_state()}
+
+    def __setstate__(self, state: dict[str, str]) -> None:
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["serialized"], for_worker=True)
+        if not isinstance(connection, LanceDBConnection):
+            raise TypeError(
+                "Serialized connection did not reconstruct a LanceDBConnection"
+            )
+        self.__dict__.update(connection.__dict__)
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
@@ -1850,13 +2128,21 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
 
     @override
+    def table_exists(self, table_id: List[str]) -> bool:
+        return LOOP.run(self._conn.table_exists(table_id))
+
+    @override
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> TableListing:
-        """List tables in this database, one page at a time.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -1894,7 +2180,9 @@ class LanceDBConnection(DBConnection):
         """Get the names of all tables in the database. The names are sorted.
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
 
         Parameters
         ----------
@@ -1914,7 +2202,8 @@ class LanceDBConnection(DBConnection):
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1942,6 +2231,8 @@ class LanceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -1972,6 +2263,8 @@ class LanceDBConnection(DBConnection):
             storage_options=storage_options,
             data_storage_version=data_storage_version,
             enable_v2_manifest_paths=enable_v2_manifest_paths,
+            initial_bases=initial_bases,
+            allow_external_blob_outside_bases=allow_external_blob_outside_bases,
         )
         return tbl
 
@@ -1983,6 +2276,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
     ) -> LanceTable:
@@ -1995,6 +2289,10 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.  When non-empty, the
             table is resolved through the directory namespace client.
+        location: str, optional
+            The explicit location (URI) of the table. If provided, the table will be
+            opened from this location instead of deriving it from the database URI
+            and table name.
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
@@ -2028,6 +2326,7 @@ class LanceDBConnection(DBConnection):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
+                location=location,
             )
         except (RuntimeError, ValueError) as e:
             if namespace_path and (
@@ -2049,16 +2348,26 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -2081,16 +2390,30 @@ class LanceDBConnection(DBConnection):
         >>> view.table.count_rows()  # doctest: +SKIP
         1
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         LOOP.run(
             self._conn.create_materialized_view(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -2099,25 +2422,46 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         job = LOOP.run(
             self._conn.create_materialized_view_async(
                 name,
                 source,
+                query=query,
                 select=select,
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return Job(job)
@@ -2173,6 +2517,7 @@ class LanceDBConnection(DBConnection):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> LanceTable:
         """Clone a table from a source table.
 
@@ -2197,6 +2542,8 @@ class LanceDBConnection(DBConnection):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -2212,6 +2559,7 @@ class LanceDBConnection(DBConnection):
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
+                exist_ok=exist_ok,
             )
         )
         return LanceTable.open(
@@ -2313,11 +2661,17 @@ class LanceDBConnection(DBConnection):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(
             self._conn.create_function_async(
-                definition, secrets=secrets, namespace_path=namespace_path
+                definition,
+                secrets=secrets,
+                exist_ok=exist_ok,
+                namespace_path=namespace_path,
+                refresh_lock=refresh_lock,
             )
         )
         return Job(job)
@@ -2403,8 +2757,12 @@ class LanceDBConnection(DBConnection):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -2420,8 +2778,10 @@ class LanceDBConnection(DBConnection):
                 azure_tenant_id_secret=azure_tenant_id_secret,
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
+                azure_storage_account_access_key_secret=azure_storage_account_access_key_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
+                exist_ok=exist_ok,
                 namespace_path=namespace_path,
             )
         )
@@ -2460,9 +2820,18 @@ class LanceDBConnection(DBConnection):
 
     @override
     def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
-        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+        LOOP.run(
+            self._conn.create_secret(
+                name, value, exist_ok=exist_ok, namespace_path=namespace_path
+            )
+        )
 
     @override
     def alter_secret(
@@ -2506,10 +2875,17 @@ class LanceDBConnection(DBConnection):
 
     @override
     def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         return LOOP.run(
-            self._conn.create_view(name, query, namespace_path=namespace_path)
+            self._conn.create_view(
+                name, query, exist_ok=exist_ok, namespace_path=namespace_path
+            )
         )
 
     @override
@@ -2611,16 +2987,52 @@ class LanceDBConnection(DBConnection):
 
     @override
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> Listing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = jobs[:5]
         """
         return Listing(
-            self._conn.list_jobs(page_token=page_token, page_limit=page_limit)
+            self._conn.list_jobs(
+                page_token=page_token,
+                page_limit=page_limit,
+                table=table,
+                namespace_path=namespace_path,
+                state=state,
+                job_type=job_type,
+                job_types=job_types,
+                created_at_gte_millis=created_at_gte_millis,
+                created_at_lt_millis=created_at_lt_millis,
+            )
         )
 
     @override
@@ -2878,6 +3290,9 @@ class AsyncConnection(object):
     async def table_exists(self, table_id: List[str]) -> bool:
         """Check if a table exists.
 
+        Use this method instead of checking membership in an awaited listing's
+        ``tables`` attribute, which contains only one page of table names.
+
         Parameters
         ----------
         table_id: List[str]
@@ -2903,7 +3318,11 @@ class AsyncConnection(object):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> AsyncTableListing:
-        """List tables in this database, one page at a time.
+        """Iterate over all tables in this database, fetching pages as needed.
+
+        The ``tables`` attribute contains only the current page (100 names by
+        default). Iterate over the listing to visit all pages, or use
+        ``table_exists([name])`` to check for a particular table.
 
         Parameters
         ----------
@@ -2942,7 +3361,9 @@ class AsyncConnection(object):
         """List all tables in this database, in sorted order
 
         .. deprecated::
-            Use :meth:`list_tables` instead, which provides proper pagination support.
+            Iterate over :meth:`list_tables` to get all names, or use
+            :meth:`table_exists` to check for a particular table. The listing's
+            ``tables`` attribute contains only one page.
 
         Parameters
         ----------
@@ -2966,7 +3387,8 @@ class AsyncConnection(object):
         import warnings
 
         warnings.warn(
-            "table_names() is deprecated, use list_tables() instead",
+            "table_names() is deprecated, iterate list_tables() for all names "
+            "or use table_exists([name]) to check existence",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2991,6 +3413,8 @@ class AsyncConnection(object):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -3048,6 +3472,23 @@ class AsyncConnection(object):
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
             to `"true"` in storage_options when connecting to the database.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it, so a create with data stays atomic. Each
+            entry can be a [BasePath][lancedb.schema.BasePath], a dict with
+            `path`, `name`, `is_dataset_root`, and `id` keys, or a
+            `lance.DatasetBasePath`. Blob URIs that fall under a registered
+            base are stored relative to it; other URIs need
+            `allow_external_blob_outside_bases=True`. `None` and an empty
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. Requires
+            initial `data`; the opt-in applies only to that initial write, and
+            a later `add()` must enable it again. Defaults to rejecting such
+            URIs.
 
         Returns
         -------
@@ -3159,6 +3600,25 @@ class AsyncConnection(object):
         """
         if namespace_path is None:
             namespace_path = []
+        if get_uri_scheme(self.uri) == "db":
+            # The Enterprise create endpoint has no way to express either
+            # option. Reject before sanitizing or reading `data`, and do not
+            # point at a local-only or remote `add` path.
+            if initial_bases:
+                raise NotImplementedError(
+                    "initial_bases is not supported for table creation in "
+                    "LanceDB Enterprise"
+                )
+            if allow_external_blob_outside_bases:
+                raise NotImplementedError(
+                    "allow_external_blob_outside_bases is not supported for table "
+                    "creation in LanceDB Enterprise"
+                )
+        if data is None and allow_external_blob_outside_bases:
+            raise ValueError(
+                "allow_external_blob_outside_bases requires initial data; "
+                "pass it to add() for later writes"
+            )
         metadata = None
 
         if embedding_functions is not None:
@@ -3205,6 +3665,7 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
             )
         else:
             data = data_to_reader(data, schema)
@@ -3216,6 +3677,8 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
 
         return AsyncTable(new_table)
@@ -3312,16 +3775,26 @@ class AsyncConnection(object):
     async def create_materialized_view(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        ``exist_ok=True`` preserves an existing view's definition, data and
+        refresh settings without refreshing it. Existing names error by default.
 
         LanceDB Embedded creation and refresh require a source build with the
         ``experimental-functions`` Cargo feature. Published packages leave it
@@ -3329,9 +3802,22 @@ class AsyncConnection(object):
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
-        source, native_options = await self._materialized_view_source(
-            source, select, where, limit
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
+        _validate_create_materialized_view(source, query, select, where, limit)
+        if source is not None:
+            source, native_options = await self._materialized_view_source(
+                source, select, where, limit
+            )
+        else:
+            native_options = {}
+        if query is not None:
+            native_options["query"] = query
         inner = await self._inner.create_materialized_view(
             name,
             source,
@@ -3339,33 +3825,62 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             **native_options,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return AsyncMaterializedView(AsyncTable(inner))
 
     async def create_materialized_view_async(
         self,
         name: str,
-        source: MaterializedViewSource,
+        source: Optional[MaterializedViewSource] = None,
         *,
+        query: Optional[str] = None,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
+
+        ``exist_ok=True`` preserves an existing view without refreshing it.
+        A skipped creation returns a completed job without a registry job ID.
 
         Wait for the returned job before opening or querying the view. In LanceDB
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
-        source, native_options = await self._materialized_view_source(
-            source, select, where, limit
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
+        _validate_create_materialized_view(source, query, select, where, limit)
+        if source is not None:
+            source, native_options = await self._materialized_view_source(
+                source, select, where, limit
+            )
+        else:
+            native_options = {}
+        if query is not None:
+            native_options["query"] = query
         inner = await self._inner.create_materialized_view_async(
             name,
             source,
@@ -3373,9 +3888,15 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             **native_options,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return AsyncJob(inner)
 
@@ -3451,6 +3972,7 @@ class AsyncConnection(object):
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
+        exist_ok: bool = False,
     ) -> AsyncTable:
         """Clone a table from a source table.
 
@@ -3475,6 +3997,8 @@ class AsyncConnection(object):
         is_shallow: bool, default True
             Whether to perform a shallow clone (True) or deep clone (False).
             Currently only shallow clone is supported.
+        exist_ok: bool, default False
+            Return the existing target unchanged instead of cloning over it.
 
         Returns
         -------
@@ -3489,6 +4013,7 @@ class AsyncConnection(object):
             source_version=source_version,
             source_tag=source_tag,
             is_shallow=is_shallow,
+            exist_ok=exist_ok,
         )
         return AsyncTable(table)
 
@@ -3590,7 +4115,13 @@ class AsyncConnection(object):
         """Open a server-side job by id. See
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return AsyncJob(await self._inner.open_job(job_id))
+        return _opened_job(await self._inner.open_job(job_id))
+
+    async def server_info(self) -> ServerInfo:
+        """Read the responding server's build information. See
+        [DBConnection.server_info][lancedb.db.DBConnection.server_info].
+        """
+        return json.loads(await self._inner.server_info())
 
     async def list_gpu_classes(self) -> List[GpuClass]:
         """List configured Function GPU classes. See
@@ -3603,9 +4134,14 @@ class AsyncConnection(object):
         definition: FunctionDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
+        refresh_lock: bool = False,
     ) -> AsyncJob[FunctionVersion]:
         """Submit a scalar Python function for building and registration.
+
+        ``exist_ok=True`` preserves an existing named version and its metadata.
+        The default retains the existing version-creation behavior.
 
         The server-side job builds the OCI image, then registers the completed
         artifact. The returned job has type ``query`` and the SQL query UUID as
@@ -3615,14 +4151,16 @@ class AsyncConnection(object):
         the environment variable its value arrives in. ``namespace_path`` is
         the namespace the Function is registered in; None or an empty list is
         the root. LanceDB Embedded connections raise ``NotImplementedError``.
+        ``refresh_lock`` asks the server to resolve a fresh environment lock
+        instead of reusing the published version's lock.
         """
         if not isinstance(definition, FunctionDefinition):
             raise TypeError("create_function_async requires a @function definition")
-        request = definition.bind_secrets(secrets)
+        request = definition.bind_secrets(secrets).with_refresh_lock(refresh_lock)
         inner = await self._inner.create_function_async(
-            request.to_canonical_json(), namespace_path
+            request.to_canonical_json(), namespace_path, exist_ok=exist_ok
         )
-        return _typed_job(inner, FunctionVersion.from_json)
+        return _typed_job(inner, _function_registration_decoder())
 
     async def get_function(
         self,
@@ -3738,8 +4276,12 @@ class AsyncConnection(object):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
+        exist_ok: bool = False,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         """Register cloud storage access using database-owned credential Secrets.
@@ -3747,18 +4289,26 @@ class AsyncConnection(object):
         ``namespace_path`` follows Secret naming rules. A SecretReference can name
         another database; a string names a root Secret in this database.
         For Azure, set ``storage_provider="AZURE"``, ``azure_storage_account``,
-        and Secret references for tenant ID, client ID and client secret.
+        and either ``azure_storage_account_access_key_secret`` or the three
+        Secret references for tenant ID, client ID and client secret.
         For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
         to a Secret containing the application credentials JSON file content.
         For Hugging Face, set ``storage_provider="HUGGINGFACE"`` and
         optionally set ``huggingface_token_secret`` to a Secret containing the
         token; omitting it selects anonymous access at the default rate limits.
         Registration returns setup instructions without verifying storage access.
+
+        ``exist_ok=True`` returns the stored configuration unchanged when the
+        integration exists, preserving its provider, prefix and credential
+        bindings. Existing names are errors by default.
         """
-        azure_options = (
+        azure_service_principal = (
             azure_tenant_id_secret,
             azure_client_id_secret,
             azure_client_secret_secret,
+        )
+        azure_options = azure_service_principal + (
+            azure_storage_account_access_key_secret,
         )
         if storage_provider != "HUGGINGFACE" and huggingface_token_secret is not None:
             raise ValueError(
@@ -3795,12 +4345,17 @@ class AsyncConnection(object):
             ):
                 raise ValueError("GCP integrations cannot contain AWS or Azure options")
         elif storage_provider == "AZURE":
-            if not azure_storage_account or any(
-                value is None for value in azure_options
-            ):
+            if not azure_storage_account:
+                raise ValueError("Azure integrations require azure_storage_account")
+            valid_credentials = (
+                all(value is None for value in azure_service_principal)
+                if azure_storage_account_access_key_secret is not None
+                else all(value is not None for value in azure_service_principal)
+            )
+            if not valid_credentials:
                 raise ValueError(
-                    "Azure requires a storage account and "
-                    "all three credential Secret references"
+                    "Specify either azure_storage_account_access_key_secret or "
+                    "all three Azure service principal Secret references"
                 )
             if any(
                 value is not None
@@ -3857,11 +4412,16 @@ class AsyncConnection(object):
             "azure_tenant_id_secret": reference(azure_tenant_id_secret),
             "azure_client_id_secret": reference(azure_client_id_secret),
             "azure_client_secret_secret": reference(azure_client_secret_secret),
+            "azure_storage_account_access_key_secret": reference(
+                azure_storage_account_access_key_secret
+            ),
             "gcp_credentials_json_secret": reference(gcp_credentials_json_secret),
             "huggingface_token_secret": reference(huggingface_token_secret),
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
             "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
         }
+        if exist_ok:
+            request["exist_ok"] = True
         info = await self._inner.create_storage_integration(
             validate_secret_name(name),
             json.dumps(request),
@@ -3907,17 +4467,30 @@ class AsyncConnection(object):
         )
 
     async def create_secret(
-        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        value: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> None:
         """Create a named Secret in this database.
 
-        Fails if the name is taken, so a create never silently becomes a
-        rotation. Nothing reads the value back.
+        Fails if the name is taken unless ``exist_ok=True``, which leaves the
+        existing value unchanged. Use :meth:`alter_secret` to rotate a Secret.
+        Nothing reads the value back.
+
+        Examples
+        --------
+        >>> await db.create_secret(  # doctest: +SKIP
+        ...     "api-key", "credential", exist_ok=True
+        ... )
         """
         await self._inner.create_secret(
             validate_secret_name(name),
             value,
             list(validate_namespace_path(namespace_path)),
+            exist_ok=exist_ok,
         )
 
     async def alter_secret(
@@ -3978,7 +4551,12 @@ class AsyncConnection(object):
         )
 
     async def create_view(
-        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+        self,
+        name: str,
+        query: str,
+        *,
+        exist_ok: bool = False,
+        namespace_path: Optional[List[str]] = None,
     ) -> ViewDescription:
         """Create a view: a named query the database plans on every read.
 
@@ -3986,7 +4564,9 @@ class AsyncConnection(object):
         [DBConnection.create_view][lancedb.DBConnection.create_view].
         """
         return _view_description(
-            await self._inner.create_view(name, query, list(namespace_path or []))
+            await self._inner.create_view(
+                name, query, list(namespace_path or []), exist_ok=exist_ok
+            )
         )
 
     async def describe_view(
@@ -4109,16 +4689,56 @@ class AsyncConnection(object):
         )
 
     def list_jobs(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+        self,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+        table: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+        state: Optional[
+            Literal["in_progress", "succeeded", "failed", "canceled", "timed_out"]
+        ] = None,
+        job_type: Optional[str] = None,
+        job_types: Optional[List[str]] = None,
+        created_at_gte_millis: Optional[int] = None,
+        created_at_lt_millis: Optional[int] = None,
     ) -> AsyncListing[JobInfo]:
-        """List server-side jobs across the database's tables.
+        """List server-side jobs, optionally filtered before pagination.
 
-        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
-        ``page_token`` resumes from a saved token. Requests and errors occur during
-        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        ``table`` names a table in ``namespace_path`` (the root by default).
+        Listings include all branches of the table. A namespace filter requires
+        ``table``.
+        ``state`` uses registry states such as ``in_progress``, ``succeeded``,
+        ``failed``, ``timed_out``, and ``canceled``, rather than the SDK's
+        ``running``/``finished`` labels. Set either ``job_type`` or ``job_types``.
+        Creation-time bounds are Unix milliseconds, inclusive at
+        ``created_at_gte_millis`` and exclusive at ``created_at_lt_millis``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total.
+        Resume a ``page_token`` with the same filters. Requests and errors occur
+        during iteration. See [pagination state][lancedb.listing.AsyncListing].
+
+        For example, to inspect up to five jobs without fetching all history::
+
+            jobs = db.list_jobs(table="events", page_limit=5)
+            first_five = []
+            async for job in jobs:
+                first_five.append(job)
+                if len(first_five) == 5:
+                    break
         """
         return AsyncListing(
-            self._inner.list_jobs(page_token=page_token, page_limit=page_limit)
+            self._inner.list_jobs(
+                page_token=page_token,
+                page_limit=page_limit,
+                table=table,
+                namespace_path=namespace_path,
+                state=state,
+                job_type=job_type,
+                job_types=job_types,
+                created_at_gte_millis=created_at_gte_millis,
+                created_at_lt_millis=created_at_lt_millis,
+            )
         )
 
     async def cancel_job(self, job_id: str) -> bool:
@@ -4153,6 +4773,9 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncRecordBatchReader:
         """Execute SQL and return an asynchronous Arrow reader.
 
@@ -4167,6 +4790,9 @@ class AsyncConnection(object):
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
         return await submitted.reader()
 
@@ -4176,6 +4802,9 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncSqlQuery:
         """Start executing SQL and return its query handle.
 
@@ -4183,6 +4812,11 @@ class AsyncConnection(object):
         references. The namespace defaults to ``["public"]``. ``parameters``
         binds values to ``$1`` / ``$name`` placeholders; see
         [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        ``timeout`` covers submission through result consumption, including
+        time before opening a reader. ``read_timeout`` limits each server read.
+        ``cancel_on_drop=True`` also attempts to cancel deferred Flight execution
+        when its unread handle or reader is dropped. See the synchronous method
+        above for cancellation and durable-job behavior.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
@@ -4190,6 +4824,9 @@ class AsyncConnection(object):
                 query,
                 default_namespace_path=default_namespace_path,
                 parameters=to_parameter_batch(parameters),
+                timeout=timeout,
+                read_timeout=read_timeout,
+                cancel_on_drop=cancel_on_drop,
             )
         )
 

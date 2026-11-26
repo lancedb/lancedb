@@ -3,7 +3,7 @@ title: Cohere
 sidebarTitle: Cohere
 ---
 
-import { PyEmbeddingCohereUsage } from '/snippets/integrations.mdx';
+import { PyEmbeddingCohereFoundry, PyEmbeddingCohereUsage } from '/snippets/integrations.mdx';
 
 Using cohere API requires cohere package, which can be installed using `pip install cohere`. Cohere embeddings are used to generate embeddings for text data. The embeddings can be used for various tasks like semantic search, clustering, and classification.
 You also need to set the `COHERE_API_KEY` environment variable to use the Cohere API.
@@ -54,3 +54,28 @@ Usage Example:
     {PyEmbeddingCohereUsage}
   </CodeBlock>
 </CodeGroup>
+
+## Cohere Embed on Azure AI Foundry {#cohere-embed-on-azure-ai-foundry}
+
+For text retrieval with a Cohere Embed v4 deployment in Azure AI Foundry, install
+`cohere>=5.15.0` and use the deployment's native Cohere endpoint and API key.
+Set `base_url` to `https://<resource>.services.ai.azure.com/providers/cohere`.
+The SDK appends `/v2/embed`. Set `name` to the model name configured for your
+deployment, and set `output_dimension` to a dimension the model supports. LanceDB
+uses that value for both the API request and the vector column.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingCohereFoundry}
+  </CodeBlock>
+</CodeGroup>
+
+Create a table with `schema=Document` and add rows with a `text` field. LanceDB
+embeds documents with `search_document` during `table.add()` and embeds the
+query with `search_query` during `table.search("your question")`. Both requests
+use float embeddings. Table metadata stores the key's `$var:` reference. In a new
+process, call `registry.set_var` again and call `registry.allow_endpoint(endpoint)`
+before reopening the table for embedding or text search.
+
+See [Cohere's Foundry example](https://github.com/cohere-ai/cohere-azure-workshops/tree/ca1c4cb162e2/lab-1-embed)
+and the [Cohere Embed v2 API reference](https://docs.cohere.com/v2/reference/embed).

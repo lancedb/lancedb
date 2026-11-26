@@ -287,6 +287,8 @@ pub struct MaterializedViewInfo {
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateMaterializedViewRequest {
+    /// Preserve an existing materialized view without refreshing it.
+    pub exist_ok: bool,
     /// Name of the new view.
     pub name: String,
     /// Namespace in which to create the view.
@@ -299,6 +301,11 @@ pub struct CreateMaterializedViewRequest {
     pub auto_refresh_enabled: Option<bool>,
     /// Refresh interval in seconds. When absent, the server determines when to refresh.
     pub auto_refresh_interval_seconds: Option<f64>,
+    pub total_cpu_millis: Option<u64>,
+    pub total_memory_bytes: Option<u64>,
+    pub total_gpu_count: Option<u32>,
+    pub gpu_class: Option<String>,
+    pub gpu_count: Option<u32>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -1574,19 +1581,31 @@ async fn prepare_with(
 }
 
 /// Builds a materialized view. Created by
-/// [`Connection::create_materialized_view`].
+/// [`Connection::create_materialized_view`] or
+/// [`Connection::create_materialized_view_from_query`].
 pub struct CreateMaterializedViewBuilder {
     connection: Connection,
     name: String,
     namespace: Vec<String>,
-    source: String,
+    input: MaterializedViewInput,
     source_namespace: Vec<String>,
-    projections: Vec<(String, String)>,
+    projections: Option<Vec<(String, String)>>,
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    exist_ok: bool,
     auto_refresh_enabled: Option<bool>,
     auto_refresh_interval_seconds: Option<f64>,
+    total_cpu_millis: Option<u64>,
+    total_memory_bytes: Option<u64>,
+    total_gpu_count: Option<u32>,
+    gpu_class: Option<String>,
+    gpu_count: Option<u32>,
+}
+
+enum MaterializedViewInput {
+    Source(String),
+    Query(String),
 }
 
 fn source_sql_identifier(
@@ -1609,19 +1628,25 @@ fn source_sql_identifier(
 }
 
 impl CreateMaterializedViewBuilder {
-    pub(crate) fn new(connection: Connection, name: String, source: String) -> Self {
+    fn new(connection: Connection, name: String, input: MaterializedViewInput) -> Self {
         Self {
             connection,
             name,
             namespace: Vec::new(),
-            source,
+            input,
             source_namespace: Vec::new(),
-            projections: Vec::new(),
+            projections: None,
             filter: None,
             limit: None,
             with_no_data: false,
+            exist_ok: false,
             auto_refresh_enabled: None,
             auto_refresh_interval_seconds: None,
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+            gpu_class: None,
+            gpu_count: None,
         }
     }
 
@@ -1644,10 +1669,12 @@ impl CreateMaterializedViewBuilder {
         mut self,
         columns: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        self.projections = columns
-            .into_iter()
-            .map(|(output, expression)| (output.into(), expression.into()))
-            .collect();
+        self.projections = Some(
+            columns
+                .into_iter()
+                .map(|(output, expression)| (output.into(), expression.into()))
+                .collect(),
+        );
         self
     }
 
@@ -1668,6 +1695,35 @@ impl CreateMaterializedViewBuilder {
     pub fn with_no_data(mut self, with_no_data: bool) -> Self {
         self.with_no_data = with_no_data;
         self
+    }
+
+    /// Preserve an existing view's definition, data and refresh settings.
+    /// Defaults to false. A skipped creation does not refresh the view.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("saved", "source").exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.exist_ok = exist_ok;
+        self
+    }
+
+    async fn existing_view(&self) -> Result<Option<MaterializedView>> {
+        match self
+            .connection
+            .open_table(&self.name)
+            .namespace(self.namespace.clone())
+            .execute()
+            .await
+        {
+            Ok(table) => MaterializedView::from_table(table).await.map(Some),
+            Err(Error::TableNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Enable or disable automatic refresh in LanceDB Enterprise.
@@ -1697,22 +1753,38 @@ impl CreateMaterializedViewBuilder {
     }
 
     fn query(&self) -> Result<String> {
+        if let MaterializedViewInput::Query(query) = &self.input {
+            if !self.source_namespace.is_empty()
+                || self.projections.is_some()
+                || self.filter.is_some()
+                || self.limit.is_some()
+            {
+                return Err(Error::InvalidInput {
+                    message: "a defining query cannot be combined with source_namespace, select, only_if or limit".into(),
+                });
+            }
+            return Ok(query.clone());
+        }
+        let MaterializedViewInput::Source(source) = &self.input else {
+            unreachable!()
+        };
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
 
-        let projection = if self.projections.is_empty() {
-            "*".to_string()
-        } else {
-            self.projections
-                .iter()
-                .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let projection =
+            if let Some(projections) = self.projections.as_ref().filter(|p| !p.is_empty()) {
+                projections
+                    .iter()
+                    .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                "*".to_string()
+            };
         let source = source_sql_identifier(
             &self.source_namespace,
-            &self.source,
+            source,
             self.connection.uri().starts_with("db://"),
         );
         let mut query = format!("SELECT {projection} FROM {source}");
@@ -1726,6 +1798,36 @@ impl CreateMaterializedViewBuilder {
         Ok(query)
     }
 
+    /// Set the default total cpu millis budget for this materialized view.
+    pub fn total_cpu_millis(mut self, value: u64) -> Self {
+        self.total_cpu_millis = Some(value);
+        self
+    }
+
+    /// Set the default total memory bytes budget for this materialized view.
+    pub fn total_memory_bytes(mut self, value: u64) -> Self {
+        self.total_memory_bytes = Some(value);
+        self
+    }
+
+    /// Set the default total gpu count budget for this materialized view.
+    pub fn total_gpu_count(mut self, value: u32) -> Self {
+        self.total_gpu_count = Some(value);
+        self
+    }
+
+    /// Set the default GPU pool for initial population and later refreshes.
+    pub fn gpu_class(mut self, class: impl Into<String>) -> Self {
+        self.gpu_class = Some(class.into());
+        self
+    }
+
+    /// Set the default positive GPU count for each worker.
+    pub fn gpu_count(mut self, count: u32) -> Self {
+        self.gpu_count = Some(count);
+        self
+    }
+
     /// Submit creation and initial population, returning a [`Job`] that
     /// settles when the view is ready. Remote creation submits SQL; the handle's
     /// [`Job::job_type`] is `"query"` and its ID identifies that query.
@@ -1735,12 +1837,18 @@ impl CreateMaterializedViewBuilder {
                 .connection
                 .database()
                 .create_materialized_view_async(CreateMaterializedViewRequest {
+                    exist_ok: self.exist_ok,
                     name: self.name.clone(),
                     namespace_path: self.namespace.clone(),
                     query: self.query()?,
                     with_no_data: self.with_no_data,
                     auto_refresh_enabled: self.auto_refresh_enabled,
                     auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
+                    total_cpu_millis: self.total_cpu_millis,
+                    total_memory_bytes: self.total_memory_bytes,
+                    total_gpu_count: self.total_gpu_count,
+                    gpu_class: self.gpu_class.clone(),
+                    gpu_count: self.gpu_count,
                 })
                 .await;
         }
@@ -1769,26 +1877,60 @@ impl CreateMaterializedViewBuilder {
 
     async fn execute_native(self) -> Result<MaterializedView> {
         crate::require_experimental_functions()?;
-        if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
+        if self.exist_ok
+            && let Some(view) = self.existing_view().await?
+        {
+            return Ok(view);
+        }
+        if self.auto_refresh_enabled == Some(true)
+            || self.auto_refresh_interval_seconds.is_some()
+            || self.total_cpu_millis.is_some()
+            || self.total_memory_bytes.is_some()
+            || self.total_gpu_count.is_some()
+            || self.gpu_class.is_some()
+            || self.gpu_count.is_some()
+        {
             return Err(Error::NotSupported {
                 message: "automatic materialized-view refresh requires LanceDB Enterprise"
                     .to_string(),
             });
         }
-        let source = self
-            .connection
-            .open_table(&self.source)
-            .namespace(self.source_namespace.clone())
-            .execute()
-            .await?;
-        let prepared = prepare_declaration(
-            &source,
-            (!self.projections.is_empty()).then_some(self.projections.as_slice()),
-            self.filter.as_deref(),
-            self.limit,
-        )
-        .await?;
-        let view = prepared.create_in(&self.namespace, &self.name).await?;
+        let prepared = match &self.input {
+            MaterializedViewInput::Source(name) => {
+                let source = self
+                    .connection
+                    .open_table(name)
+                    .namespace(self.source_namespace.clone())
+                    .execute()
+                    .await?;
+                prepare_declaration(
+                    &source,
+                    self.projections.as_deref().filter(|p| !p.is_empty()),
+                    self.filter.as_deref(),
+                    self.limit,
+                )
+                .await?
+            }
+            MaterializedViewInput::Query(_) => {
+                let definition = MaterializedViewDefinition::from_sql(&self.query()?)?;
+                let source = self
+                    .connection
+                    .open_table(&definition.source_table)
+                    .namespace(definition.source_namespace.clone())
+                    .execute()
+                    .await?;
+                prepare_definition(&source, definition).await?
+            }
+        };
+        let view = match prepared.create_in(&self.namespace, &self.name).await {
+            Ok(view) => view,
+            Err(Error::TableAlreadyExists { .. }) if self.exist_ok => {
+                return self.existing_view().await?.ok_or_else(|| Error::Runtime {
+                    message: "materialized view disappeared after concurrent creation".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         if !self.with_no_data {
             view.refresh().execute().await?;
         }
@@ -1876,48 +2018,52 @@ impl MaterializedView {
 /// Per-execution resource caps and GPU placement for Enterprise MV refreshes.
 ///
 /// CPU is in millicores (1000 = one core), memory is bytes, and GPUs are a
-/// simultaneous cap across the refresh, not a per-Function allocation. CPU or
-/// memory requires all three budget fields. Embedded refreshes reject options.
+/// simultaneous cap across the refresh. Each omitted resource inherits the
+/// view defaults, then Function defaults, then deployment defaults.
+/// Embedded refreshes reject these options.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RefreshMaterializedViewOptions {
-    pub cpu_millis: Option<u64>,
-    pub memory_bytes: Option<u64>,
-    pub gpu_count: Option<u32>,
+    pub total_cpu_millis: Option<u64>,
+    pub total_memory_bytes: Option<u64>,
+    pub total_gpu_count: Option<u32>,
     pub gpu_class: Option<String>,
+    pub gpu_count: Option<u32>,
 }
 
 impl RefreshMaterializedViewOptions {
     pub(crate) fn is_empty(&self) -> bool {
-        self.cpu_millis.is_none()
-            && self.memory_bytes.is_none()
-            && self.gpu_count.is_none()
+        self.total_cpu_millis.is_none()
+            && self.total_memory_bytes.is_none()
+            && self.total_gpu_count.is_none()
             && self.gpu_class.is_none()
+            && self.gpu_count.is_none()
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
         let invalid = |message: &str| Error::InvalidInput {
             message: message.into(),
         };
-        if self.cpu_millis == Some(0) || self.memory_bytes == Some(0) {
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
             return Err(invalid(
-                "cpu_millis and memory_bytes must be positive integers",
-            ));
-        }
-        if (self.cpu_millis.is_some() || self.memory_bytes.is_some())
-            && !(self.cpu_millis.is_some()
-                && self.memory_bytes.is_some()
-                && self.gpu_count.is_some())
-        {
-            return Err(invalid(
-                "cpu_millis, memory_bytes, and gpu_count must be specified together",
+                "total_cpu_millis and total_memory_bytes must be positive integers",
             ));
         }
         if let Some(class) = &self.gpu_class {
             crate::function::validate_gpu_class_name(class)?;
-            if self.gpu_count == Some(0) {
+            if self.total_gpu_count == Some(0) {
                 return Err(invalid("gpu_class requires a positive GPU budget"));
             }
+        }
+        if self.gpu_count == Some(0) {
+            return Err(invalid("gpu_count must be positive"));
+        }
+        if self
+            .gpu_count
+            .zip(self.total_gpu_count)
+            .is_some_and(|(per_worker, total)| per_worker > total)
+        {
+            return Err(invalid("total_gpu_count cannot fit one Function worker"));
         }
         Ok(())
     }
@@ -1928,17 +2074,20 @@ impl RefreshMaterializedViewOptions {
         if full {
             values.push("full = true".to_string());
         }
-        if let Some(cpu) = self.cpu_millis {
-            values.push(format!("cpu_millis = {cpu}"));
+        if let Some(cpu) = self.total_cpu_millis {
+            values.push(format!("total_cpu_millis = {cpu}"));
         }
-        if let Some(memory) = self.memory_bytes {
-            values.push(format!("memory_bytes = {memory}"));
+        if let Some(memory) = self.total_memory_bytes {
+            values.push(format!("total_memory_bytes = {memory}"));
         }
-        if let Some(gpu) = self.gpu_count {
-            values.push(format!("gpu_count = {gpu}"));
+        if let Some(gpu) = self.total_gpu_count {
+            values.push(format!("total_gpu_count = {gpu}"));
         }
         if let Some(class) = &self.gpu_class {
             values.push(format!("gpu_class = '{class}'"));
+        }
+        if let Some(count) = self.gpu_count {
+            values.push(format!("gpu_count = {count}"));
         }
         Ok(if values.is_empty() {
             String::new()
@@ -1957,25 +2106,31 @@ pub struct RefreshMaterializedViewBuilder {
 }
 
 impl RefreshMaterializedViewBuilder {
-    /// Cap total CPU capacity in millicores; requires memory and GPU budgets.
-    pub fn cpu_millis(mut self, cpu_millis: u64) -> Self {
-        self.options.cpu_millis = Some(cpu_millis);
+    /// Override total CPU capacity in millicores for this refresh.
+    pub fn total_cpu_millis(mut self, total_cpu_millis: u64) -> Self {
+        self.options.total_cpu_millis = Some(total_cpu_millis);
         self
     }
 
-    /// Cap total memory in bytes; requires CPU and GPU budgets.
-    pub fn memory_bytes(mut self, memory_bytes: u64) -> Self {
-        self.options.memory_bytes = Some(memory_bytes);
+    /// Override total memory in bytes for this refresh.
+    pub fn total_memory_bytes(mut self, total_memory_bytes: u64) -> Self {
+        self.options.total_memory_bytes = Some(total_memory_bytes);
         self
     }
 
     /// Cap concurrent GPUs for this refresh. Zero is CPU-only.
-    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
-        self.options.gpu_count = Some(gpu_count);
+    pub fn total_gpu_count(mut self, total_gpu_count: u32) -> Self {
+        self.options.total_gpu_count = Some(total_gpu_count);
         self
     }
 
     /// Select an operator-configured GPU class for this execution only.
+    /// Set the positive number of GPUs allocated to each worker.
+    pub fn gpu_count(mut self, count: u32) -> Self {
+        self.options.gpu_count = Some(count);
+        self
+    }
+
     pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
         self.options.gpu_class = Some(gpu_class.into());
         self
@@ -2067,7 +2222,41 @@ impl Connection {
         name: impl Into<String>,
         source: impl Into<String>,
     ) -> CreateMaterializedViewBuilder {
-        CreateMaterializedViewBuilder::new(self.clone(), name.into(), source.into())
+        CreateMaterializedViewBuilder::new(
+            self.clone(),
+            name.into(),
+            MaterializedViewInput::Source(source.into()),
+        )
+    }
+
+    /// Define a materialized view using a complete SQL query.
+    ///
+    /// Embedded connections parse the query with
+    /// [`MaterializedViewDefinition::from_sql`]. Remote connections send the
+    /// query to the server, which determines the supported SQL syntax.
+    /// Put projections, predicates and limits in the query rather than using
+    /// the builder's source-specific methods.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn create(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let view = db.create_materialized_view_from_query(
+    ///     "events_by_kind",
+    ///     "SELECT kind, count(*) AS n FROM events GROUP BY kind",
+    /// ).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_materialized_view_from_query(
+        &self,
+        name: impl Into<String>,
+        query: impl Into<String>,
+    ) -> CreateMaterializedViewBuilder {
+        CreateMaterializedViewBuilder::new(
+            self.clone(),
+            name.into(),
+            MaterializedViewInput::Query(query.into()),
+        )
     }
 
     /// Open the materialized view named `name`.
@@ -2229,6 +2418,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn query_builder_rejects_source_clauses() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let builder = || conn.create_materialized_view_from_query("mv", "SELECT * FROM src");
+        for invalid in [
+            builder().select([("x", "x")]),
+            builder().select(Vec::<(String, String)>::new()),
+            builder().only_if("x > 0"),
+            builder().limit(0),
+            builder().source_namespace(vec!["ns".into()]),
+        ] {
+            assert!(matches!(invalid.query(), Err(Error::InvalidInput { .. })));
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
+    async fn create_from_query_supports_grouping_and_background_population() {
+        let conn = connect("memory://").execute().await.unwrap();
+        conn.create_table(
+            "src",
+            record_batch!(("kind", Utf8, ["a", "a", "b"])).unwrap(),
+        )
+        .execute()
+        .await
+        .unwrap();
+        let query = "SELECT kind, count(*) AS n FROM src GROUP BY kind";
+        let view = conn
+            .create_materialized_view_from_query("groups", query)
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.definition_sql(), query);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+        view.refresh().execute().await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
+        conn.create_materialized_view_from_query("background", query)
+            .execute_async()
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            conn.open_materialized_view("background")
+                .await
+                .unwrap()
+                .table()
+                .count_rows(None)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
     #[test]
     fn sql_definition_defaults_share_one_metadata_value() {
         let metadata = HashMap::from([(
@@ -2270,7 +2518,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            view.refresh().gpu_count(0).execute().await,
+            view.refresh().total_gpu_count(0).execute().await,
             Err(Error::NotSupported { .. })
         ));
         assert!(matches!(

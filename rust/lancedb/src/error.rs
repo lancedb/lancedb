@@ -64,6 +64,8 @@ impl RemoteResourceIdentity {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RemoteErrorMetadata {
+    /// Build of the executable that produced the error, when reported.
+    pub server: Option<crate::server_info::ServerBuildInfo>,
     /// Machine-readable input error code, when available.
     pub error_code: Option<String>,
     /// SQL job that failed, when the request ran in an isolated job.
@@ -84,6 +86,8 @@ impl RemoteErrorMetadata {
                 .map(str::to_owned)
         };
         Self {
+            server: header("x-lancedb-server-build")
+                .and_then(|value| serde_json::from_str(&value).ok()),
             error_code: header("x-lancedb-error-code"),
             job_id: header("x-lancedb-sql-job-id"),
             job_request_id: header("x-job-request-id"),
@@ -119,7 +123,7 @@ pub(crate) fn parse_flight_resource_identity(value: &str) -> Option<RemoteResour
 }
 
 #[cfg(feature = "remote")]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct HttpErrorSource {
     message: String,
     details: Option<HttpErrorDetails>,
@@ -131,16 +135,27 @@ impl HttpErrorSource {
     pub(crate) fn new(
         message: String,
         response_body: Option<&str>,
-        metadata: RemoteErrorMetadata,
+        mut metadata: RemoteErrorMetadata,
     ) -> Self {
         let details = response_body.and_then(parse_http_error_details);
+        let body =
+            response_body.and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
+        if metadata.server.is_none() {
+            metadata.server = body
+                .as_ref()
+                .and_then(|body| body.get("server").cloned())
+                .and_then(|server| serde_json::from_value(server).ok());
+        }
         let message = if metadata.error_code.is_some() {
-            response_body
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+            body.as_ref()
                 .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
                 .unwrap_or(message)
         } else {
             message
+        };
+        let message = match &metadata.server {
+            Some(server) => format!("{message} [server: {server}]"),
+            None => message,
         };
         Self {
             message,
@@ -253,23 +268,47 @@ impl snafu::AsErrorSource for InterruptionSource {
 /// A job run remotely carries whatever the server reported, which older servers
 /// do not report at all. Every field is absent rather than invented when the
 /// backend does not supply it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct JobFailure {
     /// The stage the job was in, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     /// A human-readable reason, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// User-code traceback, possibly truncated by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traceback: Option<String>,
     /// Whether a retry could clear the failure, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retryable: Option<bool>,
     /// Isolated SQL job that raised this failure, when the server supplies
     /// one across the Flight SQL boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql_job_id: Option<String>,
     /// The underlying error from a job run in this process or a structured
     /// remote Flight SQL failure.
+    #[serde(skip)]
     pub source: Option<Arc<Error>>,
 }
+
+impl PartialEq for JobFailure {
+    fn eq(&self, other: &Self) -> bool {
+        let source_matches = match (&self.source, &other.source) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        };
+        self.phase == other.phase
+            && self.message == other.message
+            && self.traceback == other.traceback
+            && self.retryable == other.retryable
+            && self.sql_job_id == other.sql_job_id
+            && source_matches
+    }
+}
+
+impl Eq for JobFailure {}
 
 impl JobFailure {
     /// A failure whose only known detail is the error that caused it.
@@ -293,6 +332,58 @@ impl Display for JobFailure {
     }
 }
 
+fn server_build_suffix(_source: &(dyn std::error::Error + Send + Sync + 'static)) -> String {
+    #[cfg(feature = "remote")]
+    if let Some(server) = _source
+        .downcast_ref::<Error>()
+        .and_then(Error::remote_error_metadata)
+        .and_then(|metadata| metadata.server.as_ref())
+    {
+        return format!(" [server: {server}]");
+    }
+    String::new()
+}
+
+/// Actionable guidance attached to a [`Error::TableNotFound`].
+///
+/// The hint is kept in the error source chain so the missing-table
+/// classification and the original failure stay unchanged.
+#[derive(Debug)]
+pub(crate) struct TableNotFoundHint {
+    hint: String,
+    source: BoxError,
+}
+
+impl TableNotFoundHint {
+    pub(crate) fn new(hint: impl Into<String>, source: BoxError) -> Self {
+        Self {
+            hint: hint.into(),
+            source,
+        }
+    }
+}
+
+impl Display for TableNotFoundHint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.hint)
+    }
+}
+
+impl std::error::Error for TableNotFoundHint {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+fn table_not_found_hint<'a>(
+    source: &'a (dyn std::error::Error + Send + Sync + 'static),
+) -> &'a str {
+    source
+        .downcast_ref::<TableNotFoundHint>()
+        .map(|hint| hint.hint.as_str())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
@@ -300,7 +391,11 @@ pub enum Error {
     InvalidTableName { name: String, reason: String },
     #[snafu(display("Invalid input, {message}"))]
     InvalidInput { message: String },
-    #[snafu(display("Table '{name}' was not found"))]
+    #[snafu(display(
+        "Table '{name}' was not found{}{}",
+        server_build_suffix(source.as_ref()),
+        table_not_found_hint(source.as_ref())
+    ))]
     TableNotFound { name: String, source: BoxError },
     #[snafu(display(
         "Table '{name}' exists but could not be loaded (it may be corrupt or incomplete): {source}"
@@ -361,8 +456,8 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
-    #[snafu(display("Job '{job_id}' was not found"))]
-    JobNotFound { job_id: String },
+    #[snafu(display("Job '{job_id}' was not found{}", server_build_suffix(source.as_ref())))]
+    JobNotFound { job_id: String, source: BoxError },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]
@@ -552,7 +647,7 @@ impl Error {
         match self {
             Self::Http { status_code, .. } => *status_code,
             Self::Retry { status_code, .. } => *status_code,
-            Self::TableNotFound { source, .. } => {
+            Self::TableNotFound { source, .. } | Self::JobNotFound { source, .. } => {
                 source.downcast_ref::<Self>().and_then(Self::status_code)
             }
             Self::JobFailed { failure, .. } => {
@@ -599,7 +694,7 @@ impl Error {
             Self::Retry { source, .. } => source
                 .downcast_ref::<Self>()
                 .and_then(Self::remote_error_metadata),
-            Self::TableNotFound { source, .. } => source
+            Self::TableNotFound { source, .. } | Self::JobNotFound { source, .. } => source
                 .downcast_ref::<Self>()
                 .and_then(Self::remote_error_metadata),
             Self::JobFailed { failure, .. } => failure
@@ -611,9 +706,35 @@ impl Error {
         }
     }
 
-    /// A copy of an error that other partitions of a DataFusion plan still hold.
-    /// Only an interrupted response can be copied, because it shares its source.
-    fn clone_shared(&self) -> Option<Self> {
+    /// Copy supported errors without flattening sources retained by a shared plan
+    /// or schema cache.
+    pub(crate) fn clone_shared(&self) -> Option<Self> {
+        #[cfg(feature = "remote")]
+        match self {
+            Self::Http {
+                source,
+                request_id,
+                status_code,
+            } => {
+                return source
+                    .downcast_ref::<HttpErrorSource>()
+                    .map(|source| Self::Http {
+                        source: Box::new(source.clone()),
+                        request_id: request_id.clone(),
+                        status_code: *status_code,
+                    });
+            }
+            Self::TableNotFound { name, source } => {
+                return source
+                    .downcast_ref::<Self>()
+                    .and_then(Self::clone_shared)
+                    .map(|source| Self::TableNotFound {
+                        name: name.clone(),
+                        source: Box::new(source),
+                    });
+            }
+            _ => {}
+        }
         #[cfg(feature = "remote")]
         if let Self::ResponseInterrupted {
             request_id,

@@ -3,6 +3,7 @@
 
 import contextlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,30 @@ def remote_server(text_type=pa.string()):
             command = ticket.ticket
             calls.append(command)
             if b"SHOW STORAGE INTEGRATIONS" in command:
-                result = pa.table({"name": pa.array(["zeta", NAME], type=text_type)})
+                match = re.search(
+                    rb'SHOW STORAGE INTEGRATIONS IN "public" '
+                    rb"LIMIT (\d+)(?: FROM '([^']+)')?",
+                    command,
+                )
+                assert match is not None, command
+                limit = int(match.group(1))
+                names = [NAME, "zeta"]
+                if match.group(2) is not None:
+                    assert match.group(2) == b"server-storage-page", command
+                    names = names[1:]
+                page = names[:limit]
+                result = pa.table(
+                    {
+                        "namespace_path": pa.array(
+                            ["[]"] * len(page), type=pa.string()
+                        ),
+                        "name": pa.array(page, type=text_type),
+                    }
+                )
+                if len(names) > limit:
+                    result = result.replace_schema_metadata(
+                        {b"lancedb.next_page_token": b"server-storage-page"}
+                    )
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
             else:
@@ -94,14 +118,23 @@ def remote_server(text_type=pa.string()):
                         trust_policy=None,
                         permissions_policy=None,
                     )
-                    for field, name in (
-                        ("azure_tenant_id_secret", "tenant"),
-                        ("azure_client_id_secret", "client"),
-                        ("azure_client_secret_secret", "credential"),
-                    ):
-                        info[field] = dict(
-                            database="shared", namespace_path=["credentials"], name=name
+                    if b"STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET" in command:
+                        info["azure_storage_account_access_key_secret"] = dict(
+                            database="shared",
+                            namespace_path=["credentials"],
+                            name="blob_key",
                         )
+                    else:
+                        for field, name in (
+                            ("azure_tenant_id_secret", "tenant"),
+                            ("azure_client_id_secret", "client"),
+                            ("azure_client_secret_secret", "credential"),
+                        ):
+                            info[field] = dict(
+                                database="shared",
+                                namespace_path=["credentials"],
+                                name=name,
+                            )
                 if b"STORAGE_AWS_ACCESS_KEY_ID_SECRET" in command:
                     info["aws_role_arn"] = None
                     info["trust_policy"] = None
@@ -125,6 +158,7 @@ def remote_server(text_type=pa.string()):
                     "azure_tenant_id_secret",
                     "azure_client_id_secret",
                     "azure_client_secret_secret",
+                    "azure_storage_account_access_key_secret",
                     "gcp_credentials_json_secret",
                     "huggingface_token_secret",
                 ]:
@@ -195,6 +229,10 @@ def test_sync_storage_integration_lifecycle_and_aws_information(text_type):
     assert b'CREATE STORAGE INTEGRATION "raw"' in calls[0]
     assert b"STORAGE_AWS_ROLE_ARN = '" + ROLE.encode() + b"'" in calls[0]
     assert b'DROP STORAGE INTEGRATION "raw"' in calls[-1]
+    listings = [call for call in calls if b"SHOW STORAGE INTEGRATIONS" in call]
+    assert len(listings) == 2
+    assert b'SHOW STORAGE INTEGRATIONS IN "public" LIMIT 1' in listings[0]
+    assert b"FROM 'server-storage-page'" in listings[1]
 
 
 @pytest.mark.asyncio
@@ -309,6 +347,44 @@ def test_azure_lifecycle_uses_three_qualified_secret_references(text_type):
             in sql
         )
         assert b"STORAGE_AWS" not in sql
+
+
+def test_azure_lifecycle_uses_one_qualified_account_access_key_secret():
+    with remote_server() as (host, calls):
+        db = connect(host)
+        key = SecretReference(
+            "blob_key", database="shared", namespace_path=("credentials",)
+        )
+        config = {
+            "storage_provider": "AZURE",
+            "azure_storage_account": "customeraccount",
+            "azure_storage_account_access_key_secret": key,
+        }
+        with pytest.raises(ValueError, match="service principal"):
+            db.create_storage_integration(
+                "blobs",
+                "az://customer-data/raw/",
+                azure_client_id_secret="client",
+                **config,
+            )
+        assert calls == []
+
+        info = db.create_storage_integration(
+            "blobs", "az://customer-data/raw/", **config
+        )
+        reference = info.azure_storage_account_access_key_secret
+        assert reference is not None
+        assert reference.name == key.name
+        assert reference.database == key.database
+        assert tuple(reference.namespace_path) == key.namespace_path
+        assert info.azure_tenant_id_secret is None
+        assert info.azure_client_id_secret is None
+        assert info.azure_client_secret_secret is None
+        assert db.describe_storage_integration("blobs") == info
+        assert (
+            b"STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = "
+            b'"shared"."credentials"."blob_key"' in calls[0]
+        )
 
 
 @pytest.mark.asyncio

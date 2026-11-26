@@ -20,11 +20,13 @@ independently: `optimize()` compacts and remaps affected indexes in the
 same call, before returning. Compaction's `defer_index_remap` option opts
 out of that -- the call returns once compaction itself commits, leaving
 the remap for later -- which is what lets a custom remapper or a
-stable-row-ID table skip the synchronous step. LanceDB Enterprise runs
-compaction and indexing as separate, independently scheduled
-background jobs -- a table can compact while an index build is still
-catching up from an earlier compaction -- so it needs a way to keep an index
-correct without forcing every compaction to wait for a synchronous remap.
+stable-row-ID table skip the synchronous step. LanceDB Enterprise schedules
+automatic compaction and indexing independently, so an eligible table can compact
+while an index build is still catching up from earlier compaction. Deferred
+remapping keeps indexes correct without making every automatic compaction wait
+for a synchronous remap. Explicit
+[manual compaction](/maintenance/compaction#enterprise-manual-compaction) uses one
+worker with atomic execution and inline index remapping instead.
 
 ## The fragment reuse index {#fri}
 

@@ -1,0 +1,32 @@
+name: CLI shell installer
+on:
+  pull_request:
+    paths:
+      - 'scripts/install.sh'
+      - 'ci/tests/test_cli_installer.sh'
+      - '.github/workflows/cli-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: sh ci/tests/test_cli_installer.sh
+      - name: Install a pinned public release and run it
+        env:
+          LANCEDB_VERSION: v0.42.0-beta.19
+        run: |
+          export LANCEDB_INSTALL_DIR="$RUNNER_TEMP/cli bin"
+          sh scripts/install.sh
+          test "$("$LANCEDB_INSTALL_DIR/lancedb" --version)" = "lancedb ${LANCEDB_VERSION#v}"
+          "$LANCEDB_INSTALL_DIR/lancedb" profile list

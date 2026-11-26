@@ -1,15 +1,15 @@
 ---
 title: "RTE Write (Upsert)"
 sidebarTitle: "RTE Write (Upsert)"
-description: "Enable the real time engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
+description: "Enable the Realtime Engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
 icon: "bolt"
-keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+keywords: ["rte", "realtime engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
 availability:
   embedded: available
   enterprise: available
 ---
 
-The [real time engine](/tables/realtime-engine) puts an LSM-style write tier in
+The [Realtime Engine](/tables/realtime-engine) puts an LSM-style write tier in
 front of a table, turning many small writes into a few large commits. This
 page covers enabling it and writing to a table; for querying an RTE table, see
 [RTE reads](/search/realtime-read).
@@ -239,6 +239,6 @@ for the numbers.
 
 - [RTE reads](/search/realtime-read) — query an RTE table
 - [Distributed RTE Write](/enterprise/distributed-real-time-write) — how Enterprise shards and scales this
-- [How the real time engine works](/tables/realtime-engine#memwal-format)
+- [How the Realtime Engine works](/tables/realtime-engine#memwal-format)
 - [Merge insert](/ingestion/merge-insert)
 - [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

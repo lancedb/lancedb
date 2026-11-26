@@ -1,0 +1,121 @@
+---
+title: "Semantic Sampling"
+sidebarTitle: "Semantic Sampling"
+description: "Sample rows from every cluster in an existing IVF vector index with SQL TABLESAMPLE IVF."
+icon: circle-nodes
+keywords: ["semantic sampling", "sampling", "tablesample", "ivf", "clusters", "embeddings", "repeatable"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Semantic sampling draws rows from every partition of an existing IVF vector
+index. Each partition acts as a cluster of similar embeddings. Use it to
+inspect examples across your embedding space, build a dataset with broader
+topic coverage, or try an expensive operation on examples from each cluster.
+The clusters reflect your embeddings and index; they do not guarantee
+coverage of every label or topic.
+
+## Sample rows from every cluster {#sample}
+
+Connect with an [Enterprise SQL client](/basics/sql). The examples assume a
+`documents` table with `id`, `caption`, and `embedding` columns. The
+`embedding` column must have an up-to-date, single-segment
+[IVF vector index](/indexing/vector-index) that includes every live row.
+Wait for the index build to finish before sampling.
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT id, caption
+FROM documents
+TABLESAMPLE IVF (embedding, 100 ROWS)
+REPEATABLE (42);
+```
+</CodeGroup>
+
+This selects up to **100 rows from each IVF partition**, without replacement.
+A partition with fewer than 100 rows contributes all its rows; empty
+partitions contribute none. The result contains the table's existing columns,
+so you can project the fields you need without returning `embedding`.
+
+The count is per partition, not a limit on the whole result. For example:
+
+| Rows in a partition | Rows selected with `100 ROWS` |
+| --- | --- |
+| 5 | 5 |
+| 100 | 100 |
+| 1,000 | 100 |
+
+With 1,024 populated partitions, the query returns at most 102,400 rows.
+Choose the quota with the number of partitions and your output budget in mind.
+
+Equal quotas give sparse clusters more weight relative to their size.
+This makes semantic sampling useful for cluster coverage, but the resulting
+sample does not preserve the table's overall distribution. Use
+[Statistical Sampling](/curation/statistical-sampling) for uniform row
+sampling or account for the different sampling probabilities when estimating
+whole-table statistics.
+
+To group records by partition or select a subset of whole partitions, use
+[`ivf_partition()`](/sql/dql/ivf-partition) instead. Its `count` argument
+selects the number of partitions; `TABLESAMPLE IVF` selects rows within
+every partition.
+
+## Repeat a sample {#repeatable}
+
+`REPEATABLE (42)` fixes the seed. With the same table snapshot, index, and
+seed, repeated queries select the same rows. Output order is unspecified.
+Omit `REPEATABLE` to draw a new sample each time.
+
+Changes to the source data or rebuilding the index can change the selected
+rows even with the same seed. Save a sample when you need a fixed dataset
+for evaluation or comparison:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE TABLE semantic_eval AS
+SELECT id, caption, embedding
+FROM documents
+TABLESAMPLE IVF (embedding, 100 ROWS)
+REPEATABLE (42);
+```
+</CodeGroup>
+
+Create the output once with a fresh name and keep it unchanged. Record the
+source version and sampling policy alongside the result.
+
+## Filter sampled rows {#filters}
+
+Sampling happens before `WHERE`, joins, aggregation, and an outer `LIMIT`.
+For example, this draws up to 100 rows per partition and then removes rows
+with missing captions:
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT id, caption
+FROM documents
+TABLESAMPLE IVF (embedding, 100 ROWS)
+REPEATABLE (42)
+WHERE caption IS NOT NULL;
+```
+</CodeGroup>
+
+The result can contain fewer than 100 rows from a partition after filtering.
+If you need a quota from an eligible subset, first save that subset as a
+base table and build its IVF index before sampling it.
+
+## Requirements and limits {#requirements}
+
+| Requirement | Behavior |
+| --- | --- |
+| Source | Sample a base table directly. Views, derived relations, WAL-backed tables, and `CHANGES` relations are unsupported. |
+| Vector column | Name the indexed vector column directly, rather than an expression. |
+| Index | Exactly one eligible IVF index segment must cover every current fragment and assign every live row exactly once. Missing, ambiguous, or stale indexes are rejected. |
+| New or unindexed rows | Rebuild the index so all live rows are covered by a single segment. Null vectors omitted by the index also prevent complete coverage. |
+| Deleted rows | Tables with deletion vectors are rejected. Compact deleted rows and rebuild the IVF index before sampling. |
+| Row count and seed | Use nonnegative integer literals. A count of zero returns no rows. This mode accepts row counts, not percentages. |
+
+Sampling examines the membership of every partition and fetches projected
+data for the selected rows. A small quota limits the result size, but does
+not limit index reads to that many entries. Large partitions can still
+require substantial index reads and memory.

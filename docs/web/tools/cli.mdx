@@ -1,7 +1,7 @@
 ---
 title: "LanceDB CLI"
 sidebarTitle: "CLI"
-description: "Connect to LanceDB, run SQL, and manage connection profiles with the lancedb command-line client."
+description: "Install the LanceDB CLI, connect to a deployment, run SQL, and manage connection profiles."
 icon: terminal
 keywords: ["cli", "command line", "sql", "profiles", "authentication"]
 ---
@@ -10,11 +10,48 @@ Use the `lancedb` command-line client to open an interactive SQL shell, run a
 statement, or execute a SQL file. SQL requires a running deployment with an
 [Arrow Flight SQL endpoint](/basics/sql#sql-is-remote).
 
+This public client exposes `auth`, `profile`, and `sql`. Commands such as
+`lancedb admin ...` and `lancedb job ...` require the Enterprise administrative
+CLI from your deployment administrator; the public client archive and source
+installation below do not include them. Use `lancedb sql --command` for SQL
+statements supported by your deployment.
+
 ## Install
+
+On Apple Silicon macOS or Linux (x86-64 or ARM64), install the CLI with
+Homebrew or the hosted shell installer.
+
+### Homebrew
+
+```sh
+brew install lancedb/tap/lancedb
+lancedb --version
+```
+
+To upgrade an existing Homebrew installation, run `brew upgrade lancedb/tap/lancedb`.
+
+### Shell installer
+
+The installer downloads the latest stable CLI for your platform, verifies the archive's
+SHA-256 checksum, and installs the executable in `$HOME/.local/bin`.
+
+```sh
+curl -fsSL https://downloads.lancedb.com/cli/install.sh | sh
+"$HOME/.local/bin/lancedb" --version
+```
+
+Add `$HOME/.local/bin` to your `PATH` to run `lancedb` by name. To install a
+specific release, pass the tag to `sh`, for example
+`curl -fsSL https://downloads.lancedb.com/cli/install.sh | LANCEDB_VERSION=v0.42.0 sh`.
+If you already use the Enterprise CLI, set `LANCEDB_INSTALL_DIR` to a separate
+absolute directory and invoke the public CLI by its full path. To upgrade, move
+the existing executable first.
+
+### Manual download
 
 Download a CLI archive and `SHA256SUMS` from the
 [LanceDB releases page](https://github.com/lancedb/lancedb/releases). The CLI
-shares the SDK release version, including beta versions.
+shares the SDK release version.
 
 | Platform | Target | Requirements |
 | --- | --- | --- |
@@ -25,7 +62,7 @@ shares the SDK release version, including beta versions.
 Set the version and target to match your chosen release and platform:
 
 ```sh
-CLI_VERSION=X.Y.Z # Replace with the release version, for example X.Y.Z-beta.N
+CLI_VERSION=0.42.0 # Replace with the release version you want
 CLI_TARGET=aarch64-apple-darwin
 CLI_STEM="lancedb-v${CLI_VERSION}-${CLI_TARGET}"
 CLI_RELEASE_URL="https://github.com/lancedb/lancedb/releases/download/v${CLI_VERSION}"

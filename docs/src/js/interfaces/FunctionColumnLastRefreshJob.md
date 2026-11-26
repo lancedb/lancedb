@@ -26,6 +26,16 @@ optional completedAtMillis: bigint;
 
 ***
 
+### failure?
+
+```ts
+optional failure: JobFailureInfo;
+```
+
+Structured failure details for a failed Job.
+
+***
+
 ### jobId
 
 ```ts

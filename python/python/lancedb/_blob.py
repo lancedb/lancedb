@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import io
 import operator
+import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Union
 
 import pyarrow as pa
@@ -30,9 +32,55 @@ BLOB_MODE_TO_HANDLING = {
 }
 
 ROW_ID_FIELD_NAME = "_lance_row_id"
+QUERY_VERSION_METADATA_KEY = b"lancedb:query_version"
+QUERY_SNAPSHOT_METADATA_KEY = b"lancedb:query_snapshot"
 
 FetchBlobsSync = Callable[[str, list[int]], pa.Array | pa.ChunkedArray]
 FetchBlobsAsync = Callable[[str, list[int]], Awaitable[pa.Array | pa.ChunkedArray]]
+
+_POSITION_HELP = (
+    "If you only have row positions, call "
+    "table.take_offsets(offsets, with_row_id=True) first and pass the resulting "
+    "'_rowid' values."
+)
+
+
+def _remote_blob_snapshot(
+    schema: pa.Schema, *, operation: str = "blob_mode='bytes'"
+) -> tuple[int, str]:
+    """Validate the snapshot metadata a remote query attaches to its result."""
+    value = (schema.metadata or {}).get(QUERY_VERSION_METADATA_KEY, b"")
+    if not value.isdigit() or not 0 < int(value) < 2**64:
+        raise NotImplementedError(
+            f"{operation} requires a stable table snapshot: the query response "
+            "has a missing, invalid, or inconsistent x-lancedb-query-version header. "
+            "Upgrade the server and use a table without Realtime/MemWAL, or use "
+            "blob_mode='descriptions'."
+        )
+    identity = (schema.metadata or {}).get(QUERY_SNAPSHOT_METADATA_KEY, b"")
+    if not re.fullmatch(rb"v1:[0-9a-f]{64}", identity):
+        raise NotImplementedError(
+            f"{operation} requires a trustworthy query snapshot identity: "
+            "missing or unsupported x-lancedb-query-snapshot. Upgrade the server "
+            "on every serving node, or use blob_mode='descriptions'."
+        )
+    return int(value), identity.decode("ascii")
+
+
+@dataclass(frozen=True)
+class _BlobRowIdSelection:
+    row_ids: list[int]
+    version: Optional[int] = None
+    snapshot_identity: Optional[str] = None
+
+
+def _validate_blob_buffer_size(size: Optional[int]) -> Optional[int]:
+    if size is None:
+        return None
+    size = operator.index(size)
+    if size < 0:
+        raise ValueError("buffer_size must be non-negative")
+    return size
 
 
 def _normalize_blob_descriptor(value):
@@ -57,6 +105,16 @@ class BlobFile(io.RawIOBase):
 
     def __init__(self, inner) -> None:
         self._inner = inner
+
+    def set_buffer_size(self, size: int) -> None:
+        """Set sequential read-ahead bytes (default 512 KiB); 0 disables it.
+
+        Changing the size discards unused prefetched bytes without moving the
+        cursor. Explicit ``read_range`` and ``read_ranges`` bypass read-ahead.
+        """
+        if self.closed:
+            raise ValueError("set_buffer_size of closed file")
+        self._inner.set_buffer_size(_validate_blob_buffer_size(size))
 
     async def aread(self) -> bytes:
         if self.closed:
@@ -357,7 +415,7 @@ def _hit_row_ids(tbl: pa.Table, blob_sources: dict[str, str]) -> list[int]:
     raise ValueError(
         f"query result has no '_rowid' column and no '{ROW_ID_FIELD_NAME}' "
         f"field on blob columns {list(blob_sources)}. Call .with_row_id(True) "
-        "to fetch blob bytes for this query."
+        f"to fetch blob bytes for this query. {_POSITION_HELP}"
     )
 
 
@@ -398,7 +456,8 @@ def read_row_ids_from_hits(hits: pa.Table, blob_column: str) -> list[int]:
     raise ValueError(
         f"query result has no '_rowid' column and no '{ROW_ID_FIELD_NAME}' "
         f"field on blob column '{blob_column}'. Pass fresh blob query "
-        "results, call .with_row_id(True), or pass a list of row ids."
+        f"results, call .with_row_id(True), or pass a list of row ids. "
+        f"{_POSITION_HELP}"
     )
 
 
@@ -619,11 +678,31 @@ def _walk_struct_fields(
     return data_type
 
 
+def _query_snapshot_for_blob_fetch(
+    schema: pa.Schema,
+) -> Optional[tuple[int, str]]:
+    """Use the query snapshot when a result table carries one.
+
+    A table without either metadata key came from a local table or a server
+    that cannot pin deferred reads, so row ids keep their existing
+    current-snapshot behavior.
+    """
+    metadata = schema.metadata or {}
+    if not any(
+        key in metadata
+        for key in (QUERY_VERSION_METADATA_KEY, QUERY_SNAPSHOT_METADATA_KEY)
+    ):
+        return None
+    return _remote_blob_snapshot(schema, operation="fetching blobs for a query result")
+
+
 def _normalize_blob_row_ids(
     row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table], blob_column: str
-) -> list[int]:
+) -> _BlobRowIdSelection:
+    snapshot = None
     if isinstance(row_ids, pa.Table):
         values = read_row_ids_from_hits(row_ids, blob_column)
+        snapshot = _query_snapshot_for_blob_fetch(row_ids.schema)
     elif isinstance(row_ids, (pa.Array, pa.ChunkedArray)):
         if not pa.types.is_integer(row_ids.type):
             raise ValueError(
@@ -643,7 +722,8 @@ def _normalize_blob_row_ids(
         if row_id < 0:
             raise ValueError("row ids must be non-negative")
         normalized.append(row_id)
-    return normalized
+    version, snapshot_identity = snapshot if snapshot else (None, None)
+    return _BlobRowIdSelection(normalized, version, snapshot_identity)
 
 
 def _wrap_blob_files(handles: Iterable[object]) -> list[Optional[BlobFile]]:

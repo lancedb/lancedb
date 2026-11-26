@@ -77,6 +77,11 @@ catch-up works when it's re-enabled after being off.
 
 ## Refreshing part of a table {#partial}
 
+Python `where=` requires a supporting SDK, such as `0.42.0b9`, and an
+Enterprise server with filtered refresh support. Stable `0.41.0` does not
+accept this argument. The SQL form is available independently of that Python
+argument on supporting servers.
+
 <Badge color="red">Enterprise</Badge> A refresh can be scoped to a predicate,
 with `where=` in Python or `WHERE` in SQL, which is useful for filling a slice
 first and checking it before committing to the whole table:
@@ -122,6 +127,89 @@ to let LanceDB track which outputs need updating.
 **Enterprise job type:** `computed_refresh` for a SQL-expression column,
 `function_refresh` for one filled by a registered [function](/management/function).
 </Note>
+
+### Re-score selected list elements {#list-elements}
+
+`WHERE` selects **rows**, not elements within a list. Refreshing a row that
+contains ten answers passes the whole list to the Function. A mask can control
+which elements your code computes, but the Function still returns one complete
+list for that row. There is no element-level refresh or partial-list write API.
+
+This example keeps `sample_id` as the link to an existing `samples` table with
+a Blob column named `media`. It creates only answer metadata and scores; it
+neither reads nor copies Blob payloads. Run it on a deployment supporting
+`@function`, list signatures and Python `where=`, with `samples` already
+containing sample IDs `s1` and `s2`.
+
+```python
+from lancedb import col, function
+
+media_before = db.execute_query(
+    "SELECT sample_id, media FROM samples "
+    "WHERE sample_id IN ('s1', 's2') ORDER BY sample_id"
+).read_all().to_pylist()
+
+answers = db.create_table("answer_rescore_demo", [
+    {"group_id": "g1", "sample_id": "s1",
+     "answers": ["yes", "maybe", "no"],
+     "selected": [False, True, False], "previous": [0.1, 0.2, 0.3]},
+    {"group_id": "g1", "sample_id": "s2",
+     "answers": ["other"], "selected": [False], "previous": [0.4]},
+])
+
+@function
+def rescore_masked(
+    answers: list[str], selected: list[bool], previous: list[float]
+) -> list[float]:
+    if not (len(answers) == len(selected) == len(previous)):
+        raise ValueError("answers, selected and previous must have equal lengths")
+    return [
+        float(len(answer)) if choose else old
+        for answer, choose, old in zip(answers, selected, previous)
+    ]
+
+version = db.create_function(rescore_masked)
+answers.add_columns(
+    {"rescored": version(
+        answers=col("answers"), selected=col("selected"), previous=col("previous")
+    )},
+    auto_refresh_enabled=False,
+)
+job = answers.refresh_column_async("rescored", where="sample_id = 's1'")
+job.wait()
+
+rows = answers.search().select(
+    ["group_id", "sample_id", "previous", "rescored"]
+).to_list()
+by_sample = {row["sample_id"]: row for row in rows}
+assert by_sample["s1"]["group_id"] == "g1"
+assert by_sample["s1"]["rescored"] == [0.1, 5.0, 0.3]
+assert by_sample["s1"]["previous"] == [0.1, 0.2, 0.3]
+assert by_sample["s2"]["rescored"] is None
+assert by_sample["s2"]["previous"] == [0.4]
+
+media_after = db.execute_query(
+    "SELECT sample_id, media FROM samples "
+    "WHERE sample_id IN ('s1', 's2') ORDER BY sample_id"
+).read_all().to_pylist()
+assert media_after == media_before
+```
+
+Here length is a deterministic stand-in for a scorer. Only `"maybe"` is scored;
+the other scores are copied from `previous`. The final equality checks Blob
+descriptors on an otherwise unchanged source table, without fetching payloads.
+Keep the source table unchanged during this comparison. Use the same model,
+normalization and score type as the original computation in a real re-scoring
+pass. For another pass, explicitly supply the intended prior scores and mask;
+refresh does not merge the previous output into your Function's inputs.
+
+If answers need independent retries or versions, prefer one ordinary table row
+per answer, with `group_id`, `sample_id`, a stable application `answer_id`,
+answer text and score. Keep media in `samples` and join by `sample_id` when
+needed. A row predicate can then select exact answer IDs, and Blob storage
+stays in the source table. Do not use `UNNEST` to assume that nested Blob values
+become supported Function inputs; see the
+[nested-Blob limits](/curation/create-function#signature-types).
 
 ## Run a refresh on Enterprise {#async}
 
@@ -197,9 +285,45 @@ println!("{}", final_status.failed);
 ```
 </CodeGroup>
 
+`auto_refresh.state` reports `queued` while the scheduler has accepted the
+refresh but a worker has not started it; `running` means execution has started.
+`last_refresh_job` describes the most recent attempt, including a cancellation
+or a failure. If a later attempt was cancelled, `last_failure_job` retains the
+most recent job that actually failed, so its nested `failure` continues to
+explain the failed rows.
+
+These fields require a matching Agent, Query Node, and SDK deployment. An older
+client cannot decode the `queued` state, and an older server can omit the new
+optional failure fields.
+
 The wait helpers do not submit or cancel a refresh. They retry only the typed
 finalization-pending response and propagate other errors.
 */}
+
+### Admission and waiting {#admission}
+
+Submission does not reserve a supervisor or GPU immediately. A refresh can wait
+for source preparation/compaction, an earlier refresh, executor admission or
+worker capacity. A lifecycle `running` value from `status()` alone does not
+prove that Python code has begun executing.
+
+Use [`SHOW JOBS`](/sql/ddl/job#show) and the Console's job detail to inspect
+available phase and row progress. On SDK/server versions with `job.progress()`,
+the snapshot can also include `phase`, `queue_reason`, timestamps and row
+counters. These optional fields are version-dependent; missing values are
+unknown, not zero progress or an ETA. `creation_ms` is submission time, not
+worker start time. `DESCRIBE JOB` provides the finished run report, rather than
+a live queue-position API.
+
+Limits are deployment settings: the Agent dispatcher concurrency, executor
+capacity, per-table automatic-refresh limit and Function-call
+`max_concurrency` control different things. There is no universal five-refresh
+limit per database. Ask your administrator for the effective settings and use
+the [Enterprise operations guide](/enterprise/function-operations#admission)
+for their configuration names. Repeated cancellation and resubmission does not
+bypass those limits. Cancellation requests a stop, including while queued;
+observe a terminal state before submitting replacement work. Committed work
+is not rolled back.
 
 ### Configure workers and resources {#resources}
 
@@ -209,7 +333,7 @@ too slow or too expensive:
 <CodeGroup>
 ```sql SQL icon="database"
 REFRESH COLUMN embedding ON documents
-  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+  WITH (total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2)
 ```
 </CodeGroup>
 
@@ -218,16 +342,84 @@ up to 8 CPUs, 16 GiB of memory, and 2 GPUs across the fleet. They are not
 per-worker allocations or a guaranteed worker count. `num_workers` is only
 accepted for SQL-expression columns; registered Function columns reject it.
 
-The SDKs accept the same nested budget. CPU and memory are required; the GPU
-count inside the budget defaults to zero, so a CPU-only Function can omit it:
+In particular, `total_gpu_count = 2` does not request two devices inside one Python
+process or enable tensor parallelism. Inspect configured GPU classes and their
+per-worker limits with `db.list_gpu_classes()` or `SHOW GPU CLASSES`. Choose a
+model that fits the worker shape supported by your deployment; see
+[GPU placement and budgets](/enterprise/function-operations#gpu).
+
+The SDKs expose the same independent total limits:
 
 <CodeGroup>
 ```python Python icon="python"
 job = table.refresh_column_async(
     "embedding",
-    resource_budget={
-        "cpu_millis": 8000,
-        "memory_bytes": 16 * 1024**3,
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=2,
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::table::RefreshColumnOptions;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default()
+            .total_cpu_millis(8000)
+            .total_memory_bytes(17_179_869_184)
+            .total_gpu_count(2),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  totalGpuCount: 2,
+});
+await job.wait();
+```
+</CodeGroup>
+
+Each supplied `total_*` value overrides that resource for this refresh.
+Unspecified values inherit the column's `total_*` settings, then the
+pinned Function's defaults, then the deployment defaults. `total_gpu_count=0`
+limits the refresh to CPU workers and cannot run a GPU Function.
+
+{/*
+Draft for the Function refresh control-plane resource release.
+
+`total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count` above sizes the Function workers. Two independent options
+size the refresh control plane for a registered Function.
+`supervisor_resources` sets the CPU, memory and ephemeral-storage limits of
+the supervisor pod. `planning_workers` sets the resources of one planning
+worker and the sizing of the CPU-only planning fleet: `max_workers`,
+`rows_per_worker` and `fragments_per_worker`. Every field is required and
+must be positive. Omitting either option leaves the server's configured
+defaults unchanged, and either can be combined with `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count`.
+
+<CodeGroup>
+```python Python icon="python"
+job = table.refresh_column_async(
+    "embedding",
+    supervisor_resources={
+        "cpu_millis": 2_000,
+        "memory_bytes": 4 * 1024**3,
+        "ephemeral_storage_bytes": 10 * 1024**3,
+    },
+    planning_workers={
+        "resources": {
+            "cpu_millis": 1_000,
+            "memory_bytes": 2 * 1024**3,
+            "ephemeral_storage_bytes": 5 * 1024**3,
+        },
+        "max_workers": 4,
+        "rows_per_worker": 100_000,
+        "fragments_per_worker": 8,
     },
 )
 job.wait()
@@ -235,46 +427,69 @@ job.wait()
 
 ```rust Rust icon="rust"
 use lancedb::table::{
-    FunctionWorkerResourceBudget,
+    FunctionRefreshPlanningConfig,
+    FunctionRefreshPodResources,
     RefreshColumnOptions,
 };
 
 let _job = table
     .refresh_column_async_with_options(
         "embedding",
-        RefreshColumnOptions::default().resource_budget(
-            FunctionWorkerResourceBudget::new(8000, 17_179_869_184),
-        ),
+        RefreshColumnOptions::default()
+            .supervisor_resources(
+                FunctionRefreshPodResources::new(
+                    2_000,
+                    4 * 1024 * 1024 * 1024,
+                    10 * 1024 * 1024 * 1024,
+                ),
+            )
+            .planning_workers(
+                FunctionRefreshPlanningConfig::new(
+                    FunctionRefreshPodResources::new(
+                        1_000,
+                        2 * 1024 * 1024 * 1024,
+                        5 * 1024 * 1024 * 1024,
+                    ),
+                    4,
+                    100_000,
+                    8,
+                ),
+            ),
     )
     .await?;
 ```
 
 ```typescript TypeScript icon="typescript"
 const job = await table.refreshColumnAsync("embedding", {
-  resourceBudget: {
-    cpuMillis: 8000,
-    memoryBytes: 16 * 1024 ** 3,
+  supervisorResources: {
+    cpuMillis: 2_000,
+    memoryBytes: 4 * 1024 ** 3,
+    ephemeralStorageBytes: 10 * 1024 ** 3,
+  },
+  planningWorkers: {
+    resources: {
+      cpuMillis: 1_000,
+      memoryBytes: 2 * 1024 ** 3,
+      ephemeralStorageBytes: 5 * 1024 ** 3,
+    },
+    maxWorkers: 4,
+    rowsPerWorker: 100_000,
+    fragmentsPerWorker: 8,
   },
 });
 await job.wait();
 ```
 </CodeGroup>
 
-On current SQL servers, the equivalent `REFRESH COLUMN ... WITH (...)` form
-still takes all three fields when CPU or memory is set; use `gpu_count = 0`
-for a CPU-only Function. The SDK normalizes an omitted nested GPU count to a
-numeric zero before sending the request.
+The SDK validates the shape and sends these values only with this explicit
+refresh request. A supporting LanceDB Enterprise server is required.
+*/}
 
-The existing top-level `gpu_count` / `gpuCount` option remains the shorthand
-for changing only the aggregate GPU budget. It cannot be combined with the
-complete resource budget. Omitting both preserves the server's existing
-defaults.
-
-These examples configure only the explicit refresh shown. A registered
-Function declaration can separately set `auto_refresh_resource_budget` on
-`add_columns`; that declaration controls the budget for its automatic
-refreshes. SQL-expression columns reject the automatic resource-budget option
-because they do not use Function workers.
+A Function column may set `total_cpu_millis`,
+`total_memory_bytes`, and `total_gpu_count` on `add_columns`.
+These override the Function defaults for both manual and automatic refreshes.
+The settings apply to registered Function columns; SQL-expression columns use
+`num_workers` instead.
 
 To override the registered Function's call concurrency for this logical
 execution only:
@@ -306,13 +521,14 @@ await job.wait();
 
 `max_concurrency` caps user-code calls in flight for one Function within one
 logical execution. It is not an account-wide quota and does not resize or
-rewrite `resource_budget`. Omitting it uses the registration default; a
+rewrite `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count`. Omitting it uses the registration default; a
 refresh value overrides that default for this execution only.
 
 `batch_size` caps rows in one Function call; LanceDB adapts actual call and
 work sizes. For Function columns, the refresh defaults to
-`error_policy = 'fail'`. Set `error_policy = 'skip'` to write null outputs for
-failing rows and record them in the error store, subject to failure limits.
+`error_policy = 'skip'` with a 5% failed-row ceiling: failing rows keep any
+existing output, unassigned outputs stay unassigned, and their errors are
+recorded in the error store. Set `error_policy = 'fail'` to stop on a row error.
 See the [SQL refresh options](/sql/dml/refresh-column#options).
 
 {/*
@@ -326,6 +542,39 @@ three attempts, including the first call. Import `FunctionRetryPolicy`
 from `lancedb.functions`. Use `FunctionRetryPolicy(max_attempts=1)` to
 disable user-error retries. Omitting the override preserves the registered
 policy.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.functions import FunctionRetryPolicy
+
+job = table.refresh_column_async(
+    "embedding",
+    retry_policy=FunctionRetryPolicy(transient=True, max_attempts=3),
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::{function::FunctionRetryPolicy, table::RefreshColumnOptions};
+
+let mut retry_policy = FunctionRetryPolicy::transient();
+retry_policy.max_attempts = 3;
+
+let _job = table
+    .refresh_column_async_with_options(
+        "embedding",
+        RefreshColumnOptions::default().retry_policy(retry_policy),
+    )
+    .await?;
+```
+
+```typescript TypeScript icon="typescript"
+const job = await table.refreshColumnAsync("embedding", {
+  retryPolicy: { transient: true, maxAttempts: 3 },
+});
+await job.wait();
+```
+</CodeGroup>
 
 This requires a supporting LanceDB Enterprise server as well as an SDK
 that exposes these options. An older Function image may need
@@ -354,7 +603,7 @@ gpu_class = next(gpu.name for gpu in classes if gpu.gpu_model == "NVIDIA H100")
 job = table.refresh_column_async(
     "embedding",
     gpu_class=gpu_class,
-    gpu_count=4,
+    total_gpu_count=4,
     batch_size=32,
 )
 ```
@@ -378,7 +627,7 @@ async fn refresh(
             "embedding",
             RefreshColumnOptions::default()
                 .gpu_class(gpu_class)
-                .gpu_count(4)
+                .total_gpu_count(4)
                 .batch_size(32),
         )
         .await?;
@@ -387,24 +636,26 @@ async fn refresh(
 ```
 </CodeGroup>
 
-`gpu_count` is the aggregate GPU budget for the refresh's Function workers,
-not a request for that many GPUs per worker. It must be positive and preserves
-the deployment's CPU and memory defaults.
+`total_gpu_count` is the aggregate GPU budget for the refresh's Function workers,
+and `gpu_count` is the positive number of devices allocated together to each
+worker. The total budget must fit at least one worker. Omitted CPU and memory
+values inherit column settings, then Function settings, then deployment defaults.
 `gpu_class` must name a class returned by `list_gpu_classes()`; class names
-are lowercase DNS labels. Omit either option to use the Function's registered
-class or the server's configured budget. `list_gpu_classes()` requires System
+are lowercase DNS labels; `"any"` accepts any eligible configured class. Each
+omitted setting inherits the column's setting, then the Function's setting.
+If no layer specifies a GPU class, omission is equivalent to `"any"`. `list_gpu_classes()` requires System
 Usage permission, and raises `NotImplementedError` when the server predates
 GPU class discovery.
 
 <Note>
 The Rust GPU discovery and refresh controls are not in the latest Rust
 release. TypeScript does not expose GPU class discovery; pass `gpuClass`
-and `gpuCount` in the `refreshColumnAsync` options.
+and `totalGpuCount` in the `refreshColumnAsync` options.
 </Note>
 
 Completed Function outputs publish with their fragment by default. To opt into
-a row-count publication threshold, set `publication_interval_rows` in Python or
-`publication_interval_rows()` in Rust:
+a row-count publication threshold, set `publication_interval_rows` in Python,
+`publicationIntervalRows` in TypeScript, or `publication_interval_rows()` in Rust:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -413,6 +664,13 @@ job = table.refresh_column_async(
     publication_interval_rows=60,
 )
 job.wait()
+```
+
+```typescript TypeScript icon="square-js"
+const job = await table.refreshColumnAsync("embedding", {
+  publicationIntervalRows: 60,
+});
+await job.wait();
 ```
 
 ```rust Rust icon="rust"
@@ -432,7 +690,9 @@ individual publication can differ from this value depending on completed work
 and Function batching; this is not an exact-N contract. Omit it to keep
 whole-fragment publication.
 
-The TypeScript SDK does not expose the publication threshold option yet.
+In TypeScript, the threshold must be a positive safe integer, at most
+`Number.MAX_SAFE_INTEGER`. This option requires a supporting LanceDB Enterprise
+server and Function outputs without Blob types; Blob inputs are allowed.
 
 The job APIs also take the row filter and failure handling of the SQL
 `REFRESH COLUMN ... WHERE ... WITH (...)` form, so a refresh can be narrowed
@@ -482,8 +742,8 @@ The SDK rejects a blank `where`, a `max_failed_fraction` outside 0 to 1, a
 timeout that is not a positive number and a zero worker or process count
 before sending the request; the server validates everything else. A LanceDB
 Embedded refresh rejects every option other than `batch_size`, `gpu_class`
-and `gpu_count`; in particular, it rejects `resource_budget` rather than
-silently ignoring it.
+and `total_gpu_count`; in particular, it rejects `total_cpu_millis` and
+`total_memory_bytes` rather than silently ignoring them.
 
 ## When a refresh fails {#failures}
 
