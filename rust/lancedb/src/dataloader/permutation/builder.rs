@@ -356,6 +356,12 @@ impl PermutationBuilder {
             .await? as u64;
 
         self.config.split_strategy.validate(num_rows)?;
+        // Bootstrap's output row count (num_samples) differs from its input row count
+        // (num_rows); every other strategy's output matches its input. The shuffler
+        // must be told the former, not assume it always equals the latter.
+        // Plan the output row count before scanning so invalid or unrepresentable
+        // dimensions fail fast before materialization.
+        let output_rows = splitter.try_output_row_count(num_rows)?;
 
         // Apply splits
         let rows = rows.execute().await?;
@@ -365,10 +371,6 @@ impl PermutationBuilder {
         } else {
             self.sort_by_column(rows, ROW_ID).await?
         };
-        // Bootstrap's output row count (num_samples) differs from its input row count
-        // (num_rows); every other strategy's output matches its input. The shuffler
-        // must be told the former, not assume it always equals the latter.
-        let output_rows = splitter.output_row_count(num_rows);
         let split_data = splitter.apply(rows, num_rows).await?;
 
         // Shuffle data if requested
@@ -1223,6 +1225,16 @@ mod tests {
             SplitStrategy::Bootstrap {
                 num_samples: 10,
                 sizes: SplitSizes::Percentages(vec![f64::NAN]),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Fixed(u64::MAX),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Percentages(vec![0.5, 0.5]),
                 seed: Some(42),
             },
         ];

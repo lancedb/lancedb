@@ -27,6 +27,9 @@ use crate::{
 
 pub const SPLIT_ID_COLUMN: &str = "split_id";
 
+/// Maximum number of `u64` elements a `Vec<u64>` can represent (`isize::MAX / size_of::<u64>()`).
+const MAX_U64_VEC_LEN: u64 = (isize::MAX as u64) / (std::mem::size_of::<u64>() as u64);
+
 /// Strategy for assigning rows to splits
 #[derive(Debug, Clone, Default)]
 pub enum SplitStrategy {
@@ -192,6 +195,14 @@ impl SplitStrategy {
                         message: "Bootstrap strategy requires num_samples > 0".to_string(),
                     });
                 }
+                if *num_samples > MAX_U64_VEC_LEN {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "Bootstrap strategy's num_samples ({num_samples}) exceeds the maximum \
+                             representable vector length ({MAX_U64_VEC_LEN})"
+                        ),
+                    });
+                }
                 // Validated against num_samples, not num_rows: sampling is with replacement,
                 // so num_samples may exceed the number of eligible rows.
                 sizes.validate(*num_samples)
@@ -258,7 +269,7 @@ impl Splitter {
         num_rows: u64,
         sizes: &SplitSizes,
     ) -> Result<SendableRecordBatchStream> {
-        let split_sizes = sizes.to_counts(num_rows);
+        let split_sizes = sizes.try_to_counts(num_rows)?;
 
         let split_index = AtomicUsize::new(0);
         let counter_in_split = AtomicU64::new(0);
@@ -436,7 +447,13 @@ impl Splitter {
             });
         }
 
-        let split_sample_counts = sizes.to_counts(num_samples);
+        let split_sample_counts = sizes.try_to_counts(num_samples)?;
+        let total_samples = split_sample_counts
+            .iter()
+            .try_fold(0u64, |acc, &c| acc.checked_add(c))
+            .ok_or_else(|| Error::InvalidInput {
+                message: "Bootstrap split sample counts overflowed u64".to_string(),
+            })?;
 
         // `try_reserve_exact` (fallible) rather than `with_capacity` (infallible --
         // aborts the whole process via `handle_alloc_error` on failure, which no
@@ -450,13 +467,14 @@ impl Splitter {
                  allocate in memory"
             ),
         };
+        let total_samples_usize = usize::try_from(total_samples).map_err(|_| too_large())?;
         let mut position_indices = Vec::<u64>::new();
         position_indices
-            .try_reserve_exact(num_samples as usize)
+            .try_reserve_exact(total_samples_usize)
             .map_err(|_| too_large())?;
         let mut split_ids = Vec::<u64>::new();
         split_ids
-            .try_reserve_exact(num_samples as usize)
+            .try_reserve_exact(total_samples_usize)
             .map_err(|_| too_large())?;
         for (split_idx, &count) in split_sample_counts.iter().enumerate() {
             // Derive an independent seed per split (rather than one RNG shared across all
@@ -589,11 +607,37 @@ impl Splitter {
     /// `Fixed(n)` when `n` does not divide `num_samples` evenly, or explicit
     /// `counts`/`ratios` that do not use every sample) and `apply_bootstrap` only
     /// ever emits exactly what `to_counts` returns.
+    pub(crate) fn try_output_row_count(&self, num_rows: u64) -> Result<u64> {
+        match &self.strategy {
+            SplitStrategy::Bootstrap {
+                num_samples, sizes, ..
+            } => sizes.checked_total_rows(*num_samples),
+            _ => Ok(num_rows),
+        }
+    }
+
     pub fn output_row_count(&self, num_rows: u64) -> u64 {
         match &self.strategy {
             SplitStrategy::Bootstrap {
                 num_samples, sizes, ..
-            } => sizes.to_counts(*num_samples).iter().sum(),
+            } => match sizes {
+                SplitSizes::Fixed(num_splits) => {
+                    debug_assert!(*num_splits > 0, "Fixed split count must be > 0");
+                    if *num_splits == 0 {
+                        0
+                    } else {
+                        (*num_samples / *num_splits) * *num_splits
+                    }
+                }
+                SplitSizes::Counts(counts) => {
+                    counts.iter().copied().fold(0u64, u64::saturating_add)
+                }
+                SplitSizes::Percentages(_) => sizes
+                    .to_counts(*num_samples)
+                    .iter()
+                    .copied()
+                    .fold(0u64, u64::saturating_add),
+            },
             _ => num_rows,
         }
     }
@@ -695,6 +739,14 @@ impl SplitSizes {
                         message: "Split fixed config must specify at least 1 split".to_string(),
                     });
                 }
+                if *num_splits > MAX_U64_VEC_LEN {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "Split fixed config specified {} splits which exceeds the maximum representable split count ({})",
+                            *num_splits, MAX_U64_VEC_LEN
+                        ),
+                    });
+                }
                 if *num_splits > num_rows {
                     return Err(Error::InvalidInput {
                         message: format!(
@@ -716,54 +768,190 @@ impl SplitSizes {
         Ok(())
     }
 
+    fn percentages_to_counts(percentages: &[f64], num_rows: u64) -> Result<Vec<u64>> {
+        let mut counts = Vec::<u64>::new();
+        counts
+            .try_reserve_exact(percentages.len())
+            .map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "Split percentages count ({}) is too large to allocate in memory",
+                    percentages.len()
+                ),
+            })?;
+
+        let mut percentage_sum = 0.0_f64;
+        let mut sum: u128 = 0;
+        for &p in percentages {
+            let count = (p * (num_rows as f64)).round() as u64;
+            percentage_sum += p;
+            sum += count as u128;
+            counts.push(count);
+        }
+
+        let num_rows_u128 = num_rows as u128;
+        let is_basically_one = (num_rows as f64 - percentage_sum * num_rows as f64).abs() < 0.5;
+
+        // If the sum of percentages is close to 1.0 then rounding errors can add up
+        // to more or less than num_rows.
+        //
+        // Drop items from buckets in round-robin order until we have at most num_rows,
+        // using bulk passes so large rounding discrepancies cannot spin.
+        if sum > num_rows_u128 {
+            let mut excess = sum - num_rows_u128;
+            while excess > 0 {
+                let mut nonzero_count: u128 = 0;
+                let mut min_nonzero: u64 = u64::MAX;
+                for &c in &counts {
+                    if c > 0 {
+                        nonzero_count += 1;
+                        if c < min_nonzero {
+                            min_nonzero = c;
+                        }
+                    }
+                }
+                if nonzero_count == 0 {
+                    break;
+                }
+                let full_rounds = (excess / nonzero_count).min(min_nonzero as u128);
+                if full_rounds > 0 {
+                    let decrement = full_rounds as u64;
+                    for c in &mut counts {
+                        if *c > 0 {
+                            *c -= decrement;
+                        }
+                    }
+                    excess -= full_rounds * nonzero_count;
+                } else {
+                    for c in &mut counts {
+                        if excess == 0 {
+                            break;
+                        }
+                        if *c > 0 {
+                            *c -= 1;
+                            excess -= 1;
+                        }
+                    }
+                }
+            }
+        } else if is_basically_one && sum < num_rows_u128 && !counts.is_empty() {
+            // On the other hand, if the percentages sum to ~1.0 then we also shouldn't _lose_
+            // rows due to rounding errors.
+            let deficit = num_rows_u128 - sum;
+            let len = counts.len() as u128;
+            let base_add = (deficit / len) as u64;
+            let rem = (deficit % len) as usize;
+            for (idx, count) in counts.iter_mut().enumerate() {
+                *count += base_add + u64::from(idx < rem);
+            }
+        }
+
+        Ok(counts)
+    }
+
+    pub(crate) fn checked_total_rows(&self, num_rows: u64) -> Result<u64> {
+        match self {
+            Self::Percentages(percentages) => {
+                let counts = Self::percentages_to_counts(percentages, num_rows)?;
+                counts
+                    .iter()
+                    .try_fold(0u64, |acc, &c| acc.checked_add(c))
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "Split percentage counts overflowed u64".to_string(),
+                    })
+            }
+            Self::Counts(counts) => {
+                let total = counts
+                    .iter()
+                    .try_fold(0u64, |acc, &c| acc.checked_add(c))
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "Split counts overflowed u64".to_string(),
+                    })?;
+                if total > num_rows {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "Split counts specified {} rows but only {} are available",
+                            total, num_rows
+                        ),
+                    });
+                }
+                Ok(total)
+            }
+            Self::Fixed(num_splits) => {
+                if *num_splits == 0 {
+                    return Err(Error::InvalidInput {
+                        message: "Split fixed config must specify at least 1 split".to_string(),
+                    });
+                }
+                Ok((num_rows / *num_splits) * *num_splits)
+            }
+        }
+    }
+
+    pub(crate) fn try_to_counts(&self, num_rows: u64) -> Result<Vec<u64>> {
+        let sizes = match self {
+            Self::Percentages(percentages) => Self::percentages_to_counts(percentages, num_rows)?,
+            Self::Counts(counts) => {
+                let total = counts
+                    .iter()
+                    .try_fold(0u64, |acc, &c| acc.checked_add(c))
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "Split counts overflowed u64".to_string(),
+                    })?;
+                if total > num_rows {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "Split counts specified {} rows but only {} are available",
+                            total, num_rows
+                        ),
+                    });
+                }
+                let mut out = Vec::<u64>::new();
+                out.try_reserve_exact(counts.len())
+                    .map_err(|_| Error::InvalidInput {
+                        message: format!(
+                            "Split counts length ({}) is too large to allocate in memory",
+                            counts.len()
+                        ),
+                    })?;
+                out.extend_from_slice(counts);
+                out
+            }
+            Self::Fixed(num_splits) => {
+                if *num_splits == 0 {
+                    return Err(Error::InvalidInput {
+                        message: "Split fixed config must specify at least 1 split".to_string(),
+                    });
+                }
+                let num_splits_usize =
+                    usize::try_from(*num_splits).map_err(|_| Error::InvalidInput {
+                        message: format!(
+                            "Split fixed config specified {} splits which is too large to allocate in memory",
+                            *num_splits
+                        ),
+                    })?;
+                let rows_per_split = num_rows / *num_splits;
+                let mut out = Vec::<u64>::new();
+                out.try_reserve_exact(num_splits_usize)
+                    .map_err(|_| Error::InvalidInput {
+                        message: format!(
+                            "Split fixed config specified {} splits which is too large to allocate in memory",
+                            *num_splits
+                        ),
+                    })?;
+                out.resize(num_splits_usize, rows_per_split);
+                out
+            }
+        };
+
+        assert!(sizes.iter().map(|&c| c as u128).sum::<u128>() <= num_rows as u128);
+
+        Ok(sizes)
+    }
+
     pub fn to_counts(&self, num_rows: u64) -> Vec<u64> {
         let sizes = match self {
-            Self::Percentages(percentages) => {
-                let mut percentage_sum = 0.0_f64;
-                let mut counts = percentages
-                    .iter()
-                    .map(|p| {
-                        let count = (p * (num_rows as f64)).round() as u64;
-                        percentage_sum += p;
-                        count
-                    })
-                    .collect::<Vec<_>>();
-                let sum = counts.iter().sum::<u64>();
-
-                let is_basically_one =
-                    (num_rows as f64 - percentage_sum * num_rows as f64).abs() < 0.5;
-
-                // If the sum of percentages is close to 1.0 then rounding errors can add up
-                // to more or less than num_rows
-                //
-                // Drop items from buckets until we have the correct number of rows
-                let mut excess = sum as i64 - num_rows as i64;
-                let mut drop_idx = 0;
-                while excess > 0 {
-                    if counts[drop_idx] > 0 {
-                        counts[drop_idx] -= 1;
-                        excess -= 1;
-                    }
-                    drop_idx += 1;
-                    if drop_idx == counts.len() {
-                        drop_idx = 0;
-                    }
-                }
-
-                // On the other hand, if the percentages sum to ~1.0 then the we also shouldn't _lose_
-                // rows due to rounding errors
-                let mut add_idx = 0;
-                while is_basically_one && excess < 0 {
-                    counts[add_idx] += 1;
-                    add_idx += 1;
-                    excess += 1;
-                    if add_idx == counts.len() {
-                        add_idx = 0;
-                    }
-                }
-
-                counts
-            }
+            Self::Percentages(percentages) => Self::percentages_to_counts(percentages, num_rows)
+                .expect("Split percentages allocation failed"),
             Self::Counts(counts) => counts.clone(),
             Self::Fixed(num_splits) => {
                 let rows_per_split = num_rows / *num_splits;
@@ -771,7 +959,7 @@ impl SplitSizes {
             }
         };
 
-        assert!(sizes.iter().sum::<u64>() <= num_rows);
+        assert!(sizes.iter().map(|&c| c as u128).sum::<u128>() <= num_rows as u128);
 
         sizes
     }
@@ -1305,5 +1493,88 @@ mod tests {
             let result = splitter.apply(test_data(), 50).await;
             assert!(matches!(result, Err(Error::InvalidInput { .. })));
         }
+    }
+
+    #[test]
+    fn test_split_sizes_large_boundary_counts_and_validation() {
+        // Rounding two 50% splits of u64::MAX produces 2^63 + 2^63 = 2^64 before
+        // excess adjustment, which must not overflow u64 summation or signed diff.
+        let half_max = SplitSizes::Percentages(vec![0.5, 0.5]).to_counts(u64::MAX);
+        assert_eq!(half_max.len(), 2);
+        assert_eq!(
+            half_max.iter().map(|&c| c as u128).sum::<u128>(),
+            u64::MAX as u128
+        );
+
+        let above_i64_max = (i64::MAX as u64) + 10;
+        let large_pct = SplitSizes::Percentages(vec![0.6, 0.4]).to_counts(above_i64_max);
+        assert_eq!(large_pct.len(), 2);
+        assert!(large_pct.iter().map(|&c| c as u128).sum::<u128>() <= above_i64_max as u128);
+
+        // Unrepresentable fixed split counts and bootstrap sample counts must be
+        // rejected with InvalidInput without attempting large allocations.
+        assert!(matches!(
+            SplitSizes::Fixed(u64::MAX).validate(u64::MAX),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Fixed(u64::MAX),
+                seed: Some(42),
+            }
+            .validate(10),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Percentages(vec![0.5, 0.5]),
+                seed: Some(42),
+            }
+            .validate(10),
+            Err(Error::InvalidInput { .. })
+        ));
+
+        // output_row_count and checked_total_rows must not allocate a Fixed split vector
+        // or overflow on large percentage totals.
+        let large_fixed_splitter = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Fixed(u64::MAX),
+                seed: Some(42),
+            },
+        );
+        assert_eq!(large_fixed_splitter.output_row_count(10), u64::MAX);
+        assert_eq!(
+            large_fixed_splitter.try_output_row_count(10).unwrap(),
+            u64::MAX
+        );
+
+        let large_pct_splitter = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Percentages(vec![0.5, 0.5]),
+                seed: Some(42),
+            },
+        );
+        assert_eq!(large_pct_splitter.output_row_count(10), u64::MAX);
+        assert_eq!(
+            large_pct_splitter.try_output_row_count(10).unwrap(),
+            u64::MAX
+        );
+
+        // Fallible count planning must return InvalidInput without aborting even for
+        // huge Fixed counts that exceed available address space.
+        assert!(matches!(
+            SplitSizes::Fixed(u64::MAX).try_to_counts(u64::MAX),
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            SplitSizes::Fixed(1u64 << 50).try_to_counts(1u64 << 50),
+            Err(Error::InvalidInput { .. })
+        ));
     }
 }
