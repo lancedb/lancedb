@@ -82,11 +82,54 @@ import {
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
+  TagContents,
   Tags,
   UpdateFieldMetadataResult,
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
+
+/**
+ * Copies accessor properties from a napi-rs class prototype onto an instance
+ * as own enumerable properties, reusing the same getters and setters. napi-rs
+ * exposes class fields as prototype accessors, which are invisible to
+ * `Object.keys`, object spread and `JSON.stringify`; promoting them to own
+ * properties keeps the class (and `instanceof`) intact while making returned
+ * values serializable.
+ */
+function exposeOwnAccessors<T extends object>(instance: T, keys: string[]): T {
+  const proto = Object.getPrototypeOf(instance);
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(instance, key)) continue;
+    const desc = Object.getOwnPropertyDescriptor(proto, key);
+    if (
+      desc !== undefined &&
+      (desc.get !== undefined || desc.set !== undefined)
+    ) {
+      Object.defineProperty(instance, key, {
+        get: desc.get,
+        set: desc.set,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  return instance;
+}
+
+// `Tags` is a native napi-rs class returned directly from `Table.tags()`.
+// Post-process `list()` results so each `TagContents` instance carries
+// `version` and `manifestSize` as own enumerable properties.
+const nativeTagsList = Tags.prototype.list;
+Tags.prototype.list = async function (
+  this: Tags,
+): Promise<Record<string, TagContents>> {
+  const tags = await nativeTagsList.call(this);
+  for (const contents of Object.values(tags)) {
+    exposeOwnAccessors(contents, ["version", "manifestSize"]);
+  }
+  return tags;
+};
 import {
   AutoQuery,
   FullTextQuery,
