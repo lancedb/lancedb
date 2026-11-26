@@ -765,6 +765,17 @@ impl FlightService for TestSqlService {
     }
 }
 
+fn description_batch(document: serde_json::Value) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("description", DataType::Utf8, false)]).with_metadata(
+        HashMap::from([("lancedb.describe.format".into(), "json".into())]),
+    );
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+    )
+    .unwrap()
+}
+
 fn parameter_row() -> RecordBatch {
     let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
         [Some([0.1_f32, 1e-45, -0.0].map(Some))],

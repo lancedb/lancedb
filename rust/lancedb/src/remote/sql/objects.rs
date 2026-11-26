@@ -154,6 +154,43 @@ pub(super) fn string_lists(batches: &[RecordBatch], name: &str) -> Result<Vec<St
     Ok(values)
 }
 
+pub(super) fn description<T: DeserializeOwned>(batches: Vec<RecordBatch>) -> Result<T> {
+    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
+        return Err(Error::Runtime {
+            message: "DESCRIBE FORMAT JSON must return exactly one document".into(),
+        });
+    }
+    for batch in &batches {
+        if batch.num_columns() != 1
+            || batch
+                .schema()
+                .metadata()
+                .get("lancedb.describe.format")
+                .map(String::as_str)
+                != Some("json")
+            || batch
+                .column_by_name("description")
+                .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+                .is_none()
+        {
+            return Err(Error::Runtime { message: "DESCRIBE FORMAT JSON requires one UTF8 description column with JSON format metadata".into() });
+        }
+    }
+    let mut documents = strings(&batches, "description")?;
+    let document: serde_json::Value =
+        serde_json::from_str(&documents.remove(0)).map_err(|error| Error::Runtime {
+            message: format!("Invalid DESCRIBE JSON document: {error}"),
+        })?;
+    if !document.is_object() {
+        return Err(Error::Runtime {
+            message: "DESCRIBE FORMAT JSON requires an object document".into(),
+        });
+    }
+    serde_json::from_value(document).map_err(|error| Error::Runtime {
+        message: format!("Invalid DESCRIBE metadata: {error}"),
+    })
+}
+
 pub(super) fn definition<T: DeserializeOwned>(batches: Vec<RecordBatch>) -> Result<T> {
     let values = strings(&batches, "definition")?;
     let [value]: [String; 1] = values.try_into().map_err(|_| Error::Runtime {
@@ -273,5 +310,74 @@ mod tests {
         )]));
         let non_list = RecordBatch::new_empty(non_list_schema);
         assert!(string_lists(&[non_list], "warnings").is_err());
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+
+    #[test]
+    fn descriptions_require_one_explicit_json_document() {
+        let document = serde_json::json!({"name":"saved", "schema":{"fields":[]}, "nullable":null});
+        let batch = RecordBatch::try_new(
+            Arc::new(
+                arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                    "description",
+                    arrow_schema::DataType::Utf8,
+                    false,
+                )])
+                .with_metadata(std::collections::HashMap::from([(
+                    "lancedb.describe.format".into(),
+                    "json".into(),
+                )])),
+            ),
+            vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+        )
+        .unwrap();
+        assert_eq!(
+            description::<serde_json::Value>(vec![batch.clone()]).unwrap(),
+            document
+        );
+        assert!(description::<serde_json::Value>(vec![]).is_err());
+        assert!(description::<serde_json::Value>(vec![batch.clone(), batch.clone()]).is_err());
+        let invalid = RecordBatch::try_new(
+            batch.schema(),
+            vec![Arc::new(StringArray::from(vec!["View\nname: saved"]))],
+        )
+        .unwrap();
+        assert!(description::<serde_json::Value>(vec![invalid]).is_err());
+        let text = RecordBatch::try_new(
+            Arc::new(batch.schema().as_ref().clone().with_metadata(
+                std::collections::HashMap::from([(
+                    "lancedb.describe.format".into(),
+                    "text".into(),
+                )]),
+            )),
+            batch.columns().to_vec(),
+        )
+        .unwrap();
+        assert!(description::<serde_json::Value>(vec![text]).is_err());
+        for value in ["[]", "null", "1", "\"text\""] {
+            let scalar = RecordBatch::try_new(
+                batch.schema(),
+                vec![Arc::new(StringArray::from(vec![value]))],
+            )
+            .unwrap();
+            assert!(description::<serde_json::Value>(vec![scalar]).is_err());
+        }
+        let null = RecordBatch::try_new(
+            Arc::new(
+                arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                    "description",
+                    arrow_schema::DataType::Utf8,
+                    true,
+                )])
+                .with_metadata(batch.schema().metadata().clone()),
+            ),
+            vec![Arc::new(StringArray::from(vec![None::<&str>]))],
+        )
+        .unwrap();
+        assert!(description::<serde_json::Value>(vec![null]).is_err());
     }
 }
