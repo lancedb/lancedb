@@ -623,11 +623,9 @@ impl Splitter {
             } => match sizes {
                 SplitSizes::Fixed(num_splits) => {
                     debug_assert!(*num_splits > 0, "Fixed split count must be > 0");
-                    if *num_splits == 0 {
-                        0
-                    } else {
-                        (*num_samples / *num_splits) * *num_splits
-                    }
+                    num_samples
+                        .checked_div(*num_splits)
+                        .map_or(0, |rows_per_split| rows_per_split * *num_splits)
                 }
                 SplitSizes::Counts(counts) => {
                     counts.iter().copied().fold(0u64, u64::saturating_add)
@@ -1566,14 +1564,14 @@ mod tests {
             u64::MAX
         );
 
-        // Fallible count planning must return InvalidInput without aborting even for
-        // huge Fixed counts that exceed available address space.
+        // Fallible count planning must return InvalidInput without attempting a large
+        // allocation when the split count exceeds the maximum representable Vec<u64>.
         assert!(matches!(
             SplitSizes::Fixed(u64::MAX).try_to_counts(u64::MAX),
             Err(Error::InvalidInput { .. })
         ));
         assert!(matches!(
-            SplitSizes::Fixed(1u64 << 50).try_to_counts(1u64 << 50),
+            SplitSizes::Fixed(MAX_U64_VEC_LEN + 1).try_to_counts(MAX_U64_VEC_LEN + 1),
             Err(Error::InvalidInput { .. })
         ));
     }
