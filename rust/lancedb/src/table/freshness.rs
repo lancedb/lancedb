@@ -2832,7 +2832,8 @@ mod tests {
                 .execute(Box::new(RecordBatchIterator::new(
                     [Ok(source.clone())],
                     source.schema(),
-                )))
+                ))
+                    as Box<dyn arrow_array::RecordBatchReader + Send>)
                 .await
                 .unwrap();
         } else {
@@ -2966,7 +2967,8 @@ mod tests {
                 .execute(Box::new(RecordBatchIterator::new(
                     [Ok(batch.clone())],
                     batch.schema(),
-                )))
+                ))
+                    as Box<dyn arrow_array::RecordBatchReader + Send>)
                 .await
                 .unwrap()
                 .version
@@ -3262,7 +3264,8 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(
                 [Ok(source.clone())],
                 source.schema(),
-            )))
+            ))
+                as Box<dyn arrow_array::RecordBatchReader + Send>)
             .await
             .unwrap();
         assert_eq!(result.num_updated_rows, 1);
@@ -3357,7 +3360,8 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(
                 [Ok(source.clone())],
                 source.schema(),
-            )))
+            ))
+                as Box<dyn arrow_array::RecordBatchReader + Send>)
             .await
             .unwrap();
         let dataset = native.dataset.get().await.unwrap();
@@ -3396,7 +3400,8 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(
                 [Ok(batch.clone())],
                 batch.schema(),
-            )))
+            ))
+                as Box<dyn arrow_array::RecordBatchReader + Send>)
             .await
             .unwrap();
         let mut dataset = table
@@ -3461,7 +3466,8 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(
                 [Ok(batch.clone())],
                 batch.schema(),
-            )))
+            ))
+                as Box<dyn arrow_array::RecordBatchReader + Send>)
             .await
             .unwrap();
         table
