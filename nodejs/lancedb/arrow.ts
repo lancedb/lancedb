@@ -28,6 +28,7 @@ import {
   RecordBatchStreamWriter,
   Schema,
   Struct,
+  TimeUnit,
   Timestamp,
   Type,
   Utf8,
@@ -376,6 +377,7 @@ export class MakeArrowTableOptions {
  *  - bigint => Int64
  *  - String => Utf8
  *  - Buffer => Binary
+ *  - Date => Timestamp (millisecond)
  *  - Record<String, any> => Struct
  *  - Array<any> => List
  * @example
@@ -872,6 +874,37 @@ function makeVector(
         });
         return arrowMakeVector(data);
       }
+    }
+
+    // Arrow 15 writes a negative timestamp as an unsigned 32-bit number, so a
+    // date before 1970 comes back about 49.7 days late.  Fill the 64-bit
+    // values ourselves; the bytes are the same in every supported version.
+    if (
+      DataType.isTimestamp(type) &&
+      type.unit === TimeUnit.MILLISECOND &&
+      values.every((v) => v === null || v === undefined || v instanceof Date)
+    ) {
+      const millis = new BigInt64Array(values.length);
+      const nullBitmap = new Uint8Array(Math.ceil(values.length / 8));
+      let nullCount = 0;
+      values.forEach((v, i) => {
+        if (v instanceof Date) {
+          millis[i] = BigInt(v.getTime());
+          nullBitmap[i >> 3] |= 1 << (i & 7);
+        } else {
+          nullCount++;
+        }
+      });
+      return arrowMakeVector(
+        makeData({
+          type,
+          length: values.length,
+          nullCount,
+          nullBitmap,
+          // Arrow 15 and 16 type this buffer as Int32Array; same bytes.
+          data: millis as unknown as Timestamp["TArray"],
+        }),
+      );
     }
 
     // No need for inference, let Arrow create it

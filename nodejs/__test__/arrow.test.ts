@@ -543,6 +543,40 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
       ).toThrow("Failed to infer schema for data.");
     });
 
+    // Arrow 15 stores a negative timestamp as an unsigned 32-bit number.  Run
+    // with `apache-arrow` resolved to 15 to exercise the workaround.
+    it("preserves dates before 1970 through IPC", async function () {
+      const dates = [
+        new Date(-1),
+        null,
+        new Date("1890-06-15T12:00:00.000Z"),
+        new Date("2024-01-02T03:04:05.678Z"),
+      ];
+      const millis = dates.map((d) => (d === null ? null : d.getTime()));
+      const read = (table: Awaited<ReturnType<typeof currentTableFromIPC>>) =>
+        dates.map((_, i) => {
+          const value = table.getChild("created")?.get(i);
+          return value === null ? null : Number(value);
+        });
+
+      const inferred = currentTableFromIPC(
+        await fromDataToBuffer(dates.map((created) => ({ created }))),
+      );
+      expect(read(inferred)).toEqual(millis);
+
+      const schema = new Schema([
+        new Field("created", new TimestampMillisecond(), true),
+      ]);
+      const withSchema = currentTableFromIPC(
+        await fromDataToBuffer(
+          dates.map((created) => ({ created })),
+          undefined,
+          schema,
+        ),
+      );
+      expect(read(withSchema)).toEqual(millis);
+    });
+
     it("will infer FixedSizeList<Uint8> from Uint8Array values", async function () {
       const table = makeArrowTable([
         { id: "a", vector: new Uint8Array([1, 2, 3]) },

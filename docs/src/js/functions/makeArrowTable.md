@@ -42,6 +42,7 @@ rules are as follows:
  - bigint => Int64
  - String => Utf8
  - Buffer => Binary
+ - Date => Timestamp (millisecond)
  - Record<String, any> => Struct
  - Array<any> => List
 
