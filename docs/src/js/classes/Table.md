@@ -1255,8 +1255,11 @@ handle is read. Pass BlobReadOptions.signal to cancel the open.
 #### Example
 
 ```ts
-const rows = await table.query().toArray();
-const [handle] = await table.openBlobFile(rows[0].video);
+const rows = await table
+  .query()
+  .select({ video: "blob_descriptor(video)" })
+  .toArray();
+const handle = await table.openBlobFile(rows[0].video);
 if (handle) {
   const header = await handle.readRange(0n, 16n);
   await handle.close();
