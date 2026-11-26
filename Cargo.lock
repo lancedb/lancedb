@@ -3836,8 +3836,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "rand 0.9.5",
@@ -5315,8 +5315,8 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 
 [[package]]
 name = "lance"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5392,8 +5392,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5416,8 +5416,8 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrayref",
  "crunchy",
@@ -5427,8 +5427,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5466,8 +5466,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5498,8 +5498,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion-exec"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5525,8 +5525,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5543,8 +5543,8 @@ dependencies = [
 
 [[package]]
 name = "lance-derive"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5553,8 +5553,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5588,8 +5588,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5619,8 +5619,8 @@ dependencies = [
 
 [[package]]
 name = "lance-geo"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5651,8 +5651,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5724,8 +5724,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index-core"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5748,8 +5748,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5794,8 +5794,8 @@ dependencies = [
 
 [[package]]
 name = "lance-jsonb"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "byteorder",
  "ethnum",
@@ -5812,8 +5812,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "argminmax 0.7.1",
  "arrow-array",
@@ -5828,8 +5828,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5843,8 +5843,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5898,8 +5898,8 @@ dependencies = [
 
 [[package]]
 name = "lance-select"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5913,8 +5913,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5955,8 +5955,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table-runtime"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -6000,8 +6000,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -6014,8 +6014,8 @@ dependencies = [
 
 [[package]]
 name = "lance-tokenizer"
-version = "16.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.2#9eb4b09226b252f0d3d58448aa5f435147bcef13"
+version = "16.0.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v16.0.0-beta.3#a93690c0a82ad8ea5e0dd621e3a311a5fce9a487"
 dependencies = [
  "frostem",
  "icu_segmenter",
