@@ -765,6 +765,17 @@ impl FlightService for TestSqlService {
     }
 }
 
+fn description_batch(document: serde_json::Value) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("description", DataType::Utf8, false)]).with_metadata(
+        HashMap::from([("lancedb.describe.format".into(), "json".into())]),
+    );
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+    )
+    .unwrap()
+}
+
 fn parameter_row() -> RecordBatch {
     let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
         [Some([0.1_f32, 1e-45, -0.0].map(Some))],
@@ -3467,6 +3478,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
             adaptive: true,
             defer,
             result,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "DESCRIBE FUNCTION \"embed\" WITH (version = '1') FORMAT JSON".into(),
+                    description_batch(version_json.clone()),
+                ),
+                (
+                    "DESCRIBE FUNCTION \"embed\" FORMAT JSON".into(),
+                    description_batch(version_json.clone()),
+                ),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3621,8 +3642,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(listed_json["row_timeout_seconds"], 8.0);
         assert_eq!(listed_json["result_stability"], "input_and_context");
         let seen = statements.lock().unwrap();
-        assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
-        assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
+        assert_eq!(
+            seen[1],
+            "DESCRIBE FUNCTION \"embed\" WITH (version = '1') FORMAT JSON"
+        );
+        assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\" FORMAT JSON");
         shutdown.send(()).unwrap();
     }
 }

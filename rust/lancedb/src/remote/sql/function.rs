@@ -4,7 +4,7 @@
 use super::{
     SqlClient,
     materialized_view::quote_identifier,
-    objects::{definition, literal, string_lists, strings},
+    objects::{definition, description, literal, string_lists, strings},
 };
 use crate::{
     database::ExecuteQueryRequest,
@@ -72,14 +72,14 @@ impl SqlClient {
         self.object_job(
             ExecuteQueryRequest {
                 query: format!(
-                    "DESCRIBE FUNCTION {}{version_clause}",
+                    "DESCRIBE FUNCTION {}{version_clause} FORMAT JSON",
                     quote_identifier(name)
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
                 options: Default::default(),
             },
-            definition,
+            description,
         )
         .await?
         .wait()
