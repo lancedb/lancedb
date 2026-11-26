@@ -6,8 +6,10 @@ use std::{
     time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use lance::{Dataset, dataset::refs};
 
+use super::version_as_of;
 use crate::table::merge::lsm::ShardWriterCache;
 use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 
@@ -36,6 +38,14 @@ struct DatasetState {
     /// time travel. Query snapshots remain read-only but preserve RTE read
     /// semantics.
     query_snapshot: bool,
+}
+
+impl DatasetState {
+    fn pin(&mut self, dataset: Dataset) {
+        self.pinned_version = Some(dataset.version().version);
+        self.dataset = Arc::new(dataset);
+        self.query_snapshot = false;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -292,13 +302,23 @@ impl DatasetConsistencyWrapper {
         }
 
         let new_dataset = dataset.checkout_version(target_ref).await?;
-        let version_value = new_dataset.version().version;
-
-        let mut state = self.state.lock()?;
-        state.dataset = Arc::new(new_dataset);
-        state.pinned_version = Some(version_value);
-        state.query_snapshot = false;
+        self.state.lock()?.pin(new_dataset);
         Ok(())
+    }
+
+    pub(super) async fn as_of(&self, timestamp: DateTime<Utc>) -> Result<()> {
+        loop {
+            let dataset = self.state.lock()?.dataset.clone();
+            let version = version_as_of(dataset.versions().await?, timestamp)?;
+            let snapshot = dataset.checkout_version(version).await?;
+
+            let mut state = self.state.lock()?;
+            // A tag may have moved this handle to another branch during the lookup.
+            if state.dataset.manifest().branch == dataset.manifest().branch {
+                state.pin(snapshot);
+                return Ok(());
+            }
+        }
     }
 
     pub async fn reload(&self) -> Result<()> {

@@ -7,6 +7,7 @@ use crate::blob::{BlobDescriptor, BlobFile};
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use datafusion_execution::TaskContext;
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -576,6 +577,17 @@ pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToke
         .collect())
 }
 
+fn version_as_of(versions: Vec<Version>, timestamp: DateTime<Utc>) -> Result<u64> {
+    versions
+        .into_iter()
+        .filter(|v| v.timestamp <= timestamp)
+        .map(|v| v.version)
+        .max()
+        .ok_or_else(|| Error::InvalidInput {
+            message: format!("No table version is available at or before {timestamp}"),
+        })
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB Enterprise)
 ///
@@ -1115,6 +1127,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
+    /// Checkout the highest retained version committed at or before the timestamp.
+    /// Backends with a mutable branch must resolve and pin on the same branch.
+    async fn checkout_as_of(&self, timestamp: DateTime<Utc>) -> Result<()> {
+        let version = version_as_of(self.list_versions().await?, timestamp)?;
+        self.checkout(version).await
+    }
     /// Checkout a table version referenced by a tag.
     /// Tags provide a human-readable way to reference specific versions of the table.
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
@@ -3087,18 +3105,8 @@ impl Table {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn checkout_as_of(&self, timestamp: chrono::DateTime<chrono::Utc>) -> Result<()> {
-        let version = self
-            .list_versions()
-            .await?
-            .into_iter()
-            .filter(|v| v.timestamp <= timestamp)
-            .map(|v| v.version)
-            .max()
-            .ok_or_else(|| Error::InvalidInput {
-                message: format!("No table version is available at or before {timestamp}"),
-            })?;
-        self.checkout(version).await
+    pub async fn checkout_as_of(&self, timestamp: DateTime<Utc>) -> Result<()> {
+        self.inner.checkout_as_of(timestamp).await
     }
 
     /// Checks out a specific version of the Table by tag
@@ -4518,6 +4526,10 @@ impl BaseTable for NativeTable {
 
     async fn checkout(&self, version: u64) -> Result<()> {
         self.dataset.as_time_travel(version).await
+    }
+
+    async fn checkout_as_of(&self, timestamp: DateTime<Utc>) -> Result<()> {
+        self.dataset.as_of(timestamp).await
     }
 
     async fn checkout_tag(&self, tag: &str) -> Result<()> {
@@ -6101,6 +6113,68 @@ mod tests {
         assert_eq!(pinned.count_rows(None).await.unwrap(), 3); // exp HEAD, not main's 4
         pinned.add(sample_rows(vec![3])).execute().await.unwrap();
         assert_eq!(pinned.count_rows(None).await.unwrap(), 4); // writable again
+    }
+
+    #[test]
+    fn test_branch_version_checkout_during_timestamp_lookup() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let dir = tempdir().unwrap();
+            let db = connect(dir.path().to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+            let table = db
+                .create_table("items", sample_rows(vec![0]))
+                .execute()
+                .await
+                .unwrap();
+            let branch = table.create_branch("exp", 1u64).await.unwrap();
+            table.add(sample_rows(vec![1])).execute().await.unwrap();
+            let cutoff = table
+                .list_versions()
+                .await
+                .unwrap()
+                .pop()
+                .unwrap()
+                .timestamp;
+            // At the cutoff main was at v2 and exp was at v1.
+            table.add(sample_rows(vec![4])).execute().await.unwrap();
+            branch.add(sample_rows(vec![2])).execute().await.unwrap();
+            branch.add(sample_rows(vec![3])).execute().await.unwrap();
+            branch
+                .tags()
+                .await
+                .unwrap()
+                .create("exp-head", 3)
+                .await
+                .unwrap();
+
+            // Hold the filesystem worker so the first poll snapshots main and
+            // suspends in its version lookup. Keep that future unpolled while
+            // the tag checkout changes the same handle's branch.
+            let (entered, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let worker = tokio::task::spawn_blocking(move || {
+                entered.send(()).unwrap();
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+            let mut checkout = std::pin::pin!(table.checkout_as_of(cutoff));
+            assert!(futures::poll!(checkout.as_mut()).is_pending());
+            drop(release);
+            worker.await.unwrap();
+            table.checkout_tag("exp-head").await.unwrap();
+            checkout.await.unwrap();
+
+            assert_eq!(table.current_branch().as_deref(), Some("exp"));
+            assert_eq!(table.version().await.unwrap(), 1);
+            assert_eq!(table.count_rows(None).await.unwrap(), 1);
+        });
     }
 
     #[tokio::test]
