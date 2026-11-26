@@ -690,6 +690,8 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.PythonEnvironmentSpec
 
+::: lancedb.functions.PythonEnvironmentBuild
+
 ::: lancedb.functions.function
 
 ::: lancedb.functions.FunctionDefinition

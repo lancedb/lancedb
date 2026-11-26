@@ -394,8 +394,22 @@ class FunctionSignature(_RemoteValue):
     initialization: tuple[FunctionParameter, ...] = ()
 
 
+class PythonEnvironmentBuild(_RemoteValue):
+    """Package index settings reported in a Function's requested environment.
+
+    ``index_url`` is the URL requested at registration. See
+    [ResolvedEnvironmentProvenance][lancedb.functions.ResolvedEnvironmentProvenance]
+    for the indexes reported by the build.
+    """
+
+    index_url: Optional[str] = None
+
+
 class PythonEnvironmentSpec(_RemoteValue):
-    """One LanceDB Enterprise-managed Python environment source."""
+    """One LanceDB Enterprise-managed Python environment source.
+
+    ``build`` is present when the service reports a requested index URL.
+    """
 
     kind: str
     packages: tuple[str, ...] = ()
@@ -404,6 +418,14 @@ class PythonEnvironmentSpec(_RemoteValue):
     modules: tuple[str, ...] = ()
     image: Optional[str] = None
     system_packages: tuple[str, ...] = ()
+    build: Optional[PythonEnvironmentBuild] = None
+
+    @field_validator("build")
+    @classmethod
+    def _omit_build_without_index(
+        cls, build: Optional[PythonEnvironmentBuild]
+    ) -> Optional[PythonEnvironmentBuild]:
+        return build if build is not None and build.index_url is not None else None
 
 
 _HUGGING_FACE_MODEL_REPO = re.compile(

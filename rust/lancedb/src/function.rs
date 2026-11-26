@@ -681,6 +681,39 @@ impl<'de> Deserialize<'de> for RowTimeoutSeconds {
     }
 }
 
+// Function inspection includes this build setting alongside the SDK's authored
+// runtime spec. Keep it on the readback model so registration keeps its own wire shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestedPythonRuntime {
+    spec: PythonRuntimeSpec,
+    index_url: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RequestedPythonRuntime {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let document = Value::deserialize(deserializer)?;
+        let index_url = document
+            .pointer("/environment/build/index_url")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let spec: PythonRuntimeSpec =
+            serde_json::from_value(document).map_err(de::Error::custom)?;
+        let index_url = spec.environment().and(index_url);
+        Ok(Self { spec, index_url })
+    }
+}
+
+impl Serialize for RequestedPythonRuntime {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let Some(index_url) = &self.index_url else {
+            return self.spec.serialize(serializer);
+        };
+        let mut document = serde_json::to_value(&self.spec).map_err(serde::ser::Error::custom)?;
+        document["environment"]["build"] = serde_json::json!({"index_url": index_url});
+        document.serialize(serializer)
+    }
+}
+
 /// One immutable Function object revision and its executable artifact.
 ///
 /// The Function is named by its parts, `name` and `namespace_path`, the way a
@@ -764,7 +797,7 @@ pub struct FunctionVersion {
     /// [`Self::resolved_environment`] when the caller needs actual package
     /// versions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    runtime: Option<PythonRuntimeSpec>,
+    runtime: Option<RequestedPythonRuntime>,
     /// Actual installed distributions, provenance, and registration warnings.
     ///
     /// This is the single-platform compatibility field. `None` on a
@@ -890,7 +923,13 @@ impl FunctionVersion {
     ///
     /// This is the requested configuration, not evidence of what was installed.
     pub fn runtime(&self) -> Option<&PythonRuntimeSpec> {
-        self.runtime.as_ref()
+        self.runtime.as_ref().map(|runtime| &runtime.spec)
+    }
+
+    /// Package index URL requested at registration, when reported by the service.
+    /// For indexes reported by the build, see [`ResolvedEnvironmentProvenance`].
+    pub fn requested_index_url(&self) -> Option<&str> {
+        self.runtime.as_ref()?.index_url.as_deref()
     }
 
     /// Actual installed distributions and registration warnings for a
@@ -1958,6 +1997,30 @@ mod tests {
 
         document["max_concurrency"] = serde_json::json!(0);
         assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn python_environment_omits_build_without_a_requested_index() {
+        let legacy = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {"kind": "pip", "packages": ["example==1.0"]},
+        });
+        let runtime: RequestedPythonRuntime = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(runtime.index_url, None);
+        assert_eq!(serde_json::to_value(runtime).unwrap(), legacy);
+
+        for build in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"index_url": null, "env": {"UV_INDEX": "fixture"}}),
+        ] {
+            let mut response = legacy.clone();
+            response["environment"]["build"] = build;
+            let runtime: RequestedPythonRuntime = serde_json::from_value(response).unwrap();
+            assert_eq!(runtime.index_url, None);
+            assert_eq!(serde_json::to_value(runtime).unwrap(), legacy);
+        }
     }
 
     #[test]
