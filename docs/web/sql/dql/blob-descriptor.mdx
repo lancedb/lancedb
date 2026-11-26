@@ -27,6 +27,33 @@ rows = db.execute_query("SELECT id, blob_descriptor(video) AS descriptor FROM vi
 with table.open_blob_file(rows[0]["descriptor"]) as reader:
     payload = reader.read()
 ```
+
+```typescript TypeScript icon="typescript"
+const rows = await table
+  .query()
+  .select({ descriptor: "blob_descriptor(video)" })
+  .toArray();
+const reader = await table.openBlobFile(rows[0].descriptor);
+if (reader) {
+  const payload = await reader.read();
+  await reader.close();
+}
+```
+
+```rust Rust icon="rust"
+use lancedb::{blob::BlobDescriptor, Table};
+
+async fn read_descriptor(
+    table: &Table,
+    descriptor: &BlobDescriptor,
+) -> lancedb::Result<()> {
+    let reader = table.open_blob_file(descriptor).await?;
+    let payload = reader.read().await?;
+    println!("{} bytes", payload.len());
+    reader.close().await?;
+    Ok(())
+}
+```
 </CodeGroup>
 
 A descriptor is pinned to the table version it was read at: it keeps
