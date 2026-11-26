@@ -3159,13 +3159,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
-        let request = self.apply_branch_query(
-            self.client
-                .post(&format!("/v1/table/{}/version/list/", self.identifier)),
-        );
-        let (request_id, response) = self.send(request, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-
         // Servers report the creation time either as an RFC 3339 `timestamp`
         // (direct-table path) or as `timestamp_millis` in milliseconds since
         // epoch (namespace-backed path), and may omit `metadata`.
@@ -3182,23 +3175,30 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         #[derive(Deserialize)]
         struct ListVersionsResponse {
             versions: Vec<VersionEntry>,
+            page_token: Option<String>,
         }
 
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let body: ListVersionsResponse =
-            serde_json::from_str(&body).map_err(|err| Error::Http {
-                source: format!(
-                    "Failed to parse list_versions response: {}, body: {}",
-                    err, body
-                )
-                .into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            })?;
+        let path = format!("/v1/table/{}/version/list/", self.identifier);
+        let mut versions = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_tokens = HashSet::new();
+        loop {
+            let mut request = self.apply_branch_query(self.client.post(&path));
+            if let Some(token) = &page_token {
+                request = request.query(&[("page_token", token)]);
+            }
+            let (request_id, response) = self.send(request, true).await?;
+            let response = self.check_table_response(&request_id, response).await?;
+            let body = response.text().await.err_to_http(request_id.clone())?;
+            let page: ListVersionsResponse =
+                serde_json::from_str(&body).map_err(|err| Error::Http {
+                    source: format!("Failed to parse list_versions response: {err}, body: {body}")
+                        .into(),
+                    request_id: request_id.clone(),
+                    status_code: None,
+                })?;
 
-        body.versions
-            .into_iter()
-            .map(|entry| {
+            for entry in page.versions {
                 let timestamp = entry
                     .timestamp
                     .or_else(|| {
@@ -3216,14 +3216,26 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         request_id: request_id.clone(),
                         status_code: None,
                     })?;
-                Ok(Version {
+                versions.push(Version {
                     version: entry.version,
                     timestamp,
                     metadata: entry.metadata,
                     manifest_size: entry.manifest_size,
-                })
-            })
-            .collect()
+                });
+            }
+
+            let Some(next) = page.page_token.filter(|token| !token.is_empty()) else {
+                return Ok(versions);
+            };
+            if !seen_tokens.insert(next.clone()) {
+                return Err(Error::Http {
+                    source: "list_versions response repeated a page_token".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+            page_token = Some(next);
+        }
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
@@ -10983,6 +10995,95 @@ mod tests {
             "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
         assert_eq!(versions[1].manifest_size, None);
+    }
+
+    #[tokio::test]
+    async fn test_checkout_as_of_paginated_history() {
+        const TOKEN: &str = "page/2+?";
+        let pages = Arc::new(AtomicUsize::new(0));
+        let list_requests = pages.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".into(),
+            move |request| {
+                assert_eq!(request.method(), "POST");
+                let response = match request.url().path() {
+                    "/v1/table/my_table/version/list/" => {
+                        let query: HashMap<_, _> = request.url().query_pairs().collect();
+                        assert_eq!(query.get("branch").map(|v| v.as_ref()), Some("exp"));
+                        let token = query.get("page_token").map(|v| v.as_ref());
+                        match list_requests.fetch_add(1, Ordering::SeqCst) {
+                            0 => {
+                                assert_eq!(token, None);
+                                json!({
+                                    "versions": [{"version": 1, "timestamp_millis": 1000}],
+                                    "page_token": TOKEN
+                                })
+                            }
+                            1 => {
+                                assert_eq!(token, Some(TOKEN));
+                                json!({
+                                    "versions": [{"version": 2, "timestamp_millis": 2000}],
+                                    "page_token": ""
+                                })
+                            }
+                            _ => panic!("unexpected version-list request"),
+                        }
+                    }
+                    "/v1/table/my_table/describe/" => {
+                        let body = request_body_json(&request);
+                        assert_eq!(body["branch"], "exp");
+                        assert_eq!(body["version"], 2);
+                        json!({"version": 2, "schema": {"fields": []}})
+                    }
+                    path => panic!("unexpected path: {path}"),
+                };
+                http::Response::builder()
+                    .status(200)
+                    .body(response.to_string())
+                    .unwrap()
+            },
+            None,
+        )
+        .with_branch(Some("exp".into()));
+
+        let cutoff = DateTime::from_timestamp_millis(2500).unwrap();
+        table.checkout_as_of(cutoff).await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 2);
+        assert_eq!(pages.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_versions_rejects_repeated_page_token() {
+        let pages = Arc::new(AtomicUsize::new(0));
+        let list_requests = pages.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/version/list/");
+            let query: HashMap<_, _> = request.url().query_pairs().collect();
+            let token = query.get("page_token").map(|v| v.as_ref());
+            let response = match list_requests.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert_eq!(token, None);
+                    json!({
+                        "versions": [{"version": 1, "timestamp_millis": 1000}],
+                        "page_token": "second"
+                    })
+                }
+                1 => {
+                    assert_eq!(token, Some("second"));
+                    json!({"versions": [], "page_token": "third"})
+                }
+                2 => {
+                    assert_eq!(token, Some("third"));
+                    json!({"versions": [], "page_token": "third"})
+                }
+                _ => panic!("requested a page after its token was repeated"),
+            };
+            http::Response::new(response.to_string())
+        });
+
+        let err = table.list_versions().await.unwrap_err();
+        assert!(err.to_string().contains("repeated a page_token"), "{err}");
+        assert_eq!(pages.load(Ordering::SeqCst), 3);
     }
 
     /// Namespace-backed servers report `timestamp_millis` instead of

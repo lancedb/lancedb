@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import copy
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import http.server
 import io
 import inspect
@@ -1014,6 +1014,34 @@ async def test_async_checkout():
         assert await table.count_rows() == 200
         await table.checkout_latest()
         assert await table.count_rows() == 300
+
+
+def test_remote_checkout_timestamp():
+    def handler(request):
+        if request.path == "/v1/table/test/version/list/":
+            # Two versions share the cutoff. The next commit is one nanosecond later.
+            payload = {
+                "versions": [
+                    {"version": 5, "timestamp": "2024-01-02T03:04:05.123456001Z"},
+                    {"version": 4, "timestamp": "2024-01-02T03:04:05.123456Z"},
+                    {"version": 3, "timestamp": "2024-01-02T03:04:05.123456Z"},
+                ]
+            }
+        else:
+            assert request.path == "/v1/table/test/describe/"
+            body = json.loads(request.rfile.read() or b"{}")
+            payload = {"version": body.get("version") or 5, "schema": {"fields": []}}
+        request.send_response(200)
+        request.end_headers()
+        request.wfile.write(json.dumps(payload).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        cutoff = datetime.fromisoformat("2024-01-02T04:04:05.123456+01:00")
+        table.checkout(cutoff)
+        assert table.version == 4
+        table.checkout(cutoff + timedelta(microseconds=1))
+        assert table.version == 5
 
 
 def _branch_open_handler(request):

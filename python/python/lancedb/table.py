@@ -11,7 +11,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -4231,7 +4231,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self, version: Union[int, str]):
+    def checkout(self, version: Union[int, str, datetime]):
         """
         Checks out a specific version of the Table
 
@@ -4241,17 +4241,45 @@ class Table(ABC):
 
         This is a read-only operation that turns the table into a sort of "view"
         or "detached head".  Other table instances will not be affected.  To make the
-        change permanent you can use the `[Self::restore]` method.
+        change permanent you can use [restore][lancedb.table.Table.restore].
 
         Any operation that modifies the table will fail while the table is in a checked
         out state. To return the table to a normal state use
-        `[Self::checkout_latest]`.
+        [checkout_latest][lancedb.table.Table.checkout_latest].
 
         Parameters
         ----------
-        version: int | str,
-            The version to check out. A version number (`int`) or a tag
-            (`str`) can be provided.
+        version: int | str | datetime
+            A version number, tag, or timestamp. For a timestamp, checkout uses
+            the commit times reported by the backend in this branch's version
+            history. It selects the highest retained version whose reported
+            time is at or before the cutoff. A naive datetime uses the
+            system's local time zone.
+
+            Some Enterprise servers report commit times in whole milliseconds.
+            A commit later in the same millisecond as the cutoff can qualify.
+            To reproduce a report exactly, record each input table's branch
+            and version number after checkout. Reopen each table with
+            `db.open_table(name, branch=branch, version=version)` on later runs.
+
+        Raises
+        ------
+        ValueError
+            If no retained version exists at or before the timestamp.
+
+        Examples
+        --------
+        Capture a cutoff before opening the tables needed for a report.
+
+        ```python
+        from datetime import datetime, timezone
+
+        cutoff = datetime.now(timezone.utc)
+        orders = db.open_table("orders")
+        items = db.open_table("items")
+        orders.checkout(cutoff)
+        items.checkout(cutoff)
+        ```
         """
 
     @abstractmethod
@@ -4909,7 +4937,7 @@ class LanceTable(Table):
         table._checkout_version = version
         return table
 
-    def checkout(self, version: Union[int, str]):
+    def checkout(self, version: Union[int, str, datetime]):
         """Checkout a version of the table. This is an in-place operation.
 
         This allows viewing previous versions of the table. If you wish to
@@ -4921,9 +4949,10 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        version: int | str,
-            The version to check out. A version number (`int`) or a tag
-            (`str`) can be provided.
+        version: int | str | datetime
+            A version number, tag, or timestamp. See
+            [Table.checkout][lancedb.table.Table.checkout] for timestamp semantics
+            and Enterprise timestamp precision.
 
         Examples
         --------
@@ -10020,7 +10049,7 @@ class AsyncTable:
         """
         return AsyncTableDelta(await self._inner.delta(from_version, to_version))
 
-    async def checkout(self, version: int | str):
+    async def checkout(self, version: int | str | datetime):
         """
         Checks out a specific version of the Table
 
@@ -10030,20 +10059,24 @@ class AsyncTable:
 
         This is a read-only operation that turns the table into a sort of "view"
         or "detached head".  Other table instances will not be affected.  To make the
-        change permanent you can use the `[Self::restore]` method.
+        change permanent you can use [restore][lancedb.table.AsyncTable.restore].
 
         Any operation that modifies the table will fail while the table is in a checked
         out state. To return the table to a normal state use
-        `[Self::checkout_latest]`.
+        [checkout_latest][lancedb.table.AsyncTable.checkout_latest].
 
         Parameters
         ----------
-        version: int | str,
-            The version to check out. A version number (`int`) or a tag
-            (`str`) can be provided.
+        version: int | str | datetime
+            A version number, tag, or timestamp. See
+            [Table.checkout][lancedb.table.Table.checkout] for timestamp semantics
+            and Enterprise timestamp precision.
         """
         try:
-            await self._inner.checkout(version)
+            if isinstance(version, datetime):
+                await self._inner.checkout_as_of(version.astimezone(timezone.utc))
+            else:
+                await self._inner.checkout(version)
         except RuntimeError as e:
             if "not found" in str(e):
                 raise ValueError(

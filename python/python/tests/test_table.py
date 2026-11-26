@@ -13,7 +13,7 @@ import warnings
 import weakref
 from collections import UserDict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from time import sleep
 from types import MappingProxyType
@@ -1349,6 +1349,39 @@ def test_lance_table_pickle_preserves_namespace_path(tmp_path):
     assert restored.namespace == ["ns1"]
     assert restored.count_rows() == 1
     assert restored._conn._namespace_client_properties == {"root": str(tmp_path)}
+
+
+def test_checkout_two_tables_as_of_the_same_timestamp(mem_db: DBConnection):
+    orders = mem_db.create_table("orders", data=[{"id": 1}])
+    items = mem_db.create_table("items", data=[{"id": 1}])
+    items.add([{"id": 2}])
+    # Python displays commit times to microseconds. Use the next representable
+    # instant so the cutoff includes all nanoseconds of the last initial commit.
+    cutoff = items.list_versions()[-1]["timestamp"] + timedelta(microseconds=1)
+
+    orders.add([{"id": 2}])
+    items.add([{"id": 3}])
+    orders.checkout(cutoff)
+    items.checkout(cutoff.astimezone(timezone.utc))
+
+    assert (orders.version, items.version) == (1, 2)
+    assert (orders.count_rows(), items.count_rows()) == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_checkout_timestamp_pins_latest(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("items", data=[{"id": 1}])
+    writer = await mem_db_async.open_table("items")
+    await table.checkout(datetime(2100, 1, 1))
+    await writer.add([{"id": 2}])
+    assert await table.count_rows() == 1
+
+    with pytest.raises(ValueError, match="No table version is available"):
+        await table.checkout(datetime(2000, 1, 1, tzinfo=timezone.utc))
+    assert await table.version() == 1
+
+    await table.checkout_latest()
+    assert await table.count_rows() == 2
 
 
 def test_versioning(mem_db: DBConnection):
