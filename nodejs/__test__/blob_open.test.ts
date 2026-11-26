@@ -179,7 +179,7 @@ async function withOpenServer(
 }
 
 describe("openBlobFile", () => {
-  it("opens a large descriptor through the direct resolver and reads bytes", async () => {
+  it("opens a large descriptor through the direct resolver", async () => {
     await withOpenServer(async (_db, table, state) => {
       const handle = (await table.openBlobFile(descriptor(10n * BigInt(MIB))))!;
       expect(handle).not.toBeNull();
