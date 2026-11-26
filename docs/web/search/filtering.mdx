@@ -59,6 +59,23 @@ vector and full-text searches.
 SDK filters use SQL expressions without requiring a SQL connection. For
 Enterprise SQL queries, see [SELECT](/sql/dql/select#filtering).
 
+## Prefilter with keys from another table {#prefilter-with-subquery}
+
+In LanceDB Embedded, use `IN (SELECT ...)` to restrict vector or full-text
+search to keys in another table in the same namespace. Use unqualified table
+names in the subquery. LanceDB computes the matching base-table row IDs while
+planning the search, so `limit(1)` returns the best eligible row.
+
+```typescript
+const matches = await chunks
+  .vectorSearch(queryVector)
+  .where(
+    "document_id IN (SELECT document_id FROM team_documents WHERE team_id = 'Team 1')",
+  )
+  .limit(1)
+  .toArray();
+```
+
 ## Filtering examples by language {#example-metadata-filtering}
 
 The following excerpts use a connected `db` handle. Create this sample table

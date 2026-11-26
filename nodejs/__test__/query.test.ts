@@ -15,6 +15,101 @@ import {
 } from "../lancedb/arrow";
 import { Index } from "../lancedb/indices";
 
+describe("Search subquery filters", () => {
+  const documentIdColumn = "document_id";
+  const teamIdColumn = "team_id";
+  let tmpDir: tmp.DirResult;
+  let chunks: Table;
+  let teamDocuments: Table;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    chunks = await db.createTable("chunks", [
+      { [documentIdColumn]: "AAA", text: "cat cat cat cat", vector: [0, 0] },
+      { [documentIdColumn]: "BBB", text: "cat dog dog dog", vector: [1, 1] },
+    ]);
+    await chunks.createIndex("text", { config: Index.fts() });
+    teamDocuments = await db.createTable("team_documents", [
+      { [teamIdColumn]: "Team 1", [documentIdColumn]: "BBB" },
+      { [teamIdColumn]: "Team 1", [documentIdColumn]: "BBB" },
+      { [teamIdColumn]: "Team 2", [documentIdColumn]: "AAA" },
+    ]);
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it.each(["vector", "fts"])(
+    "%s search prefilters by keys from another table",
+    async (kind) => {
+      const search = () =>
+        (kind === "vector"
+          ? chunks.vectorSearch([0, 0])
+          : chunks.search("cat", "fts")
+        ).limit(1);
+      const ids = async (query: ReturnType<typeof search>) =>
+        (await query.toArray()).map((row) => row[documentIdColumn]);
+
+      expect(await ids(search())).toEqual(["AAA"]);
+      expect(await ids(search().where("document_id IN ('BBB')"))).toEqual([
+        "BBB",
+      ]);
+
+      const predicate = (team: string) =>
+        `document_id IN (SELECT "document_id" FROM team_documents WHERE team_id = '${team}')`;
+      expect(
+        await ids(
+          search().where("document_id IS NOT NULL").where(predicate("Team 1")),
+        ),
+      ).toEqual(["BBB"]);
+      expect(
+        await ids(
+          search().where("document_id = 'AAA'").where(predicate("Team 1")),
+        ),
+      ).toEqual([]);
+      expect(await ids(search().where(predicate("Missing team")))).toEqual([]);
+    },
+  );
+
+  it.each(["flat", "indexed"])(
+    "%s vector search reads current keys on repeated execution",
+    async (kind) => {
+      if (kind === "indexed") {
+        await chunks.createIndex("vector", {
+          config: Index.ivfFlat({ numPartitions: 1 }),
+        });
+      }
+      const query = chunks
+        .vectorSearch([0, 0])
+        .where(
+          "document_id IN (SELECT document_id FROM team_documents WHERE team_id = 'Team 1')",
+        )
+        .limit(1);
+      expect(
+        (await query.toArray()).map((row) => row[documentIdColumn]),
+      ).toEqual(["BBB"]);
+      await teamDocuments.add([
+        { [teamIdColumn]: "Team 1", [documentIdColumn]: "AAA" },
+      ]);
+      expect(
+        (await query.toArray()).map((row) => row[documentIdColumn]),
+      ).toEqual(["AAA"]);
+    },
+  );
+
+  it("rejects a missing lookup table and explicit postfiltering", async () => {
+    const filter = "document_id IN (SELECT document_id FROM missing_table)";
+    await expect(
+      chunks.vectorSearch([0, 0]).where(filter).toArray(),
+    ).rejects.toThrow(/missing_table/);
+    await expect(
+      chunks.vectorSearch([0, 0]).postfilter().where(filter).toArray(),
+    ).rejects.toThrow("SQL subquery filters require prefiltering");
+  });
+});
+
 describe("Query outputSchema", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;

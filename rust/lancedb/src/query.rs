@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
@@ -39,6 +40,7 @@ use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
 
+use crate::database::Database;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
@@ -421,6 +423,9 @@ pub trait QueryBase {
     ///
     /// Identifiers may be delimited with SQL-standard double quotes or
     /// backticks. String literals must use single quotes.
+    ///
+    /// Embedded prefilters support `IN (SELECT ...)` against tables in the
+    /// same namespace. Use unqualified table names inside the subquery.
     ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
@@ -890,6 +895,9 @@ pub struct QueryRequest {
     /// `Result`.
     pub(crate) filter_error: Option<String>,
 
+    /// Resolves tables referenced by Embedded SQL query filters.
+    pub(crate) database: Option<QueryDatabase>,
+
     /// Perform a full text search on the table.
     pub full_text_search: Option<FullTextSearchQuery>,
 
@@ -948,6 +956,16 @@ pub struct QueryRequest {
     pub use_rte: Option<bool>,
 }
 
+#[derive(Clone)]
+pub(crate) struct QueryDatabase(pub(crate) Arc<dyn Database>);
+
+impl fmt::Debug for QueryDatabase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Connection options may contain credentials.
+        f.debug_struct("QueryDatabase").finish_non_exhaustive()
+    }
+}
+
 impl Default for QueryRequest {
     fn default() -> Self {
         Self {
@@ -958,6 +976,7 @@ impl Default for QueryRequest {
             preserve_order: false,
             filter: None,
             filter_error: None,
+            database: None,
             full_text_search: None,
             select: Select::All,
             fast_search: false,
@@ -1047,6 +1066,11 @@ impl Query {
             parent,
             request: QueryRequest::default(),
         }
+    }
+
+    pub(crate) fn with_database(mut self, database: Option<Arc<dyn Database>>) -> Self {
+        self.request.database = database.map(QueryDatabase);
+        self
     }
 
     /// Helper method to convert the query to a VectorQuery with a `query_vector`

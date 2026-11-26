@@ -2064,7 +2064,7 @@ impl Table {
     /// # });
     /// ```
     pub fn query(&self) -> Query {
-        Query::new(self.inner.clone())
+        Query::new(self.inner.clone()).with_database(self.database.clone())
     }
 
     /// Extract rows from the dataset using dataset offsets.

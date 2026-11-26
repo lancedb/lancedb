@@ -7,6 +7,7 @@ use std::{
 };
 
 mod lsm;
+mod subquery_filter;
 
 use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
@@ -254,6 +255,11 @@ pub async fn create_plan(
         None => has_spec,
     };
     if use_rte {
+        if subquery_filter::predicate(query.base.filter.as_ref()).is_some() {
+            return Err(Error::NotSupported {
+                message: "SQL subquery filters require a base table scan. Use use_rte(false) to search the base table.".into(),
+            });
+        }
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
@@ -444,7 +450,14 @@ pub async fn create_plan(
     if let Some(filter) = &query.base.filter {
         match filter {
             QueryFilter::Sql(sql) => {
-                scanner.filter(sql)?;
+                if let Some(predicate) = subquery_filter::predicate(Some(filter)) {
+                    let mask =
+                        subquery_filter::row_mask(table, ds_ref.clone(), &query.base, predicate)
+                            .await?;
+                    scanner.with_row_id_prefilter(mask);
+                } else {
+                    scanner.filter(sql)?;
+                }
             }
             QueryFilter::Substrait(substrait) => {
                 scanner.filter_substrait(substrait)?;
