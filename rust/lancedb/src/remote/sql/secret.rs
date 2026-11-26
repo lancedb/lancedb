@@ -4,7 +4,7 @@
 use super::{SqlClient, materialized_view::quote_identifier, objects::description};
 use crate::{
     database::ExecuteQueryRequest,
-    error::Result,
+    error::{Error, Result},
     listing::{ListingOptions, ListingPage},
     secrets::SecretInfo,
     utils::{validate_namespace, validate_secret_name},
