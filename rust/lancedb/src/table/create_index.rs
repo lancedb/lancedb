@@ -366,6 +366,15 @@ impl NativeTable {
                     ScalarIndexParams::for_builtin(BuiltinIndexType::RTree).with_params(&params),
                 ))
             }
+            // Lance resolves the plugin by name and the plugin checks the column
+            // and the parameters, so there is nothing to validate here.
+            Index::Plugin(plugin) => {
+                let mut params = ScalarIndexParams::new(plugin.index_type);
+                params.params = plugin
+                    .params
+                    .map(|params| serde_json::Value::Object(params).to_string());
+                Ok(Box::new(params))
+            }
             Index::FTS(fts_opts) => {
                 validate_fts_field(field)?;
                 Ok(Box::new(fts_opts))
@@ -532,6 +541,7 @@ impl NativeTable {
             Index::NGram(_) => IndexType::NGram,
             Index::BloomFilter(_) => IndexType::BloomFilter,
             Index::RTree(_) => IndexType::RTree,
+            Index::Plugin(_) => IndexType::Scalar,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
             | Index::IvfSq(_)
@@ -1665,6 +1675,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_btree_index_on_large_utf8() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("explicit", DataType::LargeUtf8, true),
+            Field::new("auto", DataType::LargeUtf8, true),
+        ]));
+        let values = || {
+            Arc::new(LargeStringArray::from(vec![
+                Some("alpha"),
+                None,
+                Some("omega"),
+                Some("alpha"),
+            ])) as ArrayRef
+        };
+        let batch = RecordBatch::try_new(schema, vec![values(), values()]).unwrap();
+        let table = conn
+            .create_table("large_utf8_btree_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["explicit"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        // Auto picks BTree for string columns, so LargeUtf8 must get one too.
+        table
+            .create_index(&["auto"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["explicit_idx", "auto_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 2);
+        for index in index_configs {
+            assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        }
+
+        for column in ["explicit", "auto"] {
+            for (filter, expected_rows) in [
+                (format!("{column} = 'alpha'"), 2),
+                (format!("{column} > 'beta'"), 1),
+                (format!("{column} IS NULL"), 1),
+            ] {
+                let query = table.query().only_if(filter.as_str());
+                let plan = query.explain_plan(false).await.unwrap();
+                assert!(plan.contains("ScalarIndexQuery"), "{filter}: {plan}");
+                let num_rows = query
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|b| b.num_rows())
+                    .sum::<usize>();
+                assert_eq!(num_rows, expected_rows, "{filter}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_create_builtin_scalar_index() {
         for (index, index_type, predicate, invalid_column) in [
             (
@@ -1780,6 +1858,191 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    /// Lance's built-in plugins, created by name through the generic path, are
+    /// listed with the same type as their dedicated builders and serve filters.
+    #[tokio::test]
+    async fn test_create_plugin_index() {
+        use crate::index::IndexType;
+        use crate::index::scalar::PluginIndexBuilder;
+
+        for (name, params, column, index_type, predicate, expected_rows) in [
+            (
+                "ZoneMap",
+                None,
+                "id",
+                IndexType::ZoneMap,
+                "id >= 2 AND id < 4",
+                2,
+            ),
+            (
+                "bloomfilter",
+                Some(serde_json::json!({"number_of_items": 2, "probability": 0.01})),
+                "text",
+                IndexType::BloomFilter,
+                "text = 'abc'",
+                1,
+            ),
+            ("BTREE", None, "id", IndexType::BTree, "id = 3", 1),
+        ] {
+            let conn = connect("memory://").execute().await.unwrap();
+            let batch = record_batch!(
+                ("id", Int32, [1, 2, 3, 4]),
+                ("text", Utf8, [Some("abc"), Some("xyz"), None, Some("")])
+            )
+            .unwrap();
+            let table = conn.create_table("plugin", batch).execute().await.unwrap();
+
+            let mut plugin = PluginIndexBuilder::new(name).unwrap();
+            if let Some(params) = params.clone() {
+                plugin = plugin.params(params).unwrap();
+            }
+            table
+                .create_index(&[column], Index::Plugin(plugin))
+                .name("plugin_idx".into())
+                .execute()
+                .await
+                .unwrap();
+
+            let indices = table.list_indices().await.unwrap();
+            assert_eq!(indices.len(), 1);
+            assert_eq!(indices[0].index_type, index_type, "{name}");
+            assert_eq!(indices[0].columns, [column]);
+            let stats = table.index_stats("plugin_idx").await.unwrap().unwrap();
+            assert_eq!(stats.index_type, index_type);
+            assert_eq!(stats.num_indexed_rows, 4);
+
+            // Lance trained the plugin with the given params, not its defaults.
+            if let Some(params) = params {
+                let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+                let stats: serde_json::Value =
+                    serde_json::from_str(&dataset.index_statistics("plugin_idx").await.unwrap())
+                        .unwrap();
+                for (key, value) in params.as_object().unwrap() {
+                    assert_eq!(&stats["indices"][0][key], value, "{key}");
+                }
+            }
+
+            let query = table.query().only_if(predicate);
+            let plan = query.explain_plan(false).await.unwrap();
+            assert!(plan.contains("ScalarIndexQuery"), "{name}: {plan}");
+            let batches = query
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(
+                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                expected_rows,
+                "{name}"
+            );
+        }
+    }
+
+    /// A plugin LanceDB has no type for is listed as `Custom` with the name
+    /// the plugin reports.
+    #[tokio::test]
+    async fn test_create_plugin_index_without_lancedb_type_is_listed_as_custom() {
+        use crate::index::IndexType;
+        use crate::index::scalar::PluginIndexBuilder;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!((
+            "value",
+            Utf8,
+            ["alpha beta", "beta gamma", "gamma delta", "delta alpha"]
+        ))
+        .unwrap();
+        let table = conn.create_table("custom", batch).execute().await.unwrap();
+        table
+            .create_index(
+                &["value"],
+                Index::Plugin(PluginIndexBuilder::new("MinHashLSH").unwrap()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(
+            indices[0].index_type,
+            IndexType::Custom("MinHashLsh".into())
+        );
+        assert_eq!(indices[0].index_type.to_string(), "MinHashLsh");
+        assert_eq!(indices[0].columns, ["value"]);
+    }
+
+    /// Lance's errors for an unknown plugin, a column the plugin cannot index
+    /// and params the plugin rejects reach the caller, through both execute
+    /// paths, and leave no index behind.
+    #[tokio::test]
+    async fn test_create_plugin_index_errors() {
+        use crate::index::scalar::PluginIndexBuilder;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch =
+            record_batch!(("id", Int32, [1, 2, 3]), ("text", Utf8, ["a", "b", "c"])).unwrap();
+        let table = conn.create_table("errors", batch).execute().await.unwrap();
+
+        let plugin = |name: &str| PluginIndexBuilder::new(name).unwrap();
+        for (column, index, expected) in [
+            (
+                "id",
+                plugin("NoSuchPlugin"),
+                "No scalar index plugin found for name 'nosuchplugin'",
+            ),
+            ("id", plugin("ngram"), "ngram"),
+            (
+                "text",
+                plugin("bloomfilter")
+                    .params(serde_json::json!({"number_of_items": "many"}))
+                    .unwrap(),
+                "invalid type: string \"many\", expected u64",
+            ),
+        ] {
+            let error = table
+                .create_index(&[column], Index::Plugin(index.clone()))
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&expected.to_lowercase()),
+                "{error}"
+            );
+
+            let error = table
+                .create_index(&[column], Index::Plugin(index))
+                .execute_async()
+                .await
+                .unwrap()
+                .wait()
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&expected.to_lowercase()),
+                "{error}"
+            );
+        }
+        assert!(table.list_indices().await.unwrap().is_empty());
+
+        // A missing column is still caught before any build starts.
+        assert!(
+            table
+                .create_index(&["missing"], Index::Plugin(plugin("zonemap")))
+                .execute_async()
+                .await
+                .is_err()
+        );
     }
 
     #[cfg(feature = "geo")]

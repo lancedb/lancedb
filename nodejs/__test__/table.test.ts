@@ -17,6 +17,8 @@ import {
   PhraseQuery,
   Query,
   Table,
+  TableDelta,
+  TableDeltaReader,
   VectorQuery,
   blob,
   connect,
@@ -1929,6 +1931,74 @@ describe("When creating an index", () => {
         geoTbl.createIndex("id", { config: Index.rtree() }),
       ).rejects.toThrow("GeoArrow");
     });
+  });
+
+  test.each([
+    ["ZoneMap", undefined, "ZoneMap"],
+    ["BTREE", undefined, "BTree"],
+    [
+      "bloomfilter",
+      // biome-ignore lint/style/useNamingConvention: plugin param name
+      { number_of_items: 64, probability: 0.01 },
+      "BloomFilter",
+    ],
+    ["bloomfilter", '{"number_of_items": 64}', "BloomFilter"],
+  ])(
+    "create a scalar plugin index by name (%s, %p)",
+    async (indexType, params, expectedType) => {
+      await tbl.createIndex("id", {
+        config: Index.plugin(indexType, params),
+        name: "id_plugin",
+      });
+
+      const indices = await tbl.listIndices();
+      expect(indices).toHaveLength(1);
+      expect(indices[0].name).toBe("id_plugin");
+      expect(indices[0].indexType).toBe(expectedType);
+      expect(indices[0].columns).toEqual(["id"]);
+
+      const query = tbl.query().where("id = 42");
+      expect(await query.explainPlan()).toContain("ScalarIndexQuery");
+      expect(await query.toArray()).toHaveLength(1);
+    },
+  );
+
+  test("lists a scalar plugin without a LanceDB type by its own name", async () => {
+    const db = await connect(tmpDir.name);
+    const textTbl = await db.createTable("minhash", [
+      { text: "alpha beta" },
+      { text: "beta gamma" },
+    ]);
+    await textTbl.createIndex("text", { config: Index.plugin("minhashlsh") });
+
+    const indices = await textTbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].indexType).toBe("MinHashLsh");
+  });
+
+  test("rejects invalid scalar plugin configs", async () => {
+    expect(() => Index.plugin("")).toThrow("must not be empty");
+    expect(() => Index.plugin("  ")).toThrow("must not be empty");
+    expect(() => Index.plugin("zonemap", "[1]")).toThrow(
+      "must be a JSON object, got an array",
+    );
+    expect(() => Index.plugin("zonemap", "null")).toThrow(
+      "must be a JSON object, got null",
+    );
+    expect(() => Index.plugin("zonemap", "{not json")).toThrow(
+      "not valid JSON",
+    );
+    expect(() =>
+      Index.plugin("zonemap", [1] as unknown as Record<string, unknown>),
+    ).toThrow("must be a JSON object, got an array");
+
+    await expect(
+      tbl.createIndex("id", { config: Index.plugin("NoSuchPlugin") }),
+    ).rejects.toThrow("No scalar index plugin found for name 'nosuchplugin'");
+    await expect(
+      tbl.createIndex("id", { config: Index.plugin("ngram") }),
+    ).rejects.toThrow(/ngram/i);
+    expect(await tbl.listIndices()).toHaveLength(0);
   });
 
   test("should be able to get index stats", async () => {
@@ -4020,6 +4090,396 @@ describe("when dealing with tags", () => {
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
   });
+
+  it("defaults create version to the handle's visible version", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+    const tags = await table.tags();
+
+    await tags.create("live");
+    expect(await tags.getVersion("live")).toBe(2);
+
+    await table.checkout(1);
+    await tags.create("pinned");
+    expect(await tags.getVersion("pinned")).toBe(1);
+
+    // An explicit version is independent of the version this handle shows.
+    await tags.create("explicit", 2);
+    expect(await tags.getVersion("explicit")).toBe(2);
+
+    // A tag checkout is still a visible version, not "latest".
+    await table.checkoutLatest();
+    await table.add([{ id: 3 }]);
+    expect(await table.version()).toBe(3);
+    await table.checkout("live");
+    await tags.create("tag-checkout");
+    expect(await tags.getVersion("tag-checkout")).toBe(2);
+  });
+});
+
+describe("when dealing with branches", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("forks from a tag on a branch with the same version as main", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+
+    const exp = await branches.create("exp");
+    await exp.add([{ i: 10 }]);
+    const expVersion = await exp.version();
+    await (await exp.tags()).create("exp-v2", expVersion);
+
+    // main reaches the same numeric version with different rows.
+    await table.add([{ i: 100 }]);
+    expect(await table.version()).toBe(expVersion);
+
+    const fromTag = await branches.create("from-tag", {
+      fromTag: "exp-v2",
+    });
+    expect(fromTag.currentBranch()).toBe("from-tag");
+    expect(await fromTag.countRows("i = 10")).toBe(1);
+    expect(await fromTag.countRows("i = 100")).toBe(0);
+
+    // The existing positional branch/version path keeps its ordering.
+    const positional = await branches.create("from-exp", "exp", expVersion);
+    expect(positional.currentBranch()).toBe("from-exp");
+    expect(await positional.countRows("i = 10")).toBe(1);
+    expect(await positional.countRows("i = 100")).toBe(0);
+  });
+
+  it("rejects fromTag combined with another source before main normalization", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    await (await table.tags()).create("baseline");
+    const branches = await table.branches();
+
+    // fromRef="main" must not normalize the conflict away.
+    const mixedSources = { fromTag: "baseline", fromRef: "main" };
+    await expect(branches.create("conflict", mixedSources)).rejects.toThrow(
+      "fromTag cannot be combined",
+    );
+
+    // JavaScript callers can still pass the legacy version position.
+    const createWithLegacyVersion = branches.create.bind(branches) as (
+      name: string,
+      options: { fromTag: string },
+      fromVersion: number,
+    ) => Promise<Table>;
+    await expect(
+      createWithLegacyVersion("conflict", { fromTag: "baseline" }, 1),
+    ).rejects.toThrow("fromTag cannot be combined");
+    expect(await branches.list()).not.toHaveProperty("conflict");
+  });
+
+  it("hints at fromTag only for a missing Embedded branch", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+    const base = await branches.create("base");
+    await base.add([{ i: 1 }]);
+    await (await table.tags()).create("baseline");
+
+    // A tag passed through fromRef keeps the original failure and gains a
+    // static hint without probing the ref again.
+    await expect(branches.create("missing", "baseline")).rejects.toThrow(
+      'branches.create("missing", { fromTag: "baseline" })',
+    );
+
+    // A missing version is not an unresolved branch, so it gets no hint.
+    const missingVersion = await branches
+      .create("missing-version", "base", 9999)
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+    expect(missingVersion?.message).toContain("9999");
+    expect(missingVersion?.message).not.toContain("fromTag");
+  });
+});
+
+describe("when dealing with table delta", () => {
+  let tmpDir: tmp.DirResult;
+  // biome-ignore lint/style/useNamingConvention: storage option wire format
+  const stableRowIds = { new_table_enable_stable_row_ids: "true" };
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  async function readDelta(
+    reader: TableDeltaReader,
+  ): Promise<arrow.RecordBatch[]> {
+    const batches: arrow.RecordBatch[] = [];
+    for await (const batch of reader) {
+      batches.push(batch);
+    }
+    return batches;
+  }
+
+  function deltaColumn(batches: arrow.RecordBatch[], name: string): unknown[] {
+    return batches.flatMap((batch) => batch.getChild(name)?.toJSON() ?? []);
+  }
+
+  it("streams rows, transactions, and empty schemas", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable(
+      "delta_rows",
+      [
+        { id: 1, value: 0 },
+        { id: 2, value: 0 },
+      ],
+      { mode: "overwrite", storageOptions: stableRowIds },
+    );
+    const tags = await table.tags();
+    await tags.create("baseline", await table.version());
+    await table.add([{ id: 3, value: 0 }]);
+    await table.update({ where: "id = 1", values: { value: 10 } });
+    await table.delete("id = 2");
+
+    const delta = await table.delta("baseline", 4n);
+    expect(delta.beginVersion).toBe(1n);
+    expect(delta.endVersion).toBe(4n);
+
+    const insertedReader = delta.insertedRows();
+    expect(
+      (await insertedReader.schema()).fields.map((field) => field.name),
+    ).toEqual([
+      "id",
+      "value",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+    const inserted = await readDelta(insertedReader);
+    expect(deltaColumn(inserted, "id")).toEqual([3]);
+
+    const updated = await readDelta(delta.updatedRows());
+    expect(deltaColumn(updated, "id")).toEqual([1]);
+    const upserted = await readDelta(delta.upsertedRows());
+    expect((deltaColumn(upserted, "id") as number[]).sort()).toEqual([1, 3]);
+
+    const deleted = await readDelta(delta.deletedRowIds());
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0].schema.fields.map((field) => field.name)).toEqual([
+      "_rowid",
+    ]);
+    const deletedIds = deltaColumn(deleted, "_rowid");
+    expect(deletedIds).toHaveLength(1);
+    expect(typeof deletedIds[0]).toBe("bigint");
+
+    const transactions = await delta.listTransactions();
+    expect(transactions.map((tx) => tx.operation)).toEqual([
+      "Append",
+      "Update",
+      "Delete",
+    ]);
+    expect(transactions.map((tx) => tx.readVersion)).toEqual([1n, 2n, 3n]);
+    expect(transactions.every((tx) => typeof tx.readVersion === "bigint")).toBe(
+      true,
+    );
+
+    // Early drop after the first batch must not throw or force the rest of the
+    // stream to materialize.
+    let batchesSeen = 0;
+    for await (const _batch of delta.upsertedRows()) {
+      batchesSeen += 1;
+      break;
+    }
+    expect(batchesSeen).toBe(1);
+
+    const equal = await table.delta(2, 2);
+    const equalReader = equal.insertedRows();
+    expect(
+      (await equalReader.schema()).fields.map((field) => field.name),
+    ).toEqual([
+      "id",
+      "value",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+    expect(await readDelta(equalReader)).toEqual([]);
+    expect(
+      (await equal.deletedRowIds().schema()).fields.map((field) => field.name),
+    ).toEqual(["_rowid"]);
+    expect(await equal.listTransactions()).toEqual([]);
+  });
+
+  it("pins the visible target without moving checkout state", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_pinned", [{ id: 1 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 2 }]);
+    await table.update({ where: "id = 1", values: { id: 10 } });
+
+    await table.checkout(2);
+    const pinned = await table.delta(1n);
+    expect(pinned.beginVersion).toBe(1n);
+    expect(pinned.endVersion).toBe(2n);
+    expect(deltaColumn(await readDelta(pinned.insertedRows()), "id")).toEqual([
+      2,
+    ]);
+    expect(await table.version()).toBe(2);
+
+    const explicit = await table.delta(1n, 3n);
+    expect(deltaColumn(await readDelta(explicit.updatedRows()), "id")).toEqual([
+      10,
+    ]);
+    expect(await table.version()).toBe(2);
+    await table.checkoutLatest();
+  });
+
+  it("does not start a rejected reader until it is used", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_lazy", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+
+    const delta = await table.delta(1);
+    const reader = delta.insertedRows();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(unhandled).toEqual([]);
+      await expect(reader.schema()).rejects.toThrow(/stable row ids/);
+      await expect(reader.next()).rejects.toThrow(/stable row ids/);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("routes schema and Arrow decode failures through terminal cleanup", async () => {
+    let schemaOpens = 0;
+    const schemaFailure = new TableDelta({
+      insertedRows: async () => {
+        schemaOpens += 1;
+        return {
+          schema: async () => {
+            throw new Error("schema export failed");
+          },
+          next: async () => {
+            throw new Error("reader must not poll after schema failure");
+          },
+        };
+      },
+    } as never);
+
+    const schemaReader = schemaFailure.insertedRows();
+    await expect(schemaReader.schema()).rejects.toThrow("schema export failed");
+    await expect(schemaReader.next()).rejects.toThrow("schema export failed");
+    expect(schemaOpens).toBe(1);
+
+    const nextReader = schemaFailure.insertedRows();
+    await expect(nextReader.next()).rejects.toThrow("schema export failed");
+    expect(schemaOpens).toBe(2);
+
+    let decodeOpens = 0;
+    const decodeFailure = new TableDelta({
+      insertedRows: async () => {
+        decodeOpens += 1;
+        return {
+          schema: async () => Buffer.from("not an Arrow IPC schema"),
+          next: async () => {
+            throw new Error("reader must not poll after decode failure");
+          },
+        };
+      },
+    } as never);
+
+    const decodeReader = decodeFailure.insertedRows();
+    await expect(decodeReader.schema()).rejects.toThrow();
+    await expect(decodeReader.next()).rejects.toThrow();
+    expect(decodeOpens).toBe(1);
+  });
+
+  it("uses one reader cursor and releases it on early drop", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("delta_reader", [{ id: 1 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 2 }]);
+    const delta = await table.delta(1);
+
+    const reader = delta.insertedRows();
+    expect(reader[Symbol.asyncIterator]()).toBe(reader);
+    const first = await reader.next();
+    expect(first.done).toBe(false);
+    const [second, third] = await Promise.all([reader.next(), reader.next()]);
+    expect(second.done).toBe(true);
+    expect(third.done).toBe(true);
+    expect((await reader.schema()).fields.map((field) => field.name)).toEqual([
+      "id",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+
+    const dropped = delta.insertedRows();
+    for await (const _batch of dropped) {
+      break;
+    }
+    expect(await dropped.next()).toEqual({ done: true, value: undefined });
+    expect((await dropped.schema()).fields.map((field) => field.name)).toEqual([
+      "id",
+      "_rowid",
+      "_row_created_at_version",
+      "_row_last_updated_at_version",
+    ]);
+  });
+
+  it("rejects invalid endpoints and cross-branch tags", async () => {
+    const conn = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const table = await conn.createTable("delta_errors", [{ id: 0 }], {
+      storageOptions: stableRowIds,
+    });
+    await table.add([{ id: 1 }]);
+    const forkVersion = await table.version();
+
+    await expect(table.delta(0)).rejects.toThrow(/positive/);
+    await expect(table.delta(0n)).rejects.toThrow(/positive u64/);
+    await expect(table.delta(1n << 64n)).rejects.toThrow(/u64 bigint/);
+    await expect(table.delta(-1)).rejects.toThrow(/positive/);
+    await expect(table.delta("")).rejects.toThrow(/non-empty/);
+    await expect(table.delta(1.5)).rejects.toThrow(/safe integer/);
+    await expect(table.delta(Number.MAX_SAFE_INTEGER + 1)).rejects.toThrow(
+      /safe integer/,
+    );
+    await expect(table.delta(2, 1)).rejects.toThrow(/newer than/);
+    await expect(table.delta(999)).rejects.toThrow(/does not exist/);
+    await expect(table.delta("missing-tag")).rejects.toThrow(/does not exist/);
+
+    const branch = await (await table.branches()).create("exp");
+    await branch.add([{ id: 2 }]);
+    await table.add([{ id: 100 }]);
+    expect(await branch.version()).toBe(await table.version());
+    await (await table.tags()).create("main-tag", await table.version());
+    await (await branch.tags()).create("exp-tag", await branch.version());
+
+    const sameBranch = await branch.delta(BigInt(forkVersion), "exp-tag");
+    expect(sameBranch.endVersion).toBe(3n);
+    expect(
+      deltaColumn(await readDelta(sameBranch.insertedRows()), "id"),
+    ).toEqual([2]);
+    await expect(branch.delta("main-tag")).rejects.toThrow(/branch/i);
+    await expect(table.delta("exp-tag")).rejects.toThrow(/branch/i);
+  });
 });
 
 /** Returns a Date strictly later than every instant observed before the call. */
@@ -5918,9 +6378,10 @@ describe("computed columns", () => {
     ).rejects.toThrow("max_concurrency requires a LanceDB Enterprise refresh");
     await expect(
       table.refreshColumnAsync("x", {
-        resourceBudget: { cpuMillis: 1_000, memoryBytes: 1_024 },
+        totalCpuMillis: 1_000,
+        totalMemoryBytes: 1_024,
       }),
-    ).rejects.toThrow("resource_budget requires a LanceDB Enterprise refresh");
+    ).rejects.toThrow("total_cpu_millis requires a LanceDB Enterprise refresh");
     await expect(
       table.refreshColumn("x", {
         supervisorResources: {
@@ -6013,18 +6474,38 @@ describe("durable compaction validation", () => {
 });
 
 describe("Enterprise table overrides", () => {
-  it("keeps override methods optional for existing custom Table subclasses", async () => {
-    // Declare the old Table surface; only the new methods must be inherited.
-    // Keeping these override methods abstract must fail type checking here.
+  it("keeps added operations optional for existing custom Table subclasses", async () => {
+    // Declare the old Table surface; the new methods must be inherited.
     // biome-ignore lint/correctness/noUnusedVariables: declaration merging supplies the legacy members
     interface LegacyTable
       extends Omit<
         Table,
-        "getTableOverrides" | "updateTableOverrides" | "resetTableOverrides"
+        | "getTableOverrides"
+        | "updateTableOverrides"
+        | "resetTableOverrides"
+        | "functionErrors"
+        | "functionErrorRows"
+        | "retryFailed"
+        | "upgradeColumn"
+        | "quarantineFailed"
+        | "functionProvenance"
       > {}
-    class LegacyTable extends Table {}
+    class LegacyTable extends Table {
+      async functionErrors() {
+        return { records: [], fragments: [], truncated: false };
+      }
+    }
 
     const table = new LegacyTable();
+    await expect(table.functionErrorRows()).rejects.toThrow(
+      "Function row-failure workflow",
+    );
+    await expect(table.retryFailed("embedding")).rejects.toThrow(
+      "retryFailed is not supported on this table type",
+    );
+    await expect(table.delta(1)).rejects.toThrow(
+      "table.delta is only supported on LanceDB Embedded tables",
+    );
     await expect(table.getTableOverrides()).rejects.toThrow(
       "getTableOverrides is not supported on this table type",
     );

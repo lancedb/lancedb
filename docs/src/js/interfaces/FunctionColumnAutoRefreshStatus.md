@@ -22,11 +22,11 @@ optional activeJobId: string;
 
 ```ts
 optional blockedReason:
+  | "cancelled"
   | "table_has_mem_wal"
   | "inputs_not_settled"
   | "dependency_in_flight"
   | "table_capacity"
-  | "cancelled"
   | "preparation_backoff"
   | "failure_threshold_reached"
   | "binding_revision_missing";
@@ -86,8 +86,8 @@ optional nextRunAtReason: string;
 
 ```ts
 state:
-  | "running"
   | "queued"
+  | "running"
   | "disabled"
   | "ready"
   | "up_to_date"

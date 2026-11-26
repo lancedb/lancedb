@@ -344,15 +344,16 @@ def flatten_stats(table):
     # --8<-- [end:quickstart_flatten_stats]
 
 
-def test_quickstart_derived_feature(db_path_factory):
-    db = lancedb.connect(db_path_factory("derived_feature"))
-    table = create_frames(db)
+def test_quickstart_derived_feature_on_a_deployment(deployment):
+    # Functions need LanceDB Enterprise: LanceDB Embedded has no Function catalog.
+    table = create_frames(deployment)
     flatten_stats(table)
+    db = deployment.db
 
     # --8<-- [start:quickstart_add_feature]
-    from lancedb import col, udf
+    from lancedb import col, function
 
-    @udf
+    @function
     def quality_score(
         motion: float, sharpness: float, exposure: float, framing: float
     ) -> float:
@@ -369,7 +370,8 @@ def test_quickstart_derived_feature(db_path_factory):
             )
         }
     )
-    table.refresh_column("quality_score")
+    job = table.refresh_column_async("quality_score")
+    job.wait()
     # --8<-- [end:quickstart_add_feature]
 
     # --8<-- [start:quickstart_query_feature]
@@ -379,38 +381,8 @@ def test_quickstart_derived_feature(db_path_factory):
     print(features)
     # --8<-- [end:quickstart_query_feature]
     assert quality_scores(table) == EXPECTED_QUALITY_SCORES
-
-
-def test_quickstart_derived_feature_on_a_deployment(deployment):
-    table = create_frames(deployment)
-    flatten_stats(table)
-
-    from lancedb import col, udf
-
-    @udf
-    def quality_score(
-        motion: float, sharpness: float, exposure: float, framing: float
-    ) -> float:
-        return (motion + sharpness + exposure + framing) / 4.0
-
-    version = deployment.db.create_function_async(quality_score).wait()
-    table.add_columns(
-        {
-            "quality_score": version(
-                motion=col("motion"),
-                sharpness=col("sharpness"),
-                exposure=col("exposure"),
-                framing=col("framing"),
-            )
-        }
-    )
-
-    # --8<-- [start:quickstart_add_feature_enterprise]
-    job = table.refresh_column_async("quality_score")
-    job.wait()
-    # --8<-- [end:quickstart_add_feature_enterprise]
-    assert quality_scores(table) == EXPECTED_QUALITY_SCORES
-    with pytest.raises(Exception):
+    # The blocking form raises on Enterprise, which is why the snippet uses a job.
+    with pytest.raises(NotImplementedError, match="refresh_column_async"):
         table.refresh_column("quality_score")
 
 

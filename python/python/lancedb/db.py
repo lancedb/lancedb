@@ -118,6 +118,7 @@ from .namespace_utils import (
     _normalize_drop_namespace_mode,
     _normalize_drop_namespace_behavior,
 )
+from .resources import _resource_options
 
 
 def _view_description(
@@ -462,6 +463,9 @@ class DBConnection(EnforceOverrides):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -507,6 +511,8 @@ class DBConnection(EnforceOverrides):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -570,6 +576,23 @@ class DBConnection(EnforceOverrides):
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it, so a create with data stays atomic. Each
+            entry can be a [BasePath][lancedb.schema.BasePath], a dict with
+            `path`, `name`, `is_dataset_root`, and `id` keys, or a
+            `lance.DatasetBasePath`. Blob URIs that fall under a registered
+            base are stored relative to it; other URIs need
+            `allow_external_blob_outside_bases=True`. `None` and an empty
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. Set
+            `initial_bases` instead when the URIs share a registered prefix.
+            Defaults to rejecting such URIs. The opt-in applies only to the
+            initial data; a later `add()` must enable it again.
         Returns
         -------
         LanceTable
@@ -745,6 +768,11 @@ class DBConnection(EnforceOverrides):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -788,6 +816,14 @@ class DBConnection(EnforceOverrides):
             Positive, finite refresh interval in seconds in LanceDB Enterprise.
             When omitted, the server determines when to refresh.
 
+        total_cpu_millis: int, optional
+            Default total CPU budget in millicores for initial population and
+            refreshes. Overrides Function defaults. LanceDB Enterprise only.
+        total_memory_bytes: int, optional
+            Default total memory budget in bytes. LanceDB Enterprise only.
+        total_gpu_count: int, optional
+            Default total GPU budget across workers. LanceDB Enterprise only.
+
         Returns
         -------
         MaterializedView
@@ -799,6 +835,13 @@ class DBConnection(EnforceOverrides):
         ...     query="SELECT kind, count(*) AS n FROM events GROUP BY kind",
         ... )
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         raise NotImplementedError(
             _append_doc_url(
                 "materialized views are not supported on this connection type",
@@ -819,6 +862,11 @@ class DBConnection(EnforceOverrides):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
@@ -835,6 +883,13 @@ class DBConnection(EnforceOverrides):
         Servers without early registry-handle support return a connection-scoped
         query job instead. Its ID cannot be reopened with :meth:`open_job`.
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         raise NotImplementedError(
             _append_doc_url(
                 "materialized views are not supported on this connection type",
@@ -1562,7 +1617,7 @@ class DBConnection(EnforceOverrides):
         [RefreshColumnResult][lancedb.functions.RefreshColumnResult], including
         when the refresh was started through SQL. Other job types return
         ``None`` from ``wait()``; their persisted result is available through
-        ``job.result`` after ``job.refresh()``.
+        ``job.result()`` after ``job.checkout_latest()``.
 
         Raises `JobNotFoundError` when the server has no such job, the way
         `open_table` does for a missing table.
@@ -1698,6 +1753,9 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> pa.RecordBatchReader:
         """Execute SQL and return a blocking Arrow reader.
 
@@ -1712,6 +1770,9 @@ class DBConnection(EnforceOverrides):
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         ).reader()
 
     def execute_query_async(
@@ -1720,6 +1781,9 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> SqlQuery:
         """Start executing SQL and return its query handle.
 
@@ -1745,12 +1809,23 @@ class DBConnection(EnforceOverrides):
         With or without parameters, the server chooses whether to stream rows on the
         initial call or return a polling continuation. The reader follows
         either path transparently. Dropping an unread handle or its reader
-        stops a directly streamed query; deferred execution requires explicit
-        cancellation. Open ``reader()`` directly: a streamed query needs its
-        reader to make progress and reports ``running`` until the stream ends.
+        stops a directly streamed query. Set ``cancel_on_drop=True`` to also
+        attempt cancellation of deferred Flight execution when its unread handle
+        or reader is dropped. By default, deferred queries can be detached.
+        Open ``reader()`` directly: a streamed query needs its reader to make
+        progress and reports ``running`` until the stream ends.
         Once a server-side SQL job exists, ``describe().job_id`` exposes its
         durable Job Registry id while the query is still running. This is
         separate from the connection-scoped query ``id``.
+
+        ``timeout`` limits submission and result consumption together, starting
+        when the query is submitted. It also applies before a reader is opened.
+        ``read_timeout`` overrides the connection's limit for each server read.
+        Both accept ``datetime.timedelta``. On expiry or a failed result read,
+        the SDK stops reading and attempts to cancel Flight execution.
+        Cancellation on drop is best effort and requires the connection's runtime
+        to remain alive. Durable server-side jobs require explicit
+        ``cancel_job(query.job_id)`` regardless of these options.
 
         LanceDB Embedded connections do not support SQL.
         """
@@ -1936,10 +2011,39 @@ class LanceDBConnection(DBConnection):
                 "manifest_enabled": self._manifest_enabled,
                 "namespace_client_properties": self._namespace_client_properties,
                 "read_consistency_interval_seconds": (
-                    rci.total_seconds() if rci else None
+                    rci.total_seconds() if rci is not None else None
                 ),
             }
         )
+
+    def _pickle_state(self) -> str:
+        """Serialize this connection for pickle-based workers."""
+        if self._session is not None:
+            raise TypeError(
+                "Cannot pickle a LanceDBConnection created with a Session; "
+                "Session objects are not serializable. Create the Session in "
+                "each worker process instead."
+            )
+        if self.uri.startswith("memory://"):
+            raise TypeError(
+                "Cannot pickle an in-memory LanceDBConnection because its tables "
+                "exist only in this process. Pickle a LanceTable instead to "
+                "export its data, or connect to a persistent URI."
+            )
+        return self.serialize()
+
+    def __getstate__(self) -> dict[str, str]:
+        return {"serialized": self._pickle_state()}
+
+    def __setstate__(self, state: dict[str, str]) -> None:
+        from . import deserialize_conn
+
+        connection = deserialize_conn(state["serialized"], for_worker=True)
+        if not isinstance(connection, LanceDBConnection):
+            raise TypeError(
+                "Serialized connection did not reconstruct a LanceDBConnection"
+            )
+        self.__dict__.update(connection.__dict__)
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
@@ -2127,6 +2231,8 @@ class LanceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -2157,6 +2263,8 @@ class LanceDBConnection(DBConnection):
             storage_options=storage_options,
             data_storage_version=data_storage_version,
             enable_v2_manifest_paths=enable_v2_manifest_paths,
+            initial_bases=initial_bases,
+            allow_external_blob_outside_bases=allow_external_blob_outside_bases,
         )
         return tbl
 
@@ -2168,6 +2276,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
     ) -> LanceTable:
@@ -2180,6 +2289,10 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.  When non-empty, the
             table is resolved through the directory namespace client.
+        location: str, optional
+            The explicit location (URI) of the table. If provided, the table will be
+            opened from this location instead of deriving it from the database URI
+            and table name.
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
@@ -2213,6 +2326,7 @@ class LanceDBConnection(DBConnection):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
+                location=location,
             )
         except (RuntimeError, ValueError) as e:
             if namespace_path and (
@@ -2244,6 +2358,11 @@ class LanceDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -2271,6 +2390,13 @@ class LanceDBConnection(DBConnection):
         >>> view.table.count_rows()  # doctest: +SKIP
         1
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         LOOP.run(
             self._conn.create_materialized_view(
                 name,
@@ -2283,6 +2409,11 @@ class LanceDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -2301,7 +2432,19 @@ class LanceDBConnection(DBConnection):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> Job[None]:
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         job = LOOP.run(
             self._conn.create_materialized_view_async(
                 name,
@@ -2314,6 +2457,11 @@ class LanceDBConnection(DBConnection):
                 exist_ok=exist_ok,
                 auto_refresh_enabled=auto_refresh_enabled,
                 auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                total_cpu_millis=total_cpu_millis,
+                total_memory_bytes=total_memory_bytes,
+                total_gpu_count=total_gpu_count,
+                gpu_class=gpu_class,
+                gpu_count=gpu_count,
             )
         )
         return Job(job)
@@ -2609,6 +2757,9 @@ class LanceDBConnection(DBConnection):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -2627,6 +2778,7 @@ class LanceDBConnection(DBConnection):
                 azure_tenant_id_secret=azure_tenant_id_secret,
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
+                azure_storage_account_access_key_secret=azure_storage_account_access_key_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
                 exist_ok=exist_ok,
@@ -3261,6 +3413,8 @@ class AsyncConnection(object):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
+        initial_bases: Optional[List[Any]] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -3318,6 +3472,23 @@ class AsyncConnection(object):
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
             to `"true"` in storage_options when connecting to the database.
+        initial_bases: list, optional
+            Storage bases to register in the table's manifest in the same
+            commit that creates it, so a create with data stays atomic. Each
+            entry can be a [BasePath][lancedb.schema.BasePath], a dict with
+            `path`, `name`, `is_dataset_root`, and `id` keys, or a
+            `lance.DatasetBasePath`. Blob URIs that fall under a registered
+            base are stored relative to it; other URIs need
+            `allow_external_blob_outside_bases=True`. `None` and an empty
+            list are equivalent. When supplying IDs for multiple bases, use
+            distinct explicit non-zero IDs; [BasePath][lancedb.schema.BasePath]
+            describes the pinned-Lance limitation.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that do not fall under a registered base. The row
+            keeps a reference, so the objects have to stay readable. Requires
+            initial `data`; the opt-in applies only to that initial write, and
+            a later `add()` must enable it again. Defaults to rejecting such
+            URIs.
 
         Returns
         -------
@@ -3429,6 +3600,25 @@ class AsyncConnection(object):
         """
         if namespace_path is None:
             namespace_path = []
+        if get_uri_scheme(self.uri) == "db":
+            # The Enterprise create endpoint has no way to express either
+            # option. Reject before sanitizing or reading `data`, and do not
+            # point at a local-only or remote `add` path.
+            if initial_bases:
+                raise NotImplementedError(
+                    "initial_bases is not supported for table creation in "
+                    "LanceDB Enterprise"
+                )
+            if allow_external_blob_outside_bases:
+                raise NotImplementedError(
+                    "allow_external_blob_outside_bases is not supported for table "
+                    "creation in LanceDB Enterprise"
+                )
+        if data is None and allow_external_blob_outside_bases:
+            raise ValueError(
+                "allow_external_blob_outside_bases requires initial data; "
+                "pass it to add() for later writes"
+            )
         metadata = None
 
         if embedding_functions is not None:
@@ -3475,6 +3665,7 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
             )
         else:
             data = data_to_reader(data, schema)
@@ -3486,6 +3677,8 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 location=location,
                 namespace_client=namespace_client,
+                initial_bases=initial_bases,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
 
         return AsyncTable(new_table)
@@ -3592,6 +3785,11 @@ class AsyncConnection(object):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -3604,6 +3802,13 @@ class AsyncConnection(object):
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         _validate_create_materialized_view(source, query, select, where, limit)
         if source is not None:
             source, native_options = await self._materialized_view_source(
@@ -3623,7 +3828,12 @@ class AsyncConnection(object):
             exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             **native_options,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return AsyncMaterializedView(AsyncTable(inner))
 
@@ -3640,6 +3850,11 @@ class AsyncConnection(object):
         exist_ok: bool = False,
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[float] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
@@ -3650,6 +3865,13 @@ class AsyncConnection(object):
         Enterprise, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
+        _resource_options(
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
+        )
         _validate_create_materialized_view(source, query, select, where, limit)
         if source is not None:
             source, native_options = await self._materialized_view_source(
@@ -3669,7 +3891,12 @@ class AsyncConnection(object):
             exist_ok=exist_ok,
             auto_refresh_enabled=auto_refresh_enabled,
             auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            total_cpu_millis=total_cpu_millis,
+            total_memory_bytes=total_memory_bytes,
+            total_gpu_count=total_gpu_count,
             **native_options,
+            gpu_class=gpu_class,
+            gpu_count=gpu_count,
         )
         return AsyncJob(inner)
 
@@ -4049,6 +4276,9 @@ class AsyncConnection(object):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -4059,7 +4289,8 @@ class AsyncConnection(object):
         ``namespace_path`` follows Secret naming rules. A SecretReference can name
         another database; a string names a root Secret in this database.
         For Azure, set ``storage_provider="AZURE"``, ``azure_storage_account``,
-        and Secret references for tenant ID, client ID and client secret.
+        and either ``azure_storage_account_access_key_secret`` or the three
+        Secret references for tenant ID, client ID and client secret.
         For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
         to a Secret containing the application credentials JSON file content.
         For Hugging Face, set ``storage_provider="HUGGINGFACE"`` and
@@ -4071,10 +4302,13 @@ class AsyncConnection(object):
         integration exists, preserving its provider, prefix and credential
         bindings. Existing names are errors by default.
         """
-        azure_options = (
+        azure_service_principal = (
             azure_tenant_id_secret,
             azure_client_id_secret,
             azure_client_secret_secret,
+        )
+        azure_options = azure_service_principal + (
+            azure_storage_account_access_key_secret,
         )
         if storage_provider != "HUGGINGFACE" and huggingface_token_secret is not None:
             raise ValueError(
@@ -4111,12 +4345,17 @@ class AsyncConnection(object):
             ):
                 raise ValueError("GCP integrations cannot contain AWS or Azure options")
         elif storage_provider == "AZURE":
-            if not azure_storage_account or any(
-                value is None for value in azure_options
-            ):
+            if not azure_storage_account:
+                raise ValueError("Azure integrations require azure_storage_account")
+            valid_credentials = (
+                all(value is None for value in azure_service_principal)
+                if azure_storage_account_access_key_secret is not None
+                else all(value is not None for value in azure_service_principal)
+            )
+            if not valid_credentials:
                 raise ValueError(
-                    "Azure requires a storage account and "
-                    "all three credential Secret references"
+                    "Specify either azure_storage_account_access_key_secret or "
+                    "all three Azure service principal Secret references"
                 )
             if any(
                 value is not None
@@ -4173,6 +4412,9 @@ class AsyncConnection(object):
             "azure_tenant_id_secret": reference(azure_tenant_id_secret),
             "azure_client_id_secret": reference(azure_client_id_secret),
             "azure_client_secret_secret": reference(azure_client_secret_secret),
+            "azure_storage_account_access_key_secret": reference(
+                azure_storage_account_access_key_secret
+            ),
             "gcp_credentials_json_secret": reference(gcp_credentials_json_secret),
             "huggingface_token_secret": reference(huggingface_token_secret),
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),
@@ -4531,6 +4773,9 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncRecordBatchReader:
         """Execute SQL and return an asynchronous Arrow reader.
 
@@ -4545,6 +4790,9 @@ class AsyncConnection(object):
             query,
             default_namespace_path=default_namespace_path,
             parameters=parameters,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            cancel_on_drop=cancel_on_drop,
         )
         return await submitted.reader()
 
@@ -4554,6 +4802,9 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
         parameters: Optional[QueryParameters] = None,
+        timeout: Optional[timedelta] = None,
+        read_timeout: Optional[timedelta] = None,
+        cancel_on_drop: bool = False,
     ) -> AsyncSqlQuery:
         """Start executing SQL and return its query handle.
 
@@ -4561,6 +4812,11 @@ class AsyncConnection(object):
         references. The namespace defaults to ``["public"]``. ``parameters``
         binds values to ``$1`` / ``$name`` placeholders; see
         [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        ``timeout`` covers submission through result consumption, including
+        time before opening a reader. ``read_timeout`` limits each server read.
+        ``cancel_on_drop=True`` also attempts to cancel deferred Flight execution
+        when its unread handle or reader is dropped. See the synchronous method
+        above for cancellation and durable-job behavior.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
@@ -4568,6 +4824,9 @@ class AsyncConnection(object):
                 query,
                 default_namespace_path=default_namespace_path,
                 parameters=to_parameter_batch(parameters),
+                timeout=timeout,
+                read_timeout=read_timeout,
+                cancel_on_drop=cancel_on_drop,
             )
         )
 

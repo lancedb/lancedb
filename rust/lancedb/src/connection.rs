@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -88,6 +89,75 @@ fn set_storage_options_provider(
         None => StorageOptionsAccessor::with_provider(provider),
     };
     store_params.storage_options_accessor = Some(Arc::new(accessor));
+}
+
+/// Preserve caller-supplied options across provider refreshes.
+///
+/// Namespace providers return a fresh credential map and replace the accessor
+/// cache, so a plain initial-options accessor would drop caller-only settings
+/// after the first refresh. This wrapper merges the caller options into every
+/// provider result, with provider values winning overlapping keys.
+#[derive(Debug)]
+pub(crate) struct LayeredStorageOptionsProvider {
+    caller_options: HashMap<String, String>,
+    inner: Arc<dyn StorageOptionsProvider>,
+}
+
+impl LayeredStorageOptionsProvider {
+    pub(crate) fn new(
+        caller_options: HashMap<String, String>,
+        inner: Arc<dyn StorageOptionsProvider>,
+    ) -> Self {
+        Self {
+            caller_options,
+            inner,
+        }
+    }
+
+    fn layer(
+        &self,
+        mut options: Option<HashMap<String, String>>,
+    ) -> Option<HashMap<String, String>> {
+        let mut merged = self.caller_options.clone();
+        match options.take() {
+            Some(options) => {
+                merged.extend(options);
+                Some(merged)
+            }
+            None if merged.is_empty() => None,
+            None => Some(merged),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageOptionsProvider for LayeredStorageOptionsProvider {
+    async fn fetch_storage_options(&self) -> lance_core::Result<Option<HashMap<String, String>>> {
+        Ok(self.layer(self.inner.fetch_storage_options().await?))
+    }
+
+    async fn force_fetch_storage_options(
+        &self,
+    ) -> lance_core::Result<Option<HashMap<String, String>>> {
+        Ok(self.layer(self.inner.force_fetch_storage_options().await?))
+    }
+
+    fn provider_id(&self) -> String {
+        use std::hash::{Hash, Hasher};
+
+        let mut entries: Vec<_> = self.caller_options.iter().collect();
+        entries.sort_by_key(|(key, _)| *key);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (key, value) in entries {
+            key.hash(&mut hasher);
+            value.hash(&mut hasher);
+        }
+        format!(
+            "layered(caller_options={:x},{})",
+            hasher.finish(),
+            self.inner.provider_id()
+        )
+    }
 }
 
 /// A builder for configuring a [`Connection::table_names`] operation
@@ -356,6 +426,33 @@ impl ExecuteQueryAsyncBuilder {
             parent,
             request: ExecuteQueryRequest::new(query),
         }
+    }
+
+    /// Limit this execution from submission through result consumption.
+    ///
+    /// Expiry stops result reads and attempts to cancel Flight execution, even
+    /// if no reader was opened. It does not cancel durable server-side jobs.
+    /// Without this option, the connection's existing timeout settings apply.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.timeout = Some(timeout);
+        self
+    }
+
+    /// Override the connection's timeout for each server read on this query.
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.read_timeout = Some(timeout);
+        self
+    }
+
+    /// Cancel deferred Flight execution when its unread handle or reader is dropped.
+    ///
+    /// This is best effort and requires the submitting Tokio runtime to remain
+    /// alive. Defaults to false, allowing deferred queries to be detached.
+    /// Directly streamed queries already stop on drop. Durable jobs require
+    /// explicit job cancellation regardless of this setting.
+    pub fn cancel_on_drop(mut self, cancel: bool) -> Self {
+        self.request.options.cancel_on_drop = cancel;
+        self
     }
 
     /// Set the namespace used for unqualified table names.
@@ -2069,6 +2166,9 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NamespaceClientPushdownOperation {
     /// Execute queries on the namespace server via `query_table()` instead of locally.
+    ///
+    /// Queries with a nonempty `order_by` execute locally and require client access
+    /// to the table storage.
     QueryTable,
     /// Execute table creation on the namespace server via `create_table()`
     /// instead of using `declare_table` + local write.
@@ -2183,6 +2283,10 @@ impl ConnectNamespaceBuilder {
     /// Available operations:
     /// - [`NamespaceClientPushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
     /// - [`NamespaceClientPushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
+    ///
+    /// Some query options cannot be represented in the namespace request. A query
+    /// with a nonempty `order_by` executes locally and requires client access to
+    /// the table storage.
     ///
     /// By default, no operations are pushed down (all executed locally).
     pub fn pushdown_operation(mut self, operation: NamespaceClientPushdownOperation) -> Self {

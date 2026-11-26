@@ -42,7 +42,6 @@ use serde_json::Value;
 
 use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionApplication, FunctionBinding, OutputMapping};
 use crate::materialized_view::without_declarations;
-use crate::table::FunctionWorkerResourceBudget;
 use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
 
@@ -62,13 +61,9 @@ pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_enabled";
 /// Minimum interval between successful automatic refreshes, in seconds.
 pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
-/// Aggregate worker-resource budget for automatic Function refreshes.
-pub const AUTO_REFRESH_RESOURCE_BUDGET_META_KEY: &str =
-    "computed_column.auto_refresh_resource_budget";
-
 /// Scheduling settings persisted on each computed output. LanceDB Embedded
 /// stores these settings; automatic scheduling requires LanceDB Enterprise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComputedColumnOptions {
     /// Permit automatic refresh. Manual refresh is always available.
@@ -77,10 +72,22 @@ pub struct ComputedColumnOptions {
     /// When omitted, the server determines when to refresh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_refresh_interval_seconds: Option<u64>,
-    /// Aggregate worker-resource budget for automatic Function refreshes.
-    /// This option requires a registered Function output.
+    /// Default total CPU budget in millicores for manual and automatic refreshes.
+    /// Requires a registered Function output.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_refresh_resource_budget: Option<FunctionWorkerResourceBudget>,
+    pub total_cpu_millis: Option<u64>,
+    /// Default total memory budget in bytes for manual and automatic refreshes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_memory_bytes: Option<u64>,
+    /// Default total GPU budget for manual and automatic refreshes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_gpu_count: Option<u32>,
+    /// GPU pool used by each Function worker unless overridden at refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_class: Option<String>,
+    /// Positive number of GPUs per worker, independent of the total budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_count: Option<u32>,
 }
 
 impl Default for ComputedColumnOptions {
@@ -88,12 +95,24 @@ impl Default for ComputedColumnOptions {
         Self {
             auto_refresh_enabled: true,
             auto_refresh_interval_seconds: None,
-            auto_refresh_resource_budget: None,
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
+            gpu_class: None,
+            gpu_count: None,
         }
     }
 }
 
 impl ComputedColumnOptions {
+    pub fn has_resource_defaults(&self) -> bool {
+        self.total_cpu_millis.is_some()
+            || self.total_memory_bytes.is_some()
+            || self.total_gpu_count.is_some()
+            || self.gpu_class.is_some()
+            || self.gpu_count.is_some()
+    }
+
     /// Reject intervals that cannot be represented by the server scheduler.
     pub fn validate(&self) -> Result<()> {
         if self
@@ -104,8 +123,28 @@ impl ComputedColumnOptions {
                 message: "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000".into(),
             });
         }
-        if let Some(budget) = &self.auto_refresh_resource_budget {
-            budget.validate()?;
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "total_cpu_millis and total_memory_bytes must be positive integers".into(),
+            });
+        }
+        if let Some(class) = &self.gpu_class {
+            crate::function::validate_gpu_class_name(class)?;
+        }
+        if self.gpu_count == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "gpu_count must be positive".into(),
+            });
+        }
+        if self
+            .gpu_count
+            .zip(self.total_gpu_count)
+            .is_some_and(|(per_worker, total)| per_worker > total)
+            || (self.gpu_class.is_some() && self.total_gpu_count == Some(0))
+        {
+            return Err(Error::InvalidInput {
+                message: "total_gpu_count cannot fit one Function worker".into(),
+            });
         }
         Ok(())
     }
@@ -124,15 +163,29 @@ impl ComputedColumnOptions {
                     message: "auto_refresh_interval_seconds must be a positive integer".into(),
                 })?);
         }
-        if let Some(value) = metadata.get(AUTO_REFRESH_RESOURCE_BUDGET_META_KEY) {
-            options.auto_refresh_resource_budget = Some(serde_json::from_str(value).map_err(
-                |error| Error::InvalidInput {
-                    message: format!(
-                        "auto_refresh_resource_budget must be a valid resource budget: {error}"
-                    ),
-                },
-            )?);
+        if let Some(value) = metadata.get("computed_column.total_cpu_millis") {
+            options.total_cpu_millis = Some(value.parse().map_err(|_| Error::InvalidInput {
+                message: "invalid total_cpu_millis".into(),
+            })?);
         }
+        if let Some(value) = metadata.get("computed_column.total_memory_bytes") {
+            options.total_memory_bytes = Some(value.parse().map_err(|_| Error::InvalidInput {
+                message: "invalid total_memory_bytes".into(),
+            })?);
+        }
+        if let Some(value) = metadata.get("computed_column.total_gpu_count") {
+            options.total_gpu_count = Some(value.parse().map_err(|_| Error::InvalidInput {
+                message: "invalid total_gpu_count".into(),
+            })?);
+        }
+        options.gpu_class = metadata.get("computed_column.gpu_class").cloned();
+        options.gpu_count = metadata
+            .get("computed_column.gpu_count")
+            .map(|value| value.parse())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "invalid gpu_count".into(),
+            })?;
         options.validate()?;
         Ok(options)
     }
@@ -175,13 +228,20 @@ impl ComputedColumnOptions {
         if let Some(interval) = self.auto_refresh_interval_seconds {
             metadata.insert(AUTO_REFRESH_INTERVAL_META_KEY.into(), interval.to_string());
         }
-        if let Some(budget) = &self.auto_refresh_resource_budget {
-            metadata.insert(
-                AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-                serde_json::to_string(budget).map_err(|error| Error::InvalidInput {
-                    message: format!("failed to encode auto_refresh_resource_budget: {error}"),
-                })?,
-            );
+        for (key, value) in [
+            ("total_cpu_millis", self.total_cpu_millis),
+            ("total_memory_bytes", self.total_memory_bytes),
+            ("total_gpu_count", self.total_gpu_count.map(u64::from)),
+        ] {
+            if let Some(value) = value {
+                metadata.insert(format!("computed_column.{key}"), value.to_string());
+            }
+        }
+        if let Some(class) = &self.gpu_class {
+            metadata.insert("computed_column.gpu_class".into(), class.clone());
+        }
+        if let Some(count) = self.gpu_count {
+            metadata.insert("computed_column.gpu_count".into(), count.to_string());
         }
         Ok(metadata)
     }
@@ -1569,6 +1629,56 @@ pub(crate) fn plan_function_application(
     output_name: Option<&str>,
 ) -> Result<FunctionDeclarationPlan> {
     ensure_supported_function_metadata(schema)?;
+    let (outputs, output_schema) = plan_function_outputs(schema, application, output_name)?;
+    plan_function_inputs(schema, &HashSet::new(), application, outputs, output_schema)
+}
+
+/// All output types are known from the registered signatures. Resolve inputs
+/// against the complete set so an application can read a later sibling.
+pub(crate) fn plan_function_bindings(
+    schema: &ArrowSchema,
+    bindings: &[(FunctionApplication, Option<String>)],
+) -> Result<Vec<FunctionDeclarationPlan>> {
+    ensure_supported_function_metadata(schema)?;
+    let mut fields = schema.fields().to_vec();
+    let mut destinations = HashSet::new();
+    let mut plans = Vec::with_capacity(bindings.len());
+    for (application, name) in bindings {
+        let (outputs, output_schema) = plan_function_outputs(schema, application, name.as_deref())?;
+        for field in &output_schema.fields {
+            if !destinations.insert(field.name.clone()) {
+                return Err(Error::ColumnAlreadyExists {
+                    name: field.name.clone(),
+                });
+            }
+            let field =
+                lance_namespace::schema::convert_json_arrow_field(field).map_err(|error| {
+                    invalid_function(format!("invalid Function output schema: {error}"))
+                })?;
+            fields.push(Arc::new(field));
+        }
+        plans.push((application, outputs, output_schema));
+    }
+    let candidate = ArrowSchema::new(fields);
+    plans
+        .into_iter()
+        .map(|(application, outputs, output_schema)| {
+            plan_function_inputs(
+                &candidate,
+                &destinations,
+                application,
+                outputs,
+                output_schema,
+            )
+        })
+        .collect()
+}
+
+fn plan_function_outputs(
+    schema: &ArrowSchema,
+    application: &FunctionApplication,
+    output_name: Option<&str>,
+) -> Result<(Vec<FunctionOutputTarget>, JsonArrowSchema)> {
     if application.has_unknown_fields() {
         return Err(Error::NotSupported {
             message: "Function application contains fields from a newer contract".into(),
@@ -1580,76 +1690,11 @@ pub(crate) fn plan_function_application(
         ));
     }
 
-    let mut parameters = BTreeSet::new();
-    let mut input_bindings = Vec::with_capacity(application.inputs().len());
-    let mut input_fields = Vec::with_capacity(application.inputs().len());
-    for input in application.inputs() {
-        if !parameters.insert(input.parameter.as_str()) {
-            return Err(invalid_function(format!(
-                "duplicate Function parameter '{}'",
-                input.parameter
-            )));
-        }
-        if input.kind == "literal" {
-            crate::function::validate_literal(&input.value)?;
-            continue;
-        }
-        if input.kind != "column" {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "Function input kind '{}' is not supported for column declaration",
-                    input.kind
-                ),
-            });
-        }
-        let source = input.value.as_object().ok_or_else(|| {
-            invalid_function(format!(
-                "Function parameter '{}' has an invalid column source",
-                input.parameter
-            ))
-        })?;
-        if source.len() != 1 {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "Function parameter '{}' uses a newer column source contract",
-                    input.parameter
-                ),
-            });
-        }
-        let path = source.get("path").and_then(Value::as_str).ok_or_else(|| {
-            invalid_function(format!(
-                "Function parameter '{}' requires a column path",
-                input.parameter
-            ))
-        })?;
-        let resolved = resolve_field_path(schema, path)?;
-        let nullable = function_input_nullability(&resolved, path)?;
-        let field = resolved.leaf;
-        let parameter_field =
-            ArrowField::new(input.parameter.clone(), field.data_type().clone(), nullable)
-                .with_metadata(function_input_metadata(field));
-        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            parameter_field.clone(),
-        ]))
-        .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
-        let json_field = input_schema.fields.into_iter().next().unwrap();
-        input_bindings.push(FunctionInputTarget {
-            parameter: input.parameter.clone(),
-            field_path: path.to_string(),
-            arrow_type: canonical_input_arrow_type(&json_field)?,
-            nullable,
-        });
-        input_fields.push(parameter_field);
-    }
-    let input_schema =
-        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(input_fields))
-            .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
-
     let output = application.output();
     let mut outputs = Vec::new();
     let mut output_fields = Vec::new();
     match output.kind.as_str() {
-        "scalar" => {
+        "scalar" | "scalar_blob_writer" => {
             if !application.columns().is_empty() {
                 return Err(invalid_function(
                     "scalar Function applications cannot rename result fields",
@@ -1678,7 +1723,7 @@ pub(crate) fn plan_function_application(
             });
             output_fields.push(function_output_field(name, true, arrow_type)?);
         }
-        "named_struct" => {
+        "named_struct" | "named_struct_blob_writer" => {
             if output.fields.is_empty() {
                 return Err(invalid_function(
                     "named-struct Function output requires at least one field",
@@ -1770,6 +1815,82 @@ pub(crate) fn plan_function_application(
         }
     }
 
+    Ok((outputs, JsonArrowSchema::new(output_fields)))
+}
+
+fn plan_function_inputs(
+    schema: &ArrowSchema,
+    new_outputs: &HashSet<String>,
+    application: &FunctionApplication,
+    outputs: Vec<FunctionOutputTarget>,
+    output_schema: JsonArrowSchema,
+) -> Result<FunctionDeclarationPlan> {
+    let mut parameters = BTreeSet::new();
+    let mut input_bindings = Vec::with_capacity(application.inputs().len());
+    let mut input_fields = Vec::with_capacity(application.inputs().len());
+    for input in application.inputs() {
+        if !parameters.insert(input.parameter.as_str()) {
+            return Err(invalid_function(format!(
+                "duplicate Function parameter '{}'",
+                input.parameter
+            )));
+        }
+        if input.kind == "literal" {
+            crate::function::validate_literal(&input.value)?;
+            continue;
+        }
+        if input.kind != "column" {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "Function input kind '{}' is not supported for column declaration",
+                    input.kind
+                ),
+            });
+        }
+        let source = input.value.as_object().ok_or_else(|| {
+            invalid_function(format!(
+                "Function parameter '{}' has an invalid column source",
+                input.parameter
+            ))
+        })?;
+        if source.len() != 1 {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "Function parameter '{}' uses a newer column source contract",
+                    input.parameter
+                ),
+            });
+        }
+        let path = source.get("path").and_then(Value::as_str).ok_or_else(|| {
+            invalid_function(format!(
+                "Function parameter '{}' requires a column path",
+                input.parameter
+            ))
+        })?;
+        let resolved = resolve_field_path(schema, path)?;
+        let nullable = !new_outputs.contains(resolved.root.name())
+            && function_input_nullability(&resolved, path)?;
+        let field = resolved.leaf;
+        let parameter_field =
+            ArrowField::new(input.parameter.clone(), field.data_type().clone(), nullable)
+                .with_metadata(function_input_metadata(field));
+        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            parameter_field.clone(),
+        ]))
+        .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
+        let json_field = input_schema.fields.into_iter().next().unwrap();
+        input_bindings.push(FunctionInputTarget {
+            parameter: input.parameter.clone(),
+            field_path: path.to_string(),
+            arrow_type: canonical_input_arrow_type(&json_field)?,
+            nullable,
+        });
+        input_fields.push(parameter_field);
+    }
+    let input_schema =
+        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(input_fields))
+            .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
+
     Ok(FunctionDeclarationPlan {
         application: application.clone(),
         binding_metadata_version: if application
@@ -1783,7 +1904,7 @@ pub(crate) fn plan_function_application(
         },
         input_bindings,
         input_schema,
-        output_schema: JsonArrowSchema::new(output_fields),
+        output_schema,
         outputs,
     })
 }
@@ -2702,68 +2823,70 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use arrow_array::{RecordBatch, record_batch};
+    use arrow_schema::{DataType, TimeUnit};
+    use futures::TryStreamExt;
+    use lance::dataset::ColumnAlteration;
+
+    use super::*;
+    use crate::connect;
+    use crate::query::{ExecutableQuery, QueryBase, Select};
+    use crate::{Error, Table};
+
     #[test]
-    fn computed_auto_refresh_resource_budget_metadata_round_trips() {
-        let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-            .with_gpu_count(2);
+    fn gpu_worker_defaults_round_trip_independently_of_totals() {
         let options = super::ComputedColumnOptions {
-            auto_refresh_enabled: true,
-            auto_refresh_interval_seconds: Some(300),
-            auto_refresh_resource_budget: Some(budget),
+            gpu_class: Some("any".into()),
+            gpu_count: Some(2),
+            total_gpu_count: Some(8),
+            ..Default::default()
         };
-        assert_eq!(
-            super::ComputedColumnOptions::from_metadata(&HashMap::new()).unwrap(),
-            super::ComputedColumnOptions::default()
-        );
         let metadata = options.metadata().unwrap();
-        assert_eq!(
-            metadata
-                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
-                .map(String::as_str),
-            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2}"#)
-        );
+        assert_eq!(metadata["computed_column.gpu_count"], "2");
+        assert_eq!(metadata["computed_column.total_gpu_count"], "8");
         assert_eq!(
             super::ComputedColumnOptions::from_metadata(&metadata).unwrap(),
             options
         );
-
-        let mut omitted_gpu = metadata.clone();
-        omitted_gpu.insert(
-            super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184}"#.into(),
+        assert!(
+            super::ComputedColumnOptions {
+                gpu_count: Some(0),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
         );
-        let decoded = super::ComputedColumnOptions::from_metadata(&omitted_gpu).unwrap();
-        assert_eq!(decoded.auto_refresh_resource_budget.unwrap().gpu_count, 0);
+        assert!(
+            super::ComputedColumnOptions {
+                gpu_count: Some(4),
+                total_gpu_count: Some(2),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn computed_default_resource_metadata_round_trips_partial_dimensions() {
+        let options = super::ComputedColumnOptions {
+            total_cpu_millis: Some(8000),
+            total_memory_bytes: None,
+            total_gpu_count: Some(0),
+            ..Default::default()
+        };
+        let metadata = options.metadata().unwrap();
+        assert_eq!(metadata["computed_column.total_cpu_millis"], "8000");
+        assert_eq!(metadata["computed_column.total_gpu_count"], "0");
+        assert!(!metadata.contains_key("computed_column.total_memory_bytes"));
         assert_eq!(
-            decoded
-                .metadata()
-                .unwrap()
-                .get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
-                .map(String::as_str),
-            Some(r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":0}"#)
+            super::ComputedColumnOptions::from_metadata(&metadata).unwrap(),
+            options
         );
-
-        for invalid in [
-            r#"{"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":8000,"gpu_count":2}"#,
-            r#"{"cpu_millis":"8000","memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":-1,"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":18446744073709551616,"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":-1}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":4294967296}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":17179869184,"gpu_count":2,"unknown":1}"#,
-            r#"{"cpu_millis":0,"memory_bytes":17179869184,"gpu_count":2}"#,
-            r#"{"cpu_millis":8000,"memory_bytes":0,"gpu_count":2}"#,
-        ] {
-            let mut malformed = metadata.clone();
-            malformed.insert(
-                super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY.into(),
-                invalid.into(),
-            );
-            assert!(
-                super::ComputedColumnOptions::from_metadata(&malformed).is_err(),
-                "accepted invalid budget: {invalid}"
-            );
+        for invalid in ["0", "-1", "1.5", "18446744073709551616"] {
+            let malformed =
+                HashMap::from([("computed_column.total_cpu_millis".into(), invalid.into())]);
+            assert!(super::ComputedColumnOptions::from_metadata(&malformed).is_err());
         }
     }
 
@@ -2797,9 +2920,11 @@ mod tests {
             function_field("assignment", super::FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL),
         ]);
         let budget = crate::table::FunctionWorkerResourceBudget::new(8_000, 17_179_869_184)
-            .with_gpu_count(2);
+            .with_total_gpu_count(2);
         let updated = super::ComputedColumnOptions {
-            auto_refresh_resource_budget: Some(budget),
+            total_cpu_millis: Some((budget).total_cpu_millis),
+            total_memory_bytes: Some((budget).total_memory_bytes),
+            total_gpu_count: Some((budget).total_gpu_count),
             ..Default::default()
         }
         .apply_to_schema(&schema)
@@ -2808,8 +2933,8 @@ mod tests {
         for name in ["first", "second"] {
             let metadata = updated.field_with_name(name).unwrap().metadata();
             assert_eq!(
-                metadata.get(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY),
-                Some(&serde_json::to_string(&budget).unwrap())
+                metadata.get("computed_column.total_cpu_millis"),
+                Some(&"8000".to_string())
             );
             assert_eq!(
                 metadata.get("custom").map(String::as_str),
@@ -2821,7 +2946,7 @@ mod tests {
                 .field_with_name("assignment")
                 .unwrap()
                 .metadata()
-                .contains_key(super::AUTO_REFRESH_RESOURCE_BUDGET_META_KEY)
+                .contains_key("computed_column.total_cpu_millis")
         );
     }
 
@@ -2927,16 +3052,6 @@ mod tests {
             );
         }
     }
-
-    use arrow_array::{RecordBatch, record_batch};
-    use arrow_schema::{DataType, TimeUnit};
-    use futures::TryStreamExt;
-    use lance::dataset::ColumnAlteration;
-
-    use super::*;
-    use crate::connect;
-    use crate::query::{ExecutableQuery, QueryBase, Select};
-    use crate::{Error, Table};
 
     async fn table_with_ints(name: &str) -> Table {
         let conn = connect("memory://").execute().await.unwrap();
@@ -5143,17 +5258,53 @@ mod tests {
     #[test]
     fn test_blob_function_plans_semantic_input_and_scalar_output() {
         let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
-        let application =
-            blob_application(r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#);
-        let plan = plan_function_application(&schema, &application, Some("thumbnail")).unwrap();
+        for output in [
+            r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#,
+            r#"{"kind":"scalar_blob_writer","arrow_type":"blob_v2","nullable":false,"blob_writer_paths":[[]]}"#,
+        ] {
+            let application = blob_application(output);
+            let plan = plan_function_application(&schema, &application, Some("thumbnail")).unwrap();
 
-        assert_eq!(plan.input_bindings[0].arrow_type, FUNCTION_BLOB_V2_TYPE);
-        let input_schema =
-            lance_namespace::schema::convert_json_arrow_schema(&plan.input_schema).unwrap();
-        assert!(input_schema.field(0).is_blob_v2());
-        let output_schema =
-            lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
-        assert!(output_schema.field(0).is_blob_v2());
+            assert_eq!(plan.input_bindings[0].arrow_type, FUNCTION_BLOB_V2_TYPE);
+            let input_schema =
+                lance_namespace::schema::convert_json_arrow_schema(&plan.input_schema).unwrap();
+            assert!(input_schema.field(0).is_blob_v2());
+            let output_schema =
+                lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
+            assert!(output_schema.field(0).is_blob_v2());
+        }
+    }
+
+    #[test]
+    fn test_named_blob_writer_plan_preserves_logical_output_columns() {
+        let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
+        let application = blob_application(
+            r#"{
+                "kind":"named_struct_blob_writer",
+                "fields":[
+                    {"name":"item","arrow_type":"blob_v2","nullable":true},
+                    {"name":"checksum","arrow_type":"binary","nullable":false}
+                ],
+                "blob_writer_paths":[[{"field":"item"}]]
+            }"#,
+        );
+        let expanded = plan_function_application(&schema, &application, None).unwrap();
+        let expanded_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&expanded.output_schema).unwrap();
+        assert_eq!(expanded_schema.field(0).name(), "item");
+        assert!(expanded_schema.field(0).is_blob_v2());
+        assert_eq!(expanded_schema.field(1).data_type(), &DataType::Binary);
+
+        let whole = plan_function_application(&schema, &application, Some("rendered")).unwrap();
+        let whole_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&whole.output_schema).unwrap();
+        let DataType::Struct(fields) = whole_schema.field(0).data_type() else {
+            panic!("named writer output must bind as a struct");
+        };
+        assert!(fields[0].is_blob_v2());
+        assert!(fields[0].is_nullable());
+        assert_eq!(fields[1].data_type(), &DataType::Binary);
+        assert!(!fields[1].is_nullable());
     }
 
     #[test]

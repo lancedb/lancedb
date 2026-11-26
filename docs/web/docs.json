@@ -676,6 +676,7 @@
               "integrations/ai/llamaIndex",
               "integrations/ai/genkit",
               "integrations/ai/kiln",
+              "integrations/ai/mastra",
               "integrations/ai/prompttools",
               "integrations/ai/synthetic-data-kit",
               "integrations/ai/vscode"

@@ -8,7 +8,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.functions import function
+from lancedb.functions import BlobWriter, function
 
 
 @pytest.mark.asyncio
@@ -61,3 +61,73 @@ async def test_function_exist_ok_forwards_sql_and_keeps_stored_version(entry, ex
     assert f'{prefix} "{stored["name"]}" FROM '.encode() in request
     assert b'"exist_ok"' not in request
     assert json.loads(version.to_canonical_json()) == stored
+
+
+@pytest.mark.asyncio
+async def test_blob_writer_paths_round_trip_through_function_registration():
+    flight = pytest.importorskip("pyarrow.flight")
+    fixture = (
+        Path(__file__).parents[3]
+        / "rust/lancedb/tests/fixtures/first_class_functions/v1"
+        / "remote_function_version.canonical.json"
+    )
+    stored = json.loads(fixture.read_text())
+    expected_paths = [[{"field": "item"}], [{"field": "variants"}, "item"]]
+    output_schema = pa.schema(
+        [
+            BlobWriter.field("item"),
+            pa.field("variants", pa.list_(BlobWriter.field("asset"))),
+            pa.field("checksum", pa.binary(), nullable=False),
+        ]
+    )
+
+    @function(name=stored["name"], output_schema=output_schema)
+    def render(text: str):
+        with BlobWriter.open() as output:
+            output.write(text.encode())
+        return {"item": output, "variants": [b"", None], "checksum": b""}
+
+    expected_output = json.loads(
+        render.registration_request.signature.output.to_canonical_json()
+    )
+    assert expected_output["kind"] == "named_struct_blob_writer"
+    assert expected_output["blob_writer_paths"] == expected_paths
+    stored["signature"] = {
+        "inputs": [{"name": "text", "arrow_type": "utf8", "nullable": False}],
+        "output": expected_output,
+    }
+
+    class FunctionServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.requests = []
+
+        def do_get(self, context, ticket):
+            self.requests.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"definition": [json.dumps(stored)]})
+            )
+
+    with FunctionServer() as server:
+        db = await lancedb.connect_async(
+            "db://analytics",
+            api_key="test-key",
+            host_override="http://localhost:10024",
+            sql_host_override=f"grpc://127.0.0.1:{server.port}",
+        )
+        job = await db.create_function_async(render)
+        version = await job.wait()
+        (request,) = server.requests
+
+    assert b"CREATE FUNCTION" in request
+    _, marker, body = request.partition(b" FROM '{")
+    assert marker
+    submitted, _ = json.JSONDecoder().raw_decode("{" + body.decode(errors="replace"))
+    assert submitted["signature"]["output"] == expected_output
+    assert (
+        json.loads(version.to_canonical_json())["signature"]["output"]
+        == expected_output
+    )
+    application = version(text=lancedb.col("text")).rename(columns={"item": "payload"})
+    assert json.loads(application.to_canonical_json())["output"] == expected_output
+    assert application.columns == {"item": "payload"}

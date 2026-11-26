@@ -23,30 +23,6 @@ pub(super) fn statement(
     Ok(sql)
 }
 
-/// Submission can already have created work: reject ambiguous receipts without
-/// retrying or confusing the SQL query's identity with the compaction job.
-pub(super) fn receipt(batches: &[arrow_array::RecordBatch]) -> Result<String> {
-    use arrow_array::{Array, StringArray};
-    let invalid = || {
-        Error::Runtime { message: "OPTIMIZE did not return a single nonempty job_id receipt; inspect jobs before retrying because compaction may already have been submitted".into() }
-    };
-    if batches.iter().map(|batch| batch.num_rows()).sum::<usize>() != 1 {
-        return Err(invalid());
-    }
-    let batch = batches
-        .iter()
-        .find(|batch| batch.num_rows() == 1)
-        .ok_or_else(invalid)?;
-    let ids = batch
-        .column_by_name("job_id")
-        .and_then(|a| a.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(invalid)?;
-    if ids.is_null(0) || ids.value(0).is_empty() {
-        return Err(invalid());
-    }
-    Ok(ids.value(0).into())
-}
-
 pub(super) fn compaction_sql_options(
     options: &crate::table::optimize::CompactionOverrides,
 ) -> Result<Vec<String>> {
@@ -298,40 +274,6 @@ mod tests {
                 compaction_sql_options(&options),
                 Err(Error::InvalidInput { .. })
             ));
-        }
-    }
-}
-
-#[cfg(test)]
-mod receipt_tests {
-    use super::*;
-    use arrow_array::{ArrayRef, RecordBatch, StringArray};
-    use std::sync::Arc;
-
-    #[test]
-    fn compaction_receipt_requires_one_unambiguous_registry_id() {
-        let batch = |ids: Vec<Option<&str>>| {
-            RecordBatch::try_from_iter([("job_id", Arc::new(StringArray::from(ids)) as ArrayRef)])
-                .unwrap()
-        };
-        assert_eq!(
-            receipt(&[batch(vec![Some("compacting-job")])]).unwrap(),
-            "compacting-job"
-        );
-        for batches in [
-            vec![],
-            vec![batch(vec![])],
-            vec![batch(vec![None])],
-            vec![batch(vec![Some("")])],
-            vec![batch(vec![Some("a"), Some("b")])],
-            vec![batch(vec![Some("a")]), batch(vec![Some("b")])],
-        ] {
-            assert!(
-                receipt(&batches)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("inspect jobs before retrying")
-            );
         }
     }
 }

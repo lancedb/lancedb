@@ -833,7 +833,7 @@ def test_function_image_requires_digest_reference(image):
 def test_function_gpu_marker_uses_gpu_runtime():
     with pytest.warns(UserWarning, match="uses a scalar callable"):
 
-        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g", gpu_count=2)
         def double_on_gpu(value: int) -> int:
             return value * 2
 
@@ -841,6 +841,7 @@ def test_function_gpu_marker_uses_gpu_runtime():
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
     assert request["runtime"]["gpu_class"] == "a10g"
+    assert request["runtime"]["gpus_per_worker"] == 2
 
     @function(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -856,14 +857,29 @@ def test_function_gpu_marker_uses_gpu_runtime():
     def identity(value: int) -> int:
         return value
 
-    for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
-        with pytest.raises(ValueError, match="gpu must be a boolean"):
+    for invalid in [
+        0,
+        1,
+        -1,
+        1.5,
+        "",
+        "true",
+        "1",
+        "a_b",
+        "-a10g",
+        "a10g-",
+        "a" * 64,
+    ]:
+        with pytest.raises(ValueError, match="gpu"):
             function(name="invalid_gpu", gpu=invalid)(identity)
-    for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
+    for enabled in (None, False):
+        for options in ({"gpu_class": "h100"}, {"gpu_count": 2}):
+            with pytest.raises(ValueError, match="require gpu=True"):
+                function(gpu=enabled, **options)(identity)
+    for invalid_class in ("H100", "a_b", "-h100", "h100-", "", "a" * 64):
         with pytest.raises(ValueError, match="gpu_class"):
-            function(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
-    with pytest.raises(ValueError, match="requires gpu=True"):
-        function(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
+            function(gpu=True, gpu_class=invalid_class)(identity)
+    assert function(gpu=False)(identity).registration_request.runtime.gpu is None
 
     base_runtime = {
         "kind": "python_v2",
@@ -893,6 +909,66 @@ class _GpuScalarFunction:
 class _GpuArrayFunction:
     def __call__(self, value: pa.Array) -> pa.Array:
         return value
+
+
+@pytest.mark.parametrize(
+    "name, count", [(None, 1), ("h100", 2), ("a10g", 4), ("any", 2)]
+)
+def test_gpu_count_is_part_of_runtime_identity(name, count):
+    with pytest.warns(UserWarning):
+        definition = function(gpu=True, gpu_class=name, gpu_count=count)(
+            normalize_score.__wrapped__
+        )
+    runtime = definition.registration_request.runtime
+    assert runtime.gpu is True
+    assert runtime.gpu_class == name
+    assert runtime.gpus_per_worker == count
+    encoded = definition.registration_request.to_canonical_json()
+    assert json.loads(encoded)["runtime"]["gpus_per_worker"] == count
+    different = runtime._copy(update={"gpus_per_worker": count + 1})
+    assert runtime.digest != different.digest
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5, "2", 2**32])
+def test_gpu_annotation_rejects_invalid_counts(count):
+    with pytest.raises(ValueError, match="gpu_count"):
+        function(gpu=True, gpu_count=count)(normalize_score.__wrapped__)
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5, "2", 2**32])
+def test_gpu_wire_count_is_a_strict_positive_uint32(count):
+    with pytest.raises(ValueError):
+        PythonRuntimeSpec.model_validate(
+            {
+                "kind": "python_v2",
+                "python_version": "3.12",
+                "environment": {"kind": "pip"},
+                "gpu": True,
+                "gpus_per_worker": count,
+            }
+        )
+
+
+def test_function_annotation_carries_independent_total_defaults():
+    definition = function(
+        total_cpu_millis=8000,
+        total_memory_bytes=16 * 1024**3,
+        total_gpu_count=0,
+    )(normalize_score.__wrapped__)
+    request = json.loads(definition.registration_request.to_canonical_json())
+    assert request["total_cpu_millis"] == 8000
+    assert request["total_memory_bytes"] == 16 * 1024**3
+    assert request["total_gpu_count"] == 0
+    assert "gpu" not in request["runtime"]
+    for values in (
+        {"total_cpu_millis": 0},
+        {"total_memory_bytes": True},
+        {"total_memory_bytes": 2**64},
+        {"total_gpu_count": -1},
+        {"total_gpu_count": 2**32},
+    ):
+        with pytest.raises(ValueError):
+            function(**values)(normalize_score.__wrapped__)
 
 
 def test_gpu_scalar_warning_names_the_vectorized_alternative():

@@ -20,10 +20,17 @@ from typing import Annotated, Optional, get_type_hints
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
-from lancedb import col
-from lancedb.functions import FunctionDefinition, FunctionVersion, function, udf
+from lancedb import blob, col
+from lancedb.functions import (
+    BlobWriter,
+    FunctionDefinition,
+    FunctionVersion,
+    function,
+    udf,
+)
 
 FIXTURES = (
     Path(__file__).parents[3]
@@ -580,6 +587,245 @@ def test_array_batch_annotations_accept_explicit_schemas():
     assert signature.output.nullable is False
     values = pa.array([1, 2, 3])
     assert identity(values).equals(values)
+
+
+def test_batch_functions_take_one_array_parameter_per_input_column():
+    @function(
+        input_schema=pa.schema(
+            [
+                pa.field("value", pa.float64(), nullable=False),
+                pa.field("weight", pa.float64(), nullable=False),
+            ]
+        ),
+        output_schema=pa.float64(),
+    )
+    def weighted_score(value: pa.Array, weight: pa.Array) -> pa.Array:
+        return pc.multiply(value, weight)
+
+    signature = weighted_score.registration_request.signature
+    assert [parameter.name for parameter in signature.inputs] == ["value", "weight"]
+    result = weighted_score(pa.array([1.0, 2.0]), pa.array([3.0, 4.0]))
+    assert result.to_pylist() == [3.0, 8.0]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda definition: definition(col("value")),
+        lambda definition: definition(value=col("value")),
+        lambda definition: definition(value=col("value") * 2),
+    ],
+    ids=["positional", "keyword", "derived"],
+)
+def test_definition_calls_reject_expr_inputs_before_user_code(invoke):
+    @function
+    def double(value: float) -> float:
+        raise AssertionError("user code ran")
+
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        invoke(double)
+
+
+def test_class_definition_binds_initialization_only_on_a_version():
+    with pytest.raises(TypeError, match="registered FunctionVersion"):
+        scale(factor=col("factor"), label="x")
+
+
+def test_blob_writer_scalar_annotation_and_bytes_keep_distinct_wire_shapes():
+    @function
+    def render(text: str) -> BlobWriter:
+        with BlobWriter.open() as output:
+            output.write(text.encode())
+        return output
+
+    @function(output_schema=blob("image", nullable=False))
+    def render_bytes(text: str) -> bytes:
+        return text.encode()
+
+    scalar = {"kind": "scalar", "arrow_type": "blob_v2", "nullable": False}
+    writer = {**scalar, "kind": "scalar_blob_writer", "blob_writer_paths": [[]]}
+    for definition, expected in ((render, writer), (render_bytes, scalar)):
+        request = json.loads(definition.registration_request.to_canonical_json())
+        assert request["signature"]["output"] == expected
+        assert request["artifact"]["adapter"] == {
+            "kind": "scalar_to_arrow_batch",
+            "version": 1,
+        }
+    assert render_bytes("text") == b"text"
+    with pytest.raises(RuntimeError, match="computed column refresh"):
+        render("text")
+
+
+@pytest.mark.parametrize("input_type", ["Array", "RecordBatch"])
+@pytest.mark.parametrize("return_type", ["list[Writer]", "tuple[Writer, ...]"])
+def test_blob_writer_vectorized_annotations_resolve_in_the_artifact(
+    helper_package, monkeypatch, input_type, return_type
+):
+    as_tuple = return_type.startswith("tuple")
+    result = "tuple(results)" if as_tuple else "results"
+    column = "values" if input_type == "Array" else "values.column(0)"
+    module = helper_package(
+        "fx_blob_writers",
+        {
+            "__init__.py": f"""
+                from __future__ import annotations
+
+                import pyarrow as pa
+                from pyarrow import {input_type} as Batch
+                from lancedb.functions import BlobWriter as Writer, function
+
+                Output = {return_type}
+
+                @function(input_schema=pa.schema([pa.field("values", pa.string())]))
+                def render(values: Batch) -> Output:
+                    results = []
+                    for text in {column}:
+                        with Writer.open() as output:
+                            output.write(text.as_py().encode())
+                        results.append(output)
+                    return {result}
+            """,
+        },
+    )
+    assert json.loads(
+        module.render.registration_request.signature.output.to_canonical_json()
+    ) == {
+        "kind": "scalar_blob_writer",
+        "arrow_type": "blob_v2",
+        "nullable": False,
+        "blob_writer_paths": [[]],
+    }
+
+    class WorkerWriter:
+        def __init__(self):
+            self.payload = bytearray()
+            self.closed = False
+
+        @classmethod
+        def open(cls):
+            return cls()
+
+        def write(self, data):
+            self.payload.extend(data)
+            return len(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.closed = True
+
+    worker = types.ModuleType("lance_blob")
+    worker.BlobWriter = WorkerWriter
+    monkeypatch.setitem(sys.modules, "lance_blob", worker)
+    namespace = {}
+    exec(compile(artifact(module.render), "user_function.py", "exec"), namespace)
+    render = namespace["render"]
+    input_annotation = getattr(pa, input_type)
+    output_annotation = (
+        tuple[WorkerWriter, ...]
+        if return_type.startswith("tuple")
+        else list[WorkerWriter]
+    )
+    assert get_type_hints(render) == {
+        "values": input_annotation,
+        "return": output_annotation,
+    }
+    column = pa.array(["alpha", "", "omega"])
+    batch = column if input_type == "Array" else pa.record_batch([column], names=["x"])
+    output = render(batch)
+    assert [(type(value), value.closed, bytes(value.payload)) for value in output] == [
+        (WorkerWriter, True, b"alpha"),
+        (WorkerWriter, True, b""),
+        (WorkerWriter, True, b"omega"),
+    ]
+
+
+@pytest.mark.parametrize("list_type", [pa.list_, pa.large_list])
+def test_blob_writer_nested_paths_keep_logical_arrow_schema(list_type):
+    def output_schema(blob_field):
+        return list_type(
+            pa.field(
+                "asset",
+                pa.struct(
+                    [
+                        blob_field("item"),
+                        blob("bytes_sibling"),
+                        pa.field("checksum", pa.binary(), nullable=False),
+                        blob_field("rendered.blob", nullable=False),
+                    ]
+                ),
+            )
+        )
+
+    def render_batch(values: pa.Array):
+        return [
+            [
+                {
+                    "item": None,
+                    "bytes_sibling": b"",
+                    "checksum": b"ok",
+                    "rendered.blob": b"",
+                }
+            ]
+        ] * len(values)
+
+    input_schema = pa.schema([pa.field("values", pa.string())])
+    streaming = function(
+        render_batch,
+        input_schema=input_schema,
+        output_schema=output_schema(BlobWriter.field),
+    )
+    materialized = function(
+        render_batch, input_schema=input_schema, output_schema=output_schema(blob)
+    )
+    plain = json.loads(
+        materialized.registration_request.signature.output.to_canonical_json()
+    )
+    writer = json.loads(
+        streaming.registration_request.signature.output.to_canonical_json()
+    )
+    assert writer == {
+        **plain,
+        "kind": "scalar_blob_writer",
+        "blob_writer_paths": [
+            ["item", {"field": "item"}],
+            ["item", {"field": "rendered.blob"}],
+        ],
+    }
+    item = json.loads(writer["arrow_type"])["fields"][0]
+    assert item["name"] == "asset"
+    assert item["nullable"] is True
+    assert item["type"]["fields"][0]["metadata"] == {
+        "ARROW:extension:name": "lance.blob.v2"
+    }
+
+
+def test_blob_writer_requires_supported_output_leaves():
+    def annotated(value: str) -> BlobWriter:
+        return BlobWriter.open()
+
+    def optional(value: str) -> BlobWriter | None:
+        return None
+
+    def explicit(value: str):
+        return value
+
+    with pytest.raises(TypeError, match="requires a Blob v2 field"):
+        function(annotated, output_schema=pa.binary())
+    with pytest.raises(ValueError, match="must be non-nullable"):
+        function(optional)
+    invalid_field = pa.field(
+        "value", pa.binary(), metadata={"lance.function.blob_writer": "true"}
+    )
+    with pytest.raises(TypeError, match="requires a Blob v2 field"):
+        function(explicit, output_schema=pa.struct([invalid_field]))
+    for schema in (
+        pa.list_(BlobWriter.field("item"), 2),
+        pa.map_(pa.string(), BlobWriter.field("value")),
+    ):
+        with pytest.raises(TypeError, match="nested under collection types"):
+            function(explicit, output_schema=schema)
 
 
 @pytest.mark.parametrize("class_function", [False, True])

@@ -268,6 +268,38 @@ const after = await table.getRTEStats();
 
 ***
 
+### cleanupAsync()
+
+```ts
+cleanupAsync(_options?): Promise<Job<CleanupResult>>
+```
+
+Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+Requires table Ownership and parent Usage. Retention inherits from the table
+then deployment when omitted. Local/historical handles are unsupported.
+Before submission, disable/drain automatic cleanup and prevent other cleanup,
+tag/branch publication and restore until completion, including direct clients.
+Coordination is not enforced by the server. Cancellation cannot undo deletion
+or prove storage I/O stopped. Preview is available without deletion.
+Wait timeout leaves work running; save the ID and reopen with db.openJob().
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CleanupResult`](../interfaces/CleanupResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000 });
+```
+
+***
+
 ### close()
 
 ```ts
@@ -520,6 +552,53 @@ containing the new version number of the table
 
 ***
 
+### delta()
+
+```ts
+delta(fromVersion, toVersion?): Promise<TableDelta>
+```
+
+Compare two persisted versions or same-branch tags on an Embedded table.
+
+`fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+`toVersion` uses the version currently visible through this handle,
+including a checked-out version. The endpoints are fixed when the delta is
+created.
+
+Row readers require stable row IDs at both endpoints. Create the table with
+`storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+them. `listTransactions()` works without stable row IDs.
+
+Row readers reject ranges containing a Restore, or ranges whose transaction
+history cannot prove they are restore-free. Recompute the checkpoint with a
+full rescan and reinitialize it at the range end version.
+
+LanceDB Enterprise tables reject this operation.
+
+#### Parameters
+
+* **fromVersion**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+* **toVersion?**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+#### Returns
+
+`Promise`&lt;[`TableDelta`](TableDelta.md)&gt;
+
+#### Example
+
+```ts
+const delta = await table.delta("baseline");
+const reader = delta.insertedRows();
+console.log((await reader.schema()).fields.map((field) => field.name));
+for await (const batch of reader) {
+  console.log(batch.getChild("id")?.toJSON());
+}
+console.log(await delta.listTransactions());
+```
+
+***
+
 ### disableRTE()
 
 ```ts
@@ -650,6 +729,24 @@ await table.enableRTE({
   maintainedIndexes: ["id_idx"],
 });
 ```
+
+***
+
+### explainCleanup()
+
+```ts
+explainCleanup(_options?): Promise<CleanupPlan>
+```
+
+Preview version deletion without creating a job. Execution re-evaluates current state.
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`CleanupPlan`](../interfaces/CleanupPlan.md)&gt;
 
 ***
 
@@ -855,38 +952,78 @@ that version; a latest handle retains normal read-freshness behavior.
 
 ***
 
+### functionErrorRows()
+
+```ts
+functionErrorRows(options?): Promise<FunctionFailedRow[]>
+```
+
+Read current failing inputs, one result per error record.
+Requires a complete LanceDB Enterprise workflow version 1 listing with
+row identities. Throws if a failed row is no longer addressable in the
+table's read snapshot. For materialized views, see the source identities
+on each error record returned by [Table#functionErrors](Table.md#functionerrors).
+
+#### Parameters
+
+* **options?**: [`FunctionErrorRowsOptions`](../interfaces/FunctionErrorRowsOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionFailedRow`](../interfaces/FunctionFailedRow.md)[]&gt;
+
+***
+
 ### functionErrors()
 
 ```ts
 abstract functionErrors(options?): Promise<FunctionErrors>
 ```
 
-The per-row errors Function refreshes recorded on this table.
+List the per-row errors recorded by Function refreshes on this table.
 
-A refresh running under a skip policy records each row it skipped with
-the input that failed and the error. This lists those records, newest
-job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Enterprise only; reading errors needs read
-access to the table, since a message carries the value that failed.
+On LanceDB Enterprise with workflow version 1 or later, the default
+lists current failures. Set `history: true` to include retained attempts
+for repaired rows. Older deployments keep their existing default listing.
+Reading errors requires table read access because messages can include the
+input that failed. `errorGroups` describes the returned records.
 
 #### Parameters
 
 * **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
-    Optional filters: `jobId`,
-    `column`, and `limit` (server default 10000, cap 100000).
 
 #### Returns
 
 `Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
 
-The records, the capped fragments,
-and whether the listing stopped at its limit.
-
 #### Example
 
 ```ts
-const { records, truncated } = await table.functionErrors({ column: "embedding" });
+const errors = await table.functionErrors({ column: "embedding" });
+console.log(errors.records, errors.errorGroups);
 ```
+
+***
+
+### functionProvenance()
+
+```ts
+functionProvenance(_column, _options?): Promise<FunctionProvenance>
+```
+
+Read the producing Function version and job for each returned value.
+Check `truncated` before treating the result as a complete listing.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionProvenanceOptions`](../interfaces/FunctionProvenanceOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionProvenance`](../interfaces/FunctionProvenance.md)&gt;
 
 ***
 
@@ -1253,6 +1390,28 @@ Prewarm an index in the table.
 
 ***
 
+### quarantineFailed()
+
+```ts
+quarantineFailed(_column, _options?): Promise<number>
+```
+
+Quarantine current failures and return the number of affected rows.
+Set `quarantined: false` to release them for future refreshes.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionQuarantineOptions`](../interfaces/FunctionQuarantineOptions.md)
+
+#### Returns
+
+`Promise`&lt;`number`&gt;
+
+***
+
 ### query()
 
 ```ts
@@ -1383,26 +1542,18 @@ LanceDB Enterprise it is the server's backfill job.
     `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
     `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
     and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
-    `maxConcurrency`, `resourceBudget`, `supervisorResources`,
+    `maxConcurrency`, `totalCpuMillis`, `totalMemoryBytes`, `supervisorResources`,
     `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
     Function refreshes. `retryPolicy` overrides user-code retries only when
     repeating partial work is safe; set `maxAttempts: 1` to disable retries.
     `maxConcurrency` overrides the registered default for this logical
     execution only and is a positive integer; it is not an account-wide
-    quota. A `resourceBudget` requires `cpuMillis` and
-    `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
-    `supervisorResources` and each `planningWorkers.resources` entry require
-    positive `cpuMillis`, `memoryBytes` and `ephemeralStorageBytes`.
-    `planningWorkers` also requires positive `maxWorkers`,
-    `rowsPerWorker` and `fragmentsPerWorker`.
-    The budget applies only to this explicit refresh and does not configure
-    a later automatic refresh.
-    `gpuCount` at the top level is the shorthand that preserves the
-    deployment defaults for CPU and memory, and cannot be combined with
-    `resourceBudget`. `numWorkers` applies only to expression columns; use
-    `resourceBudget` for registered Functions. All are LanceDB Enterprise
-    only; a LanceDB Embedded refresh rejects every option other than
-    `batchSize`, `gpuClass` and `gpuCount`.
+    quota. `totalCpuMillis`, `totalMemoryBytes`, and `totalGpuCount` override
+    their corresponding execution-wide resource limits independently. Unset
+    values inherit column defaults, then Function defaults, then deployment
+    defaults. A zero GPU limit is valid for CPU-only Functions.
+    `supervisorResources` and `planningWorkers.resources` are per-pod sizes.
+    `numWorkers` applies only to expression columns.
     `publicationIntervalRows` opts into publishing completed Function split
     ranges once their accumulated unpublished rows reach the threshold.
     It must be a positive safe integer and requires non-Blob Function outputs.
@@ -1418,10 +1569,8 @@ LanceDB Enterprise it is the server's backfill job.
 ```ts
 const job = await table.refreshColumnAsync("embedding", {
   where: "published_at > '2026-01-01'",
-  resourceBudget: {
-    cpuMillis: 8000,
-    memoryBytes: 16 * 1024 ** 3,
-  },
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
   maxConcurrency: 4,
   publicationIntervalRows: 10000,
   errorPolicy: "skip",
@@ -1470,6 +1619,28 @@ out state and the read_consistency_interval, if any, will apply.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### retryFailed()
+
+```ts
+retryFailed(_column, _options?): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start a job to retry exactly the current failures of one Function column.
+Filters apply on the server. Quarantined rows are excluded by default.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`RetryFailedOptions`](../interfaces/RetryFailedOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 
@@ -1842,6 +2013,28 @@ await table.updateTableOverrides({
   job_types: { compaction: { enabled: false } },
 });
 ```
+
+***
+
+### upgradeColumn()
+
+```ts
+upgradeColumn(_column, _options): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start an upgrade to an existing immutable Function version and choose
+which rows to recompute. New and changed inputs use the new version.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options**: [`UpgradeColumnOptions`](../interfaces/UpgradeColumnOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 

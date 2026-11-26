@@ -22,6 +22,7 @@ from lancedb.functions import (
     SecretReference,
 )
 from lancedb.table import AsyncTable
+from lancedb.resources import _resource_options
 
 
 FIXTURES = (
@@ -610,19 +611,23 @@ class _FunctionDeclarationInner:
 
     async def add_function_columns(
         self,
-        application_json,
-        output_name,
+        bindings,
         auto_refresh_enabled,
         auto_refresh_interval_seconds,
-        auto_refresh_resource_budget,
+        total_cpu_millis,
+        total_memory_bytes,
+        total_gpu_count,
+        gpu_class=None,
+        gpu_count=None,
     ):
         self.calls.append(
             (
-                json.loads(application_json),
-                output_name,
+                [(json.loads(app), name) for app, name in bindings],
                 auto_refresh_enabled,
                 auto_refresh_interval_seconds,
-                auto_refresh_resource_budget,
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
             )
         )
         return "declared"
@@ -647,29 +652,45 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
         mapping_type({"features": application._copy(update={"columns": {}})})
     )
     assert result == "declared"
-    assert inner.calls[-1][1] == "features"
-    assert inner.calls[-1][2:] == (None, None, None)
+    [(_, name)], *options = inner.calls[-1]
+    assert name == "features"
+    assert options == [None, None, None, None, None]
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
     )
     result = await table.add_columns(
-        bare, auto_refresh_enabled=False, auto_refresh_interval_seconds=300
+        bare,
+        auto_refresh_enabled=False,
+        auto_refresh_interval_seconds=300,
+        total_cpu_millis=8000,
+        total_gpu_count=0,
     )
     assert result == "declared"
-    assert inner.calls[-1][1] is None
-    assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
-    assert inner.calls[-1][2:] == (False, 300, None)
+    [(payload, name)], *options = inner.calls[-1]
+    assert name is None
+    assert payload["columns"] == {"normalized_text": "search_text"}
+    assert options == [False, 300, 8000, None, 0]
 
 
 @pytest.mark.asyncio
-async def test_add_columns_rejects_multiple_bindings_and_unknown_newer_application():
+async def test_add_columns_routes_multiple_bindings_in_one_call():
+    inner = _FunctionDeclarationInner()
+    table = AsyncTable(inner)
+    application = known_application()._copy(update={"columns": {}})
+    assert await table.add_columns({"a": application, "b": application}) == "declared"
+    assert len(inner.calls) == 1
+    assert [name for _, name in inner.calls[0][0]] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_add_columns_rejects_mixed_bindings_and_unknown_newer_application():
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
 
-    with pytest.raises(ValueError, match="exactly one Function binding"):
-        await table.add_columns({"a": application, "b": application})
+    with pytest.raises(ValueError, match="cannot mix Function applications"):
+        await table.add_columns({"a": application, "b": "1+1"})
 
     future = json.loads(fixture("remote_function_application.json"))
     application = FunctionApplication(**future)
@@ -715,3 +736,20 @@ def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
     renamed = application.rename(columns={"normalized_text": "search_text"})
     assert dict(application.columns) == {}
     assert dict(renamed.columns) == {"normalized_text": "search_text"}
+
+
+@pytest.mark.parametrize("gpu_count", [0, -1, True, 1.5, 2**32])
+def test_gpu_worker_count_rejects_invalid_values(gpu_count):
+    with pytest.raises(ValueError, match="gpu_count"):
+        _resource_options(None, None, None, gpu_count=gpu_count)
+
+
+def test_gpu_worker_settings_are_separate_from_execution_totals():
+    assert _resource_options(8000, None, 8, gpu_class="any", gpu_count=2) == {
+        "total_cpu_millis": 8000,
+        "total_gpu_count": 8,
+        "gpu_class": "any",
+        "gpu_count": 2,
+    }
+    with pytest.raises(ValueError, match="cannot fit"):
+        _resource_options(None, None, 1, gpu_count=2)

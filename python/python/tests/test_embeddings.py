@@ -1107,6 +1107,47 @@ def test_openai_bad_request_partial_batch_recovery():
     assert embeddings[1] is None
 
 
+@pytest.fixture
+def mock_openai_client(monkeypatch):
+    client = MagicMock()
+    client.embeddings.create.return_value.data = []
+    monkeypatch.setattr(
+        "lancedb.embeddings.openai.attempt_import_or_raise", MagicMock()
+    )
+    monkeypatch.setattr(get_registry().get("openai"), "_openai_client", client)
+    return client
+
+
+@pytest.mark.parametrize(
+    ("texts", "expected"),
+    [([], []), ([None, ""], [None, None])],
+    ids=["empty-batch", "all-inputs-filtered"],
+)
+def test_openai_skips_batches_without_valid_text(mock_openai_client, texts, expected):
+    model = get_registry().get("openai").create()
+
+    assert model.compute_source_embeddings(texts) == expected
+    mock_openai_client.embeddings.create.assert_not_called()
+
+
+def test_openai_add_all_invalid_texts_as_null_vectors(mock_openai_client, tmp_path):
+    model = get_registry().get("openai").create(name="text-embedding-3-small", dim=2)
+
+    class TextModel(LanceModel):
+        text: Optional[str] = model.SourceField()
+        vector: Optional[Vector(model.ndims())] = model.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("words", schema=TextModel)
+    table.add([{"text": None}, {"text": ""}], on_bad_vectors="null")
+
+    assert table.to_arrow().to_pylist() == [
+        {"text": None, "vector": None},
+        {"text": "", "vector": None},
+    ]
+    mock_openai_client.embeddings.create.assert_not_called()
+
+
 def test_ollama_embeddings_pickle():
     """OllamaEmbeddings must pickle even after the cached client is created."""
     registry = get_registry()

@@ -62,6 +62,8 @@ pub struct CreateStorageIntegrationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub azure_client_secret_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azure_storage_account_access_key_secret: Option<SecretReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gcp_credentials_json_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token_secret: Option<SecretReference>,
@@ -113,6 +115,7 @@ impl CreateStorageIntegrationRequest {
             azure_tenant_id_secret: None,
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
+            azure_storage_account_access_key_secret: None,
             gcp_credentials_json_secret: None,
             huggingface_token_secret: None,
         }
@@ -136,6 +139,7 @@ impl CreateStorageIntegrationRequest {
             azure_tenant_id_secret: None,
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
+            azure_storage_account_access_key_secret: None,
             gcp_credentials_json_secret: None,
             huggingface_token_secret: None,
         }
@@ -166,6 +170,38 @@ impl CreateStorageIntegrationRequest {
             azure_tenant_id_secret: Some(tenant_id),
             azure_client_id_secret: Some(client_id),
             azure_client_secret_secret: Some(client_secret),
+            azure_storage_account_access_key_secret: None,
+            gcp_credentials_json_secret: None,
+            huggingface_token_secret: None,
+            aws_role_arn: None,
+            aws_access_key_id_secret: None,
+            aws_secret_access_key_secret: None,
+            aws_region: None,
+        }
+    }
+
+    /// Register Azure Blob access using a Secret containing a storage account access key.
+    ///
+    /// ```
+    /// use lancedb::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
+    /// let config = CreateStorageIntegrationRequest::azure_with_account_access_key(
+    ///     "az://customer-data/raw/", "customeraccount", SecretReference::new("azure_key"),
+    /// );
+    /// ```
+    pub fn azure_with_account_access_key(
+        storage_prefix: impl Into<String>,
+        storage_account: impl Into<String>,
+        access_key: SecretReference,
+    ) -> Self {
+        Self {
+            storage_provider: StorageProvider::Azure,
+            storage_prefix: storage_prefix.into(),
+            exist_ok: false,
+            azure_storage_account: Some(storage_account.into()),
+            azure_storage_account_access_key_secret: Some(access_key),
+            azure_tenant_id_secret: None,
+            azure_client_id_secret: None,
+            azure_client_secret_secret: None,
             gcp_credentials_json_secret: None,
             huggingface_token_secret: None,
             aws_role_arn: None,
@@ -198,6 +234,7 @@ impl CreateStorageIntegrationRequest {
             azure_tenant_id_secret: None,
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
+            azure_storage_account_access_key_secret: None,
         }
     }
 
@@ -225,6 +262,7 @@ impl CreateStorageIntegrationRequest {
             azure_tenant_id_secret: None,
             azure_client_id_secret: None,
             azure_client_secret_secret: None,
+            azure_storage_account_access_key_secret: None,
         }
     }
 
@@ -269,6 +307,8 @@ pub struct StorageIntegrationInfo {
     pub azure_client_id_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub azure_client_secret_secret: Option<SecretReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azure_storage_account_access_key_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gcp_credentials_json_secret: Option<SecretReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -170,6 +170,51 @@ the publishing job replaces assets with matching names on an existing release.
 Verify beta releases remain marked as prereleases and do not take the latest
 release designation.
 
+### Python CLI wheels
+
+Run the **CLI Python wheels** workflow with a published CLI tag to build the
+`lancedb-tools` wheels. It verifies the release archives against `SHA256SUMS`,
+bundles the native executable and its notices, and saves the three wheels as
+the `lancedb-tools-wheels` Actions artifact. Python package versions follow
+PEP 440 (for example, CLI `v0.42.0-beta.30` becomes `0.42.0b30`).
+
+The workflow tests `uvx` and `pipx` against the artifact on each supported
+platform. To try a downloaded wheel on a matching machine, substitute its
+local path for `"$wheel"`:
+
+```sh
+uvx --from "$wheel" lancedb --version
+pipx install "$wheel"
+lancedb profile list
+```
+
+This workflow produces review artifacts. Publishing the first stable wheels
+to PyPI is a separate release step.
+
+### Homebrew tap updates
+
+After a stable GitHub release publishes, the `homebrew` job reads its
+`SHA256SUMS` and opens a PR against `lancedb/homebrew-tap`. Review the
+version and three checksums, wait for the tap's install tests, then merge the
+PR manually. Rerunning the failed job reuses the release-specific branch.
+
+Before enabling the job, land the initial `Formula/lancedb.rb` on the tap's
+`main` branch and configure the release credentials:
+
+1. Register a private GitHub App under the LanceDB organization. Grant repository
+   permissions **Contents** and **Pull requests** (both read and write). Leave
+   webhooks disabled. Install the App on the selected repository
+   `lancedb/homebrew-tap`.
+2. In `lancedb/lancedb`, create a GitHub Actions environment named
+   `homebrew-tap`. Under deployment branches and tags, select tags matching
+   `v*`. Add the App's **Client ID** as the environment variable
+   `HOMEBREW_TAP_APP_CLIENT_ID` and its generated PEM private key as the
+   environment secret `HOMEBREW_TAP_APP_PRIVATE_KEY`.
+
+The release job exchanges the key for a short-lived tap installation token.
+If opening the tap PR fails, fix the configuration and rerun the failed job
+against the already published release.
+
 ## Breaking changes
 
 We try to avoid breaking changes, but sometimes they are necessary. When there

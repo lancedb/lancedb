@@ -11,18 +11,17 @@ availability:
 
 A Function refresh can encounter a bad row, fail to initialize a model, lose
 a worker, or fail while publishing results. These need different remedies.
-The native workflow below is draft guidance for an unreleased SDK and a
-matching Enterprise server. The recipes that follow it remain available for
-older deployments.
+The native workflow below needs a recent SDK and a matching Enterprise server.
+The recipes that follow it remain available for older deployments.
 
-## Draft native workflow: server contract version 1 {#native}
+## Native workflow: server contract version 1 {#native}
 
-This section requires the SDK changes in [PR #5048](https://github.com/lancedb/lancedb/pull/5048)
-and an Enterprise deployment advertising `workflow_version >= 1` in its
-Function error response. No released SDK or Enterprise version is implied by
-this draft. The SDK checks this capability before submitting native retry,
-upgrade, quarantine, history or provenance requests, and rejects unsupported
-servers before changing the column.
+This section uses the native recovery APIs in Python SDK 0.42.0b19 or later and
+in Rust and TypeScript SDKs that expose them. It requires an Enterprise
+deployment advertising `workflow_version >= 1` in its Function error response.
+The SDK checks this capability before submitting native retry, upgrade,
+quarantine, history or provenance requests and rejects unsupported servers
+before changing the column.
 
 New Function refreshes default to `error_policy="skip"` with a 5% failed-row
 ceiling. Successful outputs are published before a threshold failure is
@@ -32,7 +31,9 @@ failures remain job failures. External effects can repeat during recovery.
 
 Read current unresolved failures, group their causes and inspect their inputs:
 
-```python
+<CodeGroup>
+
+```python Python
 errors = table.function_errors(column="embedding")
 print(errors.summary())
 inputs = errors.rows(columns=["text"])
@@ -42,29 +43,71 @@ history = table.function_errors(column="embedding", history=True)
 print(history.records)  # Retained attempts, including repaired failures.
 ```
 
+```typescript TypeScript
+const errors = await table.functionErrors({ column: "embedding" });
+if (!errors.truncated && errors.fragments.length === 0) {
+  console.log(errors.errorGroups);
+}
+const inputs = await table.functionErrorRows({ column: "embedding", columns: ["text"] });
+for (const { input, error } of inputs) {
+  console.log(input.text, error.rowId, error.errorType);
+}
+
+const history = await table.functionErrors({ column: "embedding", history: true });
+console.log(history.records);
+```
+
+</CodeGroup>
+
 The default listing deduplicates failures by row and Function column, retaining
-attempt counts and first/last failure times. `summary()` and `rows()` refuse
-incomplete selections; narrow a truncated request before inspecting it.
-Historical records cannot be joined to current inputs through `rows()`.
-Stable row IDs survive compaction; older physical-only records are rejected
-for exact retry if their fragments have been rewritten.
+attempt counts and first/last failure times. In Python, `summary()` and `rows()`
+require a complete listing. In TypeScript, `errorGroups` counts the returned
+records and `functionErrorRows()` requires a complete current listing. Narrow a
+truncated request before using its counts as totals. Read historical attempts
+through the returned records.
+Stable row IDs survive compaction. TypeScript exposes row IDs and physical
+addresses as `bigint`. Older physical-only records are rejected for exact
+retry if their fragments have been rewritten.
 
 Select retry rows on the server, optionally by exception class or job:
 
-```python
+<CodeGroup>
+
+```python Python
 retry_job = table.retry_failed("embedding", error_type="ValueError")
 retry_job.wait()
 ```
 
+```typescript TypeScript
+const retryJob = await table.retryFailed("embedding", { errorType: "ValueError" });
+const { rowsAssigned, rowsFailed } = await retryJob.wait();
+console.log(rowsAssigned, rowsFailed);
+```
+
+</CodeGroup>
+
 Upgrade the existing Function binding and choose which values to recompute:
 
-```python
+<CodeGroup>
+
+```python Python
 upgrade_job = table.upgrade_column("embedding", version="2", recompute="failed")
 upgrade_job.wait()
 provenance = table.function_provenance("embedding")
 if not provenance.truncated:
     print(provenance.records)
 ```
+
+```typescript TypeScript
+const upgradeJob = await table.upgradeColumn("embedding", { version: "2", recompute: "failed" });
+await upgradeJob.wait();
+const provenance = await table.functionProvenance("embedding");
+if (!provenance.truncated) {
+  console.log(provenance.records);
+}
+```
+
+</CodeGroup>
 
 The immutable target version must already exist for the same Function.
 `recompute="failed"` selects current failures; `"all"` recomputes all live rows;
@@ -76,18 +119,28 @@ recorded provenance do not acquire an invented producing version.
 Quarantine failures that need input repair, then explicitly include them when
 they are ready to retry:
 
-```python
+<CodeGroup>
+
+```python Python
 table.quarantine_failed("embedding", after_attempts=3)
 retry_job = table.retry_failed("embedding", include_quarantined=True)
 retry_job.wait()
 ```
 
+```typescript TypeScript
+await table.quarantineFailed("embedding", { afterAttempts: 3 });
+const retryJob = await table.retryFailed("embedding", { includeQuarantined: true });
+await retryJob.wait();
+```
+
+</CodeGroup>
+
 Ordinary and automatic refreshes exclude quarantined rows, including during
 an `"all"` upgrade. Explicit inclusion releases quarantine before the retry.
-Async tables expose the same operations with `await`; `function_errors()`
-returns `AsyncFunctionErrors`, and its `rows()` method is also awaited.
-These native recovery APIs are available in Python and Rust. TypeScript does
-not yet expose them; its SDK support is tracked as a separate follow-up.
+To release rows for a later refresh, set `quarantined=False` in Python or
+`quarantined: false` in TypeScript when calling the quarantine method.
+Async Python tables expose the same operations with `await`, including
+`rows()` on the `AsyncFunctionErrors` listing.
 
 The equivalent Rust operations use explicit request options:
 
@@ -137,6 +190,36 @@ views, with errors identified by Function invocation and source input. Column
 retry and upgrade helpers apply to Function columns; use the materialized-view
 refresh reference for view refresh options.
 
+## Resume a failed refresh job {#resume-refresh}
+
+Job recovery requires a Python or Rust SDK that exposes `resume_refresh` and
+an Enterprise deployment that supports `POST /v1/table/{id}/resume_refresh`.
+The `workflow_version` reported by `function_errors` covers row-error
+operations. Check your server release for job recovery support separately.
+
+Open the original table on the branch where the refresh failed. Pass the
+failed job ID to get a handle for the successor attempt and wait for its result.
+
+```python
+resumed = table.resume_refresh(failed_job_id)
+result = resumed.wait()
+```
+
+```rust
+async fn resume(table: &lancedb::Table, failed_job_id: &str) -> lancedb::Result<()> {
+    let resumed = table.resume_refresh(failed_job_id).await?;
+    let result = resumed.wait().await?;
+    println!("Assigned {} rows", result.rows_assigned);
+    Ok(())
+}
+```
+
+The server reuses confirmed outputs. If it reports that an external call may
+already have run, check the external result before starting another refresh.
+For a Function with external effects, set `max_job_attempts=1` when submitting
+the refresh until you have verified replay safety on your deployment. A limit
+of `1` counts the initial attempt and disables automatic job retries.
+
 ## Older-deployment recipes {#older-deployments}
 
 The following sections describe deployments without workflow version 1. Their
@@ -145,8 +228,9 @@ remain unchanged.
 
 ## Choose a row-error policy {#policy}
 
-The default `fail` stops the job on a row error. `skip` writes null outputs for
-failed rows and records errors, subject to the refresh's failure limits:
+On these deployments, the default `fail` stops the job on a row error. `skip`
+retains a failed row's existing output, leaves an unassigned output unassigned
+and records errors, subject to the refresh's failure limits:
 
 ```python
 job = table.refresh_column_async(
@@ -162,7 +246,7 @@ print(result.rows_assigned, result.rows_failed, result.rows_remaining)
 Choose limits for your workload; these example limits stop work when more
 than 100 rows or more than 10% fail. `skip` does not make initialization,
 infrastructure or publication failures successful. If `wait()` raises,
-[refresh the job record](/basics/jobs#snapshots), inspect `job.failure`, and
+[refresh the job record](/basics/jobs#snapshots), inspect `job.failure()`, and
 inspect any recorded row errors. A failed/cancelled job can have committed
 some output, but retention of every successful call is not guaranteed.
 External effects are not rolled back and can be repeated during recovery.
@@ -174,7 +258,7 @@ Scope diagnostics to the job you are investigating:
 ```python
 from collections import Counter
 
-errors = table.function_errors(job_id=job.id, column="embedding", limit=10000)
+errors = table.function_errors(job_id=job.id(), column="embedding", limit=10000)
 groups = Counter((r.error_type, r.error_message) for r in errors.records)
 for cause, count in groups.most_common():
     print(count, cause)

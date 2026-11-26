@@ -3,6 +3,7 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
+import { tableFromArrays } from "apache-arrow";
 import packageJson = require("../package.json");
 import {
   ClientAuthMethod,
@@ -311,6 +312,9 @@ describe("remote connection", () => {
       },
       async (db) => {
         const table = (await db.openTable("test")) as LocalTable;
+        await expect(table.delta(1)).rejects.toThrow(
+          "table.delta is only supported on LanceDB Embedded tables",
+        );
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
@@ -863,15 +867,349 @@ describe("remote connection", () => {
         ]);
         expect(errors.records[0].rowOffset).toBe(9);
         expect(errors.fragments[0].rowsSkipped).toBe(500);
-        await table.functionErrors();
+        expect(errors.workflowVersion).toBeUndefined();
+        expect(errors.errorGroups).toBeUndefined();
+        await expect(
+          table.functionErrorRows({ columns: ["text"] }),
+        ).rejects.toThrow("Function row-failure workflow");
+        await table.functionErrors({ history: false });
         await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
           "limit must be a non-negative integer",
         );
+        for (const operation of [
+          () => table.functionErrors({ history: true }),
+          () => table.retryFailed("embedding"),
+          () => table.upgradeColumn("embedding", { version: "2" }),
+          () => table.quarantineFailed("embedding"),
+          () => table.quarantineFailed("embedding", { quarantined: false }),
+          () => table.functionProvenance("embedding"),
+        ]) {
+          await expect(operation()).rejects.toThrow(
+            "Function row-failure workflow",
+          );
+        }
       },
     );
     expect(bodies).toEqual([
       JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
       {},
+      {},
+      ...Array.from({ length: 6 }, () => ({ limit: 1 })),
+    ]);
+  });
+
+  it("reads Function failure history and joins current inputs by exact row identity", async () => {
+    const stableId = 9_007_199_254_740_993n;
+    const physicalAddress = 9_007_203_549_708_297n;
+    const currentRows = tableFromArrays({
+      text: ["physical failure", "moved stable row", "unrelated row"],
+      ["_rowid"]: new BigUint64Array([
+        physicalAddress,
+        stableId,
+        stableId - 1n,
+      ]),
+      ["_rowaddr"]: new BigUint64Array([physicalAddress, 14n, 10n]),
+    });
+    const records = `[
+      {"job_id":"j-7", "fragment_id":0, "row_offset":10,
+       "row_id":${stableId}, "row_address":10, "column":"embedding",
+       "function":"embed", "function_version":"2", "table_version":11,
+       "error_type":"ValueError", "error_message":"bad input",
+       "created_at_millis":1700000000001, "first_seen_at_millis":1700000000000,
+       "last_seen_at_millis":1700000000001, "attempts":3, "quarantined":true},
+      {"job_id":"j-7", "fragment_id":2097153, "row_offset":9,
+       "row_address":${physicalAddress}, "column":"embedding",
+       "function":"embed", "function_version":"2", "table_version":11,
+       "error_type":"ValueError", "error_message":"bad input", "created_at_millis":1700000000001},
+      {"job_id":"j-8", "fragment_id":0, "row_offset":10,
+       "row_id":${stableId}, "row_address":10, "column":"score",
+       "function":"score", "function_version":"1", "table_version":11,
+       "error_type":"TypeError", "error_message":"bad input", "created_at_millis":1700000000001}
+    ]`;
+    const groups = `[
+      {"column":"embedding", "error_type":"ValueError", "error_message":"bad input", "rows_failed":2},
+      {"column":"score", "error_type":"TypeError", "error_message":"bad input", "rows_failed":1}
+    ]`;
+    const errorRequests: unknown[] = [];
+    const queryRequests: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          if (req.url === "/v1/table/docs/describe/") {
+            res.writeHead(200).end('{"version":12,"schema":{"fields":[]}}');
+          } else if (req.url === "/v1/table/docs/errors") {
+            const request = JSON.parse(body);
+            errorRequests.push(request);
+            const empty = request.column === "empty";
+            const truncated = request.limit === 2;
+            res.writeHead(200).end(`{
+              "workflow_version":1, "records":${empty ? "[]" : records},
+              "fragments":[], "truncated":${truncated},
+              "error_groups":${empty ? "[]" : groups}
+            }`);
+          } else if (req.url === "/v1/table/docs/query/") {
+            const query = JSON.parse(body);
+            queryRequests.push(query);
+            const rows =
+              queryRequests.length === 1
+                ? currentRows.slice(0, 2)
+                : currentRows.slice(0, 1);
+            res
+              .writeHead(200, {
+                "Content-Type": "application/vnd.apache.arrow.stream",
+              })
+              .end(Buffer.from(tableToIPC(rows, "stream")));
+          } else {
+            res.writeHead(404).end();
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const errors = await table.functionErrors();
+        expect(errors.workflowVersion).toBe(1);
+        expect(errors.records[0]).toMatchObject({
+          rowId: stableId,
+          rowAddress: 10n,
+          attempts: 3,
+          firstSeenAtMillis: 1_700_000_000_000,
+          lastSeenAtMillis: 1_700_000_000_001,
+          quarantined: true,
+        });
+        expect(errors.records[1].rowAddress).toBe(physicalAddress);
+        expect(errors.errorGroups).toEqual([
+          {
+            column: "embedding",
+            errorType: "ValueError",
+            errorMessage: "bad input",
+            rowsFailed: 2n,
+          },
+          {
+            column: "score",
+            errorType: "TypeError",
+            errorMessage: "bad input",
+            rowsFailed: 1n,
+          },
+        ]);
+        const rows = await table.functionErrorRows({ columns: ["text"] });
+        expect(rows.map(({ input, error }) => [input, error.column])).toEqual([
+          [{ text: "moved stable row" }, "embedding"],
+          [{ text: "physical failure" }, "embedding"],
+          [{ text: "moved stable row" }, "score"],
+        ]);
+        await expect(
+          table.functionErrorRows({ columns: ["text"] }),
+        ).rejects.toThrow("no longer addressable");
+        const history = await table.functionErrors({
+          history: true,
+          jobId: "j-7",
+        });
+        expect(history.records[0].rowId).toBe(stableId);
+        await expect(
+          table.functionErrorRows({ columns: ["text"], limit: 2 }),
+        ).rejects.toThrow("Function errors are incomplete");
+        await expect(
+          table.functionErrorRows({ column: "empty" }),
+        ).resolves.toEqual([]);
+      },
+    );
+    expect(errorRequests).toEqual([
+      {},
+      {},
+      {},
+      { limit: 1 },
+      { history: true, ["job_id"]: "j-7" },
+      { limit: 2 },
+      { column: "empty" },
+    ]);
+    expect(queryRequests).toHaveLength(2);
+    for (const request of queryRequests) {
+      expect(request).toMatchObject({
+        columns: ["text", "_rowid", "_rowaddr"],
+        filter: `_rowid IN (${stableId}) OR _rowaddr IN (${physicalAddress})`,
+        k: 2,
+      });
+    }
+  });
+
+  it("forwards exact Function recovery requests and preserves async job results", async () => {
+    const requests: [string, unknown][] = [];
+    const stableId = 9_007_199_254_740_993n;
+    await withMockDatabase(
+      (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          const path = req.url ?? "";
+          const request = body ? JSON.parse(body) : {};
+          requests.push([path, request]);
+          if (path === "/v1/table/docs/describe/") {
+            res.writeHead(200).end('{"version":8,"schema":{"fields":[]}}');
+          } else if (path === "/v1/table/docs/errors") {
+            res
+              .writeHead(200)
+              .end(
+                '{"workflow_version":1,"records":[],"fragments":[],"truncated":false}',
+              );
+          } else if (path === "/v1/table/docs/backfill_column") {
+            res.writeHead(202).end('{"job_id":"refresh-1"}');
+          } else if (path === "/v1/jobs/describe") {
+            res.writeHead(200).end(`{
+              "job_id":"refresh-1", "job_type":"function_refresh", "job_state":"DONE",
+              "result":{"rows_assigned":19, "rows_failed":1, "rows_remaining":0,
+                "source_version":7, "published_version":8, "error_groups_truncated":true,
+                "error_groups":[{"column":"embedding", "error_type":"ValueError",
+                                  "error_message":"bad input", "rows_failed":1}]}
+            }`);
+          } else if (path === "/v1/table/docs/errors/quarantine") {
+            res.writeHead(200).end('{"rows_affected":2}');
+          } else if (path === "/v1/table/docs/function_provenance") {
+            res.writeHead(200).end(`{"truncated":true,"records":[{
+              "column":"embedding", "job_id":"refresh-1", "function_name":"embed",
+              "function_version":"2", "row_id":${stableId}, "row_address":null,
+              "source_version":7, "published_version":8
+            }]}`);
+          } else {
+            res.writeHead(404).end();
+          }
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const job = await table.retryFailed("embedding", {
+          errorType: "ValueError",
+          jobId: "first",
+          includeQuarantined: true,
+          functionVersion: "2",
+          maxFailedFraction: 1,
+        });
+        expect(job.id).toBe("refresh-1");
+        expect(await job.wait()).toEqual({
+          rowsAssigned: 19n,
+          rowsFailed: 1n,
+          rowsRemaining: 0n,
+          sourceVersion: 7n,
+          publishedVersion: 8n,
+          errorGroupsTruncated: true,
+          errorGroups: [
+            {
+              column: "embedding",
+              errorType: "ValueError",
+              errorMessage: "bad input",
+              rowsFailed: 1n,
+            },
+          ],
+        });
+        await table.retryFailed("embedding");
+        await table.upgradeColumn("embedding", {
+          version: "3",
+          recompute: "failed",
+        });
+        await table.upgradeColumn("embedding", { version: "4" });
+        await table.upgradeColumn("embedding", {
+          version: "5",
+          recompute: "none",
+        });
+        await expect(
+          table.quarantineFailed("embedding", {
+            jobId: "first",
+            afterAttempts: 3,
+            errorType: "ValueError",
+          }),
+        ).resolves.toBe(2);
+        await expect(
+          table.quarantineFailed("embedding", { quarantined: false }),
+        ).resolves.toBe(2);
+        const provenance = await table.functionProvenance("embedding", {
+          version: 8n,
+          limit: 1,
+        });
+        expect(provenance.truncated).toBe(true);
+        expect(provenance.records[0]).toMatchObject({
+          jobId: "refresh-1",
+          functionName: "embed",
+          functionVersion: "2",
+          rowId: stableId,
+          sourceVersion: 7n,
+          publishedVersion: 8n,
+        });
+        await expect(
+          table.upgradeColumn("embedding", { version: "" }),
+        ).rejects.toThrow("nonempty function_version");
+        await expect(
+          table.quarantineFailed("embedding", { afterAttempts: 2 ** 32 + 1 }),
+        ).rejects.toThrow("afterAttempts");
+        await expect(
+          table.functionProvenance("embedding", { version: -(2n ** 64n) }),
+        ).rejects.toThrow("positive lossless u64 bigint");
+        const ordinary = await table.refreshColumnAsync("embedding");
+        await expect(ordinary.wait()).resolves.toBeUndefined();
+      },
+    );
+    const probe = ["/v1/table/docs/errors", { limit: 1 }];
+    expect(requests).toEqual([
+      ["/v1/table/docs/describe/", {}],
+      probe,
+      [
+        "/v1/table/docs/backfill_column",
+        JSON.parse(`{
+        "column":"embedding", "retry_errors":true, "retry_job_id":"first",
+        "retry_error_type":"ValueError", "include_quarantined":true,
+        "function_version":"2", "recompute":"failed", "max_failed_fraction":1
+      }`),
+      ],
+      ["/v1/jobs/describe", { ["job_id"]: "refresh-1" }],
+      probe,
+      [
+        "/v1/table/docs/backfill_column",
+        { column: "embedding", ["retry_errors"]: true },
+      ],
+      ...[
+        ["3", "failed"],
+        ["4", "all"],
+        ["5", "none"],
+      ].flatMap(([version, recompute]) => [
+        probe,
+        [
+          "/v1/table/docs/backfill_column",
+          { column: "embedding", ["function_version"]: version, recompute },
+        ],
+      ]),
+      probe,
+      [
+        "/v1/table/docs/errors/quarantine",
+        {
+          column: "embedding",
+          quarantined: true,
+          ["job_id"]: "first",
+          ["after_attempts"]: 3,
+          ["error_type"]: "ValueError",
+        },
+      ],
+      probe,
+      [
+        "/v1/table/docs/errors/quarantine",
+        {
+          column: "embedding",
+          quarantined: false,
+          ["job_id"]: null,
+          ["after_attempts"]: null,
+          ["error_type"]: null,
+        },
+      ],
+      probe,
+      [
+        "/v1/table/docs/function_provenance",
+        { column: "embedding", version: 8, limit: 1 },
+      ],
+      ["/v1/table/docs/backfill_column", { column: "embedding" }],
+      ["/v1/jobs/describe", { ["job_id"]: "refresh-1" }],
     ]);
   });
 
@@ -1007,7 +1345,7 @@ describe("remote connection", () => {
           publicationIntervalRows: 60,
           maxConcurrency: 3,
           gpuClass: "a10g",
-          gpuCount: 2,
+          totalGpuCount: 2,
           errorPolicy: "skip",
           maxFailedFraction: 0.01,
           maxFailedRows: 50,
@@ -1030,10 +1368,8 @@ describe("remote connection", () => {
           });
         }
         await table.refreshColumnAsync("embedding", {
-          resourceBudget: {
-            cpuMillis: 8_000,
-            memoryBytes: 16 * 1024 ** 3,
-          },
+          totalCpuMillis: 8_000,
+          totalMemoryBytes: 16 * 1024 ** 3,
         });
         await expect(
           table.refreshColumnAsync("embedding", {
@@ -1078,75 +1414,53 @@ describe("remote connection", () => {
           [{ maxConcurrency: Number.NaN }, "maxConcurrency"],
           [{ maxConcurrency: Number.POSITIVE_INFINITY }, "maxConcurrency"],
           [{ numWorkers: 0 }, "num_workers"],
-          [{ gpuCount: 0 }, "gpu_count"],
+
           [
             {
-              resourceBudget: {
-                cpuMillis: 1_000,
-                memoryBytes: 1_024,
-              },
-              gpuCount: 1,
+              totalCpuMillis: 0,
+              totalMemoryBytes: 1_024,
             },
-            "gpu_count cannot be combined with resource_budget",
+            "totalCpuMillis",
           ],
           [
             {
-              resourceBudget: {
-                cpuMillis: 0,
-                memoryBytes: 1_024,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: 1.5,
             },
-            "resourceBudget.cpuMillis",
+            "totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                cpuMillis: 1_000,
-                memoryBytes: 1_024,
-                gpuCount: 1.5,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: -1,
             },
-            "resourceBudget.gpuCount",
+            "totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                cpuMillis: 1_000,
-                memoryBytes: 1_024,
-                gpuCount: -1,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: 2 ** 32,
             },
-            "resourceBudget.gpuCount",
+            "totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                cpuMillis: 1_000,
-                memoryBytes: 1_024,
-                gpuCount: 2 ** 32,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: Number.NaN,
             },
-            "resourceBudget.gpuCount",
+            "totalGpuCount",
           ],
           [
             {
-              resourceBudget: {
-                cpuMillis: 1_000,
-                memoryBytes: 1_024,
-                gpuCount: Number.NaN,
-              },
+              totalCpuMillis: 1_000,
+              totalMemoryBytes: 1_024,
+              totalGpuCount: Number.POSITIVE_INFINITY,
             },
-            "resourceBudget.gpuCount",
-          ],
-          [
-            {
-              resourceBudget: {
-                cpuMillis: 1_000,
-                memoryBytes: 1_024,
-                gpuCount: Number.POSITIVE_INFINITY,
-              },
-            },
-            "resourceBudget.gpuCount",
+            "totalGpuCount",
           ],
           [
             {
@@ -1195,7 +1509,7 @@ describe("remote connection", () => {
       JSON.parse(
         `{"column": "embedding", "where": "id % 2 = 0", "batch_size": 16,
           "publication_interval_rows": 60,
-          "max_concurrency": 3, "gpu_class": "a10g", "gpu_count": 2,
+          "max_concurrency": 3, "gpu_class": "a10g", "total_gpu_count": 2,
           "error_policy": "skip",
           "max_failed_fraction": 0.01, "max_failed_rows": 50,
           "row_timeout_seconds": 30, "init_timeout_seconds": 120,
@@ -1211,12 +1525,7 @@ describe("remote connection", () => {
         '{"column": "embedding", "publication_interval_rows": 9007199254740991}',
       ),
       JSON.parse(
-        `{"column": "embedding",
-          "resource_budget": {
-            "cpu_millis": 8000,
-            "memory_bytes": 17179869184,
-            "gpu_count": 0
-          }}`,
+        '{"column":"embedding","total_cpu_millis":8000,"total_memory_bytes":17179869184}',
       ),
     ]);
   });
@@ -1394,6 +1703,111 @@ describe("remote connection", () => {
     );
   });
 
+  it("forks Enterprise branches from tags and defaults tag versions", async () => {
+    const requests: { path: string; body: Record<string, unknown> }[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/branches/list/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            }),
+          );
+          return;
+        }
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 2,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw ? JSON.parse(raw) : {};
+          requests.push({ path, body });
+          if (path.endsWith("/tags/version/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: 3, branch: "base" }));
+            return;
+          }
+          if (path.endsWith("/tags/create/")) {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          if (path.endsWith("/branches/create/")) {
+            if (body["name"] === "missing") {
+              res
+                .writeHead(404, { "Content-Type": "application/json" })
+                .end(JSON.stringify({ message: "not found" }));
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end("{}");
+            return;
+          }
+          res.writeHead(404).end();
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("t", undefined, { branch: "exp" });
+        await (await table.tags()).create("baseline");
+
+        const branches = await table.branches();
+        const fromTag = await branches.create("from-tag", {
+          fromTag: "baseline",
+        });
+        expect(fromTag.currentBranch()).toBe("from-tag");
+
+        // An Enterprise 404 is an ambiguous table-or-source failure, so the
+        // Embedded branch hint must not be appended based on its message.
+        const missing = await branches
+          .create("missing", { fromTag: "baseline" })
+          .then(
+            () => undefined,
+            (error: Error) => error,
+          );
+        expect(missing).toBeDefined();
+        expect(missing?.message).not.toContain("fromTag");
+      },
+    );
+
+    // Omitting the tag version resolves the handle's visible branch version.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/create/",
+      body: {
+        tag: "baseline",
+        version: 2,
+        branch: "exp",
+      },
+    });
+    // A tag source uses the existing coordinate lookup and the normal
+    // branches/create body; there is no from_tag field on the wire.
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/tags/version/",
+      body: { tag: "baseline" },
+    });
+    expect(requests).toContainEqual({
+      path: "/v1/table/t/branches/create/",
+      // biome-ignore lint/style/useNamingConvention: snake_case is the server wire format
+      body: { name: "from-tag", from_branch: "base", from_version: 3 },
+    });
+  });
+
   it("sends FTS options to remote tables", async () => {
     let createIndexBody: Record<string, unknown> | undefined;
 
@@ -1524,6 +1938,91 @@ describe("remote connection", () => {
         name: "geom_rtree",
         // biome-ignore lint/style/useNamingConvention: server wire format
         page_size: 1024,
+      },
+    ]);
+  });
+
+  it("uses an explicit type and nested params for remote scalar plugin indexes", async () => {
+    const createIndexBodies: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "id", type: { type: "int32" }, nullable: false },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBodies.push(JSON.parse(raw));
+            res.writeHead(200).end();
+          });
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("id", { config: Index.plugin(" ZoneMap ") });
+        await table.createIndex("id", {
+          config: Index.plugin("bloomfilter", {
+            // biome-ignore lint/style/useNamingConvention: plugin param name
+            number_of_items: 4096,
+            column: "not_id",
+          }),
+          name: "id_bloom",
+        });
+        await table.createIndex("id", {
+          config: Index.plugin("bloomfilter", '{"probability": 0.01}'),
+        });
+        await table.createIndex("id", { config: Index.plugin("zonemap", {}) });
+      },
+    );
+
+    expect(createIndexBodies).toEqual([
+      // biome-ignore lint/style/useNamingConvention: wire format
+      { column: "id", index_type: "PLUGIN", plugin_type: "ZONEMAP" },
+      {
+        column: "id",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        index_type: "PLUGIN",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        plugin_type: "BLOOMFILTER",
+        name: "id_bloom",
+        // biome-ignore lint/style/useNamingConvention: plugin param name
+        params: { number_of_items: 4096, column: "not_id" },
+      },
+      {
+        column: "id",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        index_type: "PLUGIN",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        plugin_type: "BLOOMFILTER",
+        params: { probability: 0.01 },
+      },
+      {
+        column: "id",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        index_type: "PLUGIN",
+        // biome-ignore lint/style/useNamingConvention: wire format
+        plugin_type: "ZONEMAP",
+        params: {},
       },
     ]);
   });
@@ -2191,7 +2690,13 @@ describe("remote connection jobs surface", () => {
                 .end(
                   '{"jobs": [{"job_id": "job-2", "table": "t2", ' +
                     '"job_type": "create_index", "state": "succeeded", ' +
-                    '"created_at_millis": 2000}]}',
+                    '"created_at_millis": 2000, "completed_at_millis": 2000, ' +
+                    '"duration_millis": 0, "columns": ["embedding"], ' +
+                    '"function_name": "features$embed", "function_version": "7"}, ' +
+                    '{"job_id": "job-3", "table": "t2", "job_type": "function_refresh", ' +
+                    '"state": "failed", "created_at_millis": 3000, "duration_millis": 200, ' +
+                    '"completed_at_millis": 3200, "failure": {"phase": "execute", ' +
+                    '"message": "worker failed", "retryable": false}}]}',
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
@@ -2260,9 +2765,31 @@ describe("remote connection jobs surface", () => {
       },
       async (db) => {
         const jobs = await collect(db.listJobs());
-        expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
+        expect(jobs.map((job) => job.jobId)).toEqual([
+          "job-1",
+          "job-2",
+          "job-3",
+        ]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
+        expect(jobs[0].completedAtMillis).toBeUndefined();
+        expect(jobs[0].durationMillis).toBeUndefined();
+        expect(jobs[0].columns).toEqual([]);
+        expect(jobs[0].functionName).toBeUndefined();
+        expect(jobs[0].functionVersion).toBeUndefined();
+        expect(jobs[0].failure).toBeUndefined();
+        expect(jobs[1].completedAtMillis).toBe(2000);
+        expect(jobs[1].durationMillis).toBe(0);
+        expect(jobs[1].columns).toEqual(["embedding"]);
+        expect(jobs[1].functionName).toBe("features$embed");
+        expect(jobs[1].functionVersion).toBe("7");
+        expect(jobs[1].failure).toBeUndefined();
+        expect(jobs[2].state).toBe("failed");
+        expect(jobs[2].durationMillis).toBe(200);
+        expect(jobs[2].failure?.phase).toBe("execute");
+        expect(jobs[2].failure?.message).toBe("worker failed");
+        expect(jobs[2].failure?.retryable).toBe(false);
+        expect(jobs[2].failure?.traceback).toBeUndefined();
         expect(jobs[0].progress).toEqual({
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
@@ -2305,6 +2832,8 @@ describe("remote connection jobs surface", () => {
         expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
         expect(await job.progress()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: server wire format
+          job_id: "job-1",
           // biome-ignore lint/style/useNamingConvention: server wire format
           job_type: "create_index",
           state: "failed",
@@ -3234,4 +3763,60 @@ describe("table overrides", () => {
     );
     expect(requests).toEqual([]);
   });
+});
+
+describe("cleanup typed results", () => {
+  test.each(["counts", "no_op", "unknown", "missing", "FAILED", "CANCELLED"])(
+    "reopens and waits for cleanup (%s)",
+    async (outcome) => {
+      const known = outcome !== "unknown";
+      await withMockDatabase(
+        (request, response) => {
+          expect(request.url).toBe("/v1/jobs/describe");
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              ["job_id"]: "cleanup-job",
+              ["job_type"]: "cleanup",
+              ["job_state"]: ["FAILED", "CANCELLED"].includes(outcome)
+                ? outcome
+                : "DONE",
+              result:
+                outcome === "missing"
+                  ? null
+                  : {
+                      ["format_version"]: 1,
+                      ["min_age_seconds"]: 0,
+                      ["statistics_complete"]: known,
+                      ["old_versions"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 2
+                        : null,
+                      ["bytes_removed"]: known
+                        ? outcome === "no_op"
+                          ? 0
+                          : 123
+                        : null,
+                    },
+            }),
+          );
+        },
+        async (db) => {
+          const job =
+            await db.openJob<import("../lancedb").CleanupResult>("cleanup-job");
+          if (["missing", "FAILED", "CANCELLED"].includes(outcome)) {
+            await expect(job.wait()).rejects.toThrow();
+          } else {
+            const result = await job.wait();
+            expect(result.statisticsComplete).toBe(known);
+            expect(result.oldVersions).toBe(
+              known ? (outcome === "no_op" ? 0 : 2) : null,
+            );
+            expect(result.minAgeSeconds).toBe(0);
+          }
+        },
+      );
+    },
+  );
 });
