@@ -405,6 +405,54 @@ class PythonEnvironmentSpec(_RemoteValue):
     image: Optional[str] = None
     system_packages: tuple[str, ...] = ()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_registration_build(cls, value):
+        if isinstance(value, Mapping):
+            build = value.get("build")
+            if build is not None and (not isinstance(build, Mapping) or build):
+                raise TypeError(
+                    "runtime.environment.build is unsupported "
+                    "in typed Function registration"
+                )
+        return value
+
+
+class PythonEnvironmentBuild(_RemoteValue):
+    """Explicit primary package index URL reported on a Function version."""
+
+    index_url: str
+
+
+class RequestedPythonEnvironment(PythonEnvironmentSpec):
+    """Python environment metadata reported on a Function version.
+
+    ``build`` contains only the explicitly requested primary package index URL.
+    An omitted ``build`` can still accompany extra indexes, other sources, or
+    service defaults. See
+    [ResolvedEnvironmentProvenance][lancedb.functions.ResolvedEnvironmentProvenance]
+    for the sources reported by the build.
+    """
+
+    build: Optional[PythonEnvironmentBuild] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_registration_build(cls, value):
+        # Inspection accepts an authored model or a wire document with a build field.
+        if isinstance(value, PythonEnvironmentSpec) and not isinstance(value, cls):
+            return value._known_dict()
+        return value
+
+    @field_validator("build", mode="before")
+    @classmethod
+    def _read_primary_index(cls, build):
+        if isinstance(build, PythonEnvironmentBuild):
+            return build
+        if isinstance(build, Mapping) and isinstance(build.get("index_url"), str):
+            return {"index_url": build["index_url"]}
+        return None
+
 
 _HUGGING_FACE_MODEL_REPO = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
@@ -543,10 +591,11 @@ class PythonRuntimeSpec(_RemoteValue):
 
         Covers Python version, environment sources, environment variables, and
         GPU settings. Package and system-package order is ignored; conda channel
-        order is preserved. Compare with ``runtime_digest`` on
-        [FunctionVersion][lancedb.functions.FunctionVersion].
-        This identifies build inputs, not the resolved contents of unpinned
-        dependencies or the deployment's default base image.
+        order is preserved. Compare an authored runtime's digest with
+        ``runtime_digest`` on [FunctionVersion][lancedb.functions.FunctionVersion].
+        A version's projected runtime fields can omit inputs from that digest.
+        This identity covers declared inputs; the installed contents of unpinned
+        dependencies and the deployment's default base image can vary.
         """
         if self.kind not in {"python", "python_v2"}:
             raise ValueError(f"cannot digest unknown runtime kind {self.kind!r}")
@@ -565,6 +614,25 @@ class PythonRuntimeSpec(_RemoteValue):
             separators=(",", ":"),
         ).encode("utf-8")
         return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+class RequestedPythonRuntime(PythonRuntimeSpec):
+    """Requested runtime metadata available during Function version inspection.
+
+    The build view contains only an explicit primary package index URL. Other
+    sources can be present even when the build view is absent. Compare the
+    server's ``FunctionVersion.runtime_digest`` with the digest of an authored
+    runtime. The inspection view can omit inputs needed to reproduce that digest.
+    """
+
+    environment: Optional[RequestedPythonEnvironment] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_unknown_runtime_payload(cls, value):
+        if isinstance(value, PythonRuntimeSpec) and not isinstance(value, cls):
+            value = value._known_dict()
+        return super()._discard_unknown_runtime_payload(value)
 
 
 class FunctionImage(_RemoteValue):
@@ -685,12 +753,12 @@ class FunctionEnvironment(NamedTuple):
     and
     [FunctionVersion.resolved_environment][lancedb.functions.FunctionVersion.resolved_environment].
     It adds no wire field and performs no second parse. ``requested`` is the
-    runtime specification supplied at registration; ``resolved`` is measured
-    data and is ``None`` when unknown. For per-platform multiarchitecture
+    server's view of the runtime requested at registration. ``resolved`` is
+    measured data and is ``None`` when unknown. For per-platform multiarchitecture
     measurements, use ``FunctionVersion.environment_report``.
     """
 
-    requested: Optional[PythonRuntimeSpec]
+    requested: Optional[RequestedPythonRuntime]
     resolved: Optional[ResolvedEnvironment]
 
 
@@ -745,16 +813,16 @@ class FunctionVersion(_RemoteValue):
     catalog. They are ``None`` for versions registered before the
     corresponding declaration.
 
-    ``runtime`` is the runtime specification requested at registration. It is
-    not evidence of what was installed. ``resolved_environment`` is measured
-    data for a single-platform image: actual package names and complete
-    versions, optional per-package source, provenance, and registration
-    warnings. ``resolved_environments`` is the corresponding map for a
-    multiarchitecture image, keyed by OCI ``os/architecture``. It is never
-    flattened into an aggregate package list. ``None`` or an empty map means
-    unknown data, not an empty installed environment. ``environment`` is a
-    convenience view with ``requested`` and ``resolved`` members over the same
-    fields.
+    ``runtime`` contains the requested runtime fields exposed by the SDK.
+    The canonical runtime identity comes from ``runtime_digest``.
+    ``resolved_environment`` is measured data for a single-platform image:
+    actual package names and complete versions, optional per-package source,
+    provenance, and registration warnings. ``resolved_environments`` is the
+    corresponding map for a multiarchitecture image, keyed by OCI
+    ``os/architecture``. It is never flattened into an aggregate package list.
+    ``None`` or an empty map means the measurement is unknown. ``environment``
+    is a convenience view with ``requested`` and ``resolved`` members over the
+    same fields.
     """
 
     name: str
@@ -778,7 +846,7 @@ class FunctionVersion(_RemoteValue):
     total_gpu_count: Optional[_UInt32] = None
     row_timeout_seconds: Optional[float] = None
     result_stability: Optional[str] = None
-    runtime: Optional[PythonRuntimeSpec] = None
+    runtime: Optional[RequestedPythonRuntime] = None
     resolved_environment: Optional[ResolvedEnvironment] = None
     resolved_environments: Mapping[str, ResolvedEnvironment] = Field(
         default_factory=dict
@@ -957,9 +1025,10 @@ class FunctionRegistrationRequest(_RemoteValue):
     Credential values deliberately have no field here. The only secret-shaped
     thing a client sends is ``secret_bindings``: the name of a Secret the
     database already holds, which the remote service resolves at execution.
-    ``refresh_lock`` is a per-registration action, not part of the Function's
-    source or runtime identity; its false default is omitted from canonical
-    JSON.
+    ``refresh_lock`` is a per-registration action that leaves the Function's
+    source and runtime identities unchanged. Its false default is omitted from
+    canonical JSON. The typed registration API accepts authored runtimes and
+    rejects nonempty ``runtime.environment.build`` settings.
     """
 
     name: str
@@ -996,6 +1065,24 @@ class FunctionRegistrationRequest(_RemoteValue):
     @classmethod
     def _validate_refresh_lock(cls, value):
         return _validate_refresh_lock(value)
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def _require_authored_runtime(cls, runtime):
+        if isinstance(runtime, RequestedPythonRuntime) or (
+            isinstance(runtime, PythonRuntimeSpec)
+            and isinstance(runtime.environment, RequestedPythonEnvironment)
+        ):
+            raise TypeError(
+                "Function version runtime metadata is for inspection only; "
+                "register an authored @function definition"
+            )
+        return runtime
+
+    def to_canonical_json(self) -> str:
+        """Encode the authored request for Function registration."""
+        self._require_authored_runtime(self.runtime)
+        return super().to_canonical_json()
 
     def with_refresh_lock(self, refresh_lock: bool) -> FunctionRegistrationRequest:
         """Return this request with the registration-time refresh action set."""
@@ -4148,7 +4235,10 @@ __all__ = [
     "OutputMapping",
     "PythonEnvironmentSpec",
     "PythonAdapterSpec",
+    "PythonEnvironmentBuild",
     "PythonRuntimeSpec",
+    "RequestedPythonEnvironment",
+    "RequestedPythonRuntime",
     "ResolvedEnvironment",
     "ResolvedEnvironmentProvenance",
     "ResolvedPackage",

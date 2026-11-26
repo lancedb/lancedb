@@ -690,6 +690,10 @@ with BlobReader(read_range, len(payload)) as reader:
 
 ::: lancedb.functions.PythonEnvironmentSpec
 
+::: lancedb.functions.RequestedPythonEnvironment
+
+::: lancedb.functions.PythonEnvironmentBuild
+
 ::: lancedb.functions.function
 
 ::: lancedb.functions.FunctionDefinition
@@ -723,6 +727,8 @@ with BlobReader(read_range, len(payload)) as reader:
 ::: lancedb.functions.HuggingFaceModel
 
 ::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.functions.RequestedPythonRuntime
 
 ::: lancedb.GpuClass
 
