@@ -3406,6 +3406,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         version_json["row_timeout_seconds"] = serde_json::json!(8.0);
         version_json["result_stability"] = serde_json::json!("input_and_context");
         version_json["runtime"] = request_json["runtime"].clone();
+        let requested_index_url = "https://requested.example/simple/";
+        version_json["runtime"]["environment"]["build"] = serde_json::json!({
+            "index_url": requested_index_url,
+            "find_links": ["https://downloads.example/wheels"],
+        });
         version_json["resolved_environment"] = serde_json::json!({
             "packages": [
                 {
@@ -3551,6 +3556,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described.row_timeout_seconds(), Some(8.0));
         assert_eq!(described.result_stability(), Some("input_and_context"));
         assert_eq!(described.runtime().unwrap().kind(), "python");
+        assert_eq!(described.requested_index_url(), Some(requested_index_url));
         assert_eq!(
             described
                 .resolved_environment()
@@ -3570,6 +3576,14 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(described_json["max_concurrency"], 4);
         assert_eq!(described_json["row_timeout_seconds"], 8.0);
         assert_eq!(described_json["result_stability"], "input_and_context");
+        assert_eq!(
+            described_json["runtime"]["environment"]["build"],
+            serde_json::json!({"index_url": requested_index_url})
+        );
+        assert_eq!(
+            described_json["resolved_environment"]["provenance"]["configured_index_urls"],
+            serde_json::json!(["https://packages.example/simple"])
+        );
         let latest = db
             .get_function_latest("embed", &["team".into()])
             .await
