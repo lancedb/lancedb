@@ -1814,6 +1814,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.sql_client.clone(),
             ));
             table.seed_blob_ranges_capability(rsp.headers());
+            table.seed_blob_locations_capability(rsp.headers());
             Ok(table)
         } else {
             // Describe the table to confirm it exists before moving on.
@@ -1837,6 +1838,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.sql_client.clone(),
             ));
             table.seed_blob_ranges_capability(&describe_headers);
+            table.seed_blob_locations_capability(&describe_headers);
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
             // branch pin applied after this invalidates the cache.
@@ -2855,7 +2857,9 @@ mod tests {
         let mut bytes = vec![0; 128 * 72 * 1024];
         SmallRng::seed_from_u64(4977).fill_bytes(&mut bytes);
         let strings: Vec<String> = bytes
-            .chunks_exact(72 * 1024)
+            .as_chunks::<{ 72 * 1024 }>()
+            .0
+            .iter()
             .map(|chunk| chunk.iter().map(|b| char::from(b'!' + b % 90)).collect())
             .collect();
         let mut batches = Vec::new();
@@ -5124,6 +5128,75 @@ mod tests {
             conn.drop_table("t", &["team/search".to_string()]).await,
             Err(Error::InvalidInput { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn function_refresh_status_tracks_capacity_without_ending_wait() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let count = polls.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            // Open, status while waiting, status after admission, another wait
+            // observed inside wait(), and finally a successful completion.
+            let (state, phase) = match count.fetch_add(1, Ordering::SeqCst) {
+                0 | 1 | 3 => ("IN_PROGRESS", "waiting_for_capacity"),
+                2 => ("IN_PROGRESS", "running"),
+                _ => ("SUCCEEDED", "waiting_for_capacity"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "job_id": "job-1", "job_type": "function_refresh",
+                        "job_state": state, "phase": phase, "creation_ms": 1
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let job = conn.open_job("job-1").await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "waiting_for_capacity");
+        assert_eq!(job.state().as_deref(), Some("running"));
+        assert_eq!(job.status().await.unwrap(), "running");
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert!(polls.load(Ordering::SeqCst) >= 6);
+    }
+
+    #[tokio::test]
+    async fn capacity_status_requires_an_active_function_refresh() {
+        for (job_type, lifecycle, phase, paused_at) in [
+            (
+                "create_index",
+                "in_progress",
+                Some("waiting_for_capacity"),
+                None,
+            ),
+            (
+                "function_refresh",
+                "in_progress",
+                Some("waiting_for_capacity"),
+                Some(42),
+            ),
+            (
+                "function_refresh",
+                "queued",
+                Some("waiting_for_capacity"),
+                None,
+            ),
+            ("function_refresh", "in_progress", None, None),
+        ] {
+            let conn = Connection::new_with_handler(move |_| {
+                http::Response::builder().status(200).body(
+                    serde_json::json!({
+                        "job_id": "job-1", "job_type": job_type, "job_state": "IN_PROGRESS",
+                        "lifecycle_state": lifecycle, "phase": phase, "paused_at_millis": paused_at
+                    }).to_string()
+                ).unwrap()
+            });
+            let job = conn.open_job("job-1").await.unwrap();
+            assert_eq!(job.status().await.unwrap(), "running");
+        }
     }
 
     #[tokio::test]

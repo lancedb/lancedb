@@ -63,8 +63,13 @@ export {
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
+  FunctionErrorGroup,
   FunctionErrorRecord,
   FunctionErrorFragment,
+  FunctionProvenance,
+  FunctionProvenanceOptions,
+  FunctionQuarantineOptions,
+  FunctionValueProvenance,
   RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
@@ -110,6 +115,15 @@ export {
   DescribeNamespaceResponse,
   RenameTableOptions,
 } from "./connection";
+
+export type {
+  FunctionErrorRowsOptions,
+  FunctionFailedRow,
+  FunctionRecompute,
+  RefreshColumnJobResult,
+  RetryFailedOptions,
+  UpgradeColumnOptions,
+} from "./function_recovery";
 
 export { JobFailureInfo, JobInfo, Session } from "./native.js";
 

@@ -1374,7 +1374,11 @@ async def test_profile_wait_preserves_timeout_and_never_waits_or_cancels_parent(
             await asyncio.to_thread(Job(job).wait_for_profile, "profile-1", **kwargs)
         else:
             await job.wait_for_profile("profile-1", **kwargs)
-    assert caught.value is error
+    assert caught.value.args == error.args
+    # On Python 3.11 and 3.12, run_coroutine_threadsafe re-creates TimeoutError
+    # when copying it across futures, so identity only holds on the async path.
+    if not sync:
+        assert caught.value is error
     inner.wait_for_profile.assert_awaited_once_with(
         "profile-1", timeout_seconds=0.05, poll_interval_seconds=5.0
     )

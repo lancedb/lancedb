@@ -316,8 +316,9 @@ class AsyncJob(Generic[T]):
         return self._inner.id if self._inner is not None else None
 
     async def status(self) -> str:
-        """The operation's current lifecycle state: "running", "finished",
-        "failed", or "cancelled".
+        """Return the current status, usually "running", "finished", "failed",
+        or "cancelled". A Function refresh waiting for execution workers reports
+        "waiting_for_capacity".
 
         A point snapshot; unlike `wait` it does not block or raise on a
         terminal failure state. States a newer server reports that this
@@ -384,8 +385,7 @@ class AsyncJob(Generic[T]):
         Queue metadata and counters are included when supplied by the server.
         Older servers may
         omit counters, and in-process operations return ``None``. A missing
-        counter is unknown rather than zero. This is additive to :meth:`status`,
-        whose string contract is unchanged.
+        counter is unknown rather than zero.
         """
         if self._inner is None:
             return None
@@ -1070,8 +1070,9 @@ class Job(Generic[T]):
         return self._inner._id if self._inner is not None else None
 
     def status(self) -> str:
-        """The operation's current lifecycle state: "running", "finished",
-        "failed", or "cancelled".
+        """Return the current status, usually "running", "finished", "failed",
+        or "cancelled". A Function refresh waiting for execution workers reports
+        "waiting_for_capacity".
 
         See :meth:`AsyncJob.status`.
         """

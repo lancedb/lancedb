@@ -233,6 +233,9 @@ pub struct RefreshColumnOptions {
     /// Only refresh the rows matching this SQL filter. Enterprise only.
     #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
     pub where_clause: Option<String>,
+    /// Total Function refresh attempts, including the initial job. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_job_attempts: Option<u32>,
     /// Override the Function's default user-code retry policy. Enterprise only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<crate::function::FunctionRetryPolicy>,
@@ -382,6 +385,12 @@ impl RefreshColumnOptions {
         self
     }
 
+    /// Set the total job attempt limit for automatic Function refresh recovery.
+    pub fn max_job_attempts(mut self, attempts: u32) -> Self {
+        self.max_job_attempts = Some(attempts);
+        self
+    }
+
     /// Cap executor processes per Function worker at `processes`.
     pub fn max_executor_processes_per_worker(mut self, processes: u32) -> Self {
         self.max_executor_processes_per_worker = Some(processes);
@@ -478,6 +487,7 @@ impl RefreshColumnOptions {
             ("row_timeout_seconds", self.row_timeout_seconds.is_some()),
             ("init_timeout_seconds", self.init_timeout_seconds.is_some()),
             ("num_workers", self.num_workers.is_some()),
+            ("max_job_attempts", self.max_job_attempts.is_some()),
             (
                 "max_executor_processes_per_worker",
                 self.max_executor_processes_per_worker.is_some(),
@@ -557,6 +567,11 @@ impl RefreshColumnOptions {
         if self.num_workers == Some(0) {
             return Err(Error::InvalidInput {
                 message: "num_workers must be greater than zero".into(),
+            });
+        }
+        if self.max_job_attempts == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_job_attempts must be greater than zero".into(),
             });
         }
         if self.max_executor_processes_per_worker == Some(0) {

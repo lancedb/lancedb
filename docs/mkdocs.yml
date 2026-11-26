@@ -72,11 +72,11 @@ plugins:
             separate_signature: true
             filters:
               - "!^_"
-          import:
+          inventories:
             # for cross references
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
-            - https://docs.pydantic.dev/latest/objects.inv
+            - https://pydantic.dev/docs/validation/latest/objects.inv
   - render_swagger:
       allow_arbitrary_locations: true
 #   - redirects:

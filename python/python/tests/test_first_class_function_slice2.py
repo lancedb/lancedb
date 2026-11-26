@@ -33,6 +33,7 @@ from lancedb.functions import (
     FunctionSignature,
     FunctionVersion,
     HuggingFaceModel,
+    PythonEnvironmentBuild,
     PythonRuntimeSpec,
     SecretBinding,
     SecretReference,
@@ -2638,6 +2639,52 @@ def test_function_version_reads_requested_and_resolved_environments():
     del invalid["resolved_environment"]["packages"]
     with pytest.raises(ValueError):
         FunctionVersion.from_json(json.dumps(invalid))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "build",
+    [
+        {},
+        {"build": None},
+        {"build": {}},
+        {"build": {"index_url": None}},
+        {"build": {"index_url": 1}},
+        {"build": "invalid-build"},
+        {
+            "build": {
+                "index_url": "https://requested.example/simple/",
+                "find_links": ["https://downloads.example/wheels"],
+            },
+        },
+    ],
+)
+async def test_get_pinned_function_preserves_only_the_requested_index_url(build):
+    payload = _function_version_with_resolved_environment()
+    payload["runtime"]["environment"].update(build)
+    catalog = _RawFunctionCatalog(payload, encode=True)
+    connection = AsyncConnection(catalog)
+
+    version = await connection.get_function(payload["name"], version=1)
+
+    assert catalog.requested_versions == ["1"]
+    assert version.version == "1"
+    requested = version.runtime.environment.build
+    raw_build = build.get("build")
+    index_url = raw_build.get("index_url") if isinstance(raw_build, dict) else None
+    canonical = version.to_canonical_json()
+    encoded = json.loads(canonical)["runtime"]["environment"]
+    if not isinstance(index_url, str):
+        assert requested is None
+        assert "build" not in encoded
+    else:
+        assert isinstance(requested, PythonEnvironmentBuild)
+        assert requested.index_url == index_url
+        assert encoded["build"] == {"index_url": index_url}
+    assert version.resolved_environment.provenance.configured_index_urls == (
+        "https://packages.example/simple",
+    )
+    assert FunctionVersion.from_json(canonical) == version
 
 
 def test_function_version_reads_resolved_environments_by_platform():

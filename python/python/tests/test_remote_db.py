@@ -2391,6 +2391,7 @@ def test_remote_create_index_async_returns_job():
             "row_timeout_seconds": 30,
             "init_timeout_seconds": 120,
             "num_workers": 4,
+            "max_job_attempts": 4,
             "max_executor_processes_per_worker": 2,
         },
     ],
@@ -2438,6 +2439,7 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
                 "row_timeout_seconds",
                 "init_timeout_seconds",
                 "num_workers",
+                "max_job_attempts",
                 "max_executor_processes_per_worker",
             ):
                 if refresh_kwargs.get(key) is not None:
@@ -2508,6 +2510,56 @@ async def test_remote_refresh_async_returns_typed_terminal_result(
     assert result.model_dump(exclude_defaults=True) == terminal_result
     assert result.rows_filled == 12
     assert result.version == 8
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_table", [True, False])
+async def test_resume_refresh_returns_typed_successor(async_table):
+    terminal = {
+        "rows_assigned": 12,
+        "rows_failed": 0,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+    }
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        if request.path == "/v1/table/test/describe/":
+            response = {"version": 1, "schema": {"fields": []}}
+        elif request.path == "/v1/table/test/resume_refresh":
+            assert body == {"job_id": "failed"}
+            response = {"job_id": "successor"}
+        elif request.path == "/v1/jobs/describe":
+            assert body["job_id"] == "successor"
+            response = {
+                "job_id": "successor",
+                "job_type": "function_refresh",
+                "job_state": "DONE",
+                "result": terminal,
+            }
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    if async_table:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            job = await table.resume_refresh("failed")
+            result = await job.wait(timeout=timedelta(seconds=30))
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            job = table.resume_refresh("failed")
+            result = job.wait(timeout=timedelta(seconds=30))
+
+    assert job.id() == "successor"
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.model_dump(exclude_defaults=True) == terminal
 
 
 def test_remote_refresh_async_forwards_progress_from_submitted_handle():
@@ -3470,6 +3522,74 @@ def test_remote_create_rtree_index():
             "index_type": "RTREE",
             "name": "geom_rtree",
             "page_size": 1024,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_scalar_plugin_nests_params(use_async):
+    from lancedb.index import ScalarPlugin
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            fields = [{"name": "id", "type": {"type": "int32"}, "nullable": False}]
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": fields}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    cases = [
+        (ScalarPlugin(" ZoneMap "), {}),
+        (
+            ScalarPlugin("bloomfilter", {"number_of_items": 4096, "column": "not_id"}),
+            {"name": "id_bloom", "replace": False},
+        ),
+        (ScalarPlugin("bloomfilter", '{"probability": 0.01}'), {}),
+        (ScalarPlugin("zonemap", {}), {}),
+    ]
+
+    if use_async:
+        async with mock_lancedb_connection_async(handler) as db:
+            table = await db.open_table("test")
+            for config, options in cases:
+                await table.create_index("id", config=config, **options)
+    else:
+        with mock_lancedb_connection(handler) as db:
+            table = db.open_table("test")
+            for config, options in cases:
+                table.create_index("id", config=config, **options)
+
+    assert received_requests == [
+        {"column": "id", "index_type": "PLUGIN", "plugin_type": "ZONEMAP"},
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
+            "name": "id_bloom",
+            "replace": False,
+            "params": {"number_of_items": 4096, "column": "not_id"},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "BLOOMFILTER",
+            "params": {"probability": 0.01},
+        },
+        {
+            "column": "id",
+            "index_type": "PLUGIN",
+            "plugin_type": "ZONEMAP",
+            "params": {},
         },
     ]
 

@@ -463,6 +463,9 @@ class DBConnection(EnforceOverrides):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -2754,6 +2757,9 @@ class LanceDBConnection(DBConnection):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -2772,6 +2778,7 @@ class LanceDBConnection(DBConnection):
                 azure_tenant_id_secret=azure_tenant_id_secret,
                 azure_client_id_secret=azure_client_id_secret,
                 azure_client_secret_secret=azure_client_secret_secret,
+                azure_storage_account_access_key_secret=azure_storage_account_access_key_secret,
                 gcp_credentials_json_secret=gcp_credentials_json_secret,
                 huggingface_token_secret=huggingface_token_secret,
                 exist_ok=exist_ok,
@@ -4269,6 +4276,9 @@ class AsyncConnection(object):
         azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
         azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
+        azure_storage_account_access_key_secret: Optional[
+            Union[str, SecretReference]
+        ] = None,
         gcp_credentials_json_secret: Optional[Union[str, SecretReference]] = None,
         huggingface_token_secret: Optional[Union[str, SecretReference]] = None,
         exist_ok: bool = False,
@@ -4279,7 +4289,8 @@ class AsyncConnection(object):
         ``namespace_path`` follows Secret naming rules. A SecretReference can name
         another database; a string names a root Secret in this database.
         For Azure, set ``storage_provider="AZURE"``, ``azure_storage_account``,
-        and Secret references for tenant ID, client ID and client secret.
+        and either ``azure_storage_account_access_key_secret`` or the three
+        Secret references for tenant ID, client ID and client secret.
         For GCP, set ``storage_provider="GCP"`` and ``gcp_credentials_json_secret``
         to a Secret containing the application credentials JSON file content.
         For Hugging Face, set ``storage_provider="HUGGINGFACE"`` and
@@ -4291,10 +4302,13 @@ class AsyncConnection(object):
         integration exists, preserving its provider, prefix and credential
         bindings. Existing names are errors by default.
         """
-        azure_options = (
+        azure_service_principal = (
             azure_tenant_id_secret,
             azure_client_id_secret,
             azure_client_secret_secret,
+        )
+        azure_options = azure_service_principal + (
+            azure_storage_account_access_key_secret,
         )
         if storage_provider != "HUGGINGFACE" and huggingface_token_secret is not None:
             raise ValueError(
@@ -4331,12 +4345,17 @@ class AsyncConnection(object):
             ):
                 raise ValueError("GCP integrations cannot contain AWS or Azure options")
         elif storage_provider == "AZURE":
-            if not azure_storage_account or any(
-                value is None for value in azure_options
-            ):
+            if not azure_storage_account:
+                raise ValueError("Azure integrations require azure_storage_account")
+            valid_credentials = (
+                all(value is None for value in azure_service_principal)
+                if azure_storage_account_access_key_secret is not None
+                else all(value is not None for value in azure_service_principal)
+            )
+            if not valid_credentials:
                 raise ValueError(
-                    "Azure requires a storage account and "
-                    "all three credential Secret references"
+                    "Specify either azure_storage_account_access_key_secret or "
+                    "all three Azure service principal Secret references"
                 )
             if any(
                 value is not None
@@ -4393,6 +4412,9 @@ class AsyncConnection(object):
             "azure_tenant_id_secret": reference(azure_tenant_id_secret),
             "azure_client_id_secret": reference(azure_client_id_secret),
             "azure_client_secret_secret": reference(azure_client_secret_secret),
+            "azure_storage_account_access_key_secret": reference(
+                azure_storage_account_access_key_secret
+            ),
             "gcp_credentials_json_secret": reference(gcp_credentials_json_secret),
             "huggingface_token_secret": reference(huggingface_token_secret),
             "aws_access_key_id_secret": reference(aws_access_key_id_secret),

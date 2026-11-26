@@ -41,6 +41,15 @@ import {
   runWithSignal,
 } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import {
+  type FunctionErrorRowsOptions,
+  type FunctionFailedRow,
+  type RefreshColumnJobResult,
+  type RetryFailedOptions,
+  type UpgradeColumnOptions,
+  decodeRefreshColumnJobResult,
+  readFailedRows,
+} from "./function_recovery";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
 import { validateNonNegativeInteger } from "./materialized_view";
@@ -55,6 +64,9 @@ import {
   DropColumnsResult,
   FunctionErrors,
   FunctionErrorsOptions,
+  FunctionProvenance,
+  FunctionProvenanceOptions,
+  FunctionQuarantineOptions,
   IndexConfig,
   IndexStatistics,
   JobFailureInfo,
@@ -1001,25 +1013,86 @@ export abstract class Table {
   ): Promise<Job>;
 
   /**
-   * The per-row errors Function refreshes recorded on this table.
+   * List the per-row errors recorded by Function refreshes on this table.
    *
-   * A refresh running under a skip policy records each row it skipped with
-   * the input that failed and the error. This lists those records, newest
-   * job first, plus a summary for any fragment whose per-row detail was
-   * capped. LanceDB Enterprise only; reading errors needs read
-   * access to the table, since a message carries the value that failed.
-   * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
-   * `column`, and `limit` (server default 10000, cap 100000).
-   * @returns {Promise<FunctionErrors>} The records, the capped fragments,
-   * and whether the listing stopped at its limit.
+   * On LanceDB Enterprise with workflow version 1 or later, the default
+   * lists current failures. Set `history: true` to include retained attempts
+   * for repaired rows. Older deployments keep their existing default listing.
+   * Reading errors requires table read access because messages can include the
+   * input that failed. `errorGroups` describes the returned records.
+   *
    * @example
    * ```ts
-   * const { records, truncated } = await table.functionErrors({ column: "embedding" });
+   * const errors = await table.functionErrors({ column: "embedding" });
+   * console.log(errors.records, errors.errorGroups);
    * ```
    */
   abstract functionErrors(
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors>;
+
+  /**
+   * Read current failing inputs, one result per error record.
+   * Requires a complete LanceDB Enterprise workflow version 1 listing with
+   * row identities. Throws if a failed row is no longer addressable in the
+   * table's read snapshot. For materialized views, see the source identities
+   * on each error record returned by {@link Table#functionErrors}.
+   */
+  async functionErrorRows(
+    options?: FunctionErrorRowsOptions,
+  ): Promise<FunctionFailedRow[]> {
+    const { columns, column, jobId, limit } = options ?? {};
+    const errors = await this.functionErrors({ column, jobId, limit });
+    return readFailedRows(this, errors, columns);
+  }
+
+  /**
+   * Start a job to retry exactly the current failures of one Function column.
+   * Filters apply on the server. Quarantined rows are excluded by default.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async retryFailed(
+    _column: string,
+    _options?: RetryFailedOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    throw new Error("retryFailed is not supported on this table type");
+  }
+
+  /**
+   * Start an upgrade to an existing immutable Function version and choose
+   * which rows to recompute. New and changed inputs use the new version.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async upgradeColumn(
+    _column: string,
+    _options: UpgradeColumnOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    throw new Error("upgradeColumn is not supported on this table type");
+  }
+
+  /**
+   * Quarantine current failures and return the number of affected rows.
+   * Set `quarantined: false` to release them for future refreshes.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async quarantineFailed(
+    _column: string,
+    _options?: FunctionQuarantineOptions,
+  ): Promise<number> {
+    throw new Error("quarantineFailed is not supported on this table type");
+  }
+
+  /**
+   * Read the producing Function version and job for each returned value.
+   * Check `truncated` before treating the result as a complete listing.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async functionProvenance(
+    _column: string,
+    _options?: FunctionProvenanceOptions,
+  ): Promise<FunctionProvenance> {
+    throw new Error("functionProvenance is not supported on this table type");
+  }
 
   /**
    * Return exact freshness status for Function-backed output columns.
@@ -2012,7 +2085,56 @@ export class LocalTable extends Table {
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors> {
     validateNonNegativeInteger(options?.limit, "limit");
-    return await this.inner.functionErrors(options);
+    return this.inner.functionErrors(options);
+  }
+
+  override async retryFailed(
+    column: string,
+    options?: RetryFailedOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    const {
+      errorType,
+      jobId,
+      includeQuarantined,
+      functionVersion,
+      ...refresh
+    } = options ?? {};
+    const job = await this.inner.refreshColumnAsync(column, refresh, {
+      retryErrors: true,
+      retryErrorType: errorType,
+      retryJobId: jobId,
+      includeQuarantined,
+      functionVersion,
+      recompute: functionVersion === undefined ? undefined : "failed",
+    });
+    return new Job(job, decodeRefreshColumnJobResult);
+  }
+
+  override async upgradeColumn(
+    column: string,
+    options: UpgradeColumnOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    const { version, recompute = "all", ...refresh } = options;
+    const job = await this.inner.refreshColumnAsync(column, refresh, {
+      functionVersion: version,
+      recompute,
+    });
+    return new Job(job, decodeRefreshColumnJobResult);
+  }
+
+  override async quarantineFailed(
+    column: string,
+    options?: FunctionQuarantineOptions,
+  ): Promise<number> {
+    return this.inner.quarantineFunctionErrors(column, options);
+  }
+
+  override async functionProvenance(
+    column: string,
+    options?: FunctionProvenanceOptions,
+  ): Promise<FunctionProvenance> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    return this.inner.functionProvenance(column, options);
   }
 
   async functionColumnStatuses(

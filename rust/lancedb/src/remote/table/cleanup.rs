@@ -40,27 +40,6 @@ pub(super) fn statement(
     Ok(sql)
 }
 
-pub(super) fn receipt(batches: &[RecordBatch]) -> Result<String> {
-    let invalid = || {
-        Error::Runtime { message: "VACUUM did not return a single nonempty job_id receipt; inspect jobs before retrying because cleanup may already have been submitted".into() }
-    };
-    if batches.iter().map(RecordBatch::num_rows).sum::<usize>() != 1 {
-        return Err(invalid());
-    }
-    let batch = batches
-        .iter()
-        .find(|batch| batch.num_rows() == 1)
-        .ok_or_else(invalid)?;
-    let ids = batch
-        .column_by_name("job_id")
-        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(invalid)?;
-    if ids.is_null(0) || ids.value(0).trim().is_empty() {
-        return Err(invalid());
-    }
-    Ok(ids.value(0).to_string())
-}
-
 pub(super) fn plan(batches: &[RecordBatch]) -> Result<crate::table::CleanupPlan> {
     let invalid = || {
         Error::Runtime { message: "EXPLAIN VACUUM did not return a valid versioned preview; a compatible EXPLAIN (FORMAT JSON) VACUUM server is required. No execution fallback was attempted".into() }
@@ -168,35 +147,6 @@ mod tests {
             "VACUUM \"a\"\"b\" WITH (branch = 'o''brien', min_age_seconds = 0)"
         );
         assert!(statement("t", None, &CleanupOptions::new().min_age_seconds(u64::MAX)).is_err());
-    }
-
-    #[test]
-    fn ambiguous_cleanup_receipts_never_become_query_handles() {
-        let batch = |values: Vec<Option<&str>>| {
-            RecordBatch::try_from_iter([(
-                "job_id",
-                Arc::new(StringArray::from(values)) as arrow_array::ArrayRef,
-            )])
-            .unwrap()
-        };
-        for batches in [
-            vec![],
-            vec![batch(vec![])],
-            vec![batch(vec![None])],
-            vec![batch(vec![Some("")])],
-            vec![batch(vec![Some("one"), Some("two")])],
-        ] {
-            assert!(
-                receipt(&batches)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("inspect jobs before retrying")
-            );
-        }
-        assert_eq!(
-            receipt(&[batch(vec![]), batch(vec![Some("durable-job")])]).unwrap(),
-            "durable-job"
-        );
     }
 
     #[test]

@@ -162,15 +162,23 @@ fn application_has_unknown_nested_fields(value: &Value) -> bool {
         return true;
     }
     application.get("output").is_some_and(|output| {
-        has_unknown_keys(output, &["kind", "arrow_type", "nullable", "fields"])
-            || output
-                .get("fields")
-                .and_then(Value::as_array)
-                .is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
-                })
+        has_unknown_keys(
+            output,
+            &[
+                "kind",
+                "arrow_type",
+                "nullable",
+                "fields",
+                "blob_writer_paths",
+            ],
+        ) || output
+            .get("fields")
+            .and_then(Value::as_array)
+            .is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
+            })
     })
 }
 
@@ -224,6 +232,23 @@ pub struct FunctionResultField {
     pub nullable: bool,
 }
 
+/// One step from the Function result root to a writer-capable Blob v2 leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum BlobWriterPathStep {
+    /// A struct child addressed by its literal Arrow field name.
+    Field { field: String },
+    /// A list value field, independent of its name.
+    ListItem(BlobWriterListItem),
+}
+
+/// The list step in a Blob writer path, encoded as `"item"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobWriterListItem {
+    Item,
+}
+
 /// Scalar or named-struct Function output.
 ///
 /// `kind` remains a string so unknown future result shapes can be decoded.
@@ -236,6 +261,11 @@ pub struct FunctionOutput {
     pub nullable: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FunctionResultField>,
+    /// Writer-capable Blob v2 leaves in `scalar_blob_writer` and
+    /// `named_struct_blob_writer` results. An empty path denotes a scalar
+    /// Blob result; an empty list denotes a result with no writer leaves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blob_writer_paths: Vec<Vec<BlobWriterPathStep>>,
 }
 
 /// Ordered language-neutral Function signature.
@@ -651,6 +681,39 @@ impl<'de> Deserialize<'de> for RowTimeoutSeconds {
     }
 }
 
+// Function inspection includes this build setting alongside the SDK's authored
+// runtime spec. Keep it on the readback model so registration keeps its own wire shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestedPythonRuntime {
+    spec: PythonRuntimeSpec,
+    index_url: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RequestedPythonRuntime {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let document = Value::deserialize(deserializer)?;
+        let index_url = document
+            .pointer("/environment/build/index_url")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let spec: PythonRuntimeSpec =
+            serde_json::from_value(document).map_err(de::Error::custom)?;
+        let index_url = spec.environment().and(index_url);
+        Ok(Self { spec, index_url })
+    }
+}
+
+impl Serialize for RequestedPythonRuntime {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let Some(index_url) = &self.index_url else {
+            return self.spec.serialize(serializer);
+        };
+        let mut document = serde_json::to_value(&self.spec).map_err(serde::ser::Error::custom)?;
+        document["environment"]["build"] = serde_json::json!({"index_url": index_url});
+        document.serialize(serializer)
+    }
+}
+
 /// One immutable Function object revision and its executable artifact.
 ///
 /// The Function is named by its parts, `name` and `namespace_path`, the way a
@@ -734,7 +797,7 @@ pub struct FunctionVersion {
     /// [`Self::resolved_environment`] when the caller needs actual package
     /// versions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    runtime: Option<PythonRuntimeSpec>,
+    runtime: Option<RequestedPythonRuntime>,
     /// Actual installed distributions, provenance, and registration warnings.
     ///
     /// This is the single-platform compatibility field. `None` on a
@@ -808,7 +871,8 @@ impl FunctionVersion {
 
     /// Digest of canonical runtime inputs, when provided by the server.
     ///
-    /// Includes Python version, environment sources, variables, and GPU settings.
+    /// Compare it with the digest of a locally authored runtime. The runtime
+    /// projection on this version can omit inputs needed to reproduce the digest.
     /// A missing digest cannot establish that a local runtime matches. Reusing a
     /// version also requires matching its source and other registration inputs.
     pub fn runtime_digest(&self) -> Option<&str> {
@@ -855,12 +919,21 @@ impl FunctionVersion {
         self.result_stability.as_deref()
     }
 
-    /// The runtime specification requested at registration, when exposed by the
-    /// server.
+    /// Runtime metadata requested at registration and exposed by the server.
     ///
-    /// This is the requested configuration, not evidence of what was installed.
+    /// This view can omit input needed to reproduce [`Self::runtime_digest`].
+    /// Read the explicit primary package index with [`Self::requested_index_url`],
+    /// and inspect installed distributions with [`Self::resolved_environment`].
     pub fn runtime(&self) -> Option<&PythonRuntimeSpec> {
-        self.runtime.as_ref()
+        self.runtime.as_ref().map(|runtime| &runtime.spec)
+    }
+
+    /// Explicit primary package index URL requested for this Function version.
+    ///
+    /// An absent value can still accompany extra indexes, other sources, or
+    /// service defaults. For build provenance, see [`ResolvedEnvironmentProvenance`].
+    pub fn requested_index_url(&self) -> Option<&str> {
+        self.runtime.as_ref()?.index_url.as_deref()
     }
 
     /// Actual installed distributions and registration warnings for a
@@ -1053,6 +1126,7 @@ pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
+    #[serde(deserialize_with = "deserialize_registration_runtime")]
     pub runtime: PythonRuntimeSpec,
     /// Maximum rows in one execution batch; the executor may use fewer.
     #[serde(
@@ -1114,8 +1188,25 @@ pub struct FunctionRegistrationRequest {
     pub refresh_lock: bool,
 }
 
+fn deserialize_registration_runtime<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<PythonRuntimeSpec, D::Error> {
+    let document = Value::deserialize(deserializer)?;
+    match document.pointer("/environment/build") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(build)) if build.is_empty() => {}
+        Some(_) => {
+            return Err(de::Error::custom(
+                "runtime.environment.build is unsupported in typed Function registration",
+            ));
+        }
+    }
+    serde_json::from_value(document).map_err(de::Error::custom)
+}
+
 impl FunctionRegistrationRequest {
     /// Decode a registration request supplied by an SDK language binding.
+    /// Nonempty environment build settings are rejected by this typed API.
     pub fn from_json(json: &str) -> Result<Self> {
         from_json(json)
     }
@@ -1928,6 +2019,84 @@ mod tests {
 
         document["max_concurrency"] = serde_json::json!(0);
         assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_exposes_the_explicit_primary_index() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        const PRIMARY: &str = "https://primary.example/simple/";
+        const EXTRA: &str = "https://extra.example/simple/";
+        const DIGEST: &str = "sha256:requested-runtime";
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {"kind": "pip", "packages": ["example==1.0"]},
+        });
+        document["runtime_digest"] = serde_json::json!(DIGEST);
+        document["resolved_environment"] = serde_json::json!({
+            "packages": [],
+            "provenance": {"configured_index_urls": [EXTRA]},
+        });
+
+        let legacy = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(legacy.requested_index_url(), None);
+        let legacy_json = legacy.to_canonical_json().unwrap();
+        for (build, index) in [
+            (Value::Null, None),
+            (serde_json::json!({}), None),
+            (serde_json::json!({"extra_index_urls": [EXTRA]}), None),
+            (serde_json::json!({"index_url": 1}), None),
+            (serde_json::json!("invalid-build"), None),
+            (
+                serde_json::json!({"index_url": PRIMARY, "extra_index_urls": [EXTRA]}),
+                Some(PRIMARY),
+            ),
+        ] {
+            document["runtime"]["environment"]["build"] = build;
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.requested_index_url(), index);
+            assert_eq!(version.runtime_digest(), Some(DIGEST));
+            let canonical = version.to_canonical_json().unwrap();
+            if let Some(index) = index {
+                let mut expected: Value = serde_json::from_str(&legacy_json).unwrap();
+                expected["runtime"]["environment"]["build"] =
+                    serde_json::json!({"index_url": index});
+                assert_eq!(serde_json::from_str::<Value>(&canonical).unwrap(), expected);
+            } else {
+                assert_eq!(canonical, legacy_json);
+            }
+            assert_eq!(FunctionVersion::from_json(&canonical).unwrap(), version);
+        }
+    }
+
+    #[test]
+    fn typed_registration_rejects_environment_build_settings() {
+        const REQUEST: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        let mut document: Value = serde_json::from_str(REQUEST).unwrap();
+        let expected = FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        for build in [Value::Null, serde_json::json!({})] {
+            document["runtime"]["environment"]["build"] = build;
+            assert_eq!(
+                FunctionRegistrationRequest::from_json(&document.to_string()).unwrap(),
+                expected
+            );
+        }
+        for build in [
+            serde_json::json!({"index_url": "https://primary.example/simple/"}),
+            serde_json::json!({"extra_index_urls": ["https://extra.example/simple/"]}),
+            serde_json::json!("invalid-build"),
+        ] {
+            document["runtime"]["environment"]["build"] = build;
+            let error = FunctionRegistrationRequest::from_json(&document.to_string()).unwrap_err();
+            assert!(error.to_string().contains(
+                "runtime.environment.build is unsupported in typed Function registration"
+            ));
+        }
     }
 
     #[test]

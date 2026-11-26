@@ -435,10 +435,46 @@ Calling the registered version binds each parameter, by name, to a column with
 {FunctionApply}
 </CodeBlock>
 
-The column is declared empty; the function has not run yet. A mapping with one
-function application keeps its scalar or named-struct result in the named
-column. A bare named-struct application expands its result fields as one atomic
-binding, with aliases from `rename(columns=...)`.
+Batch declaration requires support in both the SDK and the Enterprise deployment.
+In Python, pass several applications to `add_columns` in one mapping to add
+all their columns in one schema commit.
+Each key names the column that holds that application's scalar or whole struct
+result. An application can read another output in the same declaration. For
+example, using the registered `double` Function on the `value` column:
+
+<CodeGroup>
+```python
+table.add_columns({
+    "twice": version(value=col("value")),
+    "four_times": version(value=col("twice")),
+})
+```
+
+{/* Draft for the Rust SDK release with AddColumnsBuilder::function_bindings.
+```rust
+use lancedb::{function::FunctionApplication, Table};
+
+async fn declare_doubles(
+    table: &Table,
+    double_value: FunctionApplication, // double applied to the `value` column
+    double_twice: FunctionApplication, // double applied to the new `twice` column
+) -> lancedb::Result<()> {
+    table.add_columns()
+        .function_bindings([
+            (double_value, Some("twice".into())),
+            (double_twice, Some("four_times".into())),
+        ])
+        .execute()
+        .await?;
+    Ok(())
+}
+```
+*/}
+</CodeGroup>
+
+Declaration creates empty columns. Refresh fills their values. A bare
+named-struct application expands its result fields as one binding, with
+aliases from `rename(columns=...)`.
 
 {/* Draft for the Function literal binding release.
 
@@ -612,12 +648,26 @@ undecorated class, so local tests can create an instance and call it directly.
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) as
 input and return another. In row mode, a top-level blob parameter arrives as
 Python `bytes`, or `None` for a nullable input, after the worker has read
-the payload; annotate it `BlobReader` instead for seekable, incremental
-reads that avoid materializing the whole payload first. Return bytes and let
-the destination table store the Managed payload and descriptor --
-`output_schema=lancedb.blob(...)` is what makes the result Blob v2 rather
-than plain Arrow `binary`; a bare annotation persists as ordinary binary
-instead, skipping the Managed storage path and `fetch_blobs`.
+the payload. Annotate it `BlobReader` for seekable, incremental reads.
+For a Function that returns `bytes`, declare
+`output_schema=lancedb.blob(...)` to store a Blob v2 result. A bare `bytes`
+return annotation infers ordinary Arrow `binary`.
+
+{/*
+Draft for the streaming Blob output release.
+
+A scalar `BlobWriter` return annotation infers a non-nullable Blob v2
+output. A vectorized Function with an explicit `input_schema` can infer one
+Blob v2 per row with `list[BlobWriter]` or `tuple[BlobWriter, ...]`. Use
+`BlobWriter.field(...)` to declare writer-capable fields in named or nested
+outputs.
+
+Use `BlobWriter` for computed column refresh. Register writer-based Functions
+after the LanceDB Enterprise server and Function worker images support
+streaming Blob output, using a Python SDK that provides `BlobWriter`. Use
+byte-returning Functions on earlier deployments and for plain SQL `SELECT`,
+where results follow the query's Arrow output limits.
+*/}
 
 See [Read and produce blobs](/curation/create-function#blobs) for a full
 example: extracting a frame from a stored video, chaining a second Function

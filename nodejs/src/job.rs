@@ -106,8 +106,8 @@ impl Job {
         self.inner.execution_epoch()
     }
 
-    /// The operation's current lifecycle state: "running", "finished",
-    /// "failed", or "cancelled".
+    /// The current status, usually "running", "finished", "failed", or "cancelled".
+    /// A Function refresh waiting for execution workers reports "waiting_for_capacity".
     ///
     /// A point snapshot; unlike {@link Job.wait} it does not block or reject
     /// on a terminal failure state. States a newer server reports that this

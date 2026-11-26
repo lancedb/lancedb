@@ -952,38 +952,78 @@ that version; a latest handle retains normal read-freshness behavior.
 
 ***
 
+### functionErrorRows()
+
+```ts
+functionErrorRows(options?): Promise<FunctionFailedRow[]>
+```
+
+Read current failing inputs, one result per error record.
+Requires a complete LanceDB Enterprise workflow version 1 listing with
+row identities. Throws if a failed row is no longer addressable in the
+table's read snapshot. For materialized views, see the source identities
+on each error record returned by [Table#functionErrors](Table.md#functionerrors).
+
+#### Parameters
+
+* **options?**: [`FunctionErrorRowsOptions`](../interfaces/FunctionErrorRowsOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionFailedRow`](../interfaces/FunctionFailedRow.md)[]&gt;
+
+***
+
 ### functionErrors()
 
 ```ts
 abstract functionErrors(options?): Promise<FunctionErrors>
 ```
 
-The per-row errors Function refreshes recorded on this table.
+List the per-row errors recorded by Function refreshes on this table.
 
-A refresh running under a skip policy records each row it skipped with
-the input that failed and the error. This lists those records, newest
-job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Enterprise only; reading errors needs read
-access to the table, since a message carries the value that failed.
+On LanceDB Enterprise with workflow version 1 or later, the default
+lists current failures. Set `history: true` to include retained attempts
+for repaired rows. Older deployments keep their existing default listing.
+Reading errors requires table read access because messages can include the
+input that failed. `errorGroups` describes the returned records.
 
 #### Parameters
 
 * **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
-    Optional filters: `jobId`,
-    `column`, and `limit` (server default 10000, cap 100000).
 
 #### Returns
 
 `Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
 
-The records, the capped fragments,
-and whether the listing stopped at its limit.
-
 #### Example
 
 ```ts
-const { records, truncated } = await table.functionErrors({ column: "embedding" });
+const errors = await table.functionErrors({ column: "embedding" });
+console.log(errors.records, errors.errorGroups);
 ```
+
+***
+
+### functionProvenance()
+
+```ts
+functionProvenance(_column, _options?): Promise<FunctionProvenance>
+```
+
+Read the producing Function version and job for each returned value.
+Check `truncated` before treating the result as a complete listing.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionProvenanceOptions`](../interfaces/FunctionProvenanceOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionProvenance`](../interfaces/FunctionProvenance.md)&gt;
 
 ***
 
@@ -1350,6 +1390,28 @@ Prewarm an index in the table.
 
 ***
 
+### quarantineFailed()
+
+```ts
+quarantineFailed(_column, _options?): Promise<number>
+```
+
+Quarantine current failures and return the number of affected rows.
+Set `quarantined: false` to release them for future refreshes.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionQuarantineOptions`](../interfaces/FunctionQuarantineOptions.md)
+
+#### Returns
+
+`Promise`&lt;`number`&gt;
+
+***
+
 ### query()
 
 ```ts
@@ -1557,6 +1619,28 @@ out state and the read_consistency_interval, if any, will apply.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### retryFailed()
+
+```ts
+retryFailed(_column, _options?): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start a job to retry exactly the current failures of one Function column.
+Filters apply on the server. Quarantined rows are excluded by default.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`RetryFailedOptions`](../interfaces/RetryFailedOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 
@@ -1929,6 +2013,28 @@ await table.updateTableOverrides({
   job_types: { compaction: { enabled: false } },
 });
 ```
+
+***
+
+### upgradeColumn()
+
+```ts
+upgradeColumn(_column, _options): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start an upgrade to an existing immutable Function version and choose
+which rows to recompute. New and changed inputs use the new version.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options**: [`UpgradeColumnOptions`](../interfaces/UpgradeColumnOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-pub(crate) fn validate_profile_id(profile_id: &str) -> Result<()> {
+pub(super) fn validate_profile_id(profile_id: &str) -> Result<()> {
     if profile_id.is_empty() || profile_id.len() > 256 {
         return Err(Error::InvalidInput {
             message: "profile_id must contain between 1 and 256 bytes".into(),

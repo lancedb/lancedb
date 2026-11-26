@@ -28,11 +28,12 @@ import threading
 import time
 import warnings
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from multiprocessing import RawArray, get_all_start_methods, get_context
 from typing import Any, Callable, cast, Iterator, Literal, NamedTuple, Optional, Union
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import torch
@@ -47,6 +48,7 @@ from .permutation import (
     _table_from_pickle_state,
     _table_to_pickle_state,
 )
+from .table import LanceTable
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +57,303 @@ logger = logging.getLogger(__name__)
 # distinct seeds for any practically encountered epoch count.
 _EPOCH_PRIME = 100003
 
+# Offsets added when seeding each split's 2-phase bounded shuffle
+# permutation (distinct from _EPOCH_PRIME and from each other so they
+# can't collide).
+_SIGMA_PRIME = 1000003
+_SIGMA_SPLIT_PRIME = 3000017
+
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
+# 8 blocks of the recommended block_size=512 give max_shuffle_distance 4,096,
+# which matched 1-phase validation loss in GPT-2 pretraining; S3 throughput
+# was flat across window sizes.
+DEFAULT_WINDOW_BLOCKS = 8
 _UNSET = object()
+# Checkpoint keys pinning the 2-phase read order; absent in 1-phase checkpoints.
+# block_size comes first so a 1-phase/2-phase mix reports the mode setting.
+_TWO_PHASE_CHECKPOINT_KEYS = (
+    "block_size",
+    "shuffle",
+    "max_shuffle_distance",
+    "reshuffle_blocks_per_epoch",
+)
+
+
+def _build_bounded_permutation(n: int, max_distance: int, seed: int) -> np.ndarray:
+    """Build a permutation of ``[0, n)`` with ``|sigma(k) - k| < max_distance``.
+
+    Partitions ``[0, n)`` into consecutive chunks of ``max_distance`` entries
+    (the last chunk may be shorter) and fully shuffles each chunk
+    independently.  Since ``k`` and ``sigma(k)`` always fall in the same
+    chunk, this trivially satisfies the displacement bound.  Vectorized
+    (one random key matrix, sorted per row) so it stays cheap even sized to
+    an entire split's live-row count.
+    """
+    if n == 0:
+        return np.array([], dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    sigma = np.arange(n, dtype=np.int64)
+    num_full = n // max_distance
+    full_len = num_full * max_distance
+    if num_full:
+        # Sorting i.i.d. random keys within each row of a
+        # (num_full, max_distance) matrix gives, per row, a uniformly
+        # random permutation of that row's column indices -- i.e. one
+        # independent shuffled chunk per row, all at once.
+        keys = rng.random((num_full, max_distance))
+        chunk_perms = np.argsort(keys, axis=1)
+        bases = (np.arange(num_full, dtype=np.int64) * max_distance)[:, None]
+        sigma[:full_len] = (chunk_perms + bases).reshape(-1)
+    if full_len < n:
+        tail = np.arange(full_len, n, dtype=np.int64)
+        tail_perm = np.argsort(rng.random(n - full_len))
+        sigma[full_len:] = tail[tail_perm]
+    return sigma
+
+
+class _TwoPhaseSplitReader:
+    """Sequential-only stand-in for ``Permutation`` driving 2-phase reads.
+
+    Duck-types ``Permutation.__getitems__`` so 2-phase's shuffled reads flow
+    through the same stage-1 I/O machinery (``io_queue_depth`` prefetch,
+    ``Future``-based fetches) used by 1-phase, instead of a separate ad hoc
+    path.
+
+    This split's assigned blocks, concatenated in order and restricted to
+    live rows, give every row a dense natural rank in ``[0, num_rows)``.  A
+    single permutation ``sigma`` of that rank space -- built once, with
+    ``|sigma(rank) - rank| < max_shuffle_distance`` for every rank -- decides
+    each row's output position.  A row may move anywhere within that bound,
+    including into a different block's range entirely; the only restriction
+    is the distance from its own natural rank, not which block it started
+    in.  A block is evicted, and the next block assigned to this split read
+    in to replace it, as soon as every one of its rows has been read past
+    in the output order -- which happens naturally once ``sigma`` has been
+    applied, without any extra bookkeeping about "generations" or "slots".
+
+    Only one ``__getitems__`` call executes its own gather/evict logic at a
+    time (serialized by ``_lock``): the block cache and read plan are
+    shared, mutable state, and letting ``io_queue_depth`` submit multiple
+    concurrent calls for the same split would race on them.  The actual
+    block *fetches* do run concurrently with each other and with whichever
+    call holds ``_lock``, though: each call, after satisfying its own rows,
+    schedules background prefetches (on a small private executor, sized by
+    ``prefetch_depth``) for the next few not-yet-loaded blocks the read
+    plan is about to need, up to ``prefetch_depth`` blocks in flight or
+    already fetched but not yet consumed at once.  By the time a later call
+    actually needs one of those blocks, its fetch has often already
+    completed, so the call just picks up the finished result instead of
+    blocking on storage -- overlapping this split's own I/O with whatever
+    is consuming its previous blocks, the same way ``io_queue_depth``
+    overlaps I/O for 1-phase.
+    """
+
+    def __init__(
+        self,
+        block_ids: list[Any],
+        block_live_counts: list[int],
+        shuffle: bool,
+        max_shuffle_distance: int,
+        seed: int,
+        read_block_fn: Callable[[Any], pa.Table],
+        columns: Optional[list[str]],
+        skip: int = 0,
+        prefetch_depth: int = 1,
+    ):
+        self._block_ids = block_ids
+        self._read_block_fn = read_block_fn
+        self._columns = columns
+        self._lock = threading.Lock()
+        self._loaded: dict[int, pa.Table] = {}
+        self._pending: dict[int, Future] = {}
+        self._prefetch_depth = max(1, prefetch_depth)
+
+        counts = np.asarray(block_live_counts, dtype=np.int64)
+        total_rows = int(counts.sum())
+        num_blocks = len(block_ids)
+        if not 0 <= skip <= total_rows:
+            raise ValueError(f"skip ({skip}) out of range for {total_rows} row(s)")
+
+        # Natural (block, then row) order: block_pos[k]/local_offset[k]
+        # describe the row whose dense natural rank is exactly k.  These two
+        # arrays are retained for the reader's whole lifetime, one entry per
+        # row in the *entire* split (not just the resident window -- see the
+        # whole-split-memory review thread, still open) -- so their dtype is
+        # the full per-row memory cost, not a rounding choice.  block_pos
+        # values are block indices (bounded by num_blocks) and local_offset
+        # values are in-block row offsets (bounded by this split's largest
+        # block), both far smaller than the row-rank range sigma/order below
+        # need int64 for, so int32 halves that cost in the realistic case;
+        # falls back to int64 only if a single split's block count or block
+        # size itself exceeds what int32 can represent.
+        max_count = int(counts.max()) if num_blocks else 0
+        pos_dtype = np.int32 if num_blocks < 2**31 else np.int64
+        local_dtype = np.int32 if max_count < 2**31 else np.int64
+        block_pos = np.repeat(np.arange(num_blocks, dtype=pos_dtype), counts)
+        local_offset = (
+            np.concatenate([np.arange(c, dtype=local_dtype) for c in counts])
+            if num_blocks
+            else np.array([], dtype=local_dtype)
+        )
+
+        if shuffle and total_rows:
+            sigma = _build_bounded_permutation(total_rows, max_shuffle_distance, seed)
+        else:
+            sigma = np.arange(total_rows, dtype=np.int64)
+
+        # sigma is itself a permutation of dense ranks, so inverting it
+        # (argsort) directly gives, for each output position, which
+        # natural rank -- and thus which (block, local offset) -- to draw.
+        # Slicing off the first `skip` entries resumes at a saved absolute
+        # position: those rows were already consumed in an earlier run, so
+        # blocks that only appear before `skip` are simply never
+        # referenced and never loaded.
+        order = np.argsort(sigma, kind="stable")[skip:]
+        self._plan_block_pos = block_pos[order]
+        self._plan_local_offset = local_offset[order]
+        self.num_rows = total_rows - skip
+
+        # Last plan position (inclusive) at which each block is still
+        # needed, so it can be evicted as soon as we've read past it.
+        # Computed with numpy (first occurrence in the reversed plan) rather
+        # than a per-row Python loop: materializing the whole split's plan
+        # as a Python list briefly costs about twice the plan arrays' memory.
+        plan_len = len(self._plan_block_pos)
+        if plan_len:
+            visited, rev_first = np.unique(
+                self._plan_block_pos[::-1], return_index=True
+            )
+            last_pos = plan_len - 1 - rev_first
+            self._block_last_pos: dict[int, int] = dict(
+                zip(visited.tolist(), last_pos.tolist())
+            )
+        else:
+            self._block_last_pos = {}
+
+        # Distinct blocks in the order the plan first needs them. Prefetch
+        # walks this (one entry per block) instead of rescanning raw plan
+        # positions, which costs one Python step per *row* scanned and
+        # dominates read time once max_shuffle_distance is large.
+        if plan_len:
+            _, first_pos = np.unique(self._plan_block_pos, return_index=True)
+            self._block_visit_order = self._plan_block_pos[np.sort(first_pos)].tolist()
+        else:
+            self._block_visit_order = []
+        # Prefetch's starting point in _block_visit_order. Every entry
+        # before it is a block whose last use is already behind the read
+        # watermark, so rescanning that ever-growing prefix on each top-up
+        # would make prefetch cost quadratic in the split's block count.
+        self._visit_cursor = 0
+        # io_queue_depth submits several calls at once and they may take
+        # _lock out of order, so a later call's max index is not a safe
+        # eviction point: an earlier, still-waiting call can need a block
+        # whose last use precedes it, and evicting it forces a re-read.
+        # Evict only behind _served_prefix, the first plan position not yet
+        # returned by any call.
+        self._served = np.zeros(self.num_rows, dtype=bool)
+        self._served_prefix = 0
+        # Created last so a failed construction leaves no threads behind.
+        self._executor = ThreadPoolExecutor(max_workers=self._prefetch_depth)
+
+    def _load_block(self, block_id: Any) -> pa.Table:
+        # A block read can arrive as several record batches. Table.take on a
+        # multi-chunk column concatenates the whole column first, so every
+        # later gather from this block would copy all of it; combining once
+        # here pays that copy a single time per block instead of per call.
+        return self._read_block_fn(block_id).combine_chunks()
+
+    def _advance_served_prefix(self, idx_arr: np.ndarray) -> int:
+        """Mark ``idx_arr`` served; return the last position of the served prefix."""
+        self._served[idx_arr] = True
+        n = self.num_rows
+        while self._served_prefix < n:
+            window = self._served[self._served_prefix : self._served_prefix + 4096]
+            if window.all():
+                self._served_prefix += len(window)
+            else:
+                self._served_prefix += int(window.argmin())
+                break
+        return self._served_prefix - 1
+
+    def __getitems__(self, indices) -> pa.RecordBatch:
+        # Fancy-indexed (not sliced) so this also supports non-contiguous
+        # index lists, not just the contiguous range(start, start + fetch)
+        # that the main I/O pipeline requests.
+        idx_arr = np.asarray(indices, dtype=np.int64)
+        with self._lock:
+            block_pos_slice = self._plan_block_pos[idx_arr]
+            local_off_slice = self._plan_local_offset[idx_arr]
+            for bp in np.unique(block_pos_slice).tolist():
+                if bp not in self._loaded:
+                    if bp in self._pending:
+                        # Prefetched by an earlier call: block on it only if
+                        # it hasn't finished yet -- often it already has.
+                        self._loaded[bp] = self._pending.pop(bp).result()
+                    else:
+                        # read_block_fn already returns only this block's
+                        # live rows, in natural (ascending) order -- no
+                        # further filtering or reordering needed here.
+                        self._loaded[bp] = self._load_block(self._block_ids[bp])
+
+            # Group by source block (stable, so each block's rows keep
+            # their relative order), gather from each, then invert the
+            # grouping to restore this chunk's actual priority order.
+            group_order = np.argsort(block_pos_slice, kind="stable")
+            grouped_block_pos = block_pos_slice[group_order]
+            grouped_local_off = local_off_slice[group_order]
+            run_starts = np.flatnonzero(np.diff(grouped_block_pos)) + 1
+            bounds = [0, *run_starts.tolist(), len(grouped_block_pos)]
+            tables = [
+                self._loaded[int(grouped_block_pos[start])].take(
+                    grouped_local_off[start:end]
+                )
+                for start, end in zip(bounds[:-1], bounds[1:])
+            ]
+            combined = pa.concat_tables(tables)
+            inverse = np.argsort(group_order)
+            result = combined.take(inverse)
+
+            watermark = self._advance_served_prefix(idx_arr)
+            for bp in list(self._loaded):
+                if self._block_last_pos.get(bp, -1) <= watermark:
+                    del self._loaded[bp]
+
+            # Top up the prefetch queue: scan forward from this call's end
+            # for blocks the plan is about to need that aren't already
+            # loaded or already being fetched, and hand them to the
+            # background executor so a later call can often just pick up
+            # the (by then finished) result above instead of blocking.
+            room = self._prefetch_depth - len(self._pending)
+            if room > 0:
+                visit_order = self._block_visit_order
+                while (
+                    self._visit_cursor < len(visit_order)
+                    and self._block_last_pos[visit_order[self._visit_cursor]]
+                    <= watermark
+                ):
+                    self._visit_cursor += 1
+                for i in range(self._visit_cursor, len(visit_order)):
+                    if room == 0:
+                        break
+                    bp = visit_order[i]
+                    if bp in self._loaded or bp in self._pending:
+                        continue
+                    if self._block_last_pos.get(bp, -1) <= watermark:
+                        # Already read past: never needed again.
+                        continue
+                    self._pending[bp] = self._executor.submit(
+                        self._load_block, self._block_ids[bp]
+                    )
+                    room -= 1
+
+        if self._columns is not None:
+            result = result.select(self._columns)
+        return result.combine_chunks().to_batches()[0]
+
+    def close(self) -> None:
+        """Release this reader's background prefetch executor."""
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _default_worker_start_method() -> str:
@@ -65,6 +361,14 @@ def _default_worker_start_method() -> str:
     if "forkserver" in get_all_start_methods():
         return "forkserver"
     return "spawn"
+
+
+class _BlockSlice(NamedTuple):
+    """Rows ``[start, stop)`` of one 2-phase block, by position within the block."""
+
+    block_id: int
+    start: int
+    stop: int
 
 
 class _WorkerSample(NamedTuple):
@@ -268,6 +572,7 @@ class StreamingDataset(IterableDataset):
         ``split_strategy=lambda b: b.bootstrap_sample(10_000, fixed=num_splits,
         seed=42)`` draws 10,000 samples with replacement, divided evenly across
         ``num_splits`` splits.
+        Cannot be combined with ``block_size``.
     shuffle_seed:
         Base seed for the random permutation.  Combined with ``epoch`` so
         each epoch produces a different ordering.  Pass ``None`` to generate
@@ -293,7 +598,8 @@ class StreamingDataset(IterableDataset):
         once this many batches are buffered, applying backpressure when the
         transform stage (or ``transform_queue_depth``) is the bottleneck.
         Must be greater than zero.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
-        (4).
+        (4).  In 2-phase mode (``block_size`` set) this also sizes each split's
+        background block-prefetch depth.
     columns:
         Optional list of column names to read.  When set, only those columns
         are fetched from storage; all others are omitted.  ``None`` (the
@@ -302,7 +608,50 @@ class StreamingDataset(IterableDataset):
         When set, rows are shuffled in contiguous groups of this size rather
         than individually.  Larger clumps improve I/O locality (important on
         object storage) at the cost of reduced randomness.  ``None`` (the
-        default) shuffles rows individually.
+        default) shuffles rows individually.  Cannot be combined with
+        ``block_size`` (2-phase mode has its own locality/randomness knobs,
+        below).
+    block_size:
+        Enables 2-phase shuffled reads: rows are shuffled at the granularity
+        of contiguous blocks of exactly this many live rows, and each split
+        reads a rolling window of ``window_blocks`` blocks at a time instead
+        of taking individual rows by row-id.  This trades some randomness
+        for I/O that is mostly contiguous range scans (or, when ``filter``
+        is set, sparse takes of just the live rows) rather than one row-id
+        take per row, which is far cheaper on object storage.  ``None`` (the
+        default) uses 1-phase shuffling, which permutes every row
+        individually up front.  512 is a good starting point: 128-2,048
+        matched 1-phase validation loss in GPT-2 pretraining, and S3
+        throughput was flat from 128 to 65,536.  Throughput comes from
+        reading many splits in parallel, so use DataLoader workers (and
+        ``num_splits`` of at least the worker count); with no workers,
+        2-phase can be slower than 1-phase.  Each split serves the same
+        number of (live) rows, so a split may start or end partway through
+        a block; as in 1-phase, fewer than ``num_splits`` rows are dropped
+        per epoch.
+    window_blocks:
+        Number of blocks kept in RAM per split at once in 2-phase mode.
+        Larger windows shuffle across more rows at the cost of more memory;
+        must be at least 1.  Requires ``block_size``.  Defaults to
+        ``DEFAULT_WINDOW_BLOCKS`` (8).
+    max_shuffle_distance:
+        Bounds how far, in rows, 2-phase shuffling may displace a row from
+        its position in unshuffled (block, then row) order.  Requires
+        ``block_size``.  Smaller values shuffle less but let a block's RAM
+        be reclaimed and refilled with the next block sooner; larger values
+        shuffle more but hold blocks in RAM longer.  Defaults to
+        ``window_blocks * block_size``, so the default window actually
+        holds ``window_blocks`` blocks in RAM at once; pass this explicitly
+        to decouple the shuffle bound from ``window_blocks``.
+    reshuffle_blocks_per_epoch:
+        Whether ``epoch`` feeds into which blocks are assigned to which
+        split, in addition to the row-level shuffle within each split's
+        blocks (which always varies by epoch).  Requires ``block_size``.
+        ``True`` (the default) reassigns blocks every epoch, matching
+        1-phase's per-epoch row reassignment.  ``False`` keeps each
+        split's blocks fixed across epochs -- only the row order within
+        them changes -- which keeps a block's on-disk location, and thus
+        its read locality, stable across an entire training run.
     filter:
         Optional SQL filter expression (e.g. ``"label = 'dog'"``).  Only rows
         that satisfy the predicate are included in the permutation.  The filter
@@ -455,6 +804,10 @@ class StreamingDataset(IterableDataset):
         io_queue_depth: int = DEFAULT_PREFETCH_BATCHES,
         columns: Optional[list[str]] = None,
         shuffle_clump_size: Optional[int] = None,
+        block_size: Optional[int] = None,
+        window_blocks: Optional[int] = None,
+        max_shuffle_distance: Optional[int] = None,
+        reshuffle_blocks_per_epoch: Optional[bool] = None,
         filter: Optional[str] = None,
         transform: Optional[Callable] = None,
         transform_parallelism: Optional[int] = None,
@@ -489,6 +842,30 @@ class StreamingDataset(IterableDataset):
             )
         if io_queue_depth <= 0:
             raise ValueError("io_queue_depth must be greater than 0")
+        if block_size is not None and block_size <= 1:
+            raise ValueError("block_size must be greater than 1")
+        if block_size is None:
+            if window_blocks is not None:
+                raise ValueError("window_blocks requires block_size to be set")
+            if max_shuffle_distance is not None:
+                raise ValueError("max_shuffle_distance requires block_size to be set")
+            if reshuffle_blocks_per_epoch is not None:
+                raise ValueError(
+                    "reshuffle_blocks_per_epoch requires block_size to be set"
+                )
+        else:
+            if window_blocks is not None and window_blocks < 1:
+                raise ValueError("window_blocks must be at least 1")
+            if max_shuffle_distance is not None and max_shuffle_distance <= 0:
+                raise ValueError("max_shuffle_distance must be greater than 0")
+            if split_strategy is not None:
+                raise ValueError("split_strategy cannot be combined with block_size")
+            if shuffle_clump_size is not None:
+                raise ValueError(
+                    "shuffle_clump_size cannot be combined with block_size "
+                    "(2-phase mode uses window_blocks/max_shuffle_distance "
+                    "instead); remove one of them"
+                )
         if transform_parallelism is not None and transform_parallelism <= 0:
             raise ValueError("transform_parallelism must be greater than 0")
         if pack_sequences is not None:
@@ -568,6 +945,7 @@ class StreamingDataset(IterableDataset):
         self._io_queue_depth = io_queue_depth
         self._columns = columns
         self._shuffle_clump_size = shuffle_clump_size
+        self._block_size = block_size
         self._filter = filter
         self._transform = transform
         self._transform_parallelism = transform_parallelism
@@ -647,74 +1025,185 @@ class StreamingDataset(IterableDataset):
         # this instance has never iterated have no entry.
         self._resume_positions: dict[int, int] = {}
 
-        # Build the permutation table once, deterministically.
-        builder = permutation_builder(table)
-        if filter is not None:
-            builder = builder.filter(filter)
-        if split_strategy is not None:
-            # Escape hatch: lets any PermutationBuilder split strategy drive this
-            # dataset (split_hash, split_calculated, bootstrap_sample, or any future
-            # strategy) without StreamingDataset needing a bespoke parameter for each
-            # one. shuffle/shuffle_seed/epoch/shuffle_clump_size are ignored in this
-            # path -- the caller's split_strategy is solely responsible for ordering.
-            self._perm_table = split_strategy(builder).execute()
-            # _rank_splits below assumes split ids are exactly 0..num_splits-1 with no
-            # gaps (every other path guarantees this by always building with
-            # fixed=num_splits) -- a split_strategy callable has no such guarantee, and
-            # a mismatch would otherwise silently drop rows (ids >= num_splits) or leave
-            # some ranks reading an empty split (missing ids < num_splits).
-            split_value_counts = (
-                self._perm_table.to_arrow().column("split_id").value_counts()
-            )
-            counts_by_split = dict(
-                zip(
-                    split_value_counts.field("values").to_pylist(),
-                    split_value_counts.field("counts").to_pylist(),
-                )
-            )
-            expected_splits = set(range(num_splits))
-            if set(counts_by_split) != expected_splits:
+        if block_size is not None:
+            # 2-phase shuffled read: the source dataset is never given a
+            # row-level permutation.  Instead we only shuffle at the
+            # granularity of contiguous row blocks; _perm_table (and its
+            # row-by-row index mapping) is not built at all in this mode.
+            #
+            # block_size counts LIVE rows (rows passing `filter`), not raw
+            # rows.
+            #
+            # Pin the exact version/branch the block plan below is computed
+            # against, so a write to the table between construction and a
+            # later iteration (or between epochs) cannot shift which rows a
+            # block refers to.  Read paths in _read_block always reopen a
+            # private handle checked out to this pin (see
+            # _open_pinned_table) rather than reading the table's live,
+            # possibly-since-mutated state.  Branch pinning isn't
+            # implemented yet -- the reopened handle always lands on the
+            # default branch (see _table_from_pickle_state) -- so a table
+            # checked out to a non-default branch is rejected below rather
+            # than silently pinning the wrong branch.
+            self._pinned_branch = table.current_branch()
+            if self._pinned_branch is not None:
                 raise ValueError(
-                    f"split_strategy produced split ids {sorted(counts_by_split)}, "
-                    f"but num_splits={num_splits} requires exactly "
-                    f"{{0, ..., {num_splits - 1}}}. Pass num_splits matching the "
-                    "strategy's own split count (e.g. `fixed=num_splits` on "
-                    "bootstrap_sample/split_random/etc.)."
+                    "block_size does not yet support a table checked out to "
+                    f"a non-default branch ({self._pinned_branch!r}); check "
+                    "out the default branch before constructing StreamingDataset"
                 )
-            # The round-robin iteration below (and in _iter_owned) assumes every
-            # split has the same row count -- it stops as soon as any one owned
-            # split is exhausted (see its own comment: "all splits exhaust
-            # simultaneously"). Every other path guarantees this by always building
-            # with fixed=num_splits; a split_strategy using ratios/counts/split_hash
-            # weights has no such guarantee, and unequal sizes would otherwise
-            # silently drop rows from the larger splits -- or, with world_size > 1
-            # where each rank owns different splits, end ranks after different row
-            # counts and desync or hang a distributed run's end-of-epoch collectives.
-            if len(set(counts_by_split.values())) > 1:
+            # An RTE write spec means some acknowledged writes only exist in
+            # the MemWAL, not yet flushed into the base table that the native
+            # scanner/take paths below read; a version pin can't see them, so
+            # reads here would silently omit them with no error.  1-phase
+            # already refuses this for the same reason (unflushed rows have
+            # no row id -- see PermutationBuilder); block_size mode has no
+            # row ids in its read path either, but reads positionally, so it
+            # fails differently (stale values, not a missing-row-id error)
+            # and needs its own explicit check.
+            if table.get_rte_spec() is not None:
                 raise ValueError(
-                    f"split_strategy produced unequal split sizes "
-                    f"{counts_by_split} (split id -> row count). Every split must "
-                    "have the same row count. Use `fixed=num_splits` rather than "
-                    "`ratios`/`counts`/weighted `split_hash`, which can produce "
-                    "unequal sizes, or split unevenly-sized groups into separate "
-                    "StreamingDatasets instead."
+                    "block_size does not yet support a table with an RTE "
+                    "write spec set; unflushed MemWAL rows are not visible "
+                    "to a version-pinned read, so block reads could "
+                    "silently miss acknowledged writes. Call "
+                    "table.checkpoint_rte() and table.disable_rte() "
+                    "first, or construct StreamingDataset without block_size"
                 )
-        elif shuffle:
-            perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
-            self._perm_table = builder.split_random(
-                fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
-            ).execute()
-        else:
-            self._perm_table = builder.split_sequential(fixed=num_splits).execute()
-        # Only the split_strategy path needs a permutation fingerprint in the
-        # checkpoint (see `_checkpoint_snapshot`): split_random/split_sequential are
-        # already fully pinned by shuffle_seed/num_splits, and a fingerprint over raw
-        # row ids would spuriously reject an otherwise-valid resume after those row
-        # ids get renumbered by compaction (row ids are not stable by default).
-        self._uses_split_strategy = split_strategy is not None
-        # Lazily computed and cached by `_perm_fingerprint` -- `_perm_table` never
-        # changes after construction, so this is correct to compute once.
-        self._perm_fingerprint_cache: Optional[str] = None
+            self._pinned_version = table.version
+            # Captured once, now, rather than recomputed on every
+            # _open_pinned_table() call: for a memory table, the "pickle
+            # state" below IS the row data (to_arrow()), not just reopen
+            # coordinates, so recomputing it later would silently capture
+            # whatever the live table looks like *then* instead of the
+            # snapshot this pin is supposed to mean.  Not used for a
+            # RemoteTable -- see _open_pinned_table, which deep-copies it
+            # directly instead.
+            from .remote.table import RemoteTable as _RemoteTable
+
+            self._pinned_table_state: Optional[dict] = (
+                _table_to_pickle_state(table)
+                if self._connection_factory is None
+                and not isinstance(table, _RemoteTable)
+                else None
+            )
+
+            pinned_for_setup = self._open_pinned_table()
+            # Remote block reads go through take_offsets, which doesn't
+            # guarantee its output order, so they additionally select
+            # "_rowoffset" and sort locally by it (see _read_block); when the
+            # caller didn't narrow columns, that means explicitly listing
+            # every column, hence caching the full list once here.
+            self._all_columns: Optional[list[str]] = (
+                pinned_for_setup.schema.names if columns is None else None
+            )
+            self._live_offsets: Optional[np.ndarray] = None
+            if filter is None:
+                num_rows = pinned_for_setup.count_rows()
+            else:
+                self._live_offsets = self._scan_live_offsets(pinned_for_setup)
+                num_rows = int(self._live_offsets.size)
+
+            # Every block holds exactly block_size live rows except a
+            # trailing runt, so no per-block range or count list is kept:
+            # anything sized by the block count also inflates the pickle
+            # shipped to each DataLoader worker (see __getstate__).
+            self._num_rows = num_rows
+            self._num_blocks = -(-num_rows // block_size)
+            full_blocks = num_rows // block_size
+            if full_blocks < num_splits:
+                raise ValueError(
+                    f"block_size={block_size} yields only {full_blocks} "
+                    f"block(s) from {num_rows} row(s), fewer than num_splits "
+                    f"({num_splits}); use a smaller block_size or fewer splits"
+                )
+            # Whether the epoch feeds into the block shuffle (so which
+            # blocks a split owns changes every epoch, same as 1-phase's
+            # row assignment) or only into the row-level shuffle within
+            # each split's fixed blocks (so blocks stay pinned to the same
+            # split/location across epochs, and only their row order
+            # varies).  Defaults to True: matches the pre-existing
+            # behavior of using epoch for both.
+            self._reshuffle_blocks_per_epoch = (
+                reshuffle_blocks_per_epoch
+                if reshuffle_blocks_per_epoch is not None
+                else True
+            )
+            # Kept as a plain Python list for simplicity, unlike the
+            # 1-phase row mapping below, which is Arrow-backed because it
+            # is built and consumed through the Arrow-based permutation
+            # table machinery; a block permutation has no such need.
+            self._block_perm: Optional[list[int]] = self._shuffled_block_order()
+            self._perm_table = None
+            # Block mode has no PermutationBuilder output to fingerprint.
+            # These fields still drive common checkpoint code.
+            self._uses_split_strategy = False
+            self._perm_fingerprint_cache: Optional[str] = None
+
+            # window_blocks is the primary residency knob: by default,
+            # max_shuffle_distance (the displacement bound that actually
+            # drives which blocks stay resident -- see
+            # _TwoPhaseSplitReader) is derived from it so that a split
+            # holds roughly window_blocks blocks in RAM at once. Passing
+            # max_shuffle_distance explicitly overrides that derivation.
+            self._window_blocks = (
+                window_blocks if window_blocks is not None else DEFAULT_WINDOW_BLOCKS
+            )
+            self._max_shuffle_distance = (
+                max_shuffle_distance
+                if max_shuffle_distance is not None
+                else self._window_blocks * block_size
+            )
+        else:  # 1-phase shuffled read
+            # Build the permutation table once, deterministically.
+            builder = permutation_builder(table)
+            if filter is not None:
+                builder = builder.filter(filter)
+            if split_strategy is not None:
+                # Escape hatch: lets any PermutationBuilder split strategy drive
+                # this dataset without a bespoke parameter for each strategy.
+                self._perm_table = split_strategy(builder).execute()
+                # _rank_splits assumes split ids are exactly 0..num_splits-1.
+                split_value_counts = (
+                    self._perm_table.to_arrow().column("split_id").value_counts()
+                )
+                counts_by_split = dict(
+                    zip(
+                        split_value_counts.field("values").to_pylist(),
+                        split_value_counts.field("counts").to_pylist(),
+                    )
+                )
+                expected_splits = set(range(num_splits))
+                if set(counts_by_split) != expected_splits:
+                    raise ValueError(
+                        f"split_strategy produced split ids {sorted(counts_by_split)}, "
+                        f"but num_splits={num_splits} requires exactly "
+                        f"{{0, ..., {num_splits - 1}}}. Pass num_splits matching the "
+                        "strategy's own split count (e.g. `fixed=num_splits` on "
+                        "bootstrap_sample/split_random/etc.)."
+                    )
+                # Round-robin iteration assumes every split has the same row count.
+                if len(set(counts_by_split.values())) > 1:
+                    raise ValueError(
+                        f"split_strategy produced unequal split sizes "
+                        f"{counts_by_split} (split id -> row count). Every split must "
+                        "have the same row count. Use `fixed=num_splits` rather than "
+                        "`ratios`/`counts`/weighted `split_hash`, which can produce "
+                        "unequal sizes, or split unevenly-sized groups into separate "
+                        "StreamingDatasets instead."
+                    )
+            elif shuffle:
+                perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
+                self._perm_table = builder.split_random(
+                    fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
+                ).execute()
+            else:
+                self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+            # Only split_strategy needs a fingerprint: the built-in strategies
+            # are pinned by shuffle_seed/num_splits, while row ids can change
+            # across compaction.
+            self._uses_split_strategy = split_strategy is not None
+            self._perm_fingerprint_cache: Optional[str] = None
 
         if self._blocks_per_epoch == "auto":
             self._blocks_per_epoch = self._estimate_blocks_per_epoch()
@@ -724,6 +1213,236 @@ class StreamingDataset(IterableDataset):
         rank_start = rank * splits_per_rank
         self._rank_splits: list[int] = list(
             range(rank_start, rank_start + splits_per_rank)
+        )
+
+    def _open_pinned_table(self):
+        """Open a private table handle checked out to this dataset's pin.
+
+        A fresh handle so checking it out to the pinned version never
+        mutates ``self._table``, which the caller may still be using
+        elsewhere.  Goes through ``Table.checkout``/``take_offsets``/
+        ``search`` -- the same backend-agnostic interface ``RemoteTable``
+        implements -- instead of pylance's ``to_lance()``, which only
+        works against a local table.
+
+        Three cases, each independent of ``self._table`` by construction:
+
+        - ``connection_factory`` set: call it fresh every time (the
+          documented way to get an unrelated handle; e.g. a worker
+          reconnect).
+        - A ``RemoteTable``: ``_table_to_pickle_state``/
+          ``_table_from_pickle_state`` (used below for the other two cases)
+          special-case "remote" by returning ``self._table`` itself --
+          correct for their original purpose (cross-process pickling, where
+          the unpickled copy necessarily lives in a different process), but
+          wrong here, since this runs in the *same* process: calling
+          ``checkout()`` on that result would pin (and, since LanceDB Cloud
+          rejects writes through a version-pinned handle, effectively make
+          read-only) the caller's own table object.  ``deepcopy`` instead
+          round-trips through ``RemoteTable.__getstate__``/``__setstate__``,
+          which carries only reopen coordinates (connection state, branch,
+          checkout version) and clears the live connection handle, so the
+          copy reconnects independently on first real use.
+        - Local or memory: ``self._pinned_table_state`` (captured once at
+          construction -- see ``__init__``) is replayed here instead of
+          recomputing ``_table_to_pickle_state(self._table)`` fresh each
+          call.  For a local (on-disk) table this would barely matter (the
+          state is just reopen coordinates, not data), but for a memory
+          table the "pickle state" the helper returns *is* the row data
+          (``to_arrow()``); recomputing it on every call would silently
+          capture whatever the live table looks like at that later moment
+          instead of the snapshot construction actually pinned.  A reopened
+          memory table is always a fresh version-1 table, so there is
+          nothing meaningful to additionally ``checkout()`` -- it already
+          is exactly the pinned snapshot by construction.
+        """
+        if self._connection_factory is not None:
+            # The factory may hand back a cached, caller-owned handle, and
+            # checkout() pins whatever handle it is called on, so pin a copy.
+            # Copy over the live connection rather than through pickle state:
+            # the factory exists so workers can hold unpicklable connections
+            # (e.g. with a Session), and an in-memory table must keep its
+            # version history for the checkout to find the snapshot.
+            handle = self._connection_factory(self._table.name)
+            if isinstance(handle, LanceTable):
+                pinned = handle._private_copy()
+            else:
+                pinned = deepcopy(handle)
+            pinned.checkout(self._pinned_version)
+            return pinned
+
+        if self._pinned_table_state is None:
+            # Only a RemoteTable skips capturing _pinned_table_state (see
+            # __init__) -- anything else reaching here is a construction
+            # bug, not a runtime condition callers can hit.
+            pinned = deepcopy(self._table)
+            pinned.checkout(self._pinned_version)
+            return pinned
+
+        pinned = _table_from_pickle_state(self._pinned_table_state)
+        if self._pinned_table_state["kind"] != "memory":
+            pinned.checkout(self._pinned_version)
+        return pinned
+
+    def _pinned_lance_dataset(self, pinned_table):
+        """Native pylance handle for ``pinned_table``, if it's an on-disk table.
+
+        ``to_lance()`` raises ``NotImplementedError`` on ``RemoteTable``, and
+        -- for a different reason -- also fails on a reopened ``memory://``
+        table: ``_open_pinned_table`` rebuilds it as an isolated store (see
+        its docstring), which pylance's raw ``lance.dataset()`` open (what
+        ``to_lance()`` uses) cannot resolve; only the table's own connection
+        handle can see its data. Both cases are excluded here up front
+        rather than only via the ``except``, since the memory failure is a
+        ``ValueError`` indistinguishable from a real error. Cached per
+        dataset instance (keyed by nothing -- there's only ever one pin per
+        instance) so the conversion runs at most once rather than once per
+        block read. ``None`` means callers must use the backend-agnostic
+        query builder instead.
+        """
+        if not hasattr(self, "_pinned_lance_ds_cache"):
+            conn_uri = getattr(getattr(pinned_table, "_conn", None), "uri", "")
+            if conn_uri.startswith("memory://"):
+                self._pinned_lance_ds_cache = None
+            else:
+                try:
+                    self._pinned_lance_ds_cache = pinned_table.to_lance()
+                except NotImplementedError:
+                    self._pinned_lance_ds_cache = None
+        return self._pinned_lance_ds_cache
+
+    def _scan_live_offsets(self, pinned_table) -> np.ndarray:
+        """Ascending ``_rowoffset`` of every row matching ``filter``.
+
+        Lance evaluates the filter natively and returns only each live row's
+        dataset-wide position, without materializing column data. Blocks are
+        contiguous chunks of this array, so a block read is a sparse take of
+        exactly its live rows. Goes through the table's own query builder
+        rather than pylance, so this also works against a remote table.
+        """
+        live_offsets = (
+            pinned_table.search()
+            .where(self._filter)
+            .select(["_rowoffset"])
+            .to_arrow()
+            .column("_rowoffset")
+            .to_numpy()
+        )
+        # Block and row semantics assume ascending order, which scan
+        # execution order doesn't guarantee.
+        if live_offsets.size and not np.all(live_offsets[:-1] <= live_offsets[1:]):
+            live_offsets = np.sort(live_offsets)
+        return live_offsets
+
+    def _read_block(
+        self, pinned_table, block: _BlockSlice, columns: Optional[list[str]]
+    ) -> pa.Table:
+        """Read one 2-phase block slice's live rows, in natural (ascending) order."""
+        lance_ds = self._pinned_lance_dataset(pinned_table)
+        block_start = block.block_id * self._block_size
+        row_start = block_start + block.start
+        row_end = block_start + block.stop
+        if self._filter is None:
+            if lance_ds is not None:
+                # Local table: pylance's positional range scan returns rows in
+                # storage order and is much faster than a take.
+                return lance_ds.scanner(
+                    offset=row_start, limit=row_end - row_start, columns=columns
+                ).to_table()
+            # Remote offset/limit pages don't guarantee a consistent row order
+            # across requests, so independent pages can overlap or skip rows;
+            # explicit offsets name exactly this block's rows.
+            offsets = np.arange(row_start, row_end, dtype=np.int64)
+        else:
+            offsets = self._live_offsets[row_start:row_end]
+            if lance_ds is not None:
+                # Local table: pylance's native take() preserves the requested
+                # offset order already, so no sort-and-rebuild pass is needed.
+                return lance_ds.take(offsets.tolist(), columns=columns)
+
+        # take_offsets makes no ordering guarantee for an arbitrary index
+        # list, so "_rowoffset" is always also selected and used to restore
+        # the request's ascending order locally.
+        select_cols = (columns if columns is not None else self._all_columns) + [
+            "_rowoffset"
+        ]
+        table = (
+            pinned_table.take_offsets(offsets.tolist()).select(select_cols).to_arrow()
+        )
+        order = pc.sort_indices(table.column("_rowoffset"))
+        return table.take(order).drop_columns(["_rowoffset"])
+
+    def _shuffled_block_order(self) -> list[int]:
+        """The epoch's block permutation, derived only from scalar config."""
+        block_order = list(range(self._num_blocks))
+        if self._shuffle:
+            block_seed = self._shuffle_seed
+            if self._reshuffle_blocks_per_epoch:
+                block_seed += self._epoch * _EPOCH_PRIME
+            random.Random(block_seed).shuffle(block_order)
+        return block_order
+
+    def _split_blocks(self, split_idx: int) -> list[_BlockSlice]:
+        """Block slices assigned to one split, in the split's read order.
+
+        The epoch's shuffled blocks, laid end to end, form one row stream;
+        split k owns rows ``[k * n, (k + 1) * n)`` of it, where
+        ``n = num_rows // num_splits``. Cutting by rows rather than whole
+        blocks drops fewer than ``num_splits`` rows per epoch, like 1-phase,
+        so a split's first and last blocks may be partial.
+        """
+        block_perm = np.asarray(self._block_perm, dtype=np.int64)
+        block_rows = np.full(len(block_perm), self._block_size, dtype=np.int64)
+        runt = self._num_rows - (self._num_blocks - 1) * self._block_size
+        block_rows[block_perm == self._num_blocks - 1] = runt
+        block_ends = np.cumsum(block_rows)
+
+        rows_per_split = self._num_rows // self._num_splits
+        split_start = split_idx * rows_per_split
+        split_end = split_start + rows_per_split
+        first = int(np.searchsorted(block_ends, split_start, side="right"))
+        last = int(np.searchsorted(block_ends, split_end, side="left"))
+        blocks = []
+        for pos in range(first, last + 1):
+            block_start = int(block_ends[pos] - block_rows[pos])
+            blocks.append(
+                _BlockSlice(
+                    block_id=int(block_perm[pos]),
+                    start=max(split_start, block_start) - block_start,
+                    stop=min(split_end, int(block_ends[pos])) - block_start,
+                )
+            )
+        return blocks
+
+    def _make_two_phase_reader(
+        self,
+        split_idx: int,
+        pinned_table,
+        columns: Optional[list[str]],
+        skip: int = 0,
+    ) -> "_TwoPhaseSplitReader":
+        """Build the 2-phase reader for one split's assigned blocks.
+
+        ``skip`` resumes from a saved absolute position within the split's
+        own deterministic read order (see ``_TwoPhaseSplitReader``).
+        """
+        blocks = self._split_blocks(split_idx)
+        sigma_seed = (
+            self._shuffle_seed
+            + self._epoch * _EPOCH_PRIME
+            + _SIGMA_PRIME
+            + split_idx * _SIGMA_SPLIT_PRIME
+        )
+        return _TwoPhaseSplitReader(
+            block_ids=blocks,
+            block_live_counts=[block.stop - block.start for block in blocks],
+            shuffle=self._shuffle,
+            max_shuffle_distance=self._max_shuffle_distance,
+            seed=sigma_seed,
+            read_block_fn=lambda block: self._read_block(pinned_table, block, columns),
+            columns=columns,
+            skip=skip,
+            prefetch_depth=self._io_queue_depth,
         )
 
     def _estimate_blocks_per_epoch(self) -> int:
@@ -748,37 +1467,64 @@ class StreamingDataset(IterableDataset):
             "pass an explicit value for exact epoch sizing",
         )
 
-        for split in range(self._num_splits):
-            permutation = Permutation.from_tables(
-                self._table, self._perm_table, split=split
-            )
-            permutation = permutation.select_columns([token_column])
-            permutation = permutation.with_transform(Transforms.arrow2arrow)
-            split_rows = permutation.num_rows
-            if split_rows == 0:
-                raise ValueError(
-                    "blocks_per_epoch='auto' cannot estimate an empty dataset"
-                )
+        def _sampled_token_count(column: Union[pa.Array, pa.ChunkedArray]) -> int:
+            lengths = pc.list_value_length(column)
+            if lengths.null_count:
+                raise ValueError("pack_sequences does not support null token lists")
+            return int(pc.sum(lengths).as_py())
 
+        def _sample_size(split_rows: int) -> int:
             # Sample roughly 1% from each logical split, with at least one row
             # per split and a global target cap of 100,000 rows.
-            sample_rows = min(
+            return min(
                 split_rows,
                 max(1, min((split_rows + 99) // 100, sample_cap_per_split)),
             )
-            sample_offsets = sorted(rng.sample(range(split_rows), sample_rows))
-            sample_batch_size = max(1, self._read_batch_size)
-            for start in range(0, sample_rows, sample_batch_size):
-                batch = permutation.__getitems__(
-                    sample_offsets[start : start + sample_batch_size]
-                )
-                lengths = pc.list_value_length(batch.column(0))
-                if lengths.null_count:
-                    raise ValueError("pack_sequences does not support null token lists")
-                sampled_tokens += int(pc.sum(lengths).as_py())
 
-            total_sampled += sample_rows
-            total_rows += split_rows
+        if self._block_size is not None:
+            # Sample whole blocks rather than scattered rows: a row sample
+            # spread over a split touches nearly every block, so it would
+            # read the entire token column just to estimate it.  Only a
+            # split's first and last blocks can be partial, so a uniform
+            # sample of the split's own blocks still gives a near-unbiased
+            # per-row mean over exactly the rows that split will serve.
+            pinned_table = self._open_pinned_table()
+            for split in range(self._num_splits):
+                split_blocks = self._split_blocks(split)
+                split_rows = sum(block.stop - block.start for block in split_blocks)
+                num_sample_blocks = min(
+                    len(split_blocks),
+                    -(-_sample_size(split_rows) // self._block_size),
+                )
+                for block in rng.sample(split_blocks, num_sample_blocks):
+                    table = self._read_block(pinned_table, block, [token_column])
+                    sampled_tokens += _sampled_token_count(table.column(0))
+                    total_sampled += table.num_rows
+                total_rows += split_rows
+        else:
+            for split in range(self._num_splits):
+                permutation = Permutation.from_tables(
+                    self._table, self._perm_table, split=split
+                )
+                permutation = permutation.select_columns([token_column])
+                permutation = permutation.with_transform(Transforms.arrow2arrow)
+                split_rows = permutation.num_rows
+                if split_rows == 0:
+                    raise ValueError(
+                        "blocks_per_epoch='auto' cannot estimate an empty dataset"
+                    )
+
+                sample_rows = _sample_size(split_rows)
+                sample_offsets = sorted(rng.sample(range(split_rows), sample_rows))
+                sample_batch_size = max(1, self._read_batch_size)
+                for start in range(0, sample_rows, sample_batch_size):
+                    batch = permutation.__getitems__(
+                        sample_offsets[start : start + sample_batch_size]
+                    )
+                    sampled_tokens += _sampled_token_count(batch.column(0))
+
+                total_sampled += sample_rows
+                total_rows += split_rows
 
         # Pool the samples into one global average. Each document contributes
         # one EOS token.
@@ -865,34 +1611,83 @@ class StreamingDataset(IterableDataset):
         if not my_splits:
             return
 
-        # Set identity transform on each Permutation so __getitems__ returns
-        # the raw RecordBatch.  Stage 2 applies the real transform.
-        permutations: list[Permutation] = []
-        initial_samples: list[int] = []
-        initial_positions: list[int] = []
-        for split_idx in my_splits:
-            perm = Permutation.from_tables(
-                self._table, self._perm_table, split=split_idx
-            )
-            if self._columns is not None:
-                perm = perm.select_columns(self._columns)
-            perm = perm.with_transform(Transforms.arrow2arrow)
-            sample_count = self._resume_samples.get(split_idx, self._resume_offset)
-            # Both modes resume from absolute permutation positions. Packing
-            # stores them separately because it also checkpoints partial blocks.
-            start_pos = (
-                self._pack_consumed[split_idx]
-                if self._pack_sequences is not None
-                else self._resume_positions.get(split_idx, sample_count)
-            )
-            if start_pos > 0:
-                perm = perm.with_skip(start_pos)
-            initial_samples.append(sample_count)
-            initial_positions.append(start_pos)
-            permutations.append(perm)
+        if self._block_size is None:
+            # 1-phase: set identity transform on each Permutation so
+            # __getitems__ returns the raw RecordBatch.  Stage 2 applies the
+            # real transform.
+            permutations: list[Permutation] = []
+            initial_samples: list[int] = []
+            initial_positions: list[int] = []
+            for split_idx in my_splits:
+                perm = Permutation.from_tables(
+                    self._table, self._perm_table, split=split_idx
+                )
+                if self._columns is not None:
+                    perm = perm.select_columns(self._columns)
+                perm = perm.with_transform(Transforms.arrow2arrow)
+                sample_count = self._resume_samples.get(split_idx, self._resume_offset)
+                # Both modes resume from absolute permutation positions. Packing
+                # stores them separately because it also checkpoints partial blocks.
+                start_pos = (
+                    self._pack_consumed[split_idx]
+                    if self._pack_sequences is not None
+                    else self._resume_positions.get(split_idx, sample_count)
+                )
+                if start_pos > 0:
+                    perm = perm.with_skip(start_pos)
+                initial_samples.append(sample_count)
+                initial_positions.append(start_pos)
+                permutations.append(perm)
 
-        n = len(permutations)
-        split_sizes = [perm.num_rows for perm in permutations]
+            n = len(permutations)
+            split_sizes = [perm.num_rows for perm in permutations]
+        else:
+            # 2-phase: each split owns an equal, contiguous run of rows from
+            # the epoch's shuffled block order (see _split_blocks); the
+            # fewer than num_splits leftover rows are dropped, as in 1-phase.
+            #
+            # Each split's blocks are wrapped in a _TwoPhaseSplitReader,
+            # which duck-types Permutation.__getitems__ -- so from here on,
+            # 2-phase flows through the exact same stage-1 I/O machinery
+            # (_fill_io/_submit_io/_drain_io, io_queue_depth prefetch) as
+            # 1-phase.  No 2-phase-specific code exists past this point.
+            pinned_table = self._open_pinned_table()
+
+            permutations: list[_TwoPhaseSplitReader] = []
+            initial_samples = []
+            initial_positions = []
+            for split_idx in my_splits:
+                # Same absolute-position resume convention as 1-phase: a
+                # loaded checkpoint's positions_consumed_per_split (falling
+                # back to the sample count, then to the global offset) is
+                # this split's saved absolute position in its own
+                # deterministic read order.  Packing stores its own cursor
+                # separately (it also checkpoints partial blocks), so it
+                # must be consulted here too, exactly as the 1-phase branch
+                # above does -- otherwise a packed resume silently ignores
+                # _pack_consumed and replays already-consumed documents.
+                sample_count = self._resume_samples.get(split_idx, self._resume_offset)
+                start_pos = (
+                    self._pack_consumed[split_idx]
+                    if self._pack_sequences is not None
+                    else self._resume_positions.get(split_idx, sample_count)
+                )
+                try:
+                    reader = self._make_two_phase_reader(
+                        split_idx, pinned_table, self._columns, skip=start_pos
+                    )
+                except BaseException:
+                    # The consumer loop's finally, which closes the readers'
+                    # prefetch executors, hasn't been entered yet.
+                    for built in permutations:
+                        built.close()
+                    raise
+                permutations.append(reader)
+                initial_samples.append(sample_count)
+                initial_positions.append(start_pos)
+
+            n = len(permutations)
+            split_sizes = [reader.num_rows for reader in permutations]
         local_consumed = [0] * n
         # Permutation position each split has consumed through (absolute,
         # i.e. counted from the start of the unskipped split).  Runs ahead of
@@ -1332,6 +2127,13 @@ class StreamingDataset(IterableDataset):
                     self._fetch_head_ref = None
                     self._split_sizes_ref = None
                     self._local_consumed_ref = None
+                    if self._block_size is not None:
+                        # Each _TwoPhaseSplitReader owns a private prefetch
+                        # executor; a fresh set is built on every
+                        # _iter_owned call, so these must be shut down here
+                        # or their threads leak across epochs/iterations.
+                        for reader in permutations:
+                            reader.close()
 
     @property
     def bytes_loaded(self) -> int:
@@ -1462,9 +2264,11 @@ class StreamingDataset(IterableDataset):
             state["_table"] = _table_to_pickle_state(self._table)
         # _perm_table: always in-memory; serialise as Arrow data (mirrors
         # how Permutation.__getstate__ handles its permutation_table).
+        # None in 2-phase mode, which never builds one.
         state["_perm_table"] = (
-            self._perm_table.name,
-            self._perm_table.to_arrow(),
+            (self._perm_table.name, self._perm_table.to_arrow())
+            if self._perm_table is not None
+            else None
         )
         for key in (
             "_raw_batches_ref",
@@ -1475,6 +2279,22 @@ class StreamingDataset(IterableDataset):
         ):
             state[key] = None
         state["_consumer_iterator_lock"] = None
+        # Rebuilt in __setstate__.  Spawn/forkserver workers receive this
+        # pickle through a pipe; once it outgrows the 64 KiB pipe buffer,
+        # each Popen blocks until its child has imported torch and read it,
+        # so a payload that scales with the block count serializes worker
+        # startup (minutes at 128 workers with small blocks).
+        if state.get("_block_perm") is not None:
+            state["_block_perm"] = None
+        # One entry per live row, so it would grow the pickle the same way;
+        # each worker rescans it from the pinned snapshot in __setstate__.
+        if state.get("_live_offsets") is not None:
+            state["_live_offsets"] = None
+        # Non-picklable Rust-backed handle (see _pinned_lance_dataset);
+        # dropped rather than set to None so the worker's first _read_block
+        # call recomputes it fresh against its own reconnected table instead
+        # of permanently misreading an absent cache as "confirmed remote".
+        state.pop("_pinned_lance_ds_cache", None)
         return state
 
     def __setstate__(self, state):
@@ -1483,17 +2303,27 @@ class StreamingDataset(IterableDataset):
 
         table_name = state.pop("_table_name")
         table_state = state.pop("_table")
-        perm_name, perm_data = state.pop("_perm_table")
+        perm_table_state = state.pop("_perm_table")
         self.__dict__.update(state)
         self._consumer_iterator_lock = threading.Lock()
+        if "_block_perm" in state:
+            self._block_perm = self._shuffled_block_order()
         if self._connection_factory is not None:
             self._table = self._connection_factory(table_name)
         else:
             self._table = _table_from_pickle_state(table_state)
-            if table_state["kind"] == "memory":
+            if table_state["kind"] == "memory" and perm_table_state is not None:
                 # Rebuilt from Arrow, so the recorded pin cannot resolve on it.
-                perm_data = _drop_base_version(perm_data)
-        self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
+                perm_name, perm_data = perm_table_state
+                perm_table_state = (perm_name, _drop_base_version(perm_data))
+        if perm_table_state is not None:
+            perm_name, perm_data = perm_table_state
+            self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
+        else:
+            # 2-phase mode never builds a permutation table.
+            self._perm_table = None
+        if self._block_size is not None and self._filter is not None:
+            self._live_offsets = self._scan_live_offsets(self._open_pinned_table())
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
@@ -1584,6 +2414,22 @@ class StreamingDataset(IterableDataset):
             self._perm_fingerprint_cache = hasher.hexdigest()
         return self._perm_fingerprint_cache
 
+    def _two_phase_checkpoint_config(self) -> dict:
+        """The 2-phase settings a saved position is only meaningful under."""
+        if self._block_size is None:
+            return {}
+        return {key: getattr(self, f"_{key}") for key in _TWO_PHASE_CHECKPOINT_KEYS}
+
+    def _check_two_phase_checkpoint_config(self, state: dict, source: str) -> None:
+        ours = self._two_phase_checkpoint_config()
+        for key in _TWO_PHASE_CHECKPOINT_KEYS:
+            if state.get(key) != ours.get(key):
+                raise ValueError(
+                    f"{key} mismatch: {source} has {state.get(key)}, "
+                    f"current dataset has {ours.get(key)}; saved positions "
+                    "index a different 2-phase read order"
+                )
+
     def _checkpoint_snapshot(self) -> dict:
         # Only recorded for split_strategy: split_random/split_sequential are
         # already fully pinned by shuffle_seed/num_splits below, and row ids are not
@@ -1599,6 +2445,7 @@ class StreamingDataset(IterableDataset):
                 "shuffle_seed": self._shuffle_seed,
                 "num_splits": self._num_splits,
                 **perm_fingerprint,
+                **self._two_phase_checkpoint_config(),
                 "epoch": self._epoch,
                 "pack_sequences": self._pack_sequences,
                 "eos_id": self._eos_id,
@@ -1620,6 +2467,7 @@ class StreamingDataset(IterableDataset):
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
             **perm_fingerprint,
+            **self._two_phase_checkpoint_config(),
             "epoch": self._epoch,
             "samples_consumed_per_split": samples,
             "positions_consumed_per_split": positions,
@@ -1690,6 +2538,7 @@ class StreamingDataset(IterableDataset):
                     f"{key} mismatch in worker checkpoint: "
                     f"{state.get(key)} != {expected}"
                 )
+        self._check_two_phase_checkpoint_config(state, "worker checkpoint")
         packed = "pack_buffers" in state
         if packed != (self._pack_sequences is not None):
             raise ValueError("worker checkpoint mode does not match the dataset")
@@ -1759,7 +2608,10 @@ class StreamingDataset(IterableDataset):
         across compaction, so it would reject an otherwise-valid resume), and
         continue to rely on ``shuffle_seed``/``num_splits`` alone as before.
         Packed checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
-        ``blocks_per_epoch``, and ``epoch``.
+        ``blocks_per_epoch``, and ``epoch``. Checkpoints from a ``block_size``
+        dataset pin ``shuffle``, ``block_size``, ``max_shuffle_distance`` and
+        ``reshuffle_blocks_per_epoch``, and are rejected by a 1-phase dataset
+        and vice versa.
         """
         if state["num_splits"] != self._num_splits:
             raise ValueError(
@@ -1772,6 +2624,11 @@ class StreamingDataset(IterableDataset):
                 f"current dataset has {self._shuffle_seed}"
             )
         checkpoint_fingerprint = state.get("perm_fingerprint")
+        if checkpoint_fingerprint is not None and self._perm_table is None:
+            raise ValueError(
+                "permutation mismatch: the checkpoint records a split_strategy "
+                "fingerprint, but this block_size dataset has no permutation table"
+            )
         if (
             checkpoint_fingerprint is not None
             and checkpoint_fingerprint != self._perm_fingerprint
@@ -1784,6 +2641,7 @@ class StreamingDataset(IterableDataset):
                 "Resuming would apply saved per-split positions to the wrong "
                 "rows."
             )
+        self._check_two_phase_checkpoint_config(state, "checkpoint")
         self._consumer_checkpoint_requires_uniform = False
 
         if "pack_buffers" in state or self._pack_sequences is not None:
@@ -1897,6 +2755,13 @@ class StreamingDataset(IterableDataset):
         for state in states[1:]:
             if ("pack_buffers" in state) != packed:
                 raise ValueError("cannot merge packed and unpacked state dicts")
+            # Absent on purpose in 1-phase states, so compare presence too.
+            for key in _TWO_PHASE_CHECKPOINT_KEYS:
+                if state.get(key) != first.get(key):
+                    raise ValueError(
+                        f"{key} mismatch across state dicts: "
+                        f"{state.get(key)} != {first.get(key)}"
+                    )
             for key in config_keys:
                 if key not in state:
                     continue

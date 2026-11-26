@@ -134,7 +134,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        python-minor-version: ["10", "13"]
+        python-minor-version: ["11", "13"]
     runs-on: "ubuntu-24.04"
     defaults:
       run:
@@ -268,7 +268,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       # As with Doctest, `pip install -e .` compiles the extension and this job
       # had no Rust cache, which is most of its ~37 minutes.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

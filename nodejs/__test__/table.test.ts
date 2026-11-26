@@ -1933,6 +1933,74 @@ describe("When creating an index", () => {
     });
   });
 
+  test.each([
+    ["ZoneMap", undefined, "ZoneMap"],
+    ["BTREE", undefined, "BTree"],
+    [
+      "bloomfilter",
+      // biome-ignore lint/style/useNamingConvention: plugin param name
+      { number_of_items: 64, probability: 0.01 },
+      "BloomFilter",
+    ],
+    ["bloomfilter", '{"number_of_items": 64}', "BloomFilter"],
+  ])(
+    "create a scalar plugin index by name (%s, %p)",
+    async (indexType, params, expectedType) => {
+      await tbl.createIndex("id", {
+        config: Index.plugin(indexType, params),
+        name: "id_plugin",
+      });
+
+      const indices = await tbl.listIndices();
+      expect(indices).toHaveLength(1);
+      expect(indices[0].name).toBe("id_plugin");
+      expect(indices[0].indexType).toBe(expectedType);
+      expect(indices[0].columns).toEqual(["id"]);
+
+      const query = tbl.query().where("id = 42");
+      expect(await query.explainPlan()).toContain("ScalarIndexQuery");
+      expect(await query.toArray()).toHaveLength(1);
+    },
+  );
+
+  test("lists a scalar plugin without a LanceDB type by its own name", async () => {
+    const db = await connect(tmpDir.name);
+    const textTbl = await db.createTable("minhash", [
+      { text: "alpha beta" },
+      { text: "beta gamma" },
+    ]);
+    await textTbl.createIndex("text", { config: Index.plugin("minhashlsh") });
+
+    const indices = await textTbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].indexType).toBe("MinHashLsh");
+  });
+
+  test("rejects invalid scalar plugin configs", async () => {
+    expect(() => Index.plugin("")).toThrow("must not be empty");
+    expect(() => Index.plugin("  ")).toThrow("must not be empty");
+    expect(() => Index.plugin("zonemap", "[1]")).toThrow(
+      "must be a JSON object, got an array",
+    );
+    expect(() => Index.plugin("zonemap", "null")).toThrow(
+      "must be a JSON object, got null",
+    );
+    expect(() => Index.plugin("zonemap", "{not json")).toThrow(
+      "not valid JSON",
+    );
+    expect(() =>
+      Index.plugin("zonemap", [1] as unknown as Record<string, unknown>),
+    ).toThrow("must be a JSON object, got an array");
+
+    await expect(
+      tbl.createIndex("id", { config: Index.plugin("NoSuchPlugin") }),
+    ).rejects.toThrow("No scalar index plugin found for name 'nosuchplugin'");
+    await expect(
+      tbl.createIndex("id", { config: Index.plugin("ngram") }),
+    ).rejects.toThrow(/ngram/i);
+    expect(await tbl.listIndices()).toHaveLength(0);
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
@@ -6406,18 +6474,35 @@ describe("durable compaction validation", () => {
 });
 
 describe("Enterprise table overrides", () => {
-  it("keeps override methods optional for existing custom Table subclasses", async () => {
-    // Declare the old Table surface; only the new methods must be inherited.
-    // Keeping these override methods abstract must fail type checking here.
+  it("keeps added operations optional for existing custom Table subclasses", async () => {
+    // Declare the old Table surface; the new methods must be inherited.
     // biome-ignore lint/correctness/noUnusedVariables: declaration merging supplies the legacy members
     interface LegacyTable
       extends Omit<
         Table,
-        "getTableOverrides" | "updateTableOverrides" | "resetTableOverrides"
+        | "getTableOverrides"
+        | "updateTableOverrides"
+        | "resetTableOverrides"
+        | "functionErrors"
+        | "functionErrorRows"
+        | "retryFailed"
+        | "upgradeColumn"
+        | "quarantineFailed"
+        | "functionProvenance"
       > {}
-    class LegacyTable extends Table {}
+    class LegacyTable extends Table {
+      async functionErrors() {
+        return { records: [], fragments: [], truncated: false };
+      }
+    }
 
     const table = new LegacyTable();
+    await expect(table.functionErrorRows()).rejects.toThrow(
+      "Function row-failure workflow",
+    );
+    await expect(table.retryFailed("embedding")).rejects.toThrow(
+      "retryFailed is not supported on this table type",
+    );
     await expect(table.delta(1)).rejects.toThrow(
       "table.delta is only supported on LanceDB Embedded tables",
     );

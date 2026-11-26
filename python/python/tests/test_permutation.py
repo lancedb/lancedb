@@ -1888,6 +1888,247 @@ def test_from_tables_split_without_permutation_table(mem_db):
         Permutation.from_tables(tbl, split="train")
 
 
+def _double_value_row(row):
+    return {"id": row["id"], "value": row["value"] * 2}
+
+
+def _double_value_batch(batch):
+    return {"id": batch["id"], "value": [value * 2 for value in batch["value"]]}
+
+
+def test_map_row_by_row(some_permutation: Permutation):
+    """Test .map() applies fn to each row individually."""
+    mapped = some_permutation.map(_double_value_row)
+    batches = list(mapped.iter(10, skip_last_batch=False))
+    first_batch = batches[0]
+    assert len(first_batch) == 10
+    assert isinstance(first_batch[0], dict)
+    for row in first_batch:
+        assert row["value"] == row["id"] * 2
+
+
+def test_map_batched(some_permutation: Permutation):
+    """Test batched only changes what fn receives, not what is yielded."""
+    seen = []
+
+    def double_value(batch):
+        seen.append(batch)
+        return _double_value_batch(batch)
+
+    mapped = some_permutation.map(double_value, batched=True)
+    first_batch = next(mapped.iter(10, skip_last_batch=False))
+    assert isinstance(seen[0], dict)
+    assert len(seen[0]["id"]) == 10
+    assert first_batch == next(
+        some_permutation.map(_double_value_row).iter(10, skip_last_batch=False)
+    )
+
+
+def test_map_chain(some_permutation: Permutation):
+    """Test chained maps run in order and each one replaces the whole row."""
+
+    def add_doubled(row):
+        return {**row, "doubled": row["value"] * 2}
+
+    def to_total(batch):
+        return {
+            "total": [a + b for a, b in zip(batch["value"], batch["doubled"])],
+        }
+
+    def add_label(row):
+        return {**row, "label": str(row["total"])}
+
+    first = some_permutation.map(add_doubled)
+    mapped = first.map(to_total, batched=True).map(add_label)
+    expected = [
+        {"total": row["value"] * 3, "label": str(row["value"] * 3)}
+        for row in some_permutation.take_offsets([0, 1, 2])
+    ]
+    assert mapped.take_offsets([0, 1, 2]) == expected
+    assert next(mapped.iter(3, skip_last_batch=False)) == expected
+    # Extending a chain does not change the permutation it was derived from
+    assert set(first.take_offsets([0])[0]) == {"id", "value", "doubled"}
+
+
+@pytest.mark.parametrize(
+    "explicit",
+    [
+        lambda permutation: permutation.with_format("python"),
+        lambda permutation: permutation.with_format("arrow"),
+        lambda permutation: permutation.with_transform(Transforms.arrow2arrow),
+    ],
+)
+def test_map_rejects_format_and_transform(some_permutation: Permutation, explicit):
+    """Test .map() cannot be mixed with with_format or with_transform."""
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        explicit(some_permutation).map(_double_value_row)
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        explicit(some_permutation.map(_double_value_row))
+
+
+def test_map_rejects_format_without_optional_dependency(
+    some_permutation: Permutation, monkeypatch
+):
+    """Test the map check runs before a format imports an optional dependency."""
+    import sys
+
+    # Make polars fail to import, as it does on an install without extras
+    monkeypatch.setitem(sys.modules, "polars", None)
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        some_permutation.map(_double_value_row).with_format("polars")
+
+
+def test_map_rejects_explicit_transform_from_old_pickle(
+    some_permutation: Permutation,
+):
+    """Test pickles written before explicit_transform existed keep the guard."""
+
+    def restore_without_flag(permutation):
+        state = permutation.__getstate__()
+        del state["explicit_transform"]
+        restored = Permutation.__new__(Permutation)
+        restored.__setstate__(state)
+        return restored
+
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        restore_without_flag(some_permutation.with_format("arrow")).map(
+            _double_value_row
+        )
+    # The default transform is indistinguishable from an explicit "python" format
+    mapped = restore_without_flag(some_permutation).map(_double_value_row)
+    assert mapped.take_offsets([0]) == [
+        _double_value_row(row) for row in some_permutation.take_offsets([0])
+    ]
+
+
+def test_map_rejects_transform_passed_to_constructor(some_table: Table):
+    """Test a transform given to the constructor counts as explicit too."""
+    permutation = Permutation(
+        some_table,
+        None,
+        0,
+        {"id": "id"},
+        DEFAULT_BATCH_SIZE,
+        Transforms.arrow2arrow,
+    )
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        permutation.map(_double_value_row)
+
+
+def test_map_take_offsets(some_permutation: Permutation):
+    """Test .map() keeps the positions and duplicates of the requested offsets."""
+    calls = []
+
+    def record(batch):
+        calls.append(batch)
+        return batch
+
+    mapped = some_permutation.map(_double_value_row).map(record, batched=True)
+    offsets = [5, 0, 5, 2]
+    expected = [
+        _double_value_row(row) for row in some_permutation.take_offsets(offsets)
+    ]
+    assert mapped.take_offsets(offsets) == expected
+    assert mapped.__getitems__(offsets) == expected
+
+    calls.clear()
+    assert mapped.take_offsets([]) == []
+    assert calls == []
+
+
+def test_map_validates_output(some_permutation: Permutation):
+    """Test .map() rejects callback output that would break the batch shape."""
+    with pytest.raises(ValueError, match="returned 1 values for column `id`"):
+        some_permutation.map(
+            lambda batch: {"id": batch["id"][:1]}, batched=True
+        ).take_offsets([0, 1])
+    with pytest.raises(TypeError, match="must return a dict of columns, got list"):
+        some_permutation.map(
+            lambda batch: list(batch.values()), batched=True
+        ).take_offsets([0, 1])
+    # A str has the right length here but is still not a column of values
+    for value in (2, "ab"):
+        with pytest.raises(TypeError, match="list of values for column `n`, got"):
+            some_permutation.map(lambda batch: {"n": value}, batched=True).take_offsets(
+                [0, 1]
+            )
+    with pytest.raises(
+        TypeError, match="must return a dict for each row, got NoneType"
+    ):
+        some_permutation.map(lambda row: None).take_offsets([0, 1])
+    with pytest.raises(ValueError, match="did not return the same keys for every row"):
+        some_permutation.map(
+            lambda row: row if row["id"] % 2 else {"id": row["id"]}
+        ).map(lambda batch: batch, batched=True).take_offsets(list(range(10)))
+
+
+def test_map_projection_and_schema(some_permutation: Permutation):
+    """Test the selection and schema describe the read that feeds the callbacks."""
+
+    def to_str(row):
+        return {name: str(value) for name, value in row.items()}
+
+    mapped = some_permutation.map(to_str)
+    assert mapped.schema == some_permutation.schema
+    assert mapped.column_names == ["id", "value"]
+
+    for projected in (
+        some_permutation.select_columns(["id"]).map(to_str),
+        mapped.select_columns(["id"]),
+        mapped.remove_columns(["value"]),
+    ):
+        assert projected.schema == some_permutation.select_columns(["id"]).schema
+        assert list(projected.take_offsets([0])[0]) == ["id"]
+
+    renamed = mapped.rename_column("value", "data")
+    assert renamed.column_names == ["id", "data"]
+    assert list(renamed.take_offsets([0])[0]) == ["id", "data"]
+
+
+def test_map_is_lazy(some_permutation: Permutation):
+    """Test .map() does not call fn until iteration."""
+    call_count = [0]
+
+    def counting_fn(row):
+        call_count[0] += 1
+        return row
+
+    mapped = some_permutation.map(counting_fn)
+    assert call_count[0] == 0
+
+    mapped.__getitems__([0])
+    assert call_count[0] == 1
+
+
+def test_map_non_callable(some_permutation: Permutation):
+    """Test .map() raises TypeError for non-callable fn."""
+    with pytest.raises(TypeError, match="fn must be callable"):
+        some_permutation.map("not a function")
+
+
+@pytest.mark.parametrize(
+    "fn, batched", [(_double_value_row, False), (_double_value_batch, True)]
+)
+def test_map_pickle_round_trip(some_permutation: Permutation, fn, batched):
+    """Test a mapped permutation reads the same data after a pickle round trip."""
+    import pickle
+
+    mapped = some_permutation.map(fn, batched=batched)
+    restored = pickle.loads(pickle.dumps(mapped))
+
+    offsets = [3, 1, 3]
+    assert restored.take_offsets(offsets) == mapped.take_offsets(offsets)
+    assert restored.take_offsets(offsets)[0]["value"] == (
+        some_permutation.take_offsets(offsets)[0]["value"] * 2
+    )
+    # The restored permutation keeps enforcing the map / format constraint
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        restored.with_format("arrow")
+    explicit = pickle.loads(pickle.dumps(some_permutation.with_format("arrow")))
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        explicit.map(fn, batched=batched)
+
+
 def test_rebatch_regroups_short_and_empty_batches():
     """_rebatch fills batches from short, empty and oversized input batches."""
     from lancedb.permutation import _rebatch

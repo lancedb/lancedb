@@ -75,6 +75,7 @@ pub(super) fn create_sql(
             || request.azure_tenant_id_secret.is_some()
             || request.azure_client_id_secret.is_some()
             || request.azure_client_secret_secret.is_some()
+            || request.azure_storage_account_access_key_secret.is_some()
             || request.gcp_credentials_json_secret.is_some()
         {
             return Err(invalid(
@@ -110,6 +111,7 @@ pub(super) fn create_sql(
             || request.azure_tenant_id_secret.is_some()
             || request.azure_client_id_secret.is_some()
             || request.azure_client_secret_secret.is_some()
+            || request.azure_storage_account_access_key_secret.is_some()
         {
             return Err(invalid(
                 "GCP integrations cannot contain AWS or Azure options",
@@ -145,24 +147,32 @@ pub(super) fn create_sql(
             literal(&request.storage_prefix),
             literal(account)
         );
-        for (key, reference) in [
-            (
-                "STORAGE_AZURE_TENANT_ID_SECRET",
-                &request.azure_tenant_id_secret,
-            ),
-            (
-                "STORAGE_AZURE_CLIENT_ID_SECRET",
-                &request.azure_client_id_secret,
-            ),
-            (
-                "STORAGE_AZURE_CLIENT_SECRET_SECRET",
-                &request.azure_client_secret_secret,
-            ),
-        ] {
-            let reference = reference.as_ref().ok_or_else(|| {
-                invalid("Azure integrations require all three credential Secret references")
-            })?;
-            sql.push_str(&format!(" {key} = {}", secret_name(reference)?));
+        match (
+            &request.azure_storage_account_access_key_secret,
+            &request.azure_tenant_id_secret,
+            &request.azure_client_id_secret,
+            &request.azure_client_secret_secret,
+        ) {
+            (Some(reference), None, None, None) => {
+                sql.push_str(&format!(
+                    " STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = {}",
+                    secret_name(reference)?
+                ));
+            }
+            (None, Some(tenant), Some(client), Some(secret)) => {
+                for (key, reference) in [
+                    ("STORAGE_AZURE_TENANT_ID_SECRET", tenant),
+                    ("STORAGE_AZURE_CLIENT_ID_SECRET", client),
+                    ("STORAGE_AZURE_CLIENT_SECRET_SECRET", secret),
+                ] {
+                    sql.push_str(&format!(" {key} = {}", secret_name(reference)?));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    "Specify either azure_storage_account_access_key_secret or all three Azure service principal Secret references",
+                ));
+            }
         }
         return Ok(sql);
     }
@@ -170,6 +180,7 @@ pub(super) fn create_sql(
         || request.azure_tenant_id_secret.is_some()
         || request.azure_client_id_secret.is_some()
         || request.azure_client_secret_secret.is_some()
+        || request.azure_storage_account_access_key_secret.is_some()
     {
         return Err(invalid("S3 integrations cannot contain Azure options"));
     }
@@ -244,6 +255,7 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
                 | "azure_tenant_id_secret"
                 | "azure_client_id_secret"
                 | "azure_client_secret_secret"
+                | "azure_storage_account_access_key_secret"
                 | "gcp_credentials_json_secret"
                 | "huggingface_token_secret"
                 | "trust_policy"
@@ -264,6 +276,28 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn azure_account_access_key_sql_references_only_the_key_secret() {
+        let mut request = CreateStorageIntegrationRequest::azure_with_account_access_key(
+            "az://customer-data/raw/",
+            "customeraccount",
+            SecretReference::new("blob_key")
+                .with_database("shared")
+                .with_namespace(vec!["credentials".into()]),
+        );
+        let sql = create_sql("blobs", &[], &request).unwrap();
+        assert!(sql.contains("STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'"));
+        assert!(sql.contains(
+            r#"STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET = "shared"."credentials"."blob_key""#
+        ));
+        assert!(!sql.contains("STORAGE_AZURE_TENANT_ID_SECRET"));
+        assert!(!sql.contains("STORAGE_AZURE_CLIENT_ID_SECRET"));
+        assert!(!sql.contains("STORAGE_AZURE_CLIENT_SECRET_SECRET"));
+
+        request.azure_client_id_secret = Some(SecretReference::new("client"));
+        assert!(create_sql("blobs", &[], &request).is_err());
+    }
 
     #[test]
     fn create_if_not_exists_preserves_provider_options() {

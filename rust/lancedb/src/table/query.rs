@@ -32,11 +32,9 @@ use datafusion_physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
-use lance::index::DatasetIndexInternalExt;
 use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
-use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
@@ -273,13 +271,11 @@ pub async fn create_plan(
                 Some(query.query_vector[0].len() as i32),
             )?);
         }
-        let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
-        let (_, element_type) =
+        let (vector_type, element_type) =
             lance::index::vector::utils::get_vector_type(schema, column.as_ref().unwrap())?;
+        let is_list_vector = matches!(&vector_type, DataType::List(_));
         let is_binary = matches!(element_type, DataType::UInt8);
-        if matches!(vector_field.data_type(), DataType::List(_))
-            || (query.base.offset.unwrap_or(0) == 0 && !is_binary)
-        {
+        if is_list_vector || (query.base.offset.unwrap_or(0) == 0 && !is_binary) {
             // Lance distinguishes these cases from the vector column type: a
             // list-like query against a List column is one multivector query,
             // while the same query against a FixedSizeList column is a batch of
@@ -315,7 +311,7 @@ pub async fn create_plan(
                 fsl_builder.append(true);
             }
             query_vector = Some(Arc::new(fsl_builder.finish()));
-            is_batch_query = !matches!(vector_field.data_type(), DataType::List(_));
+            is_batch_query = !is_list_vector;
         } else {
             // Lance's batch path has no per-query offset, and its binary path
             // requires primitive UInt8 queries rather than a fixed-size list.
@@ -670,7 +666,7 @@ impl<'a> AnnExecRef<'a> {
 /// Cosine PQ/SQ/RQ indices normalize their vectors and use squared L2 internally.  This
 /// preserves ranking, but squared L2 over unit vectors is twice the cosine distance.  Flat
 /// cosine indices calculate cosine directly, so they are not included.
-async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<String>> {
+async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<uuid::Uuid>> {
     let mut ann_plans = Vec::new();
     find_ann_plans(plan, &mut ann_plans);
 
@@ -680,17 +676,22 @@ async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<S
         if ann.query().metric_type != Some(LanceDistanceType::Cosine) {
             continue;
         }
-        for index in ann.indices() {
-            let uuid = index.uuid.to_string();
-            if !checked.insert(uuid.clone()) {
-                continue;
-            }
-            let vector_index = ann
-                .dataset()
-                .open_vector_index(&ann.query().column, &index.uuid, &NoOpMetricsCollector)
-                .await?;
+        let uuids: Vec<_> = ann
+            .indices()
+            .iter()
+            .map(|index| index.uuid)
+            .filter(|uuid| checked.insert(*uuid))
+            .collect();
+        if uuids.is_empty() {
+            continue;
+        }
+        let types = ann
+            .dataset()
+            .vector_index_types(&ann.query().column, &uuids)
+            .await?;
+        for (uuid, index_type) in uuids.into_iter().zip(types) {
             if matches!(
-                vector_index.index_type(),
+                index_type,
                 IndexType::IvfPq
                     | IndexType::IvfSq
                     | IndexType::IvfRq
@@ -747,7 +748,7 @@ fn collect_ann_plans(
 fn normalize_ann_branches(
     public_plan: Arc<dyn ExecutionPlan>,
     internal_plan: Arc<dyn ExecutionPlan>,
-    normalized_l2_indices: &HashSet<String>,
+    normalized_l2_indices: &HashSet<uuid::Uuid>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut internal_ann_plans = VecDeque::new();
     collect_ann_plans(&internal_plan, &mut internal_ann_plans);
@@ -765,7 +766,7 @@ fn normalize_ann_branches(
 fn replace_ann_branches(
     public_plan: Arc<dyn ExecutionPlan>,
     internal_ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
-    normalized_l2_indices: &HashSet<String>,
+    normalized_l2_indices: &HashSet<uuid::Uuid>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if let Some(public_ann) = AnnExecRef::from_plan(public_plan.as_ref()) {
         let internal_plan = internal_ann_plans
@@ -797,7 +798,7 @@ fn replace_ann_branches(
         let normalized_count = public_ann
             .indices()
             .iter()
-            .filter(|index| normalized_l2_indices.contains(&index.uuid.to_string()))
+            .filter(|index| normalized_l2_indices.contains(&index.uuid))
             .count();
         if normalized_count == 0 {
             return Ok(public_plan);
@@ -2091,6 +2092,115 @@ mod tests {
             "plan should add query_index column, got:\n{display}"
         );
     }
+
+    #[tokio::test]
+    async fn test_create_plan_batch_vector_missing_column_returns_sdk_error() {
+        use crate::connect;
+        use crate::table::query::create_plan;
+        use arrow_array::{Float32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::new_empty(schema);
+        let table = conn
+            .create_table("test_batch_vector_missing_column", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let native_table = table.as_native().unwrap();
+
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(1),
+                ..Default::default()
+            },
+            column: Some("missing_vector".to_string()),
+            query_vector: vec![
+                Arc::new(Float32Array::from(vec![1.0, 2.0])),
+                Arc::new(Float32Array::from(vec![3.0, 4.0])),
+            ],
+            ..Default::default()
+        });
+
+        let error = create_plan(native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                Error::Lance {
+                    source: lance::Error::Index { message, .. }
+                } if message.contains("column missing_vector does not exist in schema")
+            ),
+            "expected ordinary vector column validation error, got: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cold_cosine_rq_plan_only_needs_index_header() {
+        use crate::index::{Index, vector::IvfRqIndexBuilder};
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let conn = crate::connect(uri).execute().await.unwrap();
+        let vectors = Arc::new(fixed_size_list_array(
+            (0..512 * 8).map(|n| (1 + n % 31) as f32).collect(),
+            8,
+        ));
+        let schema = Arc::new(Schema::new(vec![arrow_schema::Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![vectors]).unwrap();
+        let table = conn.create_table("vectors", batch).execute().await.unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(
+                    IvfRqIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let indices = dataset.load_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        // The quantizer is needed to execute the search. Planning should only read
+        // the segment's type from index.idx, even with an empty session cache.
+        let auxiliary = dir
+            .path()
+            .join("vectors.lance/_indices")
+            .join(indices[0].uuid.to_string())
+            .join(lance_index::INDEX_AUXILIARY_FILE_NAME);
+        std::fs::remove_file(auxiliary).unwrap();
+        let conn = crate::connect(uri).execute().await.unwrap();
+        let table = conn.open_table("vectors").execute().await.unwrap();
+        let plan = table
+            .vector_search([1.0_f32; 8].as_slice())
+            .unwrap()
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let mut ann = Vec::new();
+        find_ann_plans(plan.as_ref(), &mut ann);
+        assert_eq!(ann.len(), 1);
+        assert_eq!(ann[0].query().metric_type, Some(LanceDistanceType::Cosine));
+    }
+
     #[rstest::rstest]
     #[case::modern(false)]
     #[case::legacy(true)]
@@ -2105,9 +2215,10 @@ mod tests {
         use crate::connect;
         use crate::index::{Index, vector::IvfPqIndexBuilder};
         use lance::index::{
-            DatasetIndexExt,
+            DatasetIndexExt, DatasetIndexInternalExt,
             vector::{IndexFileVersion, VectorIndexParams},
         };
+        use lance_index::metrics::NoOpMetricsCollector;
 
         fn normalized_vector(state: &mut u64, dimension: usize) -> Vec<f32> {
             let mut vector = (0..dimension)

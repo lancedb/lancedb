@@ -294,11 +294,10 @@ evaluation, and how that differs from rotating or revoking it later.
 ## Read and produce blobs {#blobs}
 
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
-return another blob, including a blob nested inside a struct field, not only
-at the top level. In row mode, a top-level blob parameter arrives as Python
-`bytes`, or `None` for a nullable input, after the worker has read the
-payload. Return bytes and let the destination table store the Managed
-payload and descriptor.
+return a Blob v2 value at the top level or inside a struct. In row mode, a
+top-level blob parameter arrives as Python `bytes`, or `None` for a nullable
+input, after the worker reads the payload. Use `BlobReader` to read it
+incrementally.
 
 This section extracts a frame from a stored video and captions it,
 continuing as one example across chaining, persisting and incremental reads
@@ -322,10 +321,32 @@ frames = db.create_table("frames", [
 
 ### Produce a blob {#produce-blobs}
 
-Declare blob inputs and outputs explicitly. `extract_frame` reads one frame
-out of a video at a timestamp and returns it as a JPEG, without loading the
-whole clip first -- see [Read a blob incrementally](#incremental) below for
-how the `video: BlobReader` parameter does that:
+{/*
+Draft for the streaming Blob output release.
+
+Use `BlobWriter` during computed column refresh to produce a Blob v2 value in
+chunks. Register the Function with a Python SDK that exposes `BlobWriter`
+after upgrading the LanceDB Enterprise server and Function worker images to
+versions that support streaming Blob output. Keep returning `bytes` with an
+explicit Blob v2 output schema on deployments without writer support.
+
+Import `BlobWriter` from `lancedb.functions`. In a scalar Function,
+`-> BlobWriter` infers a non-nullable Blob v2 output. For a vectorized
+Function, provide `input_schema` and annotate the return as
+`list[BlobWriter]` or `tuple[BlobWriter, ...]` to infer one Blob v2 result per
+row. Return the writers in input row order. Use `BlobWriter.field(...)` in
+an explicit output schema to mark writer-capable Blob v2 fields in named or
+nested results.
+
+Open a writer with `BlobWriter.open()`, pass each chunk to `write()`, and
+return the sealed writer after leaving its context manager. For plain SQL
+`SELECT`, use a byte-returning Function within the query's Arrow output
+limits.
+*/}
+
+`extract_frame` reads one frame from a video and returns JPEG bytes. Its
+explicit output schema declares a Blob v2 result. The `BlobReader` input
+lets it read the video incrementally. [Read a blob incrementally](#incremental)
 
 <CodeGroup>
 ```python Python icon="python"
@@ -365,15 +386,8 @@ fixed-size lists do not support this layout. List-nested values are queryable
 as descriptors, but `fetch_blobs` and `blob_mode="bytes"` cannot fetch their
 payloads.
 
-<Warning>
-`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
-rather than plain Arrow `binary`. Returning `bytes` from a function whose
-output type is inferred from a bare annotation, with no explicit
-`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
-still holds the right bytes, but it skips the Managed storage path, descriptor
-reads, and `fetch_blobs`. Declare it explicitly on every function whose output
-should be a blob, not just the first one in a chain.
-</Warning>
+A bare `bytes` return annotation infers ordinary Arrow `binary`. To store
+returned bytes as Blob v2, declare `output_schema=lancedb.blob(...)`.
 
 ### Chain a Function on its output {#chain}
 
@@ -539,11 +553,12 @@ def embed(text: str) -> list[float]: ...
 version = db.create_function(embed)
 table.add_columns(
     {"embedding": version(text=col("text"))},
-    gpu_class="any",
-    gpu_count=1,
     total_gpu_count=8,
 )
-table.refresh_column("embedding", gpu_class="h100", gpu_count=4, total_gpu_count=8)
+job = table.refresh_column_async(
+    "embedding", gpu_class="h100", total_gpu_count=8
+)
+job.wait()
 
 db.create_materialized_view(
     "embeddings", query="SELECT embed(text) AS embedding FROM documents",
@@ -556,7 +571,10 @@ db.create_materialized_view(
 
 `gpu_class` selects the GPU pool and `gpu_count` selects the positive number
 of devices allocated together to each worker. Both can be overridden at
-column/MV creation and refresh. An explicit `gpu_class="any"` replaces a
+column/MV creation and refresh. On LanceDB Enterprise, the Python
+`add_columns` does not yet accept `gpu_class` or `gpu_count`, and
+`refresh_column_async` does not yet accept `gpu_count`; those values come from
+the registered Function. An explicit `gpu_class="any"` replaces a
 registered class with any eligible configured pool. These settings require a
 GPU Function for computed columns. The `total_*` values are ceilings for the
 whole worker fleet. CPU and memory can limit the fleet before it reaches its GPU ceiling.

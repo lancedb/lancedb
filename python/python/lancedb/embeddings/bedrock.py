@@ -2,21 +2,66 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import base64
+import io
 import json
 from functools import cached_property
-from typing import List, Union
+from pathlib import Path
+from typing import TYPE_CHECKING, List, Literal, Union
 
 import numpy as np
 from pydantic import ConfigDict
 
 from ..util import attempt_import_or_raise
-from .base import TextEmbeddingFunction
+from .base import EmbeddingFunction, TextEmbeddingFunction
 from .registry import register
-from .utils import TEXT
+from .utils import IMAGES, TEXT, retry_with_exponential_backoff
+
+if TYPE_CHECKING:
+    from PIL.Image import Image
+
+
+class _BedrockEmbeddingFunction(EmbeddingFunction):
+    name: str
+    region: str = "us-east-1"
+
+    model_config = ConfigDict(ignored_types=(cached_property,))
+
+    def _invoke_model(self, body: str, *, max_retries: int = 0) -> dict:
+        invoke = self.client.invoke_model
+        if max_retries > 0:
+            invoke = retry_with_exponential_backoff(invoke, max_retries=max_retries)
+        response = invoke(
+            body=body,
+            modelId=self.name,
+            accept="application/json",
+            contentType="application/json",
+        )
+        return json.loads(response["body"].read())
+
+    @cached_property
+    def client(self):
+        """The boto3 Bedrock Runtime client."""
+        boto3 = attempt_import_or_raise("boto3")
+        return self._runtime_client(boto3.Session())
+
+    def _runtime_client(self, session, **credentials):
+        botocore = attempt_import_or_raise("botocore")
+        retry_config = botocore.config.Config(
+            region_name=self.region,
+            # The embedding function handles retries.
+            retries={"max_attempts": 0, "mode": "standard"},
+        )
+        return session.client(
+            service_name="bedrock-runtime",
+            config=retry_config,
+            region_name=self.region,
+            **credentials,
+        )
 
 
 @register("bedrock-text")
-class BedRockText(TextEmbeddingFunction):
+class BedRockText(_BedrockEmbeddingFunction, TextEmbeddingFunction):
     """
     Parameters
     ----------
@@ -59,14 +104,35 @@ class BedRockText(TextEmbeddingFunction):
     """
 
     name: str = "amazon.titan-embed-text-v1"
-    region: str = "us-east-1"
     assumed_role: Union[str, None] = None
     profile_name: Union[str, None] = None
     role_session_name: str = "lancedb-embeddings"
     source_input_type: str = "search_document"
     query_input_type: str = "search_query"
 
-    model_config = ConfigDict(ignored_types=(cached_property,))
+    @cached_property
+    def client(self):
+        """The boto3 Bedrock Runtime client."""
+        boto3 = attempt_import_or_raise("boto3")
+        session = (
+            boto3.Session(region_name=self.region, profile_name=self.profile_name)
+            if self.profile_name
+            else boto3.Session()
+        )
+        if not self.assumed_role:
+            return self._runtime_client(session)
+
+        sts = session.client("sts")
+        credentials = sts.assume_role(
+            RoleArn=self.assumed_role,
+            RoleSessionName=self.role_session_name,
+        )["Credentials"]
+        return self._runtime_client(
+            session,
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
+        )
 
     def ndims(self):
         # return len(self._generate_embedding("test"))
@@ -145,16 +211,7 @@ class BedRockText(TextEmbeddingFunction):
         body = json.dumps(input_body)
 
         try:
-            # invoke bedrock API
-            response = self.client.invoke_model(
-                body=body,
-                modelId=self.name,
-                accept="application/json",
-                contentType="application/json",
-            )
-
-            # format output based on provider
-            response_body = json.loads(response.get("body").read())
+            response_body = self._invoke_model(body)
             if provider == "cohere":
                 return response_body.get("embeddings")[0]
             else:
@@ -170,50 +227,155 @@ class BedRockText(TextEmbeddingFunction):
                 """
             raise ValueError(f"Error raised by boto3 client: {e}. \n {help_txt}")
 
-    @cached_property
-    def client(self):
-        """Create a boto3 client for Amazon Bedrock service
 
-        Returns
-        -------
-        boto3.client
-            The boto3 client for Amazon Bedrock service
-        """
-        botocore = attempt_import_or_raise("botocore")
-        boto3 = attempt_import_or_raise("boto3")
+@register("bedrock-image")
+class BedrockImage(_BedrockEmbeddingFunction):
+    """Embed images and search them by text or Pillow image using Amazon Bedrock.
 
-        session_kwargs = {"region_name": self.region}
-        client_kwargs = {**session_kwargs}
+    Install `boto3` and `pillow` to use this embedding function. Use a binary
+    source column (`bytes`) for encoded image bytes or a string
+    source column (`str`) for file paths readable by the process that adds rows.
+    Pillow detects the image format from the file contents. Null source values
+    produce null embeddings.
 
-        if self.profile_name:
-            session_kwargs["profile_name"] = self.profile_name
+    Both models accept PNG and JPEG sources. `cohere.embed-v4:0` also accepts
+    WebP and GIF. For queries, pass a text string or a Pillow image. Images
+    used as queries are encoded in RGB PNG format before calling Bedrock. With
+    [AsyncTable.search][lancedb.table.AsyncTable.search], pass
+    `query_type="vector"` for Pillow image queries.
 
-        retry_config = botocore.config.Config(
-            region_name=self.region,
-            retries={
-                "max_attempts": 0,  # disable this as retries retries are handled
-                "mode": "standard",
-            },
-        )
-        session = (
-            boto3.Session(**session_kwargs) if self.profile_name else boto3.Session()
-        )
-        if self.assumed_role:  # if not using default credentials
-            sts = session.client("sts")
-            response = sts.assume_role(
-                RoleArn=str(self.assumed_role),
-                RoleSessionName=self.role_session_name,
+    This function uses the boto3 default credential chain configured by your
+    application, including `AWS_PROFILE` or the application's IAM role.
+
+    Parameters
+    ----------
+    name : str, default "amazon.titan-embed-image-v1"
+        Model ID to invoke on Amazon Bedrock. `amazon.titan-embed-image-v1`
+        returns 1024 dimensions. `cohere.embed-v4:0` returns 1536 dimensions.
+    region : str, default "us-east-1"
+        AWS Region where the model is available.
+    max_retries : int, default 7
+        Maximum retries per Bedrock request. Set to `0` to disable retries.
+
+    Examples
+    --------
+    ```python
+    from pathlib import Path
+
+    import lancedb
+    from lancedb.embeddings import get_registry
+    from lancedb.pydantic import LanceModel, Vector
+    from PIL import Image
+
+    model = get_registry().get("bedrock-image").create()
+
+    class Photo(LanceModel):
+        image: bytes = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    db = lancedb.connect("photos_db")
+    table = db.create_table("photos", schema=Photo)
+    table.add([{"image": Path("sunset.jpg").read_bytes()}])
+
+    matches = table.search("sunset over the ocean").limit(5).to_list()
+    with Image.open("query.png") as query:
+        similar = table.search(query).limit(5).to_list()
+    ```
+    """
+
+    # Table metadata can select a model and region. Credentials come from the
+    # application, so reject settings such as a profile name or role ARN.
+    model_config = ConfigDict(extra="forbid")
+
+    name: Literal["amazon.titan-embed-image-v1", "cohere.embed-v4:0"] = (
+        "amazon.titan-embed-image-v1"
+    )
+
+    def ndims(self) -> int:
+        return 1024 if self.name == "amazon.titan-embed-image-v1" else 1536
+
+    def compute_source_embeddings(self, images: IMAGES) -> list[list[float] | None]:
+        return self._embed_sources(images, max_retries=0)
+
+    def compute_query_embeddings(self, query: "str | Image") -> list[list[float]]:
+        return self._embed_query(query, max_retries=0)
+
+    # A transient failure can retry its own request without replaying earlier
+    # images or repeating local image encoding and response parsing.
+    def compute_source_embeddings_with_retry(
+        self, images: IMAGES, *args, **kwargs
+    ) -> list[list[float] | None]:
+        return self._embed_sources(images, max_retries=self.max_retries)
+
+    def compute_query_embeddings_with_retry(
+        self, query: "str | Image", *args, **kwargs
+    ) -> list[list[float]]:
+        return self._embed_query(query, max_retries=self.max_retries)
+
+    def _embed_sources(
+        self, images: IMAGES, *, max_retries: int
+    ) -> list[list[float] | None]:
+        values = [images] if isinstance(images, bytes) else self.sanitize_input(images)
+        embeddings = []
+        for image in values:
+            if image is None:
+                embeddings.append(None)
+                continue
+            image_bytes = Path(image).read_bytes() if isinstance(image, str) else image
+            image_module = attempt_import_or_raise("PIL.Image", "pillow")
+            with image_module.open(io.BytesIO(image_bytes)) as decoded:
+                payload = self._image_payload(image_bytes, decoded.format)
+            embeddings.append(
+                self._embed(
+                    payload, input_type="search_document", max_retries=max_retries
+                )
             )
-            client_kwargs["aws_access_key_id"] = response["Credentials"]["AccessKeyId"]
-            client_kwargs["aws_secret_access_key"] = response["Credentials"][
-                "SecretAccessKey"
-            ]
-            client_kwargs["aws_session_token"] = response["Credentials"]["SessionToken"]
+        return embeddings
 
-        service_name = "bedrock-runtime"
+    def _embed_query(
+        self, query: "str | Image", *, max_retries: int
+    ) -> list[list[float]]:
+        if isinstance(query, str):
+            payload = (
+                {"inputText": query}
+                if self.name == "amazon.titan-embed-image-v1"
+                else {"texts": [query]}
+            )
+        else:
+            image_module = attempt_import_or_raise("PIL.Image", "pillow")
+            if not isinstance(query, image_module.Image):
+                raise TypeError("Bedrock image queries must be text or a Pillow image")
+            with io.BytesIO() as buffer:
+                query.convert("RGB").save(buffer, format="PNG")
+                payload = self._image_payload(buffer.getvalue(), "PNG")
+        return [
+            self._embed(payload, input_type="search_query", max_retries=max_retries)
+        ]
 
-        bedrock_client = session.client(
-            service_name=service_name, config=retry_config, **client_kwargs
-        )
+    def _image_payload(self, image_bytes: bytes, image_format: str | None) -> dict:
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        if self.name == "amazon.titan-embed-image-v1":
+            if image_format not in ("JPEG", "PNG"):
+                raise ValueError(
+                    "Titan Multimodal Embeddings accepts PNG and JPEG images"
+                )
+            return {"inputImage": encoded}
 
-        return bedrock_client
+        if image_format not in ("JPEG", "PNG", "WEBP", "GIF"):
+            raise ValueError("Cohere Embed v4 accepts PNG, JPEG, WebP, and GIF images")
+        return {"images": [f"data:image/{image_format.lower()};base64,{encoded}"]}
+
+    def _embed(
+        self, payload: dict, *, input_type: str, max_retries: int
+    ) -> list[float]:
+        is_cohere = self.name == "cohere.embed-v4:0"
+        if is_cohere:
+            payload["input_type"] = input_type
+            payload["embedding_types"] = ["float"]
+
+        response = self._invoke_model(json.dumps(payload), max_retries=max_retries)
+        if is_cohere:
+            return response["embeddings"]["float"][0]
+        if response.get("message"):
+            raise ValueError(response["message"])
+        return response["embedding"]

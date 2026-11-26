@@ -27,6 +27,7 @@ from .index import (
     NGram,
     ZoneMap,
     RTree,
+    ScalarPlugin,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -682,6 +683,7 @@ class Table:
             NGram,
             ZoneMap,
             RTree,
+            ScalarPlugin,
             FTS,
         ],
         replace: Optional[bool],
@@ -708,6 +710,7 @@ class Table:
             NGram,
             ZoneMap,
             RTree,
+            ScalarPlugin,
             FTS,
         ],
         replace: Optional[bool],
@@ -772,8 +775,7 @@ class Table:
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self,
-        application_json: str,
-        output_name: Optional[str],
+        bindings: list[tuple[str, Optional[str]]],
         auto_refresh_enabled: Optional[bool] = None,
         auto_refresh_interval_seconds: Optional[int] = None,
         total_cpu_millis: Optional[int] = None,
@@ -804,6 +806,7 @@ class Table:
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -834,6 +837,7 @@ class Table:
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -842,6 +846,7 @@ class Table:
         function_version: Optional[str] = None,
         recompute: Optional[Literal["failed", "all", "none"]] = None,
     ) -> Job: ...
+    async def resume_refresh(self, job_id: str) -> Job: ...
     async def function_errors(
         self,
         job_id: Optional[str] = None,

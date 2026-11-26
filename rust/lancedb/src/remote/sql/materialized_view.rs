@@ -7,7 +7,7 @@ use arrow_array::{Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 
 use super::SqlClient;
-use crate::arrow::SendableRecordBatchStream;
+use super::receipt::ReceiptRow;
 use crate::database::ExecuteQueryRequest;
 use crate::error::{Error, Result};
 use crate::listing::{ListingOptions, ListingPage};
@@ -60,66 +60,38 @@ impl SqlClient {
                 true,
             )
             .await?;
-        let query = Arc::new(submitted.query);
         if !submitted.materialized_view_job_handle_supported {
-            return Ok(MaterializedViewJobSubmission::Query(query));
+            return Ok(MaterializedViewJobSubmission::Query(Arc::new(
+                submitted.query,
+            )));
         }
-        let mut reader: SendableRecordBatchStream = query.reader().await?;
-        let mut rows = 0;
-        let mut registry_job_id = None;
-        let mut already_exists = false;
-        while let Some(batch) = reader.try_next().await? {
-            rows += batch.num_rows();
-            if rows > 1 {
-                return Err(Error::Runtime {
-                    message: "materialized-view submission must return exactly one status row"
-                        .into(),
-                });
-            }
-            if let Some(column) = batch.column_by_name("status") {
-                let values = column
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| Error::Runtime {
-                        message: "materialized-view submission status is not UTF-8".into(),
-                    })?;
-                already_exists =
-                    values.len() == 1 && !values.is_null(0) && values.value(0) == "already_exists";
-            }
-            if let Some(column) = batch.column_by_name("job_id") {
-                let values = column
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| Error::Runtime {
-                        message: "materialized-view submission job_id is not UTF-8".into(),
-                    })?;
-                if values.null_count() != 0 {
-                    return Err(Error::Runtime {
-                        message: "materialized-view submission contains a null job_id".into(),
-                    });
-                }
-                if values.is_empty() {
-                    continue;
-                }
-                let value = values.value(0);
-                if !value.is_empty() {
-                    registry_job_id = Some(value.to_string());
-                }
-            }
-        }
-        if rows != 1 {
-            return Err(Error::Runtime {
+        let row = ReceiptRow::read(&submitted.query)
+            .await?
+            .ok_or_else(|| Error::Runtime {
                 message: "materialized-view submission must return exactly one status row".into(),
-            });
+            })?;
+        let already_exists = if let Some(column) = row.column("status") {
+            let status = column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "materialized-view submission status is not UTF-8".into(),
+                })?;
+            !status.is_null(0) && status.value(0) == "already_exists"
+        } else {
+            false
+        };
+        match row.job_id()? {
+            Some(id) => Ok(MaterializedViewJobSubmission::Registry {
+                job_id: id.to_owned(),
+            }),
+            None if already_exists => Ok(MaterializedViewJobSubmission::AlreadyExists),
+            None => Err(Error::Runtime {
+                message:
+                    "server acknowledged an early materialized-view handle but returned no job_id"
+                        .into(),
+            }),
         }
-        if already_exists && registry_job_id.is_none() {
-            return Ok(MaterializedViewJobSubmission::AlreadyExists);
-        }
-        let job_id = registry_job_id.ok_or_else(|| Error::Runtime {
-            message: "server acknowledged an early materialized-view handle but returned no job_id"
-                .into(),
-        })?;
-        Ok(MaterializedViewJobSubmission::Registry { job_id })
     }
 
     pub(in crate::remote) async fn describe_materialized_view(

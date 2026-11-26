@@ -619,7 +619,7 @@ class RemoteTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, ScalarPlugin, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -1237,6 +1237,7 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -1265,6 +1266,7 @@ class RemoteTable(Table):
                 row_timeout_seconds=row_timeout_seconds,
                 init_timeout_seconds=init_timeout_seconds,
                 num_workers=num_workers,
+                max_job_attempts=max_job_attempts,
                 max_executor_processes_per_worker=max_executor_processes_per_worker,
                 retry_errors=retry_errors,
                 retry_job_id=retry_job_id,
@@ -1296,6 +1298,7 @@ class RemoteTable(Table):
         row_timeout_seconds: Optional[float] = None,
         init_timeout_seconds: Optional[float] = None,
         num_workers: Optional[int] = None,
+        max_job_attempts: Optional[int] = None,
         max_executor_processes_per_worker: Optional[int] = None,
         retry_errors: bool = False,
         retry_job_id: Optional[str] = None,
@@ -1325,6 +1328,7 @@ class RemoteTable(Table):
                     row_timeout_seconds=row_timeout_seconds,
                     init_timeout_seconds=init_timeout_seconds,
                     num_workers=num_workers,
+                    max_job_attempts=max_job_attempts,
                     max_executor_processes_per_worker=max_executor_processes_per_worker,
                     retry_errors=retry_errors,
                     retry_job_id=retry_job_id,
@@ -1335,6 +1339,9 @@ class RemoteTable(Table):
                 )
             )
         )
+
+    def resume_refresh(self, job_id: str) -> Job[RefreshColumnResult]:
+        return Job(LOOP.run(self._table.resume_refresh(job_id)))
 
     def function_errors(
         self,

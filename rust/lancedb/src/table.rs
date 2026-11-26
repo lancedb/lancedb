@@ -973,6 +973,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("Function columns are supported only in LanceDB Enterprise"),
         })
     }
+    /// Declare multiple immutable registered-Function bindings in one schema commit.
+    async fn add_function_bindings(
+        &self,
+        _bindings: &[(crate::function::FunctionApplication, Option<String>)],
+        _options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: DocLink::Functions
+                .append_to("Batch Function declarations require LanceDB Enterprise support"),
+        })
+    }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed.
     ///
@@ -1020,6 +1031,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             });
         }
         self.refresh_column_async(column).await
+    }
+    /// Resume a failed Function refresh on this table and branch.
+    async fn resume_refresh(
+        &self,
+        _job_id: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "resuming a Function refresh requires LanceDB Enterprise".into(),
+        })
     }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
@@ -1532,6 +1552,12 @@ impl Table {
     /// # }
     /// ```
     ///
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
+    /// values and individual ranges may be fetched from short-lived object-store
+    /// URLs instead of the LanceDB proxy. Clients then need network access to
+    /// the object-store endpoint, including private endpoint routing, DNS, TLS
+    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
+    /// stay on the LanceDB proxy.
     /// Blobs inside lists cannot be fetched by row id. Returns
     /// [`Error::InvalidInput`] for those paths, when the column does not exist,
     /// or when it is not a blob column. Returns [`Error::NotSupported`] on
@@ -1583,6 +1609,12 @@ impl Table {
     /// # }
     /// ```
     ///
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
+    /// values and individual ranges may be fetched from short-lived object-store
+    /// URLs instead of the LanceDB proxy. Clients then need network access to
+    /// the object-store endpoint, including private endpoint routing, DNS, TLS
+    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
+    /// stay on the LanceDB proxy.
     /// Returns an error when a range is invalid, a requested row id does not
     /// exist, or the column is not a blob column. Returns
     /// [`Error::NotSupported`] on table types without blob support.
@@ -1610,6 +1642,12 @@ impl Table {
     /// `ClientConfig::blob_request_concurrency` or the
     /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` environment variable to tune it.
     ///
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
+    /// values and individual ranges may be fetched from short-lived object-store
+    /// URLs instead of the LanceDB proxy. Clients then need network access to
+    /// the object-store endpoint, including private endpoint routing, DNS, TLS
+    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
+    /// stay on the LanceDB proxy.
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
     /// partial handles are returned.
@@ -1637,7 +1675,10 @@ impl Table {
     ///
     /// The descriptor carries its table version, branch, column and row identity.
     /// Opening does not materialize the payload or change this table's checkout.
-    /// Remote reads use the table's authenticated HTTP byte-range endpoint.
+    /// On Enterprise clusters that enable direct Blob reads, large range reads
+    /// may use a short-lived object-store URL; the client needs network access
+    /// to that endpoint in addition to the LanceDB endpoint. Small reads stay
+    /// on the authenticated LanceDB byte-range endpoint.
     ///
     /// ```
     /// use lancedb::{Table, blob::BlobDescriptor};
@@ -2422,6 +2463,25 @@ impl Table {
         column: impl AsRef<str>,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// Resume a failed Function refresh on this table and its current branch.
+    /// Returns the successor attempt. Its result includes the published table version.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn resume(table: &Table, failed_job_id: &str) -> lancedb::Result<()> {
+    /// let job = table.resume_refresh(failed_job_id).await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn resume_refresh(
+        &self,
+        job_id: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.resume_refresh(job_id.as_ref()).await
     }
 
     /// Like [`Table::refresh_column_async`], with explicit refresh options.
@@ -3558,6 +3618,43 @@ impl NativeTable {
         .await
     }
 
+    /// Open a native table at a retained version of the dataset at `uri`.
+    ///
+    /// The version is selected during the dataset open. The returned handle is
+    /// read-only until it checks out the latest version. `params` supplies the
+    /// session, storage options, and commit handler for the dataset.
+    ///
+    /// ```
+    /// use lancedb::table::{BaseTable, NativeTable};
+    ///
+    /// async fn count_snapshot(uri: &str, version: u64) -> lancedb::Result<usize> {
+    ///     let table = NativeTable::open_at_version(uri, "events", version, Default::default()).await?;
+    ///     let rows = table.count_rows(None).await?;
+    ///     table.checkout_latest().await?;
+    ///     Ok(rows)
+    /// }
+    /// ```
+    pub async fn open_at_version(
+        uri: &str,
+        name: &str,
+        version: u64,
+        params: ReadParams,
+    ) -> Result<Self> {
+        Self::open_native(
+            uri,
+            name,
+            Vec::new(),
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+            Some(version),
+        )
+        .await
+    }
+
     /// Opens an existing Table
     ///
     /// # Arguments
@@ -3584,6 +3681,34 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         managed_versioning: Option<bool>,
+    ) -> Result<Self> {
+        Self::open_native(
+            uri,
+            name,
+            namespace,
+            write_store_wrapper,
+            params,
+            read_consistency_interval,
+            namespace_client,
+            pushdown_operations,
+            managed_versioning,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_native(
+        uri: &str,
+        name: &str,
+        namespace: Vec<String>,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: Option<ReadParams>,
+        read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+        managed_versioning: Option<bool>,
+        version: Option<u64>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -3622,6 +3747,9 @@ impl NativeTable {
         };
 
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+        if let Some(version) = version {
+            builder = builder.with_version(version);
+        }
 
         // Set up commit handler when managed_versioning is enabled
         if managed_versioning && let Some(ref ns_client) = namespace_client {
@@ -3649,9 +3777,12 @@ impl NativeTable {
             Err(e) => return Err(e.into()),
         };
 
-        crate::docs::check_table_maintenance_warnings(&dataset, uri).await;
-
-        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+        let dataset = if version.is_some() {
+            DatasetConsistencyWrapper::new_time_travel(dataset, read_consistency_interval)
+        } else {
+            crate::docs::check_table_maintenance_warnings(&dataset, uri).await;
+            DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval)
+        };
         let id = Self::build_id(&namespace, name);
 
         Ok(Self {
@@ -5246,6 +5377,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(table.name, "test")
+    }
+
+    #[tokio::test]
+    async fn opens_a_retained_native_version_with_an_unreadable_latest_manifest() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.lance");
+        let uri = path.to_str().unwrap();
+        let batch = make_test_batches();
+        let rows = batch.num_rows();
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new([Ok(batch.clone())], batch.schema()),
+            uri,
+            None,
+        )
+        .await
+        .unwrap();
+        let retained = dataset.version().version;
+        dataset
+            .append(
+                RecordBatchIterator::new([Ok(batch.clone())], batch.schema()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(dataset.count_rows(None).await.unwrap(), rows * 2);
+        let latest = dataset.manifest_location().path.filename().unwrap();
+        std::fs::write(path.join("_versions").join(latest), b"unreadable manifest").unwrap();
+        assert!(NativeTable::open(uri).await.is_err());
+
+        let pinned = NativeTable::open_at_version(uri, "events", retained, ReadParams::default())
+            .await
+            .unwrap();
+        assert_eq!(pinned.version().await.unwrap(), retained);
+        assert_eq!(pinned.count_rows(None).await.unwrap(), rows);
+        assert!(pinned.dataset.ensure_mutable().is_err());
     }
 
     /// The per-row error store is a server feature; a LanceDB Embedded table says so
