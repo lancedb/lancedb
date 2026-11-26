@@ -1801,17 +1801,8 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         let (socket, _) = listener.accept().await?;
         Ok::<_, std::io::Error>(Some((socket, listener)))
     });
-    let result = RecordBatch::try_from_iter(vec![
-        (
-            "name",
-            Arc::new(StringArray::from(vec!["view"])) as ArrayRef,
-        ),
-        (
-            "query",
-            Arc::new(StringArray::from(vec!["SELECT * FROM source"])) as ArrayRef,
-        ),
-    ])
-    .unwrap();
+    let result =
+        description_batch(serde_json::json!({"name":"view", "query":"SELECT * FROM source"}));
     let service = TestSqlService {
         result,
         ..Default::default()
@@ -1921,7 +1912,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     assert_eq!(
         *statements.lock().unwrap(),
         [
-            "DESCRIBE MATERIALIZED VIEW \"view\"",
+            "DESCRIBE MATERIALIZED VIEW \"view\" FORMAT JSON",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2, gpu_class = 'h100', gpu_count = 2)",
@@ -3216,11 +3207,8 @@ async fn remote_mv_listing_uses_server_continuation_tokens() {
 async fn remote_describe_materialized_view_preserves_the_sql_definition() {
     for defer in [false, true] {
         let definition = "SELECT s.x, d.label FROM source s JOIN dim d ON s.id = d.id";
-        let result = RecordBatch::try_from_iter(vec![(
-            "query",
-            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
-        )])
-        .unwrap();
+        let result =
+            description_batch(serde_json::json!({"name":"daily_sales", "query":definition}));
         let service = TestSqlService {
             adaptive: true,
             defer,
@@ -3245,7 +3233,7 @@ async fn remote_describe_materialized_view_preserves_the_sql_definition() {
         assert!(info.parsed_definition.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
-            ["DESCRIBE MATERIALIZED VIEW \"daily_sales\""]
+            ["DESCRIBE MATERIALIZED VIEW \"daily_sales\" FORMAT JSON"]
         );
         shutdown.send(()).unwrap();
     }
