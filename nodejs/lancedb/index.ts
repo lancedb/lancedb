@@ -93,6 +93,7 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
+export type { BlobDescriptor, BlobDescriptorSource } from "./blob";
 export type {
   BlobData,
   BlobInput,
