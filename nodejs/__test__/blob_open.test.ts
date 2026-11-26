@@ -10,7 +10,7 @@ import {
   connect,
 } from "../lancedb";
 
-jest.setTimeout(60000);
+jest.setTimeout(15000);
 
 const IDENTITY = `v1:${"a".repeat(64)}`;
 const MIB = 1024 * 1024;
@@ -179,7 +179,7 @@ async function withOpenServer(
 }
 
 describe("openBlobFile", () => {
-  it("opens a large descriptor through the direct resolver", async () => {
+  it("opens a large descriptor through the direct resolver and reads bytes", async () => {
     await withOpenServer(async (_db, table, state) => {
       const handle = (await table.openBlobFile(descriptor(10n * BigInt(MIB))))!;
       expect(handle).not.toBeNull();
@@ -187,10 +187,12 @@ describe("openBlobFile", () => {
       expect(await handle.readRange(0n, 4n)).toEqual(Buffer.alloc(4, 0x61));
       expect(state.proxyCalls).toBe(1);
       expect(state.objectCalls).toBe(0);
-      // The descriptor is at the inclusive 10 MiB boundary, so opening asks the
-      // resolver for a presigned object-store URL.
+      const large = await handle.readRange(0n, 10n * BigInt(MIB));
+      expect(large.length).toBe(10 * MIB);
+      expect(large.equals(Buffer.alloc(10 * MIB, 0x61))).toBe(true);
       expect(state.blobLocationsCalls).toBe(1);
-      expect(state.objectCalls).toBe(0);
+      expect(state.objectCalls).toBe(1);
+      expect(state.proxyCalls).toBe(1);
       expect(state.lastLocationBody).toMatchObject({
         version: 46,
         // biome-ignore lint/style/useNamingConvention: Matches the resolver body.
@@ -211,7 +213,9 @@ describe("openBlobFile", () => {
       state.directStatus = 503;
       const handle = (await table.openBlobFile(descriptor(10n * BigInt(MIB))))!;
       expect(handle).not.toBeNull();
-      expect(await handle.readRange(0n, 4n)).toEqual(Buffer.alloc(4, 0x61));
+      const large = await handle.readRange(0n, 10n * BigInt(MIB));
+      expect(large.length).toBe(10 * MIB);
+      expect(large.equals(Buffer.alloc(10 * MIB, 0x61))).toBe(true);
       expect(state.blobLocationsCalls).toBe(1);
       expect(state.objectCalls).toBe(0);
       expect(state.proxyCalls).toBe(1);
