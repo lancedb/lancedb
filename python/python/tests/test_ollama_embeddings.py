@@ -102,8 +102,19 @@ def test_ollama_generate_embeddings_empty_array(ollama_embeddings):
     function, requests = ollama_embeddings
 
     assert function.generate_embeddings(np.array([], dtype=str)) == []
+    assert requests == []
+
+
+def test_ollama_source_embeddings_skip_null_and_empty_texts(ollama_embeddings):
+    function, requests = ollama_embeddings
+
+    assert function.compute_source_embeddings(
+        pa.array(["hello", None, "", "世界"])
+    ) == [[0.0, 5.0], None, None, [1.0, 2.0]]
+    assert [request["input"] for request in requests] == [["hello", "世界"]]
+
+    assert function.compute_source_embeddings(pa.array([None, ""])) == [None, None]
     assert len(requests) == 1
-    assert requests[0]["input"] == []
 
 
 def test_ollama_query_embeddings(ollama_embeddings):

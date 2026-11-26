@@ -72,8 +72,14 @@ class OllamaEmbeddings(TextEmbeddingFunction):
         # TODO retry, rate limit, token limit
         if isinstance(texts, np.ndarray):
             texts = texts.tolist()
-        embeddings = self._compute_embedding(texts)
-        return list(embeddings)
+        # Ollama rejects None, so null and empty texts get no embedding
+        valid_indices = [idx for idx, text in enumerate(texts) if text]
+        embeddings: list[Union[np.array, None]] = [None] * len(texts)
+        if valid_indices:
+            computed = self._compute_embedding([texts[idx] for idx in valid_indices])
+            for idx, embedding in zip(valid_indices, computed):
+                embeddings[idx] = embedding
+        return embeddings
 
     def __getstate__(self) -> dict[str, Any]:
         state = super().__getstate__()
