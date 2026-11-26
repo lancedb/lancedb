@@ -1821,6 +1821,21 @@ def test_branches(tmp_path):
     branches = table.branches.list()
     assert "exp" in branches
     assert branches["exp"]["parent_branch"] is None
+    assert branches["exp"]["create_at"] > 0
+    assert branches["exp"]["metadata"] == {}
+
+    # No SDK writes branch metadata yet, so give the stored ref file
+    # non-empty metadata and a known creation time in Unix seconds.
+    ref_path = tmp_path / "test.lance" / "_refs" / "branches" / "exp.json"
+    stored = json.loads(ref_path.read_text())
+    stored["metadata"] = {"owner": "test"}
+    stored["createAt"] = 1700000000
+    ref_path.write_text(json.dumps(stored))
+
+    branches = table.branches.list()
+    assert branches["exp"]["create_at"] == 1700000000
+    assert branches["exp"]["metadata"] == {"owner": "test"}
+    assert branches["exp"]["manifest_size"] > 0
 
     # from_ref="main" is equivalent to the default
     table.branches.create("exp2", from_ref="main")

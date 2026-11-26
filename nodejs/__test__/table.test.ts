@@ -11,6 +11,7 @@ import {
   AutoQuery,
   type BlobInput,
   type BlobMode,
+  BranchContents,
   type CompactionOptions,
   Connection,
   MatchQuery,
@@ -4127,6 +4128,52 @@ describe("when dealing with branches", () => {
   });
   afterEach(() => {
     tmpDir.removeCallback();
+  });
+
+  it("returns serializable BranchContents instances from list()", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [{ i: 0 }]);
+    const branches = await table.branches();
+    await branches.create("exp");
+
+    // No SDK writes branch metadata yet, so give the stored ref file
+    // non-empty metadata and a known creation time in Unix seconds.
+    const refPath = path.join(
+      tmpDir.name,
+      "my_table.lance",
+      "_refs",
+      "branches",
+      "exp.json",
+    );
+    const stored = JSON.parse(fs.readFileSync(refPath, "utf8"));
+    stored.metadata = { owner: "test" };
+    stored.createAt = 1700000000;
+    fs.writeFileSync(refPath, JSON.stringify(stored));
+
+    const list = await branches.list();
+    const exp = list["exp"];
+
+    // The runtime class export and instance identity are preserved.
+    expect(exp).toBeInstanceOf(BranchContents);
+
+    // All fields are own enumerable properties, so spread and JSON
+    // serialization see them.
+    expect(Object.keys(exp)).toEqual(
+      expect.arrayContaining([
+        "parentBranch",
+        "parentVersion",
+        "createAt",
+        "manifestSize",
+        "metadata",
+      ]),
+    );
+    expect({ ...exp }.createAt).toBe(1700000000);
+
+    const serialized = JSON.parse(JSON.stringify(list));
+    expect(serialized["exp"].createAt).toBe(1700000000);
+    expect(serialized["exp"].metadata).toEqual({ owner: "test" });
+    expect(serialized["exp"].manifestSize).toBeGreaterThan(0);
+    expect(serialized["exp"].parentBranch).toBeNull();
   });
 
   it("forks from a tag on a branch with the same version as main", async () => {

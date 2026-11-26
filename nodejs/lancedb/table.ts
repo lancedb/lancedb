@@ -87,6 +87,34 @@ import {
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
+
+/**
+ * Copies accessor properties from a napi-rs class prototype onto an instance
+ * as own enumerable properties, reusing the same getters and setters. napi-rs
+ * exposes class fields as prototype accessors, which are invisible to
+ * `Object.keys`, object spread and `JSON.stringify`; promoting them to own
+ * properties keeps the class (and `instanceof`) intact while making returned
+ * values serializable.
+ */
+function exposeOwnAccessors<T extends object>(instance: T, keys: string[]): T {
+  const proto = Object.getPrototypeOf(instance);
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(instance, key)) continue;
+    const desc = Object.getOwnPropertyDescriptor(proto, key);
+    if (
+      desc !== undefined &&
+      (desc.get !== undefined || desc.set !== undefined)
+    ) {
+      Object.defineProperty(instance, key, {
+        get: desc.get,
+        set: desc.set,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  return instance;
+}
 import {
   AutoQuery,
   FullTextQuery,
@@ -2883,7 +2911,17 @@ export class Branches {
 
   /** List all branches, mapping name to branch metadata. */
   async list(): Promise<Record<string, BranchContents>> {
-    return await this.#inner.list();
+    const branches = await this.#inner.list();
+    for (const contents of Object.values(branches)) {
+      exposeOwnAccessors(contents, [
+        "parentBranch",
+        "parentVersion",
+        "createAt",
+        "manifestSize",
+        "metadata",
+      ]);
+    }
+    return branches;
   }
 
   /**

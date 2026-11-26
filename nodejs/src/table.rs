@@ -2746,7 +2746,22 @@ pub struct TagContents {
 pub struct BranchContents {
     pub parent_branch: Option<String>,
     pub parent_version: i64,
+    pub create_at: i64,
     pub manifest_size: i64,
+    metadata: HashMap<String, String>,
+}
+
+#[napi]
+impl BranchContents {
+    #[napi(getter)]
+    pub fn metadata(&self) -> HashMap<String, String> {
+        self.metadata.clone()
+    }
+
+    #[napi(setter)]
+    pub fn set_metadata(&mut self, metadata: HashMap<String, String>) {
+        self.metadata = metadata;
+    }
 }
 
 fn from_tag_hint(name: &str, tag: &str) -> String {
@@ -2922,7 +2937,9 @@ impl Branches {
                     BranchContents {
                         parent_branch: v.parent_branch,
                         parent_version: v.parent_version as i64,
+                        create_at: v.create_at as i64,
                         manifest_size: v.manifest_size as i64,
+                        metadata: v.metadata,
                     },
                 )
             })
