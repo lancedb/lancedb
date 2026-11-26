@@ -4251,8 +4251,13 @@ class Table(ABC):
         ----------
         version: int | str | datetime
             A version number, tag, or timestamp. A timestamp selects the highest
-            retained version on this branch committed at or before that instant.
-            A naive datetime uses the system's local time zone.
+            retained version on this branch whose recorded commit time is at or
+            before that instant. A naive datetime uses the system's local time zone.
+
+            Some Enterprise servers report commit times in whole milliseconds.
+            A commit later in the same millisecond as the cutoff can qualify.
+            To reproduce a report exactly, record each input table's version
+            number and pass that number to `checkout()` on subsequent runs.
 
         Raises
         ------
@@ -4943,7 +4948,8 @@ class LanceTable(Table):
         ----------
         version: int | str | datetime
             A version number, tag, or timestamp. See
-            [Table.checkout][lancedb.table.Table.checkout] for timestamp semantics.
+            [Table.checkout][lancedb.table.Table.checkout] for timestamp semantics
+            and Enterprise timestamp precision.
 
         Examples
         --------
@@ -10060,7 +10066,8 @@ class AsyncTable:
         ----------
         version: int | str | datetime
             A version number, tag, or timestamp. See
-            [Table.checkout][lancedb.table.Table.checkout] for timestamp semantics.
+            [Table.checkout][lancedb.table.Table.checkout] for timestamp semantics
+            and Enterprise timestamp precision.
         """
         try:
             if isinstance(version, datetime):

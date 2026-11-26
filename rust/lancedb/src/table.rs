@@ -1127,7 +1127,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
-    /// Checkout the highest retained version committed at or before the timestamp.
+    /// Checkout the highest retained version with a recorded commit time at or before the timestamp.
     /// Backends with a mutable branch must resolve and pin on the same branch.
     async fn checkout_as_of(&self, timestamp: DateTime<Utc>) -> Result<()> {
         let version = version_as_of(self.list_versions().await?, timestamp)?;
@@ -3091,10 +3091,14 @@ impl Table {
         self.inner.checkout(version).await
     }
 
-    /// Pin this table to the highest retained version on its branch whose commit
-    /// timestamp is at or before `timestamp`. This scans the retained version history
+    /// Pin this table to the highest retained version on its branch whose recorded
+    /// commit time is at or before `timestamp`. This scans the retained version history
     /// and returns an error if none qualifies.
     /// Use [`Self::checkout_latest`] to resume reading the latest version.
+    ///
+    /// Some Enterprise servers report commit times in whole milliseconds. A commit
+    /// later in the cutoff millisecond can qualify. To reproduce an exact snapshot,
+    /// record its version number and pass that number to [`Self::checkout`].
     ///
     /// ```
     /// use chrono::{DateTime, Utc};
