@@ -1426,9 +1426,10 @@ export abstract class Table {
    * Calling this method will set the table into time-travel mode. If you
    * wish to return to standard mode, call `checkoutLatest`.
    *
-   * In local mode, a tag must reference this handle's branch. A tag on another
-   * branch is rejected without changing the handle. Use {@link Branches.checkout}
-   * to open a handle scoped to that branch before checking out its tag.
+   * In LanceDB Embedded, a tag can select a read-only snapshot on another branch.
+   * `checkoutLatest()` returns to this handle's original branch. Restoring a
+   * snapshot from another branch is rejected before writing. Use
+   * {@link Branches.checkout} to open that branch before restoring its tag.
    *
    * @param {number | string} version The version to checkout, could be version number or tag
    * @example
@@ -1487,15 +1488,18 @@ export abstract class Table {
   abstract branches(): Promise<Branches>;
 
   /**
-   * The branch this table handle is scoped to, or `null` for the main branch.
+   * The branch of the visible snapshot, or `null` for the main branch.
    *
-   * A handle returned by {@link Branches.create} or {@link Branches.checkout}
-   * reports the branch it targets; a handle opened normally reports `null`.
+   * During Embedded tag time travel, this can differ from the handle's original
+   * branch, which `checkoutLatest()` returns to.
    */
   abstract currentBranch(): string | null;
 
   /**
    * Restore the table to the currently checked out version
+   *
+   * LanceDB Embedded rejects a snapshot on another branch before writing.
+   * Open that branch with {@link Branches.checkout} before restoring its tag.
    *
    * This operation will fail if checkout has not been called previously
    *

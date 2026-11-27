@@ -1598,7 +1598,11 @@ class Table(ABC):
         raise NotImplementedError("branches is not supported for this table type")
 
     def current_branch(self) -> Optional[str]:
-        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        """The branch of the visible snapshot, or ``None`` for ``main``.
+
+        During Embedded tag time travel, this can differ from the original
+        branch that ``checkout_latest()`` returns to.
+        """
         raise NotImplementedError("current_branch is not supported for this table type")
 
     def delta(
@@ -4239,10 +4243,11 @@ class Table(ABC):
         version. As a consequence, calling this method will disable any read consistency
         interval that was previously set.
 
-        In local mode, a tag must reference this handle's branch. A tag on another
-        branch raises `ValueError` without changing the handle. Use
-        [branches.checkout()][lancedb.table.Branches.checkout] to open a handle
-        scoped to that branch before checking out its tag.
+        In LanceDB Embedded, a tag can select a read-only snapshot on another
+        branch. `checkout_latest()` returns to this handle's original branch.
+        Restoring a snapshot from another branch raises `ValueError` before writing.
+        Use [branches.checkout()][lancedb.table.Branches.checkout] to open a
+        handle on that branch before restoring its tag.
 
         This is a read-only operation that turns the table into a sort of "view"
         or "detached head".  Other table instances will not be affected.  To make the
@@ -4281,6 +4286,10 @@ class Table(ABC):
 
         This creates a new version where the data is equivalent to the
         specified previous version. Data is not copied (as of python-v0.2.1).
+
+        In LanceDB Embedded, a snapshot on another branch cannot be restored
+        through this handle. Open that branch with `branches.checkout()` first;
+        an ambiguous cross-branch restore raises `ValueError` before writing.
 
         Parameters
         ----------
@@ -4530,10 +4539,14 @@ class LanceTable(Table):
         )
 
         version = state["checkout_version"]
-        if state["branch"] is not None:
-            table = table.branches.checkout(state["branch"], version)
-        elif version is not None:
-            table.checkout(version)
+        # Older pickle states recorded only the visible snapshot branch.
+        tracking_branch = state.get("tracking_branch", state["branch"])
+        if tracking_branch is not None:
+            table = table.branches.checkout(tracking_branch)
+        if version is not None:
+            LOOP.run(table._table._checkout_snapshot(state["branch"], version))
+            table._branch = state["branch"]
+            table._checkout_version = version
         return table
 
     def __getstate__(self) -> dict[str, Any]:
@@ -4552,9 +4565,8 @@ class LanceTable(Table):
 
     def _reopen_state(self) -> dict[str, Any]:
         """Arguments for ``_open_from_pickle_state``, minus the connection."""
-        # The native handle is authoritative: a tag checkout can move this
-        # wrapper onto another branch, so never trust the branch captured at
-        # construction time.
+        # Preserve the snapshot branch separately from the branch that
+        # checkout_latest() reattaches to after cross-branch time travel.
         self._branch = self.current_branch()
         return {
             "name": self.name,
@@ -4569,6 +4581,7 @@ class LanceTable(Table):
             "pushdown_operations": set(self._pushdown_operations),
             "route_pushdown_to_rust": self._route_pushdown_to_rust,
             "branch": self._branch,
+            "tracking_branch": self._table._inner._tracking_branch(),
             "checkout_version": self._checkout_version,
         }
 
@@ -4886,7 +4899,11 @@ class LanceTable(Table):
         return Branches(self)
 
     def current_branch(self) -> Optional[str]:
-        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        """The branch of the visible snapshot, or ``None`` for ``main``.
+
+        During Embedded tag time travel, this can differ from the original
+        branch that ``checkout_latest()`` returns to.
+        """
         return self._table.current_branch()
 
     def _pin_current_snapshot(self) -> "LanceTable":
@@ -4930,10 +4947,11 @@ class LanceTable(Table):
         Calling this method will set the table into time-travel mode. If you
         wish to return to standard mode, call `checkout_latest`.
 
-        A tag must reference this handle's branch. A tag on another branch raises
-        `ValueError` without changing the handle. Use
+        A tag can select a read-only snapshot on another branch.
+        `checkout_latest()` returns to this handle's original branch. Restoring
+        a snapshot from another branch raises `ValueError` before writing. Use
         [branches.checkout()][lancedb.table.Branches.checkout] to open a handle
-        scoped to that branch before checking out its tag.
+        on that branch before restoring its tag.
 
         Parameters
         ----------
@@ -4981,6 +4999,10 @@ class LanceTable(Table):
         This creates a new version where the data is equivalent to the
         specified previous version. Data is not copied (as of python-v0.2.1).
 
+        In LanceDB Embedded, a snapshot on another branch cannot be restored
+        through this handle. Open that branch with `branches.checkout()` first;
+        an ambiguous cross-branch restore raises `ValueError` before writing.
+
         Parameters
         ----------
         version : int or str, default None
@@ -5020,7 +5042,7 @@ class LanceTable(Table):
         4
         """
         if version is not None:
-            LOOP.run(self._table.checkout(version))
+            self.checkout(version)
         LOOP.run(self._table.restore())
         self._checkout_version = None
         self._branch = self.current_branch()
@@ -10007,6 +10029,10 @@ class AsyncTable:
         """Return an independent handle pinned to the currently selected snapshot."""
         return AsyncTable(await self._inner._checkout_current())
 
+    async def _checkout_snapshot(self, branch: Optional[str], version: int) -> None:
+        """Reopen a snapshot while retaining the handle's original branch."""
+        await self._inner._checkout_snapshot(branch, version)
+
     async def list_versions(self):
         """
         List all versions of the table
@@ -10044,10 +10070,11 @@ class AsyncTable:
         version. As a consequence, calling this method will disable any read consistency
         interval that was previously set.
 
-        In local mode, a tag must reference this handle's branch. A tag on another
-        branch raises `ValueError` without changing the handle. Use
-        [branches.checkout()][lancedb.table.AsyncBranches.checkout] to open a handle
-        scoped to that branch before checking out its tag.
+        In LanceDB Embedded, a tag can select a read-only snapshot on another
+        branch. `checkout_latest()` returns to this handle's original branch.
+        Restoring a snapshot from another branch raises `ValueError` before writing.
+        Use [branches.checkout()][lancedb.table.AsyncBranches.checkout] to open a
+        handle on that branch before restoring its tag.
 
         This is a read-only operation that turns the table into a sort of "view"
         or "detached head".  Other table instances will not be affected.  To make the
@@ -10092,6 +10119,10 @@ class AsyncTable:
     async def restore(self, version: Optional[int | str] = None):
         """
         Restore the table to the currently checked out version
+
+        In LanceDB Embedded, a snapshot on another branch cannot be restored
+        through this handle. Open that branch with `branches.checkout()` first;
+        an ambiguous cross-branch restore raises `ValueError` before writing.
 
         This operation will fail if checkout has not been called previously
 
@@ -10304,7 +10335,11 @@ class AsyncTable:
         return AsyncBranches(self._inner)
 
     def current_branch(self) -> Optional[str]:
-        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        """The branch of the visible snapshot, or ``None`` for ``main``.
+
+        During Embedded tag time travel, this can differ from the original
+        branch that ``checkout_latest()`` returns to.
+        """
         return self._inner.current_branch()
 
     async def explain_cleanup(

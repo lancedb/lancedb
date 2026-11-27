@@ -29,6 +29,8 @@ pub struct DatasetConsistencyWrapper {
 #[derive(Debug, Clone)]
 struct DatasetState {
     dataset: Arc<Dataset>,
+    /// The handle's branch, independent of the branch of a pinned snapshot.
+    tracking_branch: Option<String>,
     /// `Some(version)` = pinned to a specific version (time travel),
     /// `None` = tracking latest.
     pinned_version: Option<u64>,
@@ -59,6 +61,7 @@ enum ConsistencyMode {
 impl DatasetConsistencyWrapper {
     /// Create a new wrapper in the latest version mode.
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let tracking_branch = dataset.manifest().branch.clone();
         let dataset = Arc::new(dataset);
         let consistency = match read_consistency_interval {
             Some(d) if d == Duration::ZERO => ConsistencyMode::Strong,
@@ -73,6 +76,7 @@ impl DatasetConsistencyWrapper {
         Self {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
+                tracking_branch,
                 pinned_version: None,
                 query_snapshot: false,
             })),
@@ -98,6 +102,17 @@ impl DatasetConsistencyWrapper {
         wrapper
     }
 
+    /// Pin an independent handle to the visible snapshot, retaining the branch
+    /// that `as_latest` will reattach to.
+    pub async fn new_snapshot(&self, read_consistency_interval: Option<Duration>) -> Result<Self> {
+        self.get().await?;
+        let state = self.state.lock()?.clone();
+        let wrapper =
+            Self::new_time_travel(state.dataset.as_ref().clone(), read_consistency_interval);
+        wrapper.state.lock()?.tracking_branch = state.tracking_branch;
+        Ok(wrapper)
+    }
+
     /// Create an independent read-only wrapper pinned to the current dataset
     /// while retaining this wrapper's live RTE read context.
     pub async fn new_query_snapshot(&self) -> Result<Self> {
@@ -107,12 +122,13 @@ impl DatasetConsistencyWrapper {
         // be cloned together from one authoritative state sample below.
         self.get().await?;
 
-        let (dataset, query_snapshot) = {
+        let (dataset, tracking_branch, query_snapshot) = {
             let state = self.state.lock()?;
             // Preserve user time travel so the RTE safety guard still sees
             // it. Latest and already-internal snapshots remain internal pins.
             (
                 state.dataset.clone(),
+                state.tracking_branch.clone(),
                 state.query_snapshot || state.pinned_version.is_none(),
             )
         };
@@ -120,6 +136,7 @@ impl DatasetConsistencyWrapper {
         Ok(Self {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
+                tracking_branch,
                 pinned_version: Some(version),
                 query_snapshot,
             })),
@@ -180,10 +197,9 @@ impl DatasetConsistencyWrapper {
     /// is silently ignored — the write already committed to storage.
     pub fn update(&self, dataset: Dataset) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.pinned_version.is_some() {
-            // A concurrent as_time_travel() beat us here. The write succeeded
-            // in storage, but since we're now pinned we don't advance the
-            // cached pointer.
+        if state.pinned_version.is_some() || dataset.manifest().branch != state.tracking_branch {
+            // A concurrent checkout beat us here. The write succeeded in
+            // storage, but must not replace a pin or another branch's pointer.
             return;
         }
         if dataset.manifest().version >= state.dataset.manifest().version {
@@ -202,6 +218,7 @@ impl DatasetConsistencyWrapper {
         let new_dataset = dataset.checkout_branch(&branch).await?;
 
         let mut state = self.state.lock()?;
+        state.tracking_branch = new_dataset.manifest().branch.clone();
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = None;
         state.query_snapshot = false;
@@ -225,7 +242,7 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    /// The branch this wrapper is currently tracking, or `None` for `main`.
+    /// The branch of the visible snapshot, or `None` for `main`.
     pub fn current_branch(&self) -> Option<String> {
         self.state
             .lock()
@@ -234,6 +251,36 @@ impl DatasetConsistencyWrapper {
             .manifest()
             .branch
             .clone()
+    }
+
+    /// The branch to reattach to after time travel, or `None` for `main`.
+    #[doc(hidden)]
+    pub fn tracking_branch(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tracking_branch
+            .clone()
+    }
+
+    /// Validate restore against the handle's branch before any commit is made.
+    pub(crate) fn restore_target(&self) -> Result<Arc<Dataset>> {
+        let state = self.state.lock()?;
+        if state.pinned_version.is_none() || state.query_snapshot {
+            return Err(Error::InvalidInput {
+                message: "you must run checkout before running restore".to_string(),
+            });
+        }
+        if state.dataset.manifest().branch != state.tracking_branch {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "cannot restore a snapshot on branch '{}' with a handle scoped to branch '{}'; open a handle on the snapshot's branch before restoring",
+                    state.dataset.manifest().branch.as_deref().unwrap_or("main"),
+                    state.tracking_branch.as_deref().unwrap_or("main"),
+                ),
+            });
+        }
+        Ok(state.dataset.clone())
     }
 
     /// Returns the version, if in time travel mode, or None otherwise.
@@ -246,19 +293,20 @@ impl DatasetConsistencyWrapper {
 
     /// Convert into a wrapper in latest version mode.
     pub async fn as_latest(&self) -> Result<()> {
-        let dataset = {
+        let (dataset, tracking_branch) = {
             let state = self.state.lock()?;
             if state.pinned_version.is_none() {
                 return Ok(());
             }
-            state.dataset.clone()
+            (state.dataset.clone(), state.tracking_branch.clone())
         };
 
-        let latest_version = dataset.latest_version_id().await?;
-        let new_dataset = dataset.checkout_version(latest_version).await?;
+        let new_dataset = dataset
+            .checkout_version(refs::Ref::Version(tracking_branch.clone(), None))
+            .await?;
 
         let mut state = self.state.lock()?;
-        if state.pinned_version.is_some() {
+        if state.pinned_version.is_some() && state.tracking_branch == tracking_branch {
             state.dataset = Arc::new(new_dataset);
             state.pinned_version = None;
             state.query_snapshot = false;
@@ -270,9 +318,9 @@ impl DatasetConsistencyWrapper {
         Ok(())
     }
 
-    /// Pin to a version on this wrapper's current branch.
-    ///
-    /// References to another branch are rejected without changing the state.
+    /// Pin to a snapshot without changing the handle's tracking branch.
+    /// Numeric versions resolve on the visible snapshot's branch; tags and
+    /// explicit branch/version references can select another branch for reading.
     pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
         let target_ref = target_version.into();
 
@@ -301,16 +349,6 @@ impl DatasetConsistencyWrapper {
         let version_value = new_dataset.version().version;
 
         let mut state = self.state.lock()?;
-        // Time travel must not change the branch used by checkout_latest or restore.
-        if new_dataset.manifest().branch != state.dataset.manifest().branch {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "cannot check out a version on branch '{}' with a handle scoped to branch '{}'; use a handle scoped to the target branch instead",
-                    new_dataset.manifest().branch.as_deref().unwrap_or("main"),
-                    state.dataset.manifest().branch.as_deref().unwrap_or("main"),
-                ),
-            });
-        }
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = Some(version_value);
         state.query_snapshot = false;
@@ -358,6 +396,7 @@ async fn refresh_latest(state: Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>>
     {
         let mut state = state.lock()?;
         if state.pinned_version.is_none()
+            && new_arc.manifest().branch == state.tracking_branch
             && new_arc.manifest().version >= state.dataset.manifest().version
         {
             state.dataset = new_arc.clone();
@@ -880,5 +919,16 @@ mod tests {
         // get() returns the branch dataset
         let on_branch = wrapper.get().await.unwrap();
         assert_eq!(on_branch.manifest().branch.as_deref(), Some("exp"));
+
+        // Cross-branch snapshots keep the branch selected by as_branch,
+        // including when an internal query snapshot is taken.
+        wrapper.as_time_travel(("main", v1)).await.unwrap();
+        assert_eq!(wrapper.current_branch(), None);
+        let snapshot = wrapper.new_query_snapshot().await.unwrap();
+        assert!(snapshot.restore_target().is_err());
+        snapshot.as_latest().await.unwrap();
+        assert_eq!(snapshot.current_branch().as_deref(), Some("exp"));
+        wrapper.as_latest().await.unwrap();
+        assert_eq!(wrapper.current_branch().as_deref(), Some("exp"));
     }
 }

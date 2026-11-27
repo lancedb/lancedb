@@ -1192,7 +1192,9 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
                 .append_to("Cherry-picking branches is only supported on Enterprise tables."),
         })
     }
-    /// The branch this handle is scoped to, or `None` for `main`.
+    /// The branch of the visible snapshot, or `None` for `main`.
+    /// During Embedded tag time travel this can differ from the original branch
+    /// that `checkout_latest` returns to.
     fn current_branch(&self) -> Option<String>;
     /// Get the table definition.
     async fn table_definition(&self) -> Result<TableDefinition>;
@@ -3083,9 +3085,10 @@ impl Table {
     /// As a consequence, calling this method will disable any read consistency interval
     /// that was previously set.
     ///
-    /// In local mode, the tag must reference this handle's branch. A tag on another
-    /// branch is rejected without changing the handle. Use [`Self::checkout_branch`]
-    /// to obtain a handle scoped to that branch first.
+    /// On Embedded tables, a tag can select a read-only snapshot on another branch.
+    /// [`Self::checkout_latest`] returns to the handle's original branch. Restoring
+    /// a snapshot from another branch is rejected before writing; open that branch
+    /// with [`Self::checkout_branch`] before restoring its tag.
     ///
     /// This is a read-only operation that turns the table into a sort of "view"
     /// or "detached head".  Other table instances will not be affected.  To make the change
@@ -3108,6 +3111,9 @@ impl Table {
     }
 
     /// Restore the table to the currently checked out version
+    ///
+    /// Embedded tables reject a snapshot on another branch before writing. Open
+    /// that branch with [`Self::checkout_branch`] before restoring its tag.
     ///
     /// This operation will fail if checkout has not been called previously
     ///
@@ -3486,7 +3492,9 @@ impl Table {
         self.inner.cherry_pick(from_branch, dry_run).await
     }
 
-    /// The branch this handle is scoped to, or `None` for `main`.
+    /// The branch of the visible snapshot, or `None` for `main`.
+    /// During Embedded tag time travel this can differ from the original branch
+    /// that `checkout_latest` returns to.
     pub fn current_branch(&self) -> Option<String> {
         self.inner.current_branch()
     }
@@ -4477,11 +4485,10 @@ impl BaseTable for NativeTable {
     }
 
     async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
-        let current = self.dataset.get().await?;
-        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
-            current.as_ref().clone(),
-            self.read_consistency_interval,
-        );
+        let dataset = self
+            .dataset
+            .new_snapshot(self.read_consistency_interval)
+            .await?;
         Ok(Arc::new(Self {
             dataset,
             ..self.clone()
@@ -4582,18 +4589,10 @@ impl BaseTable for NativeTable {
     }
 
     async fn restore(&self) -> Result<()> {
-        let version = self
-            .dataset
-            .time_travel_version()
-            .ok_or_else(|| Error::InvalidInput {
-                message: "you must run checkout before running restore".to_string(),
-            })?;
-        {
-            // restore is the only "write" operation allowed in time travel mode
-            let mut dataset = (*self.dataset.get().await?).clone();
-            debug_assert_eq!(dataset.version().version, version);
-            dataset.restore().await?;
-        }
+        // Restore is the only write allowed in time travel mode. Validate the
+        // snapshot's branch before Lance can publish any restore transaction.
+        let mut dataset = self.dataset.restore_target()?.as_ref().clone();
+        dataset.restore().await?;
         // Restore moves "latest", so bump before resolving it (as RemoteTable does).
         self.bump_freshness();
         self.dataset.as_latest().await?;
@@ -5873,7 +5872,7 @@ mod tests {
     #[case(Some(Duration::ZERO))]
     #[case(Some(Duration::from_secs(60)))]
     #[tokio::test]
-    async fn test_checkout_tag_rejects_other_branch(#[case] interval: Option<Duration>) {
+    async fn test_checkout_tag_preserves_handle_branch(#[case] interval: Option<Duration>) {
         let tmp_dir = tempdir().unwrap();
         let mut builder = ConnectBuilder::new(tmp_dir.path().to_str().unwrap());
         if let Some(interval) = interval {
@@ -5892,98 +5891,146 @@ mod tests {
             (&exp, "exp", 10),
             (&other, "other", 20),
         ];
-
         for (handle, tag, row) in handles {
             handle.add(sample_rows(vec![row])).execute().await.unwrap();
-            // All tags have the same version number but different branch data.
+            // Equal version numbers must still resolve to each branch's own data.
             assert_eq!(handle.version().await.unwrap(), 2);
             handle.tags().await.unwrap().create(tag, 2).await.unwrap();
         }
 
-        for (handle, own_tag, row) in handles {
-            for (_, foreign_tag, _) in handles {
-                if foreign_tag == own_tag {
+        for (handle, own_branch, own_row) in handles {
+            for (_, foreign_branch, foreign_row) in handles {
+                if foreign_branch == own_branch {
                     continue;
                 }
-                let err = handle.checkout_tag(foreign_tag).await.unwrap_err();
+                handle.checkout_tag(foreign_branch).await.unwrap();
+                assert_eq!(handle.version().await.unwrap(), 2);
+                assert_eq!(
+                    handle.current_branch().as_deref(),
+                    (foreign_branch != "main").then_some(foreign_branch)
+                );
+                assert_eq!(handle.count_rows(None).await.unwrap(), 2);
+                assert_eq!(
+                    handle
+                        .count_rows(Some(format!("i = {foreign_row}")))
+                        .await
+                        .unwrap(),
+                    1
+                );
+                assert!(handle.add(sample_rows(vec![999])).execute().await.is_err());
+                let err = handle.restore().await.unwrap_err();
                 assert!(matches!(err, Error::InvalidInput { .. }), "{err}");
-                // A failed checkout must not pin a previously writable handle.
-                assert!(handle.restore().await.is_err());
+                assert_eq!(
+                    handle
+                        .count_rows(Some(format!("i = {foreign_row}")))
+                        .await
+                        .unwrap(),
+                    1
+                );
+                // A snapshot copy must retain the handle's branch, too.
+                let snapshot = handle.checkout_current().await.unwrap();
+                assert!(snapshot.restore().await.is_err());
+                snapshot.checkout_latest().await.unwrap();
+                assert_eq!(
+                    snapshot.current_branch().as_deref(),
+                    (own_branch != "main").then_some(own_branch)
+                );
+                // Numeric time travel still reads the visible snapshot's branch.
+                handle.checkout(2).await.unwrap();
+                assert_eq!(
+                    handle
+                        .count_rows(Some(format!("i = {foreign_row}")))
+                        .await
+                        .unwrap(),
+                    1
+                );
+                // Explicit branch/version references must resolve the branch
+                // even when both snapshots have the same version number.
+                handle
+                    .dataset()
+                    .unwrap()
+                    .as_time_travel((own_branch, 2u64))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    handle
+                        .count_rows(Some(format!("i = {own_row}")))
+                        .await
+                        .unwrap(),
+                    1
+                );
+                handle.checkout_tag(foreign_branch).await.unwrap();
+                handle.dataset().unwrap().reload().await.unwrap();
+                assert_eq!(
+                    handle
+                        .count_rows(Some(format!("i = {foreign_row}")))
+                        .await
+                        .unwrap(),
+                    1
+                );
+                handle.checkout_latest().await.unwrap();
+                assert_eq!(
+                    handle.current_branch().as_deref(),
+                    (own_branch != "main").then_some(own_branch)
+                );
             }
-
-            handle.checkout_tag(own_tag).await.unwrap();
-            for (_, foreign_tag, _) in handles {
-                if foreign_tag != own_tag {
-                    assert!(matches!(
-                        handle.checkout_tag(foreign_tag).await,
-                        Err(Error::InvalidInput { .. })
-                    ));
-                    // The wrapper's explicit branch/version references must
-                    // also check the branch when version numbers are equal.
-                    assert!(matches!(
-                        handle
-                            .dataset()
-                            .unwrap()
-                            .as_time_travel((foreign_tag, 2u64))
-                            .await,
-                        Err(Error::InvalidInput { .. })
-                    ));
-                }
-            }
-            let expected_branch = (own_tag != "main").then_some(own_tag);
-            assert_eq!(handle.current_branch().as_deref(), expected_branch);
-            assert_eq!(handle.version().await.unwrap(), 2);
-            assert_eq!(handle.count_rows(None).await.unwrap(), 2);
-            assert_eq!(
-                handle.count_rows(Some(format!("i = {row}"))).await.unwrap(),
-                1
-            );
-            assert!(handle.add(sample_rows(vec![999])).execute().await.is_err());
-
-            handle.checkout_latest().await.unwrap();
-            assert_eq!(handle.current_branch().as_deref(), expected_branch);
-            handle
-                .add(sample_rows(vec![row + 1]))
-                .execute()
-                .await
-                .unwrap();
         }
 
-        for (_, branch, own_row) in handles {
+        // Rejected restores must not commit to either the source or destination.
+        for (_, branch, row) in handles {
             let fresh = conn
                 .open_table("my_table")
                 .branch(branch)
                 .execute()
                 .await
                 .unwrap();
-            for (_, _, row) in handles {
+            assert_eq!(fresh.version().await.unwrap(), 2);
+            assert_eq!(fresh.count_rows(None).await.unwrap(), 2);
+            assert_eq!(
+                fresh.count_rows(Some(format!("i = {row}"))).await.unwrap(),
+                1
+            );
+        }
+        for (handle, _, row) in handles {
+            handle
+                .add(sample_rows(vec![row + 1]))
+                .execute()
+                .await
+                .unwrap();
+        }
+        for (handle, branch, row) in handles {
+            let fresh = conn
+                .open_table("my_table")
+                .branch(branch)
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(fresh.version().await.unwrap(), 3);
+            assert_eq!(fresh.count_rows(None).await.unwrap(), 3);
+            for (_, _, candidate) in handles {
                 assert_eq!(
                     fresh
-                        .count_rows(Some(format!("i = {}", row + 1)))
+                        .count_rows(Some(format!("i = {}", candidate + 1)))
                         .await
                         .unwrap(),
-                    usize::from(row == own_row),
-                    "write must stay on {branch}"
+                    usize::from(candidate == row)
                 );
             }
-        }
-
-        for (handle, own_tag, row) in handles {
-            handle.checkout_tag(own_tag).await.unwrap();
-            for (_, foreign_tag, _) in handles {
-                if foreign_tag != own_tag {
-                    assert!(handle.checkout_tag(foreign_tag).await.is_err());
-                }
-            }
+            handle.checkout_tag(branch).await.unwrap();
             handle.restore().await.unwrap();
-            assert_eq!(handle.version().await.unwrap(), 4);
+        }
+        // Same-branch restores must publish only on the handle's own branch.
+        for (_, branch, row) in handles {
+            let fresh = conn
+                .open_table("my_table")
+                .branch(branch)
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(fresh.version().await.unwrap(), 4);
+            assert_eq!(fresh.count_rows(None).await.unwrap(), 2);
             assert_eq!(
-                handle.current_branch().as_deref(),
-                (own_tag != "main").then_some(own_tag)
-            );
-            assert_eq!(handle.count_rows(None).await.unwrap(), 2);
-            assert_eq!(
-                handle.count_rows(Some(format!("i = {row}"))).await.unwrap(),
+                fresh.count_rows(Some(format!("i = {row}"))).await.unwrap(),
                 1
             );
         }
