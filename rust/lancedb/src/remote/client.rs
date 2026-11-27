@@ -367,6 +367,7 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) blob_request_semaphore: Arc<Semaphore>,
+    pub(crate) object_store_read_parallelism: usize,
     /// Logical blob/range size at which a handle prefers a presigned direct
     /// read over the existing proxy byte-range route.
     pub(crate) blob_presign_threshold_bytes: u64,
@@ -697,6 +698,11 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             blob_request_semaphore: Arc::new(Semaphore::new(blob_request_concurrency)),
+            object_store_read_parallelism: std::env::var("LANCE_IO_THREADS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(lance_io::object_store::DEFAULT_CLOUD_IO_PARALLELISM)
+                .clamp(1, blob_request_concurrency),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: client_config.header_provider,
@@ -1341,6 +1347,7 @@ pub mod test_utils {
             host: "http://localhost".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
@@ -1374,6 +1381,9 @@ pub mod test_utils {
                     .blob_request_concurrency
                     .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
             )),
+            object_store_read_parallelism: config
+                .blob_request_concurrency
+                .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
@@ -2162,6 +2172,7 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -2203,6 +2214,7 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -2270,6 +2282,7 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),

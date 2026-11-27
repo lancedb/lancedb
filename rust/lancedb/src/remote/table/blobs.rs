@@ -24,7 +24,7 @@ use lance::dataset::ROW_ID;
 use lance_core::datatypes::BlobKind;
 use reqwest::{Response, StatusCode, header};
 use serde::Deserialize;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock};
 
 use crate::Error;
 use crate::blob::{BlobDescriptor, BlobDescriptorSource, BlobFile, BlobRangeRequest};
@@ -46,6 +46,7 @@ const MAX_FETCH_BLOB_RANGE_BYTES: u64 = 64 * 1024 * 1024;
 // Refresh shortly before expiry so a request does not start with a URL that
 // expires while it is being signed and sent.
 const BLOB_PRESIGN_REFRESH_SKEW: Duration = Duration::from_secs(30);
+const DIRECT_RANGE_PART_SIZE: usize = 16 * 1024 * 1024;
 
 fn is_blob_locations_unavailable(error: &Error) -> bool {
     error.status_code() == Some(StatusCode::SERVICE_UNAVAILABLE)
@@ -77,16 +78,81 @@ trait BlobRangeRequester: Send + Sync + std::fmt::Debug {
     ) -> Result<BlobRangeResponse>;
 }
 
+#[async_trait::async_trait]
+trait BlobRangeReader: Send + Sync + std::fmt::Debug {
+    async fn read_blob_range(
+        &self,
+        range: Range<u64>,
+        version: Option<u64>,
+        size: u64,
+    ) -> Result<Bytes>;
+}
+
+#[async_trait::async_trait]
+impl<T: BlobRangeRequester> BlobRangeReader for T {
+    async fn read_blob_range(
+        &self,
+        range: Range<u64>,
+        version: Option<u64>,
+        size: u64,
+    ) -> Result<Bytes> {
+        let response = self
+            .request_range(range.clone(), RangeRequestMode::DataRead, version)
+            .await?;
+        validate_partial_response(&response.response, range.clone(), size)?;
+        response.read_body(range.end - range.start).await
+    }
+}
+
 /// Keep the connection slot until the response body has been consumed or dropped.
 #[derive(Debug)]
 struct BlobRangeResponse {
     request_id: String,
     response: Response,
-    /// Whether the requester already validated the response's status and
-    /// `Content-Range` against the logical blob. Direct object-store responses
-    /// use physical coordinates, so the outer handle cannot re-check them.
-    validated: bool,
     _permit: Option<OwnedSemaphorePermit>,
+}
+
+impl BlobRangeResponse {
+    async fn read_body(self, len: u64) -> Result<Bytes> {
+        let Self {
+            request_id,
+            response,
+            _permit,
+        } = self;
+        Ok(read_blob_body(response, len, request_id).await?)
+    }
+
+    async fn read_body_into(self, destination: &mut [u8]) -> Result<()> {
+        let Self {
+            request_id,
+            mut response,
+            _permit,
+        } = self;
+        let expected = destination.len();
+        let mut received: usize = 0;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .err_to_http(request_id.clone())?
+        {
+            let end = received.saturating_add(chunk.len());
+            let buffer = destination.get_mut(received..end).ok_or_else(|| {
+                remote_blob_error(format!(
+                    "byte range returned {end} bytes, expected {expected}"
+                ))
+            })?;
+            buffer.copy_from_slice(&chunk);
+            received = end;
+        }
+        if received != expected {
+            return Err(remote_blob_error(format!(
+                "byte range returned {received} bytes, expected {expected}"
+            ))
+            .into());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -95,7 +161,6 @@ impl From<(String, Response)> for BlobRangeResponse {
         Self {
             request_id,
             response,
-            validated: false,
             _permit: None,
         }
     }
@@ -171,7 +236,6 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
             return Ok(BlobRangeResponse {
                 request_id,
                 response,
-                validated: false,
                 _permit: Some(permit),
             });
         }
@@ -184,7 +248,6 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
         Ok(BlobRangeResponse {
             request_id,
             response,
-            validated: false,
             _permit: Some(permit),
         })
     }
@@ -216,23 +279,25 @@ struct RemoteBlobBuffer {
 /// Handles read the table version used to fetch their descriptor or probe their size.
 #[derive(Debug)]
 pub struct RemoteBlobFile {
-    requester: Arc<dyn BlobRangeRequester>,
+    requester: Arc<dyn BlobRangeReader>,
     state: Mutex<RemoteBlobState>,
     // Never held across I/O: close can release cached bytes even while a read
     // holds the cursor lock. A reader may retain its own prefix until it ends.
     buffer: std::sync::Mutex<RemoteBlobBuffer>,
     closed: AtomicBool,
+    on_close: Notify,
     size: u64,
     version: Option<u64>,
 }
 
 impl RemoteBlobFile {
-    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64, version: Option<u64>) -> Self {
+    fn new(requester: Arc<dyn BlobRangeReader>, size: u64, version: Option<u64>) -> Self {
         Self {
             requester,
             state: Mutex::new(RemoteBlobState::default()),
             buffer: std::sync::Mutex::new(RemoteBlobBuffer::default()),
             closed: AtomicBool::new(false),
+            on_close: Notify::new(),
             size,
             version,
         }
@@ -241,6 +306,7 @@ impl RemoteBlobFile {
     /// Close the handle without waiting for an in-flight read.
     pub(crate) async fn close(&self) -> lance_core::Result<()> {
         self.closed.store(true, Ordering::Release);
+        self.on_close.notify_waiters();
         self.buffer.lock().unwrap().bytes = Bytes::new();
         Ok(())
     }
@@ -271,6 +337,7 @@ impl RemoteBlobFile {
     }
 
     pub(crate) async fn read_range(&self, range: Range<u64>) -> lance_core::Result<Bytes> {
+        let closed = self.on_close.notified();
         self.ensure_open()?;
         if range.start > range.end {
             return Err(lance_core::Error::invalid_input(format!(
@@ -287,22 +354,10 @@ impl RemoteBlobFile {
         if range.is_empty() {
             return Ok(Bytes::new());
         }
-        let BlobRangeResponse {
-            request_id,
-            response,
-            validated,
-            _permit: permit,
-        } = self
-            .requester
-            .request_range(range.clone(), RangeRequestMode::DataRead, self.version)
-            .await
-            .map_err(remote_blob_error)?;
-        self.ensure_open()?;
-        if !validated {
-            validate_partial_response(&response, range.clone(), self.size)?;
-        }
-        let bytes = read_blob_body(response, range.end - range.start, request_id).await?;
-        drop(permit);
+        let bytes = tokio::select! {
+            _ = closed => return Err(lance_core::Error::invalid_input("blob file is already closed")),
+            result = self.requester.read_blob_range(range, self.version, self.size) => result.map_err(remote_blob_error)?,
+        };
         self.ensure_open()?;
         Ok(bytes)
     }
@@ -441,7 +496,7 @@ async fn read_blob_body(
             "byte range returned {received} bytes, expected {expected}"
         ))
     };
-    let mut chunks = response.bytes_stream();
+    let mut chunks = response.bytes_stream().map_err(reqwest::Error::without_url);
     let first = chunks
         .try_next()
         .await
@@ -613,7 +668,7 @@ enum BlobLocationItem {
 
 #[derive(Debug)]
 struct ResolvedBlobLocations {
-    sources: Vec<BlobLocationSource>,
+    sources: Vec<Arc<BlobLocationSource>>,
     items: Vec<Option<BlobLocationItem>>,
     version: u64,
     identity: Option<String>,
@@ -805,7 +860,7 @@ impl<S: HttpSend> BlobLocationsContext<S> {
             started.elapsed().as_secs_f64() * 1000.0
         );
         Ok(ResolvedBlobLocations {
-            sources: parsed.sources,
+            sources: parsed.sources.into_iter().map(Arc::new).collect(),
             items: parsed.items,
             version,
             identity,
@@ -832,10 +887,10 @@ fn decode_inline_data(data_base64: &str, expected_size: u64) -> Result<Bytes> {
     Ok(Bytes::from(bytes))
 }
 
+#[derive(Clone)]
 enum PresignedBlobState {
     Presigned {
-        url: String,
-        expires_at_unix_secs: Option<u64>,
+        source: Arc<BlobLocationSource>,
         base_offset: u64,
     },
     Inline {
@@ -849,7 +904,7 @@ struct PresignedBlobRangeRequester<S: HttpSend> {
     row_id: u64,
     logical_size: u64,
     threshold_bytes: u64,
-    proxy: Arc<dyn BlobRangeRequester>,
+    proxy: Arc<TableBlobRangeRequester<S>>,
     state: RwLock<PresignedBlobState>,
     refresh_lock: Mutex<()>,
 }
@@ -869,8 +924,8 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
         row_id: u64,
         logical_size: u64,
         threshold_bytes: u64,
-        proxy: Arc<dyn BlobRangeRequester>,
-        source: &BlobLocationSource,
+        proxy: Arc<TableBlobRangeRequester<S>>,
+        source: &Arc<BlobLocationSource>,
         base_offset: u64,
     ) -> Self {
         Self {
@@ -880,31 +935,24 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
             threshold_bytes,
             proxy,
             state: RwLock::new(PresignedBlobState::Presigned {
-                url: source.url.clone(),
-                expires_at_unix_secs: source.expires_at_unix_secs,
+                source: source.clone(),
                 base_offset,
             }),
             refresh_lock: Mutex::new(()),
         }
     }
 
-    async fn proxy_validated(
+    async fn refresh(
         &self,
-        range: Range<u64>,
-        mode: RangeRequestMode,
-        version: Option<u64>,
-    ) -> Result<BlobRangeResponse> {
-        let mut response = self
-            .proxy
-            .request_range(range.clone(), mode, version)
-            .await?;
-        validate_partial_response(&response.response, range, self.logical_size)?;
-        response.validated = true;
-        Ok(response)
-    }
-
-    async fn refresh(&self) -> Result<()> {
+        previous: &Arc<BlobLocationSource>,
+        previous_offset: u64,
+    ) -> Result<()> {
         let _guard = self.refresh_lock.lock().await;
+        if !matches!(&*self.state.read().await,
+            PresignedBlobState::Presigned { source, .. } if Arc::ptr_eq(source, previous))
+        {
+            return Ok(());
+        }
         let resolved = match self.context.resolve(&[self.row_id], false).await {
             Ok(resolved) => resolved,
             Err(error) if is_blob_locations_unavailable(&error) => {
@@ -948,9 +996,13 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
                                 resolved.sources.len()
                             ),
                         })?;
+                if offset != previous_offset {
+                    return Err(Error::InvalidInput {
+                        message: "presigned blob offset changed at the pinned version".into(),
+                    });
+                }
                 PresignedBlobState::Presigned {
-                    url: source.url.clone(),
-                    expires_at_unix_secs: source.expires_at_unix_secs,
+                    source: source.clone(),
                     base_offset: offset,
                 }
             }
@@ -1037,72 +1089,110 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
         Ok(BlobRangeResponse {
             request_id,
             response,
-            validated: true,
             _permit: Some(permit),
         })
+    }
+
+    async fn read_direct(
+        &self,
+        source: &BlobLocationSource,
+        base_offset: u64,
+        range: Range<u64>,
+    ) -> std::result::Result<Bytes, PresignedReadError> {
+        let len = range.end - range.start;
+        if len <= DIRECT_RANGE_PART_SIZE as u64 {
+            let response = self
+                .direct_read(&source.url, source.expires_at_unix_secs, base_offset, range)
+                .await?;
+            return Ok(response.read_body(len).await?);
+        }
+        let len = usize::try_from(len).map_err(|_| Error::InvalidInput {
+            message: "blob range length exceeds addressable memory".into(),
+        })?;
+        // Write each part into its own slice of the final buffer. The parts
+        // can complete in any order without buffering a second copy of the blob.
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(len)
+            .map_err(|error| Error::Other {
+                message: format!("cannot allocate blob range of {len} bytes: {error}"),
+                source: None,
+            })?;
+        output.resize(len, 0);
+        let parts = output.chunks_mut(DIRECT_RANGE_PART_SIZE).enumerate().map(
+            |(index, destination)| async move {
+                let start = range.start + index as u64 * DIRECT_RANGE_PART_SIZE as u64;
+                let part = start..start + destination.len() as u64;
+                let response = self
+                    .direct_read(&source.url, source.expires_at_unix_secs, base_offset, part)
+                    .await?;
+                response
+                    .read_body_into(destination)
+                    .await
+                    .map_err(PresignedReadError::from)
+            },
+        );
+        // The shared semaphore also caps total requests across handles, and
+        // each part holds its permit until the body has been consumed.
+        futures::stream::iter(parts)
+            .buffer_unordered(self.context.client.object_store_read_parallelism)
+            .try_collect::<()>()
+            .await?;
+        Ok(Bytes::from(output))
     }
 }
 
 #[async_trait::async_trait]
-impl<S: HttpSend> BlobRangeRequester for PresignedBlobRangeRequester<S> {
-    async fn request_range(
+impl<S: HttpSend> BlobRangeReader for PresignedBlobRangeRequester<S> {
+    async fn read_blob_range(
         &self,
         range: Range<u64>,
-        mode: RangeRequestMode,
         version: Option<u64>,
-    ) -> Result<BlobRangeResponse> {
-        if !matches!(mode, RangeRequestMode::DataRead) {
-            return Err(Error::InvalidInput {
-                message: "presigned blob handles only serve data reads".into(),
-            });
-        }
-        let range_len = range.end.saturating_sub(range.start);
-        if range_len < self.threshold_bytes {
-            return self.proxy_validated(range, mode, version).await;
+        size: u64,
+    ) -> Result<Bytes> {
+        if range.end - range.start < self.threshold_bytes {
+            return self.proxy.read_blob_range(range, version, size).await;
         }
         let mut refreshed = false;
         loop {
-            let state = self.state.read().await;
-            match &*state {
+            let state = self.state.read().await.clone();
+            match state {
                 PresignedBlobState::Proxy => {
-                    drop(state);
-                    return self.proxy_validated(range, mode, version).await;
+                    return self.proxy.read_blob_range(range, version, size).await;
                 }
                 PresignedBlobState::Inline { bytes } => {
-                    let bytes = bytes.clone();
-                    drop(state);
-                    return inline_range_response(bytes, range, self.logical_size);
+                    if range.end > bytes.len() as u64 {
+                        return Err(Error::InvalidInput {
+                            message: "inline blob range exceeds the resolved value".into(),
+                        });
+                    }
+                    return Ok(bytes.slice(range.start as usize..range.end as usize));
                 }
                 PresignedBlobState::Presigned {
-                    url,
-                    expires_at_unix_secs,
+                    source,
                     base_offset,
                 } => {
-                    let url = url.clone();
-                    let expires = *expires_at_unix_secs;
-                    let base_offset = *base_offset;
-                    drop(state);
-                    let now = unix_now_secs();
-                    if expires.is_some_and(|expires| {
-                        expires <= now.saturating_add(BLOB_PRESIGN_REFRESH_SKEW.as_secs())
-                    }) && !refreshed
+                    let expires = source.expires_at_unix_secs;
+                    if !refreshed
+                        && expires.is_some_and(|expiry| {
+                            expiry
+                                <= unix_now_secs()
+                                    .saturating_add(BLOB_PRESIGN_REFRESH_SKEW.as_secs())
+                        })
                     {
                         log::debug!(
                             "blob_direct refresh row={} reason=proactive expires_at={expires:?}",
                             self.row_id
                         );
-                        self.refresh().await?;
+                        self.refresh(&source, base_offset).await?;
                         refreshed = true;
                         continue;
                     }
-                    match self
-                        .direct_read(&url, expires, base_offset, range.clone())
-                        .await
-                    {
-                        Ok(response) => return Ok(response),
+                    match self.read_direct(&source, base_offset, range.clone()).await {
+                        Ok(bytes) => return Ok(bytes),
                         Err(PresignedReadError::Expired) if !refreshed => {
                             log::debug!("blob_direct refresh row={} reason=reactive", self.row_id);
-                            self.refresh().await?;
+                            self.refresh(&source, base_offset).await?;
                             refreshed = true;
                         }
                         Err(PresignedReadError::Expired) => {
@@ -1122,38 +1212,6 @@ fn unix_now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
-}
-
-fn inline_range_response(bytes: Bytes, range: Range<u64>, size: u64) -> Result<BlobRangeResponse> {
-    let start = usize::try_from(range.start).map_err(|_| Error::InvalidInput {
-        message: "inline blob range start exceeds addressable memory".into(),
-    })?;
-    let end = usize::try_from(range.end).map_err(|_| Error::InvalidInput {
-        message: "inline blob range end exceeds addressable memory".into(),
-    })?;
-    let slice = bytes
-        .get(start..end)
-        .ok_or_else(|| Error::InvalidInput {
-            message: "inline blob range exceeds the resolved value".into(),
-        })?
-        .to_vec();
-    let response = http::Response::builder()
-        .status(StatusCode::PARTIAL_CONTENT)
-        .header(
-            header::CONTENT_RANGE,
-            format!("bytes {}-{}/{size}", range.start, range.end - 1),
-        )
-        .body(slice)
-        .map_err(|error| Error::Other {
-            message: format!("failed to build inline blob response: {error}"),
-            source: None,
-        })?;
-    Ok(BlobRangeResponse {
-        request_id: "blob-inline".into(),
-        response: Response::from(response),
-        validated: true,
-        _permit: None,
-    })
 }
 
 impl<S: HttpSend> RemoteTable<S> {
@@ -1427,16 +1485,9 @@ impl<S: HttpSend> RemoteTable<S> {
                         &source,
                         offset,
                     ));
-                    let response = requester
-                        .request_range(0..size, RangeRequestMode::DataRead, Some(resolved.version))
+                    let bytes = requester
+                        .read_blob_range(0..size, Some(resolved.version), size)
                         .await?;
-                    let BlobRangeResponse {
-                        request_id,
-                        response,
-                        validated: _,
-                        _permit,
-                    } = response;
-                    let bytes = read_blob_body(response, size, request_id).await?;
                     Ok::<_, Error>((index, bytes))
                 }
             });
@@ -1867,20 +1918,13 @@ impl<S: HttpSend> RemoteTable<S> {
                         &source,
                         offset,
                     );
-                    let response = requester
-                        .request_range(
+                    let bytes = requester
+                        .read_blob_range(
                             request.offset..request.offset + request.length,
-                            RangeRequestMode::DataRead,
                             snapshot.version,
+                            size,
                         )
                         .await?;
-                    let BlobRangeResponse {
-                        request_id,
-                        response,
-                        validated: _,
-                        _permit,
-                    } = response;
-                    let bytes = read_blob_body(response, request.length, request_id).await?;
                     Ok::<_, Error>((index, bytes))
                 }
             });
@@ -2422,7 +2466,7 @@ impl<S: HttpSend> RemoteTable<S> {
                             proxy,
                             source,
                             *offset,
-                        )) as Arc<dyn BlobRangeRequester>)
+                        )) as Arc<dyn BlobRangeReader>)
                     }
                     BlobLocationItem::Inline { .. } | BlobLocationItem::Proxy { .. } => {
                         Some(self.blob_range_requester_with_identity(
@@ -2547,7 +2591,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 ),
             });
         }
-        let requester: Arc<dyn BlobRangeRequester> = match item {
+        let requester: Arc<dyn BlobRangeReader> = match item {
             BlobLocationItem::Presigned {
                 source_index,
                 offset,
@@ -2833,7 +2877,7 @@ impl<S: HttpSend> RemoteTable<S> {
         row_id: u64,
         read_snapshot: &ReadSnapshot,
         identity: Option<&str>,
-    ) -> Arc<dyn BlobRangeRequester> {
+    ) -> Arc<TableBlobRangeRequester<S>> {
         self.blob_range_requester_with_source_and_identity(
             column,
             row_id,
@@ -2849,7 +2893,7 @@ impl<S: HttpSend> RemoteTable<S> {
         row_id: u64,
         read_snapshot: &ReadSnapshot,
         source: Option<&BlobDescriptorSource>,
-    ) -> Arc<dyn BlobRangeRequester> {
+    ) -> Arc<TableBlobRangeRequester<S>> {
         self.blob_range_requester_with_source_and_identity(
             column,
             row_id,
@@ -2866,7 +2910,7 @@ impl<S: HttpSend> RemoteTable<S> {
         read_snapshot: &ReadSnapshot,
         source: Option<&BlobDescriptorSource>,
         identity: Option<String>,
-    ) -> Arc<dyn BlobRangeRequester> {
+    ) -> Arc<TableBlobRangeRequester<S>> {
         let path = format!(
             "/v1/table/{}/blob/{}/{row_id}/bytes",
             self.identifier,
@@ -2906,14 +2950,14 @@ enum DescriptorSize {
 /// resolved a non-null descriptor to null, which is a protocol error.
 struct ResolvedBlobHandle {
     size: u64,
-    requester: Option<Arc<dyn BlobRangeRequester>>,
+    requester: Option<Arc<dyn BlobRangeReader>>,
 }
 
 /// A row's resolved backing object for a large range request.
 enum BlobRangeLocation {
     Null,
     Presigned {
-        source: BlobLocationSource,
+        source: Arc<BlobLocationSource>,
         offset: u64,
         size: u64,
     },
@@ -2961,8 +3005,8 @@ impl<'a> BlobDescriptorSizes<'a> {
 }
 
 /// Probe blob sizes while preserving row order.
-async fn probe_blob_files(
-    requesters: Vec<Arc<dyn BlobRangeRequester>>,
+async fn probe_blob_files<T: BlobRangeRequester + 'static>(
+    requesters: Vec<Arc<T>>,
 ) -> Result<Vec<Option<BlobFile>>> {
     // Collect before buffering to satisfy the async trait lifetime bounds.
     let probe_futures: Vec<_> = requesters.into_iter().map(probe_blob_file).collect();
@@ -2990,11 +3034,12 @@ fn probe_blob_version(response: &Response, request_id: &str) -> Result<u64> {
 /// Probe one blob's size.
 ///
 /// `204` represents null. `416` with `bytes */0` represents an empty blob.
-async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Option<BlobFile>> {
+async fn probe_blob_file<T: BlobRangeRequester + 'static>(
+    requester: Arc<T>,
+) -> Result<Option<BlobFile>> {
     let BlobRangeResponse {
         request_id,
         response,
-        validated: _,
         _permit,
     } = requester
         .request_range(0..1, RangeRequestMode::SizeProbe, None)
@@ -4560,12 +4605,11 @@ mod tests {
         let max_in_flight = Arc::new(AtomicUsize::new(0));
         let probes = (0..16)
             .map(|index| {
-                let requester: Arc<dyn BlobRangeRequester> = Arc::new(CountingProbeRequester {
+                Arc::new(CountingProbeRequester {
                     index,
                     in_flight: in_flight.clone(),
                     max_in_flight: max_in_flight.clone(),
-                });
-                requester
+                })
             })
             .collect();
 
@@ -4738,7 +4782,7 @@ mod tests {
     async fn read_ranges_run_bounded_and_preserve_order() {
         let in_flight = Arc::new(AtomicUsize::new(0));
         let max_in_flight = Arc::new(AtomicUsize::new(0));
-        let requester: Arc<dyn BlobRangeRequester> = Arc::new(CountingRangeRequester {
+        let requester = Arc::new(CountingRangeRequester {
             in_flight,
             max_in_flight: max_in_flight.clone(),
         });
@@ -4965,7 +5009,7 @@ mod tests {
     async fn close_returns_while_a_sequential_read_is_in_flight() {
         let release = Arc::new(tokio::sync::Barrier::new(2));
         let started = Arc::new(tokio::sync::Notify::new());
-        let requester: Arc<dyn BlobRangeRequester> = Arc::new(BlockingRangeRequester {
+        let requester = Arc::new(BlockingRangeRequester {
             release: release.clone(),
             started: started.clone(),
             block_start: 0,
@@ -4989,8 +5033,11 @@ mod tests {
             .unwrap();
         assert!(file.is_closed());
 
-        release.wait().await;
-        let error = reader.await.unwrap().unwrap_err();
+        let error = tokio::time::timeout(Duration::from_secs(2), reader)
+            .await
+            .expect("close must release the in-flight read")
+            .unwrap()
+            .unwrap_err();
         assert!(error.to_string().contains("already closed"), "got: {error}");
         assert!(
             file.read_range(0..1)
@@ -5164,6 +5211,104 @@ mod tests {
             &PAYLOAD[6..11]
         );
         assert_eq!(object_requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_blob_file_reassembles_bounded_concurrent_ranges_in_order() {
+        use sha2::{Digest, Sha256};
+        use tokio::sync::{mpsc, oneshot};
+
+        let part = DIRECT_RANGE_PART_SIZE as u64;
+        let requested = 9..(2 * part + 16);
+        let base = 100;
+        let size = requested.end + 11;
+        let (requests, mut observed) = mpsc::unbounded_channel();
+        let table = RemoteTable::new_mock_with_version_and_config(
+            "my_table".into(),
+            move |request| {
+                if request.url().host_str() == Some("objects.example") {
+                    let (start, end) = request.headers()[header::RANGE]
+                        .to_str()
+                        .unwrap()
+                        .strip_prefix("bytes=")
+                        .unwrap()
+                        .split_once('-')
+                        .unwrap();
+                    let (start, end): (u64, u64) = (start.parse().unwrap(), end.parse().unwrap());
+                    let part_index = ((start - base - 9) / part) as u8;
+                    let len = (end - start + 1) as usize;
+                    let (release, released) = oneshot::channel::<()>();
+                    requests.send((start..end + 1, release)).unwrap();
+                    let body = reqwest::Body::wrap_stream(futures::stream::once(async move {
+                        released.await.unwrap();
+                        Ok::<_, std::io::Error>(Bytes::from(vec![b'A' + part_index; len]))
+                    }));
+                    return http::Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(
+                            header::CONTENT_RANGE,
+                            format!("bytes {start}-{end}/{}", base + size + 53),
+                        )
+                        .body(body)
+                        .unwrap();
+                }
+                assert_eq!(request.url().path(), "/v1/table/my_table/blob_locations/");
+                let selection: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(selection["version"], 7);
+                assert_eq!(selection["source_commit_micros"], 1234);
+                let response = blob_locations_json(
+                    serde_json::json!({
+                        "sources": [{"url": "https://objects.example/shared.blob", "expires_at_unix_secs": 4102444800u64}],
+                        "items": [{"kind": "presigned", "source_index": 0, "offset": base, "size": size}],
+                    }),
+                    7,
+                );
+                response.map(reqwest::Body::from)
+            },
+            Some(Version::new(1, 13, 0)),
+            crate::remote::ClientConfig {
+                blob_request_concurrency: Some(2),
+                ..Default::default()
+            },
+        );
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-lancedb-blob-locations", "1".parse().unwrap());
+        table.seed_blob_locations_capability(&headers);
+        let descriptor = BlobDescriptor {
+            kind: BlobKind::Packed as u8,
+            position: base,
+            size,
+            ..descriptor_for_refresh_harness()
+        };
+        let file = table.open_blob_file(&descriptor).await.unwrap();
+        let reader = tokio::spawn(async move { file.read_range(requested).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut active = [
+                observed.recv().await.unwrap(),
+                observed.recv().await.unwrap(),
+            ];
+            active.sort_by_key(|(range, _)| range.start);
+            let [(first, finish_first), (second, finish_second)] = active;
+            assert_eq!(first, 109..109 + part);
+            assert_eq!(second, 109 + part..109 + 2 * part);
+            assert!(observed.try_recv().is_err());
+            finish_second.send(()).unwrap();
+            let (last, finish_last) = observed.recv().await.unwrap();
+            assert_eq!(last, 109 + 2 * part..116 + 2 * part);
+            finish_last.send(()).unwrap();
+            finish_first.send(()).unwrap();
+            let bytes = reader.await.unwrap();
+            assert_eq!(bytes.len(), 2 * DIRECT_RANGE_PART_SIZE + 7);
+            let mut expected = Sha256::new();
+            expected.update(vec![b'A'; DIRECT_RANGE_PART_SIZE]);
+            expected.update(vec![b'B'; DIRECT_RANGE_PART_SIZE]);
+            expected.update(b"CCCCCCC");
+            assert_eq!(Sha256::digest(bytes), expected.finalize());
+            assert!(observed.try_recv().is_err());
+        })
+        .await
+        .expect("parts must make progress while the first response body is still pending");
     }
 
     #[tokio::test]
