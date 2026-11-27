@@ -507,6 +507,10 @@ pub trait QueryBase {
     /// new data available for fast search.
     ///
     /// By default, it is false.
+    ///
+    /// On an Embedded table, `fast_search` with an explicit distance type fails
+    /// when that metric matches no covering index. Remove `fast_search` for an
+    /// exact scan.
     fn fast_search(self) -> Self;
 
     /// If this is called then filtering will happen after the vector search instead of
@@ -1568,11 +1572,16 @@ impl VectorQuery {
     /// use.  See [`DistanceType`] for more details on the different distance metrics
     /// available.
     ///
-    /// Note: if there is a vector index then the distance type used MUST match the distance
-    /// type used to train the vector index.  If this is not done then the results will be
-    /// invalid.
-    ///
-    /// By default [`DistanceType::L2`] is used.
+    /// Note: on an Embedded table, an ordinary query keeps Lance's exact-scan
+    /// fallback when no vector index on the column was trained with this metric.
+    /// [`QueryBase::fast_search`] fails with [`crate::Error::InvalidInput`] when
+    /// this metric matches no covering index. Lance uses the first index with
+    /// this metric and does not search a later index when the first covers no rows.
+    /// A table with no covering index is not rejected. Omit this setting to use
+    /// the index metric when only one covering metric exists, or remove
+    /// `fast_search` for an exact scan. [`DistanceType::L2`] is the default only
+    /// when no index supplies a metric. Enterprise, namespace, and RTE searches
+    /// are not checked.
     pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
         self.request.distance_type = Some(distance_type);
         self
@@ -1589,7 +1598,10 @@ impl VectorQuery {
         self
     }
 
-    /// If this is called then any vector index is skipped
+    /// If this is called then any vector index is skipped.
+    ///
+    /// This is an exact scan only when [`QueryBase::fast_search`] is off. With
+    /// `fast_search` still enabled the query returns no rows.
     ///
     /// An exhaustive (flat) search will be performed.  The query vector will
     /// be compared to every vector in the table.  At high scales this can be

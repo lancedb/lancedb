@@ -56,7 +56,7 @@ your latency target. Measure your workload before choosing an index. Pick the ty
 | `IVF_HNSW_SQ` | Best recall/latency for unfiltered search; higher latency variance under selective filters. |
 | `IVF_FLAT` | Required for binary vectors with `hamming`. |
 
-The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). If a query explicitly requests a different metric, the index cannot be used and the query falls back to a brute-force scan; a deployment can be configured to reject that scan on a large table. For parameter tuning, see [Vector Indexing](/indexing/vector-index).
+The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). On an Embedded table, an ordinary query that names a metric no index was trained with falls back to an exact scan. `fast_search` fails when that metric matches no covering index Lance would search. The first index with that metric is used, so a later index with the same metric is not searched when the first covers no rows. A table with no covering index is not rejected. Remove `fast_search` for the exact scan. A deployment can still be configured to reject a large brute-force scan. For parameter tuning, see [Vector Indexing](/indexing/vector-index).
 
 #### Scalar indexes {#scalar-indexes}
 

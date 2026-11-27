@@ -150,15 +150,19 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 | `ef` | HNSW search-time exploration factor. Start around `1.5 * k` and increase up to `10 * k` for higher recall. |
 | `refine_factor` | Rerank candidates using full vectors to improve accuracy. A factor of `25` requests up to `25 * k` candidates. Higher values read more data; measure the recall gain and latency cost. |
 | `distance_range(lower_bound, upper_bound)` | Return only rows whose distance falls within `[lower_bound, upper_bound)`. Either bound is optional. Useful for near-duplicate detection or "close-enough" matching. |
-| `bypass_vector_index()` | Ignore the ANN index entirely and perform an exact (flat) scan. Can be used to measure ANN `recall@k`, or to query with a metric the index was not built for (e.g., a non-cosine query on a multivector column). |
+| `bypass_vector_index()` | Ignore the ANN index and scan every vector. That scan is exact only when `fast_search` is off; with `fast_search` still enabled it returns no rows, so omit `fast_search` instead. Use it to measure ANN `recall@k`, or to query with a metric the index was not built for (e.g., a non-cosine query on a multivector column). |
 
 <Note>
 The `distance_type` can be specified at search time in addition to build time. If
-you do this, set it to the same value used to build the vector index. If the search
-metric does not match the index metric, LanceDB cannot use the index and falls
-back to a costly flat search. On LanceDB Cloud (legacy hosted service), the brute-force KNN safety limit
-can reject that search on a large table instead of executing it. An Enterprise
-deployment applies the same limit only when it is configured to.
+you do this, set it to a metric a vector index on that column was trained with.
+On an Embedded table, an ordinary query that names another metric falls back to
+an exact scan. `fast_search` fails when that metric matches no covering
+index. Lance uses the first index with that metric and does not search a
+later index when the first covers no rows. A table with no covering index is not
+rejected. Remove `fast_search` for the exact scan. On LanceDB Cloud (legacy
+hosted service), the SDK does not apply this check; the brute-force KNN safety
+limit can reject that scan on a large table instead of executing it. An
+Enterprise deployment applies the same limit only when it is configured to.
 
 When the search metric is omitted, current SDKs use the index metric if an index
 is available. Some older SDK versions sent `l2` when it was omitted, so explicitly

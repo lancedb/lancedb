@@ -49,8 +49,10 @@ macro_rules! impl_distance_type_setter {
         /// grouped in partitions with similar vectors according to this distance type) and to
         /// calculate a subvector's code during quantization.
         ///
-        /// The metric type used to train an index MUST match the metric type used to search the
-        /// index.  Failure to do so will yield inaccurate results.
+        /// On an Embedded table, an ordinary search that names a different metric falls
+        /// back to an exact scan. `fast_search` fails when no index on the column was
+        /// trained with that metric and a covering index uses another one. Remove
+        /// `fast_search` for that exact scan.
         pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
             self.distance_type = distance_type;
             self

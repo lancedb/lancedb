@@ -12,7 +12,7 @@ from lancedb.db import AsyncConnection
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
 from lancedb.expr import col
-from lancedb.index import FTS, IvfPq
+from lancedb.index import FTS, IvfFlat, IvfPq
 import lancedb.pydantic
 import numpy as np
 import pandas.testing as tm
@@ -1898,6 +1898,50 @@ def test_query_builder_with_prefilter(table):
     )
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
+
+
+def test_vector_search_metric_mismatch_falls_back_unless_fast_search(tmp_path):
+    db = lancedb.connect(tmp_path)
+    # Query [1, 0, 0, 0]. Id 0 is nearest by L2, id 1 by cosine.
+    rows = [
+        {"id": 0, "vector": [1.0, 0.1, 0.0, 0.0]},
+        {"id": 1, "vector": [0.2, 0.0, 0.0, 0.0]},
+        {"id": 2, "vector": [3.0, 1.5, 0.0, 0.0]},
+        {"id": 3, "vector": [0.0, 0.0, 10.0, 0.0]},
+        {"id": 4, "vector": [0.0, 0.0, 10.0, 0.0]},
+        {"id": 5, "vector": [0.0, 0.0, 10.0, 0.0]},
+        {"id": 6, "vector": [0.0, 0.0, 10.0, 0.0]},
+        {"id": 7, "vector": [0.0, 0.0, 10.0, 0.0]},
+    ]
+    table = db.create_table("metric_mismatch", rows)
+    query = [1.0, 0.0, 0.0, 0.0]
+
+    # No index: an explicit metric is a flat search.
+    assert table.search(query).distance_type("cosine").limit(1).to_list()[0]["id"] == 1
+
+    table.create_index("vector", config=IvfFlat(distance_type="l2", num_partitions=1))
+
+    # The L2 index would return id 0. An ordinary cosine query stays exact.
+    assert table.search(query).distance_type("cosine").limit(1).to_list()[0]["id"] == 1
+    assert (
+        table.search(query)
+        .distance_type("cosine")
+        .bypass_vector_index()
+        .limit(1)
+        .to_list()[0]["id"]
+        == 1
+    )
+
+    with pytest.raises(ValueError, match="fast_search") as exc_info:
+        table.search(query).distance_type("cosine").fast_search().limit(1).to_list()
+    message = str(exc_info.value)
+    assert "l2" in message
+    assert "cosine" in message
+    assert "exact scan" in message
+    assert "bypass" not in message
+
+    assert table.search(query).distance_type("l2").limit(1).to_list()[0]["id"] == 0
+    assert table.search(query).limit(1).to_list()[0]["id"] == 0
 
 
 def test_query_builder_with_metric(table):

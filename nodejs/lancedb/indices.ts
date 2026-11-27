@@ -71,8 +71,10 @@ export interface IvfPqOptions {
    * (vectors are grouped in partitions with similar vectors according to this
    * distance type) and to calculate a subvector's code during quantization.
    *
-   * The distance type used to train an index MUST match the distance type used
-   * to search the index.  Failure to do so will yield inaccurate results.
+   * On an Embedded table, an ordinary search that names a different metric
+   * falls back to an exact scan. `fastSearch` fails when no index on the
+   * column was trained with that metric and a covering index uses another
+   * one. Remove `fastSearch` for that exact scan.
    *
    * The following distance types are available:
    *
@@ -177,8 +179,10 @@ export interface IvfRqOptions {
    * (vectors are grouped in partitions with similar vectors according to this
    * distance type) and during quantization.
    *
-   * The distance type used to train an index MUST match the distance type used
-   * to search the index. Failure to do so will yield inaccurate results.
+   * On an Embedded table, an ordinary search that names a different metric
+   * falls back to an exact scan. `fastSearch` fails when no index on the
+   * column was trained with that metric and a covering index uses another
+   * one. Remove `fastSearch` for that exact scan.
    *
    * The following distance types are available:
    *
@@ -507,8 +511,10 @@ export interface IvfFlatOptions {
    * (vectors are grouped in partitions with similar vectors according to this
    * distance type).
    *
-   * The distance type used to train an index MUST match the distance type used
-   * to search the index.  Failure to do so will yield inaccurate results.
+   * On an Embedded table, an ordinary search that names a different metric
+   * falls back to an exact scan. `fastSearch` fails when no index on the
+   * column was trained with that metric and a covering index uses another
+   * one. Remove `fastSearch` for that exact scan.
    *
    * The following distance types are available:
    *

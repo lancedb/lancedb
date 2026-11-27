@@ -1665,6 +1665,11 @@ impl<S: HttpSend> RemoteTable<S> {
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
+        // Embedded fast_search rejects a distance type that matches no covering
+        // vector index when another covering index uses a different metric.
+        // Doing that here would list indexes on every query, a separate request
+        // the query path does not already make, so the metric is forwarded and
+        // the server applies its own rules.
         if let Some(distance_type) = query.distance_type {
             body["distance_type"] = serde_json::json!(distance_type);
         }

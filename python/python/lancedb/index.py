@@ -788,8 +788,10 @@ class IvfFlat:
         (vectors are grouped in partitions with similar vectors according to this
         distance type) and to calculate a subvector's code during quantization.
 
-        The distance type used to train an index MUST match the distance type used
-        to search the index.  Failure to do so will yield inaccurate results.
+        On an Embedded table, an ordinary search that names a different metric
+        falls back to an exact scan. ``fast_search`` fails when no index on the
+        column was trained with that metric and a covering index uses another
+        one. Remove ``fast_search`` for that exact scan.
 
         The following distance types are available:
 
@@ -938,8 +940,10 @@ class IvfPq:
         (vectors are grouped in partitions with similar vectors according to this
         distance type) and to calculate a subvector's code during quantization.
 
-        The distance type used to train an index MUST match the distance type used
-        to search the index.  Failure to do so will yield inaccurate results.
+        On an Embedded table, an ordinary search that names a different metric
+        falls back to an exact scan. ``fast_search`` fails when no index on the
+        column was trained with that metric and a covering index uses another
+        one. Remove ``fast_search`` for that exact scan.
 
         The following distance types are available:
 

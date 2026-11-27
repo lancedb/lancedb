@@ -139,7 +139,10 @@ table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
 bypassVectorIndex(): VectorQuery
 ```
 
-If this is called then any vector index is skipped
+If this is called then any vector index is skipped.
+
+This is an exact scan only when `fastSearch` is off. With `fastSearch`
+still enabled the query returns no rows.
 
 An exhaustive (flat) search will be performed.  The query vector will
 be compared to every vector in the table.  At high scales this can be
@@ -224,11 +227,16 @@ use.  See
 [IvfPqOptions.distanceType](../interfaces/IvfPqOptions.md#distancetype) for more details on the different
 distance metrics available.
 
-Note: if there is a vector index then the distance type used MUST match the distance
-type used to train the vector index.  If this is not done then the results will be
-invalid.
+Note: on an Embedded table, an ordinary query keeps the exact-scan
+fallback when no vector index on the column was trained with this metric.
+`fastSearch` fails when this metric matches no covering index. Lance uses
+the first index with this metric and does not search a later index when
+the first covers no rows. A table with no covering index is not rejected. Omit
+the distance type to use the index metric when only one covering metric
+exists, or remove `fastSearch` for an exact scan. Enterprise, namespace,
+and RTE searches are not checked.
 
-By default "l2" is used.
+"l2" is the default only when no vector index supplies a metric.
 
 ***
 

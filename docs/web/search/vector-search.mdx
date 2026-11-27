@@ -129,11 +129,17 @@ Without a vector index, searches use `l2` by default. You can specify `cosine` o
 `dot` instead. For binary vectors, specify `hamming` even without an index. If
 you build an index for Hamming search, use `IVF_FLAT`.
 
-When a vector index exists, the search metric must match the metric used to build
-the index. If you explicitly request a different metric, LanceDB cannot use that
-index and falls back to an exhaustive (brute-force) search. On LanceDB Cloud (legacy hosted service), the
-brute-force KNN safety limit can reject that search on a large table instead of
-executing it. LanceDB Enterprise doesn't have the limit.
+When a vector index exists, an ordinary search that names a metric no index on
+that column was trained with falls back to an exact scan. On an Embedded table,
+`fast_search` fails when that metric matches no covering index. Lance uses
+the first index with that metric and does not search a later index when the
+first covers no rows. A table with no covering index is not rejected. Remove
+`fast_search` for the exact scan. Omit the metric to use the index metric when
+only one covering metric exists.
+
+On LanceDB Cloud (legacy hosted service), the SDK does not apply this check.
+The brute-force KNN safety limit can reject the resulting scan on a large
+table instead of executing it. LanceDB Enterprise doesn't have the limit.
 
 If you omit the search metric, current SDKs use the index metric when an index is
 available. Some older SDK versions sent `l2` when the metric was omitted; with a
@@ -562,7 +568,7 @@ too high, add an ANN index and compare its results with the exhaustive baseline.
 
 ### Bypass the Vector Index
 
-Use `bypass_vector_index` to get exact, ground-truth results by performing exhaustive searches across all vectors. Instead of relying on approximate methods, the system directly compares your query against every vector in the table, ensuring 100% recall at the cost of increased query time.
+Use `bypass_vector_index` to get exact, ground-truth results by performing exhaustive searches across all vectors. Instead of relying on approximate methods, the system directly compares your query against every vector in the table, ensuring 100% recall at the cost of increased query time. This is an exact scan only when `fast_search` is off. With `fast_search` still enabled the query returns no rows, so omit `fast_search` for that scan.
 
 <CodeGroup>
 <CodeBlock filename="Python" language="python" icon="python">
