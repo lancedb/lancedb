@@ -355,6 +355,14 @@ impl PermutationBuilder {
             .count_rows(self.config.filter.clone())
             .await? as u64;
 
+        self.config.split_strategy.validate(num_rows)?;
+        // Bootstrap's output row count (num_samples) differs from its input row count
+        // (num_rows); every other strategy's output matches its input. The shuffler
+        // must be told the former, not assume it always equals the latter.
+        // Plan the output row count before scanning so invalid or unrepresentable
+        // dimensions fail fast before materialization.
+        let output_rows = splitter.try_output_row_count(num_rows)?;
+
         // Apply splits
         let rows = rows.execute().await?;
         // Splits are assigned by position, so the scan has to arrive in a fixed order.
@@ -363,10 +371,6 @@ impl PermutationBuilder {
         } else {
             self.sort_by_column(rows, ROW_ID).await?
         };
-        // Bootstrap's output row count (num_samples) differs from its input row count
-        // (num_rows); every other strategy's output matches its input. The shuffler
-        // must be told the former, not assume it always equals the latter.
-        let output_rows = splitter.output_row_count(num_rows);
         let split_data = splitter.apply(rows, num_rows).await?;
 
         // Shuffle data if requested
@@ -1179,5 +1183,91 @@ mod tests {
         // Overwrite creates a new table version; the old handle stays on its snapshot.
         assert_eq!(first_plan.count_rows(None).await.unwrap(), 100);
         assert_eq!(first_plan.version().await.unwrap(), first_version);
+    }
+
+    #[tokio::test]
+    async fn test_permutation_builder_rejects_invalid_bootstrap_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let initial_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(10), BatchCount::from(1));
+        let data_table = db
+            .create_table("base_tbl", initial_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let invalid_strategies = vec![
+            SplitStrategy::Bootstrap {
+                num_samples: 10,
+                sizes: SplitSizes::Fixed(0),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: 10,
+                sizes: SplitSizes::Counts(vec![20]),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: 10,
+                sizes: SplitSizes::Counts(vec![u64::MAX, 1]),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: 0,
+                sizes: SplitSizes::Fixed(0),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: 10,
+                sizes: SplitSizes::Percentages(vec![f64::NAN]),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Fixed(u64::MAX),
+                seed: Some(42),
+            },
+            SplitStrategy::Bootstrap {
+                num_samples: u64::MAX,
+                sizes: SplitSizes::Percentages(vec![0.5, 0.5]),
+                seed: Some(42),
+            },
+        ];
+
+        for strategy in invalid_strategies {
+            let err = PermutationBuilder::new(data_table.clone())
+                .with_split_strategy(strategy, None)
+                .build()
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "expected InvalidInput, got: {err:?}"
+            );
+        }
+
+        // Also validate against the filtered eligible row count (0 eligible rows).
+        let err = PermutationBuilder::new(data_table)
+            .with_filter("col_a > 1000".to_string())
+            .with_split_strategy(
+                SplitStrategy::Bootstrap {
+                    num_samples: 10,
+                    sizes: SplitSizes::Fixed(2),
+                    seed: Some(42),
+                },
+                None,
+            )
+            .build()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "expected InvalidInput for empty filtered bootstrap table, got: {err:?}"
+        );
     }
 }

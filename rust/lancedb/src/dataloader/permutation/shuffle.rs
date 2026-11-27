@@ -134,11 +134,6 @@ impl Shuffler {
         let tmp_dir = temp_dir.path().to_path_buf();
 
         let clump_size = self.config.clump_size.unwrap_or(1);
-        if clump_size == 0 {
-            return Err(Error::InvalidInput {
-                message: "clump size must be greater than 0".to_string(),
-            });
-        }
 
         let object_store = ObjectStore::local();
         let arrow_schema = data.schema();
@@ -275,6 +270,16 @@ impl Shuffler {
         data: SendableRecordBatchStream,
         num_rows: u64,
     ) -> Result<SendableRecordBatchStream> {
+        if self.config.max_rows_per_file == 0 {
+            return Err(Error::InvalidInput {
+                message: "max_rows_per_file must be greater than 0".to_string(),
+            });
+        }
+        if self.config.clump_size == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "clump size must be greater than 0".to_string(),
+            });
+        }
         log::debug!(
             "Shuffle job {}: shuffling {} rows and {} columns",
             self.id,
@@ -489,5 +494,33 @@ mod tests {
                 assert_eq!(next, expected_next);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_shuffle_rejects_zero_clump_size() {
+        let config = ShufflerConfig {
+            temp_dir: TemporaryDirectory::None,
+            clump_size: Some(0),
+            ..Default::default()
+        };
+        let shuffler = Shuffler::new(config);
+        let stream = create_test_stream(BatchCount::from(2), RowCount::from(10));
+
+        let result = shuffler.shuffle(stream, 20).await;
+        assert!(matches!(result, Err(Error::InvalidInput { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_rejects_zero_max_rows_per_file() {
+        let config = ShufflerConfig {
+            temp_dir: TemporaryDirectory::None,
+            max_rows_per_file: 0,
+            ..Default::default()
+        };
+        let shuffler = Shuffler::new(config);
+        let stream = create_test_stream(BatchCount::from(2), RowCount::from(10));
+
+        let result = shuffler.shuffle(stream, 20).await;
+        assert!(matches!(result, Err(Error::InvalidInput { .. })));
     }
 }
