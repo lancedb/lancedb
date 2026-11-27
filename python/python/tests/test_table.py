@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import lancedb
 from lancedb import table as table_module
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
+from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfFlat, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -3392,6 +3392,98 @@ async def test_delete_expr_async(mem_db_async: AsyncConnection):
     await table.delete(col("id") == lit(0))
     assert await table.count_rows() == 2
     assert sorted((await table.to_arrow())["id"].to_pylist()) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_async_delete_keeps_indices(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "indexed_delete",
+        [
+            {
+                "id": row_id,
+                "category": "keep" if row_id < 8 else "drop",
+                "text": f"row{row_id}",
+                "vector": [float(row_id), 0.0, 0.0, 0.0],
+            }
+            for row_id in range(16)
+        ],
+    )
+    await table.create_index(
+        "vector", config=IvfFlat(num_partitions=1), name="vector_idx"
+    )
+    await table.create_index("category", config=BTree(), name="category_idx")
+    await table.create_index("text", config=FTS(), name="text_idx")
+    expected = [
+        ("category_idx", "BTree"),
+        ("text_idx", "FTS"),
+        ("vector_idx", "IvfFlat"),
+    ]
+
+    async def names():
+        indices = await table.list_indices()
+        return sorted((index.name, index.index_type) for index in indices)
+
+    async def ids_of(query):
+        return sorted((await query.to_arrow())["id"].to_pylist())
+
+    assert (await table.delete("category = 'drop'")).num_deleted_rows == 8
+    assert await names() == expected
+    for index in await table.list_indices():
+        assert index.num_indexed_rows > 0
+        stats = await table.index_stats(index.name)
+        assert stats is not None and stats.num_indexed_rows > 0
+    kept = table.query().where("category = 'keep'").limit(100)
+    assert await ids_of(kept) == list(range(8))
+    assert await ids_of(table.query().nearest_to_text("row0", columns="text")) == [0]
+    assert await ids_of(table.query().nearest_to_text("row8", columns="text")) == []
+    assert await ids_of(table.query().nearest_to([0.0, 0.0, 0.0, 0.0]).limit(1)) == [0]
+
+    assert (await table.delete("true")).num_deleted_rows == 8
+    assert await table.count_rows() == 0
+    assert await names() == expected
+
+    await table.add(
+        [
+            {
+                "id": 20,
+                "category": "fresh",
+                "text": "row20",
+                "vector": [20.0, 0.0, 0.0, 0.0],
+            }
+        ]
+    )
+    assert await names() == expected
+    fresh = table.query().where("category = 'fresh'").limit(100)
+    assert await ids_of(fresh) == [20]
+    assert await ids_of(table.query().nearest_to_text("row20", columns="text")) == [20]
+    assert await ids_of(table.query().nearest_to_text("row0", columns="text")) == []
+    nearest = table.query().nearest_to([20.0, 0.0, 0.0, 0.0]).limit(1)
+    assert await ids_of(nearest) == [20]
+
+
+@pytest.mark.asyncio
+async def test_async_delete_keeps_btree_created_before_rows(tmp_path):
+    schema = pa.schema([pa.field("pk", pa.string()), pa.field("txt", pa.string())])
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test_table", schema=schema)
+    await table.create_index(column="txt", config=BTree())
+    values = [str(row_id) for row_id in range(10)]
+    await table.add(pa.table({"pk": values, "txt": values}))
+
+    await table.delete(where="txt = '1'")
+
+    async def assert_one_btree(opened):
+        assert await opened.count_rows() == 9
+        indices = await opened.list_indices()
+        assert len(indices) == 1
+        index = indices[0]
+        assert index.name == "txt_idx"
+        assert index.index_type == "BTree"
+        assert list(index.columns) == ["txt"]
+
+    await assert_one_btree(table)
+    reopened = await (await lancedb.connect_async(tmp_path)).open_table("test_table")
+    await assert_one_btree(reopened)
 
 
 def test_update(mem_db: DBConnection):
