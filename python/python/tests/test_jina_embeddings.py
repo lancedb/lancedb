@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import pyarrow as pa
 import pytest
 
-from lancedb.embeddings import get_registry
+import lancedb
+from lancedb.embeddings import EmbeddingFunctionConfig, get_registry
 
 
 @pytest.mark.parametrize(
@@ -26,3 +28,36 @@ def test_jina_ndims_unknown_model():
     func = get_registry().get("jina").create(name="not-a-jina-model")
     with pytest.raises(ValueError, match="Unknown Jina model"):
         func.ndims()
+
+
+@pytest.mark.parametrize("width", [512, 768])
+def test_jina_append_uses_stored_width_for_unknown_model(tmp_path, monkeypatch, width):
+    func = get_registry().get("jina").create(name="jina-embeddings-v5-text-nano")
+    returned_width = width
+    monkeypatch.setattr(
+        type(func),
+        "_generate_embeddings",
+        lambda self, input, *args, **kwargs: [[0.5] * returned_width for _ in input],
+    )
+    schema = pa.schema(
+        [
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), width)),
+        ]
+    )
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
+    lancedb.connect(tmp_path).create_table(
+        "t", schema=schema, embedding_functions=[config]
+    )
+
+    table = lancedb.connect(tmp_path).open_table("t")
+    table.add([{"text": "hello"}])
+    assert table.to_arrow()["vector"].to_pylist() == [[0.5] * width]
+
+    returned_width = width + 1
+    # Mismatched vectors go through on_bad_vectors, which errors by default.
+    with pytest.raises(RuntimeError, match="Vector column .vector. has"):
+        table.add([{"text": "world"}])
+    assert table.count_rows() == 1
