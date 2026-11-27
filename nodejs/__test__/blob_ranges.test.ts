@@ -51,9 +51,10 @@ async function withRangeServer(
   run: (db: Connection, calls: Request[], paths: string[]) => Promise<void>,
   fault?: string | number,
   capability: string | null = "1",
-  onStall?: () => void,
+  onStall?: (response: http.ServerResponse) => void,
 ) {
   let takes = 0;
+  let rangeReads = 0;
   const calls: Request[] = [];
   const paths: string[] = [];
   const server = http.createServer((req, res) => {
@@ -91,13 +92,18 @@ async function withRangeServer(
       expect(url.searchParams.get("version")).toBe("3");
       const [start, end] = req.headers.range!.slice(6).split("-").map(Number);
       const bytes = Buffer.from("alpha").subarray(start, end + 1);
-      res
-        .writeHead(206, {
-          "Content-Range": `bytes ${start}-${end}/5`,
-          "Content-Length": bytes.length,
-          "x-lancedb-version": "3",
-        })
-        .end(bytes);
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/5`,
+        "Content-Length": bytes.length,
+        "x-lancedb-version": "3",
+      });
+      if (fault === "stall-read" && ++rangeReads === 1) {
+        // Withhold the rest of the body so native completion cannot win the abort.
+        res.write(bytes.subarray(0, 1));
+        onStall?.(res);
+        return;
+      }
+      res.end(bytes);
       return;
     }
     expect(req.method).toBe("POST");
@@ -191,7 +197,7 @@ async function withRangeServer(
           "x-lancedb-query-snapshot": IDENTITY,
         });
         res.flushHeaders();
-        onStall?.();
+        onStall?.(res);
         return;
       }
       if (typeof failure === "number") {
@@ -325,6 +331,55 @@ describe("fetchBlobRanges", () => {
       }
       expect(calls).toHaveLength(2);
     });
+  });
+
+  it("cancels an in-flight BlobFile read and leaves the handle usable", async () => {
+    let responseTimedOut = false;
+    let markStalled!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      markStalled = resolve;
+    });
+    let markDisconnected!: () => void;
+    const disconnected = new Promise<void>((resolve) => {
+      markDisconnected = resolve;
+    });
+    await withRangeServer(
+      async (db) => {
+        const table = await open(db, 3);
+        const [handle] = await table.fetchBlobFiles("image", [10n]);
+        const controller = new AbortController();
+        try {
+          const pending = handle!.readRange(0n, handle!.size(), {
+            signal: controller.signal,
+          });
+          const rejected = expect(pending).rejects.toMatchObject({
+            name: "AbortError",
+          });
+          await stalled;
+          controller.abort();
+          await rejected;
+          await disconnected;
+          expect(responseTimedOut).toBe(false);
+          expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+          expect(handle!.isClosed()).toBe(false);
+          expect(await handle!.tell()).toBe(0n);
+          // The single request permit must also be released by cancellation.
+          expect(await handle!.readRange(0n, 5n)).toEqual(Buffer.from("alpha"));
+        } finally {
+          controller.abort();
+          await handle!.close();
+        }
+      },
+      "stall-read",
+      null,
+      (response) => {
+        response.once("timeout", () => {
+          responseTimedOut = true;
+        });
+        response.once("close", markDisconnected);
+        markStalled();
+      },
+    );
   });
 
   it("cancels while waiting for a later response body and releases the only permit", async () => {

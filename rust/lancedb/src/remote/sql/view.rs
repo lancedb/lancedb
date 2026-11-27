@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use super::{SqlClient, materialized_view::quote_identifier, objects::strings};
+use super::{
+    SqlClient,
+    materialized_view::quote_identifier,
+    objects::{description, strings},
+};
 use crate::{
     database::ExecuteQueryRequest,
     error::{Error, Result},
@@ -9,8 +13,6 @@ use crate::{
     utils::{validate_namespace, validate_view_name},
     view::ViewDescription,
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures::TryStreamExt;
 use lance_namespace::models::JsonArrowSchema;
 use std::sync::Arc;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -42,7 +44,7 @@ impl ViewDefinition {
     }
 }
 
-fn view_description(
+fn created_view_definition(
     batches: Vec<arrow_array::RecordBatch>,
     namespace: Vec<String>,
 ) -> Result<ViewDefinition> {
@@ -55,11 +57,29 @@ fn view_description(
         }
         Ok(values.remove(0))
     };
-    let name = one("name")?;
-    let json: JsonArrowSchema =
-        serde_json::from_str(&one("schema")?).map_err(|error| Error::Runtime {
-            message: format!("View '{name}' has invalid schema JSON: {error}"),
-        })?;
+    let metadata = ViewMetadata {
+        name: one("name")?,
+        query: one("query")?,
+        schema: serde_json::from_str(&one("schema")?).map_err(|error| Error::Runtime {
+            message: format!("View metadata has invalid schema JSON: {error}"),
+        })?,
+    };
+    view_definition(metadata, namespace)
+}
+
+#[derive(serde::Deserialize)]
+struct ViewMetadata {
+    name: String,
+    query: String,
+    schema: JsonArrowSchema,
+}
+
+fn view_definition(metadata: ViewMetadata, namespace: Vec<String>) -> Result<ViewDefinition> {
+    let ViewMetadata {
+        name,
+        query,
+        schema: json,
+    } = metadata;
     let schema = lance_namespace::schema::convert_json_arrow_schema(&json).map_err(|error| {
         Error::Runtime {
             message: format!("View '{name}' has an undecodable schema: {error}"),
@@ -86,7 +106,7 @@ fn view_description(
     Ok(ViewDefinition {
         name,
         namespace,
-        query: one("query")?,
+        query,
         default_database,
         default_namespace: default_namespace_path,
         schema: json,
@@ -99,17 +119,23 @@ impl SqlClient {
         name: &str,
         query: &str,
         namespace: &[String],
+        exist_ok: bool,
     ) -> Result<ViewDescription> {
         validate_view_name(name)?;
         validate_namespace(namespace)?;
         let namespace_path = namespace.to_vec();
+        let if_not_exists = if exist_ok { " IF NOT EXISTS" } else { "" };
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("CREATE VIEW {} AS {query}", quote_identifier(name)),
+                query: format!(
+                    "CREATE VIEW{if_not_exists} {} AS {query}",
+                    quote_identifier(name)
+                ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
-            move |batches| view_description(batches, namespace_path),
+            move |batches| created_view_definition(batches, namespace_path),
         )
         .await?
         .wait()
@@ -126,11 +152,12 @@ impl SqlClient {
         let namespace_path = namespace.to_vec();
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("DESCRIBE VIEW {}", quote_identifier(name)),
+                query: format!("DESCRIBE VIEW {} FORMAT JSON", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
-            move |batches| view_description(batches, namespace_path),
+            move |batches| view_definition(description(batches)?, namespace_path),
         )
         .await?
         .wait()
@@ -142,64 +169,6 @@ impl SqlClient {
         namespace: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        validate_namespace(namespace)?;
-        let limit = options.page_limit.unwrap_or(100);
-        if limit == 0 || limit > i32::MAX as u32 {
-            return Err(Error::InvalidInput {
-                message: "page limit must be between 1 and i32::MAX".into(),
-            });
-        }
-        let invalid_token = || Error::InvalidInput {
-            message: "invalid view page token for this database or namespace".into(),
-        };
-        let after = if let Some(token) = options.page_token.filter(|token| !token.is_empty()) {
-            let decoded = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid_token())?;
-            let (kind, database, prefix, path, last): (
-                String,
-                String,
-                Option<String>,
-                Vec<String>,
-                String,
-            ) = serde_json::from_slice(&decoded).map_err(|_| invalid_token())?;
-            if kind != "view"
-                || database != self.inner.database
-                || prefix != self.inner.database_prefix
-                || path != namespace
-            {
-                return Err(invalid_token());
-            }
-            format!(" WHERE name > '{}'", last.replace('\'', "''"))
-        } else {
-            String::new()
-        };
-        let query = self
-            .execute(ExecuteQueryRequest {
-                query: format!("SHOW VIEWS{after} LIMIT {}", u64::from(limit) + 1),
-                default_namespace_path: namespace.to_vec(),
-                parameters: None,
-            })
-            .await?;
-        let mut reader = query.reader().await?;
-        let mut items = Vec::new();
-        while let Some(batch) = reader.try_next().await? {
-            items.extend(strings(&[batch], "name")?);
-        }
-        let page_token = if items.len() > limit as usize {
-            items.truncate(limit as usize);
-            let cursor = serde_json::to_vec(&(
-                "view",
-                &self.inner.database,
-                &self.inner.database_prefix,
-                namespace,
-                items.last().unwrap(),
-            ))
-            .map_err(|error| Error::Runtime {
-                message: error.to_string(),
-            })?;
-            Some(URL_SAFE_NO_PAD.encode(cursor))
-        } else {
-            None
-        };
-        Ok(ListingPage { items, page_token })
+        self.list_names("SHOW VIEWS", namespace, options).await
     }
 }

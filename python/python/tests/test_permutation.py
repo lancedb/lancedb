@@ -5,14 +5,32 @@ import pyarrow as pa
 import math
 import pytest
 
-from lancedb import DBConnection, Table, connect
+from lancedb import DBConnection, Session, Table, connect, connect_namespace
 from lancedb.background_loop import LOOP
-from lancedb.permutation import Permutation, Permutations, permutation_builder
+from lancedb.permutation import (
+    DEFAULT_BATCH_SIZE,
+    Permutation,
+    Permutations,
+    Transforms,
+    permutation_builder,
+)
 from utils import (
     MockPermutationServer,
     assert_server_safe_row_id_requests,
     mock_remote_table,
 )
+
+
+def _read_permutation_in_spawned_process(payload: bytes, output) -> None:
+    import pickle
+
+    permutation = pickle.loads(payload)
+    output.put(
+        [
+            row["id"]
+            for row in permutation.__getitems__(list(range(permutation.num_rows)))
+        ]
+    )
 
 
 def test_split_random_ratios(mem_db):
@@ -79,6 +97,368 @@ def test_pickled_permutation_reads_pinned_version(tmp_path):
     assert len(restored) == 20
     rows = restored.__getitems__(list(range(20)))
     assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
+def test_persist_plan_create_overwrite_namespace_and_metadata(tmp_path):
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    db.create_namespace(["plans"])
+    namespace_path = ["plans"]
+
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2, split_names=["train", "test"])
+        .persist(db, "splits", namespace_path=namespace_path)
+        .execute()
+    )
+    assert plan.count_rows() == 20
+    assert plan.namespace == namespace_path
+    assert pickle.loads(pickle.dumps(plan)).namespace == namespace_path
+
+    permutation = Permutation.from_tables(tbl, plan, split="train")
+    assert permutation.base_version == tbl.version
+    assert permutation.base_branch is None
+    assert permutation.num_rows == 10
+
+    with pytest.raises((ValueError, RuntimeError), match="already exists"):
+        (
+            permutation_builder(tbl)
+            .split_sequential(fixed=2)
+            .persist(db, "splits", namespace_path=namespace_path)
+            .execute()
+        )
+
+    with pytest.raises(ValueError, match="Invalid mode"):
+        permutation_builder(tbl).persist(db, "other", mode="replace")
+
+    class RemoteLike:
+        uri = "db://example"
+
+    with pytest.raises(NotImplementedError, match="Enterprise"):
+        permutation_builder(tbl).persist(RemoteLike(), "remote_splits")
+
+    tbl.add(pa.table({"id": range(20, 40)}))
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2)
+        .persist(db, "splits", namespace_path=namespace_path, mode="overwrite")
+        .execute()
+    )
+    assert plan.count_rows() == 40
+    assert db.open_table("splits", namespace_path=namespace_path).count_rows() == 40
+    # The earlier permutation still reads the plan and base snapshot it was built from.
+    assert permutation.num_rows == 10
+    assert [row["id"] for row in permutation.__getitems__([0, 1])] == [0, 1]
+
+
+def test_persist_namespace_connection_direct_result_pickle(tmp_path):
+    import pickle
+
+    db = connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["plans"])
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+
+    plan = (
+        permutation_builder(tbl)
+        .split_sequential(fixed=2, split_names=["train", "test"])
+        .persist(db, "splits", namespace_path=["plans"])
+        .execute()
+    )
+    assert plan.namespace == ["plans"]
+    assert plan._conn is db
+
+    restored_plan = pickle.loads(pickle.dumps(plan))
+    assert restored_plan.namespace == ["plans"]
+    assert restored_plan.count_rows() == 20
+
+    permutation = Permutation.from_tables(tbl, plan, split="train")
+    restored = pickle.loads(pickle.dumps(permutation))
+    assert restored.num_rows == 10
+    assert sorted(
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ) == list(range(10))
+
+
+def test_persist_direct_result_keeps_session_pickle_error(tmp_path):
+    import pickle
+
+    db = connect(tmp_path, session=Session())
+    tbl = db.create_table("base", pa.table({"id": range(5)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(plan)
+
+    permutation = Permutation.from_tables(tbl, plan)
+    with pytest.raises(TypeError, match="Session"):
+        pickle.dumps(permutation)
+
+
+def test_persist_direct_result_preserves_manifest_connection_state(tmp_path):
+    import pickle
+
+    db = connect(tmp_path, manifest_enabled=True)
+    tbl = db.create_table("base", pa.table({"id": range(5)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+
+    restored = pickle.loads(pickle.dumps(plan))
+    assert restored._conn._manifest_enabled is True
+    assert restored.count_rows() == 5
+
+
+def test_base_branch_property_reads_plan_metadata(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(10)}))
+    branch = tbl.branches.create("exp")
+    branch.add(pa.table({"id": range(10, 20)}))
+
+    plan = permutation_builder(branch).persist(db, "branch_splits").execute()
+    permutation = Permutation.from_tables(branch, plan)
+
+    assert permutation.base_branch == "exp"
+    assert permutation.base_version == branch.version
+    assert permutation.num_rows == 20
+
+
+def test_persist_embedded_plan_for_remote_base(tmp_path):
+    from lancedb import deserialize_conn
+
+    server = MockPermutationServer(num_rows=8)
+    db = connect(tmp_path)
+
+    with mock_remote_table(server) as remote:
+        permutation_builder(remote).shuffle(seed=7).persist(db, "plan").execute()
+        plan = db.open_table("plan")
+        expected_ids = plan.to_arrow().to_pydict()["row_id"]
+        assert expected_ids != list(range(8))
+
+        # Advance the mock's latest version. A fresh handle must see v2, while
+        # the plan's recorded v1 still pins every read to the old snapshot.
+        server.publish_version(2, list(range(100, 108)))
+        fresh_remote = deserialize_conn(
+            remote._serialized_connection_state()
+        ).open_table(server.name)
+        assert fresh_remote.version == 2
+
+        permutation = Permutation.from_tables(fresh_remote, plan)
+        assert permutation.base_version == 1
+        assert permutation.base_branch is None
+        assert permutation._plan_version == 1
+        assert permutation.permutation_table.version == 1
+
+        sequential_ids = [
+            row["id"]
+            for batch in permutation.iter(3, skip_last_batch=False)
+            for row in batch
+        ]
+        assert sequential_ids == expected_ids
+        assert [row["id"] for row in permutation.__getitems__([5, 1, 5, 3])] == [
+            expected_ids[i] for i in [5, 1, 5, 3]
+        ]
+
+        # The plan is local, but its build and gathers address the remote base
+        # at the recorded main/v1 snapshot. Latest describes carry no version.
+        assert server.scans
+        assert server.takes
+        for body in [*server.scans, *server.takes]:
+            assert body.get("version") == 1
+            assert body.get("branch") is None
+        describe_versions = [body.get("version") for body in server.describe_bodies]
+        assert None in describe_versions
+        assert 1 in describe_versions
+        assert all(body.get("branch") is None for body in server.describe_bodies)
+
+
+def test_persisted_plan_pickle_reopens_same_snapshot_after_overwrite(tmp_path):
+    from datetime import timedelta
+    import pickle
+
+    db = connect(tmp_path, read_consistency_interval=timedelta(0))
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    plan = permutation_builder(tbl).filter("id < 10").persist(db, "splits").execute()
+    permutation = Permutation.from_tables(tbl, plan)
+    old_base_version = permutation.base_version
+    old_plan_version = permutation._plan_version
+    state = permutation.__getstate__()
+    assert "permutation_data" not in state
+    assert (
+        state["permutation_table_state"]["state"]["checkout_version"]
+        == old_plan_version
+    )
+
+    # Replace the plan with disjoint rows of the same cardinality.
+    permutation_builder(tbl).filter("id >= 10").persist(
+        db, "splits", mode="overwrite"
+    ).execute()
+    assert plan.version == old_plan_version + 1
+    assert permutation.permutation_table.version == old_plan_version
+
+    live_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(permutation.num_rows)))
+    ]
+    assert live_ids == list(range(10))
+
+    # A reader recreated after the overwrite must still use the pinned snapshot.
+    permutation.reader = None
+    permutation._pid = None
+    recreated_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(permutation.num_rows)))
+    ]
+    assert recreated_ids == list(range(10))
+
+    restored = pickle.loads(pickle.dumps(permutation))
+    assert restored.base_version == old_base_version
+    restored_ids = [
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ]
+    assert restored_ids == list(range(10))
+
+    # A newly constructed permutation sees the overwritten plan.
+    fresh = Permutation.from_tables(tbl, db.open_table("splits"))
+    assert fresh.base_version == old_base_version
+    fresh_ids = [row["id"] for row in fresh.__getitems__(list(range(fresh.num_rows)))]
+    assert fresh_ids == list(range(10, 20))
+
+
+def test_persisted_plan_pickle_uses_captured_main_branch(tmp_path):
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    permutation_builder(tbl).persist(db, "splits").execute()
+
+    initial_plan = db.open_table("splits")
+    initial_plan.branches.create("exp", from_version=1)
+
+    # Main plan version 2 still has all 20 rows.
+    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+    main_plan = db.open_table("splits")
+    assert main_plan.version == 2
+
+    # Branch plan version 2 has different contents, so the numeric version alone
+    # does not identify the snapshot.
+    branch_plan = db.open_table("splits", branch="exp")
+    branch_plan.add(
+        pa.table(
+            {
+                "row_id": pa.array([0], type=pa.uint64()),
+                "split_id": pa.array([0], type=pa.uint32()),
+            }
+        )
+    )
+    branch_plan = db.open_table("splits", branch="exp")
+    assert branch_plan.version == 2
+    assert branch_plan.count_rows() == 21
+    branch_plan.tags.create("exp_v2", 2)
+
+    permutation = Permutation.from_tables(tbl, main_plan)
+
+    # Move the same passed-in plan handle to the other branch at the same
+    # numeric version. Pickle must still reopen the captured main snapshot.
+    main_plan.checkout("exp_v2")
+    assert main_plan.current_branch() == "exp"
+    assert main_plan.version == 2
+    payload = pickle.dumps(permutation)
+
+    restored = pickle.loads(payload)
+    assert restored.permutation_table.current_branch() is None
+    assert restored.permutation_table.version == 2
+    assert restored.num_rows == 20
+
+
+def test_persisted_plan_pickle_reopens_in_spawned_process(tmp_path):
+    import multiprocessing as mp
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(12)}))
+    plan = permutation_builder(tbl).persist(db, "splits").execute()
+    payload = pickle.dumps(Permutation.from_tables(tbl, plan))
+
+    tbl.add(pa.table({"id": range(12, 24)}))
+    permutation_builder(tbl).persist(db, "splits", mode="overwrite").execute()
+
+    context = mp.get_context("spawn")
+    output = context.Queue()
+    process = context.Process(
+        target=_read_permutation_in_spawned_process, args=(payload, output)
+    )
+    process.start()
+    try:
+        ids = output.get(timeout=60)
+    finally:
+        process.join(timeout=60)
+
+    assert process.exitcode == 0
+    assert sorted(ids) == list(range(12))
+
+
+def test_old_permutation_pickle_state_still_round_trips(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"id": range(20)}))
+    plan = permutation_builder(tbl).execute()
+    state = {
+        "base_table_name": tbl.name,
+        "permutation_data": plan.to_arrow(),
+        "split": 0,
+        "selection": {"id": "id"},
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "transform_fn": Transforms.arrow2python,
+        "offset": None,
+        "limit": None,
+        "connection_factory": None,
+        "base_table_uri": str(tmp_path),
+        "base_table_storage_options": None,
+        "base_table_namespace": [],
+    }
+
+    restored = Permutation.__new__(Permutation)
+    restored.__setstate__(state)
+
+    assert restored.base_version == tbl.version
+    assert restored.base_branch is None
+    assert sorted(
+        row["id"] for row in restored.__getitems__(list(range(restored.num_rows)))
+    ) == list(range(20))
+
+
+def test_builder_copy_is_shallow_and_does_not_materialize(
+    some_table: Table, some_perm_table: Table, monkeypatch
+):
+    """The with_* builders use copy.copy, which must stay a shallow copy.
+
+    Without ``Permutation.__copy__`` the copy falls back to the pickle path,
+    which materializes the permutation table with ``to_arrow()`` before
+    rebuilding the base table and reader. That is expensive for in-memory
+    tables and fails for remote permutation tables.
+    """
+    permutation = Permutation.from_tables(some_table, some_perm_table)
+
+    def fail_materialize(*args, **kwargs):
+        raise AssertionError("copy.copy must not materialize the permutation table")
+
+    def fail_getstate(_self):
+        raise AssertionError("copy.copy must not pickle the permutation")
+
+    monkeypatch.setattr(permutation.permutation_table, "to_arrow", fail_materialize)
+    monkeypatch.setattr(Permutation, "__getstate__", fail_getstate)
+
+    formatted = permutation.with_format("arrow")
+    assert formatted is not permutation
+    assert formatted.transform_fn is Transforms.arrow2arrow
+    assert permutation.transform_fn is Transforms.arrow2python
+    assert formatted.base_table is permutation.base_table
+    assert formatted.permutation_table is permutation.permutation_table
+    assert formatted.reader is permutation.reader
+
+    resized = permutation.with_batch_size(7)
+    assert resized.batch_size == 7
+    assert permutation.batch_size == DEFAULT_BATCH_SIZE
+    assert resized.selection is permutation.selection
+    resized.selection = {"id": "id"}
+    assert permutation.selection is not resized.selection
 
 
 def test_split_random_counts(mem_db):
@@ -273,6 +653,41 @@ def test_split_hash(mem_db):
 
     data2 = perm2.search(None).to_arrow().to_pydict()
     assert data["split_id"] == data2["split_id"]  # Should be identical
+
+
+def test_split_hash_default_discard_weight_matches_zero(mem_db):
+    """Omitting discard_weight must assign every row like discard_weight=0."""
+    tbl = mem_db.create_table(
+        "test_table",
+        pa.table(
+            {
+                "id": range(100),
+                "category": (["A", "B", "C"] * 34)[:100],
+                "value": range(100),
+            }
+        ),
+    )
+
+    default = (
+        permutation_builder(tbl)
+        .split_hash(["category"], [1, 1], split_names=["train", "test"])
+        .execute()
+    )
+    explicit_zero = (
+        permutation_builder(tbl)
+        .split_hash(
+            ["category"], [1, 1], discard_weight=0, split_names=["train", "test"]
+        )
+        .execute()
+    )
+
+    default_data = default.search(None).to_arrow().to_pydict()
+    explicit_data = explicit_zero.search(None).to_arrow().to_pydict()
+    assert default.count_rows() == 100
+    assert default.count_rows() == explicit_zero.count_rows()
+    assert dict(zip(default_data["row_id"], default_data["split_id"])) == dict(
+        zip(explicit_data["row_id"], explicit_data["split_id"])
+    )
 
 
 def test_split_hash_with_discard(mem_db):
@@ -1146,6 +1561,31 @@ def test_transform_fn_pandas(mem_db):
     assert isinstance(result, pd.DataFrame)
 
 
+def test_numpy_format_mixed_columns_is_object_ndarray(mem_db):
+    pytest.importorskip("pandas")
+    import numpy as np
+
+    tbl = mem_db.create_table(
+        "test_table",
+        pa.table(
+            {
+                "id": range(3),
+                "vector": pa.array(
+                    [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                    type=pa.list_(pa.float32(), 2),
+                ),
+            }
+        ),
+    )
+    permutation = Permutation.identity(tbl).with_format("numpy")
+    result = next(permutation.iter(2, skip_last_batch=False))
+
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == object
+    assert result.shape == (2, 2)
+    np.testing.assert_array_equal(result[0, 1], [1.0, 2.0])
+
+
 def test_custom_transform(mem_db):
     tbl = mem_db.create_table(
         "test_table", pa.table({"id": range(10), "value": range(10)})
@@ -1416,3 +1856,244 @@ def test_from_tables_split_without_permutation_table(mem_db):
 
     with pytest.raises(ValueError, match="permutation on split `train` because no"):
         Permutation.from_tables(tbl, split="train")
+
+
+def _double_value_row(row):
+    return {"id": row["id"], "value": row["value"] * 2}
+
+
+def _double_value_batch(batch):
+    return {"id": batch["id"], "value": [value * 2 for value in batch["value"]]}
+
+
+def test_map_row_by_row(some_permutation: Permutation):
+    """Test .map() applies fn to each row individually."""
+    mapped = some_permutation.map(_double_value_row)
+    batches = list(mapped.iter(10, skip_last_batch=False))
+    first_batch = batches[0]
+    assert len(first_batch) == 10
+    assert isinstance(first_batch[0], dict)
+    for row in first_batch:
+        assert row["value"] == row["id"] * 2
+
+
+def test_map_batched(some_permutation: Permutation):
+    """Test batched only changes what fn receives, not what is yielded."""
+    seen = []
+
+    def double_value(batch):
+        seen.append(batch)
+        return _double_value_batch(batch)
+
+    mapped = some_permutation.map(double_value, batched=True)
+    first_batch = next(mapped.iter(10, skip_last_batch=False))
+    assert isinstance(seen[0], dict)
+    assert len(seen[0]["id"]) == 10
+    assert first_batch == next(
+        some_permutation.map(_double_value_row).iter(10, skip_last_batch=False)
+    )
+
+
+def test_map_chain(some_permutation: Permutation):
+    """Test chained maps run in order and each one replaces the whole row."""
+
+    def add_doubled(row):
+        return {**row, "doubled": row["value"] * 2}
+
+    def to_total(batch):
+        return {
+            "total": [a + b for a, b in zip(batch["value"], batch["doubled"])],
+        }
+
+    def add_label(row):
+        return {**row, "label": str(row["total"])}
+
+    first = some_permutation.map(add_doubled)
+    mapped = first.map(to_total, batched=True).map(add_label)
+    expected = [
+        {"total": row["value"] * 3, "label": str(row["value"] * 3)}
+        for row in some_permutation.take_offsets([0, 1, 2])
+    ]
+    assert mapped.take_offsets([0, 1, 2]) == expected
+    assert next(mapped.iter(3, skip_last_batch=False)) == expected
+    # Extending a chain does not change the permutation it was derived from
+    assert set(first.take_offsets([0])[0]) == {"id", "value", "doubled"}
+
+
+@pytest.mark.parametrize(
+    "explicit",
+    [
+        lambda permutation: permutation.with_format("python"),
+        lambda permutation: permutation.with_format("arrow"),
+        lambda permutation: permutation.with_transform(Transforms.arrow2arrow),
+    ],
+)
+def test_map_rejects_format_and_transform(some_permutation: Permutation, explicit):
+    """Test .map() cannot be mixed with with_format or with_transform."""
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        explicit(some_permutation).map(_double_value_row)
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        explicit(some_permutation.map(_double_value_row))
+
+
+def test_map_rejects_format_without_optional_dependency(
+    some_permutation: Permutation, monkeypatch
+):
+    """Test the map check runs before a format imports an optional dependency."""
+    import sys
+
+    # Make polars fail to import, as it does on an install without extras
+    monkeypatch.setitem(sys.modules, "polars", None)
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        some_permutation.map(_double_value_row).with_format("polars")
+
+
+def test_map_rejects_explicit_transform_from_old_pickle(
+    some_permutation: Permutation,
+):
+    """Test pickles written before explicit_transform existed keep the guard."""
+
+    def restore_without_flag(permutation):
+        state = permutation.__getstate__()
+        del state["explicit_transform"]
+        restored = Permutation.__new__(Permutation)
+        restored.__setstate__(state)
+        return restored
+
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        restore_without_flag(some_permutation.with_format("arrow")).map(
+            _double_value_row
+        )
+    # The default transform is indistinguishable from an explicit "python" format
+    mapped = restore_without_flag(some_permutation).map(_double_value_row)
+    assert mapped.take_offsets([0]) == [
+        _double_value_row(row) for row in some_permutation.take_offsets([0])
+    ]
+
+
+def test_map_rejects_transform_passed_to_constructor(some_table: Table):
+    """Test a transform given to the constructor counts as explicit too."""
+    permutation = Permutation(
+        some_table,
+        None,
+        0,
+        {"id": "id"},
+        DEFAULT_BATCH_SIZE,
+        Transforms.arrow2arrow,
+    )
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        permutation.map(_double_value_row)
+
+
+def test_map_take_offsets(some_permutation: Permutation):
+    """Test .map() keeps the positions and duplicates of the requested offsets."""
+    calls = []
+
+    def record(batch):
+        calls.append(batch)
+        return batch
+
+    mapped = some_permutation.map(_double_value_row).map(record, batched=True)
+    offsets = [5, 0, 5, 2]
+    expected = [
+        _double_value_row(row) for row in some_permutation.take_offsets(offsets)
+    ]
+    assert mapped.take_offsets(offsets) == expected
+    assert mapped.__getitems__(offsets) == expected
+
+    calls.clear()
+    assert mapped.take_offsets([]) == []
+    assert calls == []
+
+
+def test_map_validates_output(some_permutation: Permutation):
+    """Test .map() rejects callback output that would break the batch shape."""
+    with pytest.raises(ValueError, match="returned 1 values for column `id`"):
+        some_permutation.map(
+            lambda batch: {"id": batch["id"][:1]}, batched=True
+        ).take_offsets([0, 1])
+    with pytest.raises(TypeError, match="must return a dict of columns, got list"):
+        some_permutation.map(
+            lambda batch: list(batch.values()), batched=True
+        ).take_offsets([0, 1])
+    # A str has the right length here but is still not a column of values
+    for value in (2, "ab"):
+        with pytest.raises(TypeError, match="list of values for column `n`, got"):
+            some_permutation.map(lambda batch: {"n": value}, batched=True).take_offsets(
+                [0, 1]
+            )
+    with pytest.raises(
+        TypeError, match="must return a dict for each row, got NoneType"
+    ):
+        some_permutation.map(lambda row: None).take_offsets([0, 1])
+    with pytest.raises(ValueError, match="did not return the same keys for every row"):
+        some_permutation.map(
+            lambda row: row if row["id"] % 2 else {"id": row["id"]}
+        ).map(lambda batch: batch, batched=True).take_offsets(list(range(10)))
+
+
+def test_map_projection_and_schema(some_permutation: Permutation):
+    """Test the selection and schema describe the read that feeds the callbacks."""
+
+    def to_str(row):
+        return {name: str(value) for name, value in row.items()}
+
+    mapped = some_permutation.map(to_str)
+    assert mapped.schema == some_permutation.schema
+    assert mapped.column_names == ["id", "value"]
+
+    for projected in (
+        some_permutation.select_columns(["id"]).map(to_str),
+        mapped.select_columns(["id"]),
+        mapped.remove_columns(["value"]),
+    ):
+        assert projected.schema == some_permutation.select_columns(["id"]).schema
+        assert list(projected.take_offsets([0])[0]) == ["id"]
+
+    renamed = mapped.rename_column("value", "data")
+    assert renamed.column_names == ["id", "data"]
+    assert list(renamed.take_offsets([0])[0]) == ["id", "data"]
+
+
+def test_map_is_lazy(some_permutation: Permutation):
+    """Test .map() does not call fn until iteration."""
+    call_count = [0]
+
+    def counting_fn(row):
+        call_count[0] += 1
+        return row
+
+    mapped = some_permutation.map(counting_fn)
+    assert call_count[0] == 0
+
+    mapped.__getitems__([0])
+    assert call_count[0] == 1
+
+
+def test_map_non_callable(some_permutation: Permutation):
+    """Test .map() raises TypeError for non-callable fn."""
+    with pytest.raises(TypeError, match="fn must be callable"):
+        some_permutation.map("not a function")
+
+
+@pytest.mark.parametrize(
+    "fn, batched", [(_double_value_row, False), (_double_value_batch, True)]
+)
+def test_map_pickle_round_trip(some_permutation: Permutation, fn, batched):
+    """Test a mapped permutation reads the same data after a pickle round trip."""
+    import pickle
+
+    mapped = some_permutation.map(fn, batched=batched)
+    restored = pickle.loads(pickle.dumps(mapped))
+
+    offsets = [3, 1, 3]
+    assert restored.take_offsets(offsets) == mapped.take_offsets(offsets)
+    assert restored.take_offsets(offsets)[0]["value"] == (
+        some_permutation.take_offsets(offsets)[0]["value"] * 2
+    )
+    # The restored permutation keeps enforcing the map / format constraint
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        restored.with_format("arrow")
+    explicit = pickle.loads(pickle.dumps(some_permutation.with_format("arrow")))
+    with pytest.raises(ValueError, match="map cannot be combined"):
+        explicit.map(fn, batched=batched)

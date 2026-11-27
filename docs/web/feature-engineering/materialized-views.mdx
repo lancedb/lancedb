@@ -176,6 +176,30 @@ definition is read with `await view.definition()`.
 Creation, refresh and drop also have async, job-returning SDK methods; see
 [Materialized view](/management/materialized-view#manage).
 
+## Add derived values to a view {#schema-changes}
+
+A materialized view's output schema belongs to its defining `SELECT`. Do not
+use `view.table.add_columns(...)` to attach another computed or Function column
+to that output. In particular, adding a Function binding is rejected: the
+column would not be produced by the next view refresh.
+
+Choose where the calculation belongs:
+
+- Include the expression or Function call in the view's `SELECT`, as in the
+    [caption example](#functions). To change an existing definition, create a
+    replacement view under a new name, check its results, indexes and grants,
+    and move readers to it before dropping the old view.
+- Add a Function column to the ordinary source table, refresh it, then select
+    that stored column in a view. This lets you manage column refresh separately
+    from view refresh.
+- Create an ordinary table from a query when you need independently editable
+    outputs. That table is a snapshot; it does not inherit the view's refresh
+    relationship to the source.
+
+Opening the underlying table gives access to reads and indexes; it does not
+make independent schema changes part of the materialized-view definition.
+Changing automatic-refresh settings also does not change that definition.
+
 ## Related guides {#next}
 
 <CardGroup cols={2}>

@@ -10,7 +10,7 @@ come from the `LanceDB.zip` asset of `lancedb/docs` release
 The product-terminology rules were added here: `EmbeddedName`,
 `RemoteExecution`, `OSSProduct`, `InternalNames`
 (warnings) and `LegacyCloud` (suggestion). They enforce the names in the
-docs repository's `STYLE.md#names`. Run every rule's tests from
+[style guide](../../docs/STYLE.md#names). Run every rule's tests from
 `.github/vale` with `vale test --coverage styles`.
 
 Keeping the rules here lets contributors and CI run Vale without access to the

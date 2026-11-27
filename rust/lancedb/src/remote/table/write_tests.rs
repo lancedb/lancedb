@@ -267,17 +267,44 @@ async fn multipart_http_faults_preserve_committed_blob_payloads() {
 
 #[tokio::test]
 async fn multipart_retries_sixth_part_after_reused_connection_closes() {
+    use crate::table::write_progress::{ProgressCallback, WriteProgress, WriteProgressTracker};
     use datafusion_execution::TaskContext;
     use datafusion_physical_plan::ExecutionPlan;
     use futures::TryStreamExt;
 
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let observed = progress.clone();
+    let callback: ProgressCallback = Arc::new(Mutex::new(move |p: &WriteProgress| {
+        observed
+            .lock()
+            .unwrap()
+            .push((p.output_rows(), p.output_bytes()));
+    }));
+    let tracker = Arc::new(WriteProgressTracker::new(callback, Some(6)));
+    tracker.use_acknowledged_parts();
+    let during_request = progress.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut attempts = Vec::new();
+        let mut acknowledged_bytes = 0;
         let (mut socket, _) = listener.accept().await.unwrap();
         for n in 0..6 {
             let (path, body) = read_request(&mut socket).await;
+            let rows = StreamReader::try_new(body.as_slice(), None)
+                .unwrap()
+                .map(|batch| batch.unwrap().num_rows())
+                .sum::<usize>();
+            assert_eq!(rows, 1, "one scanned batch must split into six parts");
+            let reported = *during_request.lock().unwrap().last().unwrap();
+            assert_eq!(
+                reported,
+                (n, acknowledged_bytes),
+                "progress must exclude the unacknowledged part"
+            );
+            if n < 5 {
+                acknowledged_bytes += body.len();
+            }
             attempts.push((path, body));
             if n == 5 {
                 break;
@@ -291,9 +318,17 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
         // The sixth part was staged, but the peer closes before response headers.
         drop(socket);
         let (mut socket, _) = listener.accept().await.unwrap();
-        attempts.push(read_request(&mut socket).await);
+        let (path, body) = read_request(&mut socket).await;
+        let reported = *during_request.lock().unwrap().last().unwrap();
+        assert_eq!(
+            reported,
+            (5, acknowledged_bytes),
+            "retry must not report the lost acknowledgement"
+        );
+        acknowledged_bytes += body.len();
+        attempts.push((path, body));
         respond(&mut socket, 200, "{}").await;
-        attempts
+        (attempts, acknowledged_bytes)
     });
     let client = RestfulLanceDbClient::try_new(
         &crate::remote::client::parse_db_url("db://test").unwrap(),
@@ -316,7 +351,10 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
     .unwrap();
     let input = arrow_array::record_batch!(("id", Int32, [1, 2, 3, 4, 5, 6])).unwrap();
     let plan = Arc::new(
-        crate::table::datafusion::scannable_exec::ScannableExec::new(Box::new(input), None),
+        crate::table::datafusion::scannable_exec::ScannableExec::new(
+            Box::new(input),
+            Some(tracker.clone()),
+        ),
     );
     let exec = super::insert::RemoteWriteExec::new_multipart(
         "test".into(),
@@ -325,7 +363,7 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
         plan,
         false,
         "upload-1".into(),
-        None,
+        Some(tracker),
         None,
         Some(1),
         None,
@@ -335,7 +373,15 @@ async fn multipart_retries_sixth_part_after_reused_connection_closes() {
         .try_collect::<Vec<_>>()
         .await
         .unwrap();
-    let attempts = server.await.unwrap();
+    let (attempts, acknowledged_bytes) = server.await.unwrap();
+    let progress = progress.lock().unwrap();
+    assert_eq!(*progress.first().unwrap(), (0, 0));
+    assert_eq!(*progress.last().unwrap(), (6, acknowledged_bytes));
+    assert!(
+        progress
+            .windows(2)
+            .all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1)
+    );
     assert_eq!(attempts.len(), 7);
     assert_eq!(
         attempts[5], attempts[6],
@@ -424,7 +470,12 @@ async fn multipart_rejections_preserve_progress_and_cleanup_boundaries() {
             let progress = progress.lock().unwrap();
             let last = progress.last().unwrap();
             assert!(last.2);
-            assert_eq!(last.0, 2);
+            assert_eq!(
+                progress.first().unwrap().0,
+                0,
+                "scan is not an acknowledgement"
+            );
+            assert_eq!(last.0, if stage_status == 200 { 2 } else { 0 });
             if stage_status != 200 {
                 assert!(
                     progress.iter().all(|p| p.1 == 0),

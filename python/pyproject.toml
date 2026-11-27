@@ -12,17 +12,17 @@ dependencies = [
     "tqdm>=4.27.0",
     "lance-namespace>=0.13.0"
 ]
-description = "lancedb"
+description = "Embedded database for vector, full-text and hybrid search on Lance tables"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = [
-    "data-format",
-    "data-science",
-    "machine-learning",
-    "arrow",
-    "data-analytics",
+    "lance",
+    "vector-search",
+    "full-text-search",
+    "dataset",
+    "versioning",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -33,7 +33,6 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -46,7 +45,7 @@ repository = "https://github.com/lancedb/lancedb"
 [project.optional-dependencies]
 pylance = [
     # Keep the minimum in the bundled Lance major and compatible with tests below.
-    "pylance>=15.0.0b3",
+    "pylance>=16.0.0b2",
 ]
 # A library only needs the OpenTelemetry API; the application supplies and
 # configures the SDK (the actual exporter/reader). See
@@ -56,6 +55,7 @@ tests = [
     "aiohttp>=3.9.0",
     "boto3>=1.28.57",
     "pandas>=1.4",
+    "pillow>=13.0.0",
     "pytest>=7.0",
     "pytest-mock>=3.10",
     "pytest-asyncio>=0.21",
@@ -64,7 +64,7 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow>=16",
     "pyarrow-stubs>=16.0",
-    "pylance==15.0.0b18",
+    "pylance==16.0.0b4",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",
@@ -73,18 +73,17 @@ dev = [
     "ruff>=0.3.0",
     "pre-commit>=3.5.0",
     "pyright>=1.1.350",
-    'typing-extensions>=4.0.0; python_version < "3.11"',
     "maturin>=1.10",
 ]
-docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
-clip = ["torch", "pillow>=12.1.1", "open-clip-torch"]
-siglip = ["torch", "pillow>=12.1.1", "transformers>=4.41.0","sentencepiece"]
+docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material>=9.8.2", "mkdocstrings[python]>=1.0.7,<2"]
+clip = ["torch", "pillow>=13.0.0", "open-clip-torch"]
+siglip = ["torch", "pillow>=13.0.0", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
     "requests>=2.31.0",
     "openai>=1.6.1",
     "sentence-transformers>=2.2.0",
     "torch>=2.0.0",
-    "pillow>=12.1.1",
+    "pillow>=13.0.0",
     "open-clip-torch>=2.20.0",
     "cohere>=4.0",
     "colpali-engine>=0.3.10",

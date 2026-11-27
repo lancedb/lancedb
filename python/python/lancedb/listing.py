@@ -6,7 +6,19 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Callable, Generic, Iterator, Optional, TypeVar
+from collections import deque
+from itertools import islice
+from operator import index
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Generic,
+    Iterator,
+    Optional,
+    TypeVar,
+    overload,
+)
 
 from .background_loop import LOOP
 
@@ -59,29 +71,85 @@ class Listing(Iterator[T], Generic[T]):
             print(name)
 
     Use ``list(connection.list_views())`` to collect all results.
+
+    Indexes and slices refer to the remaining items and do not consume them.
+    A bounded forward slice, such as ``listing[:5]``, fetches only enough pages
+    to reach its stop. ``len(listing)``, negative indexes, and open-ended or
+    reverse slices fetch and cache all remaining results. Iteration then drains
+    that cache. These operations may perform requests and raise request errors.
     """
 
     def __init__(self, inner: AsyncListing[T]):
         self._inner = inner
+        self._buffer: deque[T] = deque()
 
     def __iter__(self) -> Listing[T]:
         return self
 
     def __next__(self) -> T:
+        if self._buffer:
+            return self._buffer.popleft()
         try:
             return LOOP.run(self._inner.__anext__())
         except StopAsyncIteration:
             raise StopIteration from None
 
+    def _fill(self, count: Optional[int]) -> None:
+        while count is None or len(self._buffer) < count:
+            try:
+                item = LOOP.run(self._inner.__anext__())
+            except StopAsyncIteration:
+                return
+            self._buffer.append(item)
+
+    def __len__(self) -> int:
+        """Fetch and cache every remaining item, returning the remaining count."""
+        self._fill(None)
+        return len(self._buffer)
+
+    def __bool__(self) -> bool:
+        self._fill(1)
+        return bool(self._buffer)
+
+    @overload
+    def __getitem__(self, key: int) -> T: ...
+
+    @overload
+    def __getitem__(self, key: slice) -> list[T]: ...
+
+    def __getitem__(self, key: int | slice) -> T | list[T]:
+        """Read remaining items without consuming them; bounded slices stay lazy."""
+        if isinstance(key, slice):
+            start = 0 if key.start is None else index(key.start)
+            stop = None if key.stop is None else index(key.stop)
+            step = 1 if key.step is None else index(key.step)
+            if step == 0:
+                raise ValueError("slice step cannot be zero")
+            if start >= 0 and stop is not None and stop >= 0 and step > 0:
+                if start >= stop:
+                    return []
+                self._fill(stop)
+                start, stop, step = key.indices(len(self._buffer))
+                return list(
+                    islice(self._buffer, start, stop, min(step, len(self._buffer) + 1))
+                )
+            self._fill(None)
+            return list(self._buffer)[key]
+        position = index(key)
+        self._fill(None if position < 0 else position + 1)
+        return self._buffer[position]
+
     def num_page_results(self) -> int:
         """Return the number of cached items available without another request."""
-        return self._inner.num_page_results()
+        return len(self._buffer) + self._inner.num_page_results()
 
     def page_token(self) -> Optional[str]:
         """Return the next request's token.
 
         See [AsyncListing.page_token][lancedb.listing.AsyncListing.page_token]
         for initial, cached, final-page, and error behavior.
+        Indexing, slicing, and counting can also advance this token; drain all
+        ``num_page_results()`` cached items before resuming from it.
         """
         return self._inner.page_token()
 

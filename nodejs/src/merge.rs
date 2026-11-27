@@ -65,12 +65,17 @@ impl NativeMergeInsertBuilder {
     }
 
     #[napi(catch_unwind)]
-    pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
+    pub async fn execute(&self, buf: Buffer, retries: Option<u32>) -> napi::Result<MergeResult> {
         let data = ipc_file_to_batches(buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
         })?;
 
-        let this = self.clone();
+        let mut this = self.clone();
+        if let Some(retries) = retries {
+            let retries = u8::try_from(retries)
+                .map_err(|_| napi::Error::from_reason("retries must be between 0 and 255"))?;
+            this.inner.retries(retries);
+        }
 
         let res = this.inner.execute(data).await.map_err(|e| {
             napi::Error::from_reason(format!(

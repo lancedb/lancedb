@@ -18,7 +18,7 @@ pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
     computed: Vec<(String, String)>,
-    function: Option<(FunctionApplication, Option<String>)>,
+    functions: Vec<(FunctionApplication, Option<String>)>,
     read_columns: Option<Vec<String>>,
     options: Option<ComputedColumnOptions>,
 }
@@ -29,7 +29,7 @@ impl std::fmt::Debug for AddColumnsBuilder {
             .field("parent", &self.parent)
             .field("has_transform", &self.transform.is_some())
             .field("computed", &self.computed)
-            .field("has_function", &self.function.is_some())
+            .field("function_count", &self.functions.len())
             .field("read_columns", &self.read_columns)
             .finish()
     }
@@ -41,7 +41,7 @@ impl AddColumnsBuilder {
             parent,
             transform: None,
             computed: Vec::new(),
-            function: None,
+            functions: Vec::new(),
             read_columns: None,
             options: None,
         }
@@ -131,7 +131,7 @@ impl AddColumnsBuilder {
     /// # }
     /// ```
     pub fn function(mut self, application: FunctionApplication) -> Self {
-        self.function = Some((application, None));
+        self.functions = vec![(application, None)];
         self
     }
 
@@ -156,7 +156,19 @@ impl AddColumnsBuilder {
         name: impl Into<String>,
         application: FunctionApplication,
     ) -> Self {
-        self.function = Some((application, Some(name.into())));
+        self.functions = vec![(application, Some(name.into()))];
+        self
+    }
+
+    /// Declare several registered Function bindings in one Enterprise schema commit.
+    /// Pass a destination name for a scalar or whole struct result. Use `None`
+    /// to expand a named struct into its ordered fields. Inputs may reference
+    /// other outputs in this declaration, regardless of their order.
+    pub fn function_bindings(
+        mut self,
+        bindings: impl IntoIterator<Item = (FunctionApplication, Option<String>)>,
+    ) -> Self {
+        self.functions = bindings.into_iter().collect();
         self
     }
 
@@ -180,9 +192,13 @@ impl AddColumnsBuilder {
     /// # async fn declare(table: &Table) -> lancedb::Result<()> {
     /// table.add_columns().computed("doubled", "x * 2")
     ///     .computed_options(ComputedColumnOptions {
+    ///     gpu_class: Default::default(),
+    ///     gpu_count: Default::default(),
     ///         auto_refresh_enabled: true,
     ///         auto_refresh_interval_seconds: Some(300),
-    ///         auto_refresh_resource_budget: None,
+    ///         total_cpu_millis: None,
+    ///         total_memory_bytes: None,
+    ///         total_gpu_count: None,
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -198,29 +214,28 @@ impl AddColumnsBuilder {
             parent,
             transform,
             computed,
-            function,
+            functions,
             read_columns,
             options,
         } = self;
-        if let Some(options) = options {
+        if let Some(options) = &options {
             options.validate()?;
-            if computed.is_empty() && function.is_none() {
+            if computed.is_empty() && functions.is_empty() {
                 return Err(Error::InvalidInput {
                     message: "automatic refresh options require computed or Function columns"
                         .into(),
                 });
             }
-            if options.auto_refresh_resource_budget.is_some() && function.is_none() {
+            if options.has_resource_defaults() && functions.is_empty() {
                 return Err(Error::InvalidInput {
-                    message:
-                        "auto_refresh_resource_budget requires a registered Function declaration"
-                            .into(),
+                    message: "total_* resources require a registered Function declaration".into(),
                 });
             }
         }
         let options = options.unwrap_or_default();
 
-        let declaration_count = usize::from(!computed.is_empty()) + usize::from(function.is_some());
+        let declaration_count =
+            usize::from(!computed.is_empty()) + usize::from(!functions.is_empty());
         if transform.is_some() && declaration_count != 0 || declaration_count > 1 {
             return Err(Error::InvalidInput {
                 message: "add_columns cannot mix transforms, SQL computed columns, and a Function application; they cannot be added atomically in one call"
@@ -228,11 +243,11 @@ impl AddColumnsBuilder {
             });
         }
 
-        match (transform, computed.is_empty(), function) {
-            (None, true, None) => Err(Error::InvalidInput {
+        match (transform, computed.is_empty(), functions.as_slice()) {
+            (None, true, []) => Err(Error::InvalidInput {
                 message: "add_columns requires a transform or a computed column".into(),
             }),
-            (Some(transform), true, None) => {
+            (Some(transform), true, []) => {
                 if read_columns.is_some() && !matches!(transform, NewColumnTransform::BatchUDF(_)) {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -242,7 +257,7 @@ impl AddColumnsBuilder {
                 }
                 parent.add_columns(transform, read_columns).await
             }
-            (None, false, None) => {
+            (None, false, []) => {
                 if read_columns.is_some() {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -252,16 +267,21 @@ impl AddColumnsBuilder {
                 }
                 parent.add_computed_columns(&computed, options).await
             }
-            (None, true, Some((application, output_name))) => {
+            (None, true, bindings) => {
                 if read_columns.is_some() {
                     return Err(Error::InvalidInput {
                         message: "read_columns does not apply to a Function application; its inputs are already bound"
                             .into(),
                     });
                 }
-                parent
-                    .add_function_columns(&application, output_name.as_deref(), options)
-                    .await
+                match bindings {
+                    [(application, name)] => {
+                        parent
+                            .add_function_columns(application, name.as_deref(), options)
+                            .await
+                    }
+                    _ => parent.add_function_bindings(bindings, options).await,
+                }
             }
             _ => unreachable!("mixed add_columns modes were rejected above"),
         }
@@ -297,14 +317,18 @@ mod tests {
         let table = table_with_two_columns("options").await;
         let version = table.version().await.unwrap();
         let options = ComputedColumnOptions {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
             auto_refresh_enabled: false,
             auto_refresh_interval_seconds: Some(300),
-            auto_refresh_resource_budget: None,
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
         };
         let result = table
             .add_columns()
             .computed("doubled", "x * 2")
-            .computed_options(options)
+            .computed_options(options.clone())
             .execute()
             .await
             .unwrap();
@@ -320,7 +344,7 @@ mod tests {
         for interval in [0, u64::MAX] {
             let invalid = ComputedColumnOptions {
                 auto_refresh_interval_seconds: Some(interval),
-                ..options
+                ..options.clone()
             };
             assert!(
                 table
@@ -339,7 +363,7 @@ mod tests {
                     "once".into(),
                     "x".into()
                 )]))
-                .computed_options(options)
+                .computed_options(options.clone())
                 .execute()
                 .await
                 .is_err()
@@ -391,11 +415,13 @@ mod tests {
             .add_columns()
             .computed("doubled", "x * 2")
             .computed_options(ComputedColumnOptions {
+                gpu_class: Default::default(),
+                gpu_count: Default::default(),
                 auto_refresh_enabled: true,
                 auto_refresh_interval_seconds: None,
-                auto_refresh_resource_budget: Some(
-                    crate::table::FunctionWorkerResourceBudget::new(1_000, 1_024),
-                ),
+                total_cpu_millis: Some(1000),
+                total_memory_bytes: Some(1024),
+                total_gpu_count: Some(0),
             })
             .execute()
             .await

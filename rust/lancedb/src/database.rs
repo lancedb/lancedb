@@ -163,6 +163,8 @@ impl CreateTableRequest {
 /// sharing the same data, deletion, and index files.
 #[derive(Clone, Debug)]
 pub struct CloneTableRequest {
+    /// Preserve an existing target rather than returning a duplicate-name error.
+    pub exist_ok: bool,
     /// The name of the target table to create
     pub target_table_name: String,
     /// The namespace path for the target table. Empty list represents root namespace.
@@ -184,6 +186,7 @@ pub struct CloneTableRequest {
 impl CloneTableRequest {
     pub fn new(target_table_name: String, source_uri: String) -> Self {
         Self {
+            exist_ok: false,
             target_table_name,
             target_namespace_path: vec![],
             source_uri,
@@ -209,6 +212,8 @@ pub struct ExecuteQueryRequest {
     /// also binds `$<name>`. See
     /// [`ExecuteQueryAsyncBuilder::parameters`](crate::connection::ExecuteQueryAsyncBuilder::parameters).
     pub parameters: Option<RecordBatch>,
+    /// Execution limits and cancellation behavior for this statement.
+    pub options: crate::sql::QueryOptions,
 }
 
 impl ExecuteQueryRequest {
@@ -217,6 +222,7 @@ impl ExecuteQueryRequest {
             query: query.into(),
             default_namespace_path: vec!["public".to_string()],
             parameters: None,
+            options: Default::default(),
         }
     }
 }
@@ -235,6 +241,45 @@ pub enum ReadConsistency {
     Strong,
 }
 
+/// Registry lifecycle states accepted when filtering jobs.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobListState {
+    /// A job that has not reached a terminal state.
+    InProgress,
+    /// A job that completed successfully.
+    Succeeded,
+    /// A job that failed.
+    Failed,
+    /// A job that was canceled.
+    Canceled,
+    /// A job that exceeded its timeout.
+    TimedOut,
+}
+
+/// Server-side filters applied before job pagination.
+///
+/// Continuation tokens must be resumed with the same filters. Creation times
+/// are Unix timestamps in milliseconds; the lower bound is inclusive and the
+/// upper bound is exclusive.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct JobListFilter {
+    /// Table name within `namespace_path`, including all its branches; absent means all tables.
+    pub table: Option<String>,
+    /// Namespace of `table`; requires a table name.
+    pub namespace_path: Vec<String>,
+    /// Registry state, such as `in_progress`, `succeeded`, or `failed`.
+    /// These are server states, rather than the labels in [`JobInfo::state`].
+    pub state: Option<JobListState>,
+    /// Include jobs of any of these types; empty means all types.
+    pub job_types: Vec<String>,
+    /// Inclusive creation-time lower bound.
+    pub created_at_gte_millis: Option<i64>,
+    /// Exclusive creation-time upper bound.
+    pub created_at_lt_millis: Option<i64>,
+}
+
 /// A row from [`Database::list_jobs`]: one server-side job (index build,
 /// compaction, column refresh, ...).
 #[derive(Debug, Clone)]
@@ -249,6 +294,20 @@ pub struct JobInfo {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub created_at_millis: i64,
+    /// Terminal timestamp, in milliseconds since the epoch; unknown on older servers.
+    pub completed_at_millis: Option<i64>,
+    /// Creation-to-completion wall time, including queueing and pauses.
+    /// Absent for unfinished jobs or when the server cannot establish the duration.
+    pub duration_millis: Option<i64>,
+    /// Columns affected by this job. Empty when unavailable or not column-scoped.
+    pub columns: Vec<String>,
+    /// Pinned Function catalog name, with namespace segments joined by `$`.
+    /// Present for computed column refreshes when supplied by the server.
+    pub function_name: Option<String>,
+    /// Pinned Function version, when supplied by the server.
+    pub function_version: Option<String>,
+    /// Durable failure summary; absent when unavailable or the job did not fail.
+    pub failure: Option<crate::error::JobFailure>,
     /// Latest progress sample for a job type that reports structured progress.
     pub progress: Option<serde_json::Value>,
     /// Coarse server-derived phase, including phases introduced by newer
@@ -284,6 +343,20 @@ impl JobInfo {
 #[derive(Debug, Clone)]
 pub struct JobDescription {
     pub job_id: String,
+    /// Exact selected attempt when job_id is a durable operation handle.
+    pub attempt_job_id: Option<String>,
+    /// Root identity shared by the explicit retry lineage, when reported.
+    pub operation_id: Option<String>,
+    /// One-based attempt ordinal, when reported.
+    pub attempt: Option<u32>,
+    /// Immediate predecessor attempt, when reported.
+    pub retry_of: Option<String>,
+    /// Detailed state before folding it into legacy client labels.
+    pub lifecycle_state: Option<crate::job::JobState>,
+    /// Pinned source snapshot, when reported.
+    pub source_table_version: Option<u64>,
+    /// Most recent execution's fencing token, when reported.
+    pub execution_epoch: Option<i64>,
     pub job_type: String,
     /// Lifecycle state: "running", "finished", "failed", or "cancelled".
     pub state: String,
@@ -342,6 +415,28 @@ impl JobDescription {
             for (key, value) in progress {
                 snapshot.insert(key.clone(), value.clone());
             }
+        }
+        if let Some(operation_id) = &self.operation_id {
+            snapshot.insert("operation_id".to_string(), operation_id.clone().into());
+        }
+        snapshot.insert("job_id".to_string(), self.job_id.clone().into());
+        if let Some(attempt_job_id) = &self.attempt_job_id {
+            snapshot.insert("attempt_job_id".to_string(), attempt_job_id.clone().into());
+        }
+        if let Some(attempt) = self.attempt {
+            snapshot.insert("attempt".to_string(), attempt.into());
+        }
+        if let Some(retry_of) = &self.retry_of {
+            snapshot.insert("retry_of".to_string(), retry_of.clone().into());
+        }
+        if let Some(state) = &self.lifecycle_state {
+            snapshot.insert("lifecycle_state".to_string(), state.as_str().into());
+        }
+        if let Some(version) = self.source_table_version {
+            snapshot.insert("source_table_version".to_string(), version.into());
+        }
+        if let Some(epoch) = self.execution_epoch {
+            snapshot.insert("execution_epoch".to_string(), epoch.into());
         }
         serde_json::Value::Object(snapshot)
     }
@@ -693,6 +788,7 @@ pub trait Database:
         _name: &str,
         _query: &str,
         _namespace_path: &[String],
+        _exist_ok: bool,
     ) -> Result<ViewDescription> {
         view_ops_not_supported()
     }
@@ -776,6 +872,14 @@ pub trait Database:
     /// Fetch one page of server-side jobs across the database's tables.
     async fn list_jobs(&self, _options: ListingOptions) -> Result<ListingPage<JobInfo>> {
         job_op_not_supported("list_jobs")
+    }
+    /// Fetch one page of jobs matching server-side filters.
+    async fn list_jobs_filtered(
+        &self,
+        _filter: JobListFilter,
+        _options: ListingOptions,
+    ) -> Result<ListingPage<JobInfo>> {
+        job_op_not_supported("list_jobs_filtered")
     }
     /// Request cancellation of a job by id. Returns true if the server
     /// accepted the cancellation, false if no such job exists. Cancelling an

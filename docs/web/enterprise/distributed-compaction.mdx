@@ -76,6 +76,14 @@ rest of the job's tasks commit without waiting on it. See
 [Advanced Conflict Resolution](/enterprise/advanced-conflict-resolution)
 for when compaction defers a remap at all.
 
+Automatic compaction can use this distributed path when table state and index
+safety permit it. Explicit CLI, SQL, and SDK compaction jobs use one worker with
+atomic execution and inline index remapping. Their tuning resolves from the
+invocation, then table settings, then deployment/built-in defaults. Automatic
+jobs use table settings before those defaults. See
+[manual compaction](/maintenance/compaction#enterprise-manual-compaction) for
+submission, the four tuning fields, and job completion checks.
+
 ## Compaction interfaces {#compaction-interfaces}
 
 - [Compaction](/maintenance/compaction) for triggering and configuring a compaction.

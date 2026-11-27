@@ -80,7 +80,7 @@ endpoint, returning results as Arrow record batches:
    does not expose a SQL execution method, or from any tool with its own
    Flight SQL integration. A LanceDB-specific SDK is not required to submit
    SQL.
-3. **The LanceDB CLI.** Open an interactive SQL shell, or run a
+3. **The [LanceDB CLI](/tools/cli).** Open an interactive SQL shell, or run a
    statement or file, directly from the command line with no code at all.
 
 The [SQL reference](/sql#connecting) shows a query from Python. See
@@ -246,6 +246,53 @@ An Enterprise SQL query handle lets you inspect query execution and request
 cancellation. Background operations such as index builds return a
 [job](/basics/jobs) handle instead. Use the API for the returned handle to
 check status and retrieve results.
+
+### Timeouts and cancellation {#query-timeouts}
+
+Rust and Python SQL executions support per-query limits. Python's synchronous
+and asynchronous connections accept the same keyword arguments:
+
+```python
+from datetime import timedelta
+
+query = db.execute_query_async(
+    "SELECT frame_id, caption FROM frames",
+    timeout=timedelta(seconds=30),
+    read_timeout=timedelta(seconds=5),
+    cancel_on_drop=True,
+)
+# Cancel explicitly if these results are no longer needed.
+query.cancel()
+```
+
+`timeout` starts at submission and covers result consumption, including time
+before opening a reader. `read_timeout` overrides the connection's limit for each
+server read. Expiry stops reads and attempts to cancel Flight execution. The
+execution deadline is also sent to the server on result-streaming RPCs.
+
+By default, deferred queries can be detached. `cancel_on_drop=True` attempts
+cancellation when an unread handle or its reader is dropped; it requires the
+submitting runtime to remain alive. Directly streamed queries always stop on
+drop. With an asynchronous Python connection, await submission and
+`query.cancel()`.
+
+Rust exposes the same controls on the submission builder:
+
+```rust
+use std::time::Duration;
+
+let query = db.execute_query_async("SELECT frame_id, caption FROM frames")
+    .timeout(Duration::from_secs(30))
+    .read_timeout(Duration::from_secs(5))
+    .cancel_on_drop(true)
+    .execute()
+    .await?;
+query.cancel().await?;
+```
+
+These options cancel Flight execution. A durable server-side job can outlive its
+Flight waiter; cancel it explicitly with `db.cancel_job(query.job_id)` in Python,
+or `Connection::cancel_job` in Rust.
 
 ## Query plans {#query-plans}
 
