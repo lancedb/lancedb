@@ -793,56 +793,31 @@ def _counting_child_queries():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0, 2])
 async def test_async_hybrid_query_empty_page_does_not_fetch_candidates(
-    tmpdir_factory,
+    tmpdir_factory, offset
 ):
     # An empty page must not get the #4758 candidate floor, and must not
-    # fetch or score anything at all: limit(0) is handled before either
-    # sub-query runs, and the result is simply empty.
+    # fetch or score anything at all: limit(0) is rejected before either
+    # sub-query runs, whatever the offset. With offset(2) the sub-queries
+    # would otherwise carry k=2 and fetch two rows per side for nothing.
     db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
     table = await db.create_table("t", _candidate_rows())
     await table.create_index("text", config=FTS(with_position=False))
 
     reranker = _RecordingReranker()
     executions, patchers = _counting_child_queries()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .offset(offset)
+        .limit(0)
+    )
     with patchers[0], patchers[1]:
-        result = await (
-            table.query()
-            .nearest_to([0.5, 0.5])
-            .nearest_to_text("match")
-            .rerank(reranker)
-            .limit(0)
-            .to_arrow()
-        )
-    assert len(result) == 0
-    assert reranker.calls == []
-    assert executions == []
-
-
-@pytest.mark.asyncio
-async def test_async_hybrid_query_empty_page_with_offset_fetches_nothing(
-    tmpdir_factory,
-):
-    # offset(2).limit(0) is still an empty page. The sub-queries would carry
-    # k=2, so without an explicit zero-limit check they fetch two rows per
-    # side and call the reranker just to return nothing.
-    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
-    table = await db.create_table("t", _candidate_rows())
-    await table.create_index("text", config=FTS(with_position=False))
-
-    reranker = _RecordingReranker()
-    executions, patchers = _counting_child_queries()
-    with patchers[0], patchers[1]:
-        result = await (
-            table.query()
-            .nearest_to([0.5, 0.5])
-            .nearest_to_text("match")
-            .rerank(reranker)
-            .offset(2)
-            .limit(0)
-            .to_arrow()
-        )
-    assert len(result) == 0
+        with pytest.raises(ValueError, match="k must be positive"):
+            await query.to_arrow()
     assert reranker.calls == []
     assert executions == []
 

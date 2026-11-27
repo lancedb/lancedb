@@ -4531,23 +4531,6 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
-def _empty_hybrid_leg(schema: pa.Schema, score_column: str) -> pa.Table:
-    """Build an empty hybrid sub-query result from the sub-query's schema.
-
-    The result carries the columns an executed sub-query would return, so
-    the combiner can build an empty result from it: the projection, plus
-    `_rowid` and the leg's score column (`_distance` or `_score`), which
-    the output schema does not always list.
-    """
-    fields = list(schema)
-    names = schema.names
-    if "_rowid" not in names:
-        fields.append(pa.field("_rowid", pa.uint64()))
-    if score_column not in names:
-        fields.append(pa.field(score_column, pa.float32()))
-    return pa.schema(fields).empty_table()
-
-
 class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     """
     A query builder that performs hybrid vector and full text search.
@@ -4691,6 +4674,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
         fts_query, vec_query, limit, offset = await self._create_child_queries()
+        if limit == 0:
+            # An empty page needs no candidates. Reject it before anything
+            # runs, whatever the offset: building an empty result would need
+            # the output schema, and on a remote table output_schema() itself
+            # sends the vector and full-text queries.
+            raise ValueError(
+                "k must be positive: a hybrid query needs limit(1) or more"
+            )
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
@@ -4710,28 +4701,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths
 
-        if limit == 0:
-            # An empty page needs no candidates: retrieve and score nothing,
-            # whatever the offset. Build empty legs from the sub-query
-            # schemas instead, so the combiner returns an empty result
-            # without calling the reranker. The sub-queries can carry k=0,
-            # which output_schema() rejects, so raise their limits first;
-            # they are never executed.
-            vec_query.limit(1)
-            fts_query.limit(1)
-            vector_results = _empty_hybrid_leg(
-                await vec_query.output_schema(), "_distance"
+        fts_results, vector_results = await asyncio.gather(
+            fts_query.to_arrow(timeout=timeout),
+            vec_query.to_arrow(timeout=timeout),
+        )
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
             )
-            fts_results = _empty_hybrid_leg(await fts_query.output_schema(), "_score")
-        else:
-            fts_results, vector_results = await asyncio.gather(
-                fts_query.to_arrow(timeout=timeout),
-                vec_query.to_arrow(timeout=timeout),
-            )
-            if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
-                vector_results, fts_results = self._pk_fusion.stamp(
-                    vector_results, fts_results
-                )
 
         result = LanceHybridQueryBuilder._combine_hybrid_results(
             fts_results=fts_results,

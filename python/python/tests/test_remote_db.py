@@ -3075,6 +3075,84 @@ def test_query_sync_hybrid():
         (table.search("puppy", query_type="hybrid").limit(42).to_list())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0, 2])
+async def test_async_hybrid_zero_limit_sends_no_query(offset):
+    # An explicit limit(0) is rejected before schema discovery or retrieval,
+    # so the remote client never sends a /query/ request for an empty page.
+    query_ks = []
+
+    def handler(request):
+        if request.path.endswith("/describe/"):
+            data = json.dumps(
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "text",
+                                "type": {"type": "string"},
+                                "nullable": True,
+                            },
+                            {
+                                "name": "vector",
+                                "type": {
+                                    "type": "fixed_size_list",
+                                    "length": 2,
+                                    "fields": [
+                                        {
+                                            "name": "item",
+                                            "type": {"type": "float"},
+                                            "nullable": True,
+                                        }
+                                    ],
+                                },
+                                "nullable": True,
+                            },
+                        ]
+                    },
+                }
+            ).encode()
+            content_type = "application/json"
+        elif request.path.endswith("/query/"):
+            length = int(request.headers["Content-Length"])
+            body = json.loads(request.rfile.read(length))
+            query_ks.append(body["k"])
+            score = "_score" if "full_text_query" in body else "_distance"
+            table = pa.table(
+                {
+                    "_rowid": pa.array([1], type=pa.uint64()),
+                    score: pa.array([1.0], type=pa.float32()),
+                }
+            )
+            sink = pa.BufferOutputStream()
+            with pa.ipc.new_file(sink, table.schema) as writer:
+                writer.write_table(table)
+            data = sink.getvalue().to_pybytes()
+            content_type = "application/vnd.apache.arrow.file"
+        else:
+            request.send_response(404)
+            request.end_headers()
+            return
+        request.send_response(200)
+        request.send_header("Content-Type", content_type)
+        request.end_headers()
+        request.wfile.write(data)
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = (
+            table.query()
+            .nearest_to([0.5, 0.5])
+            .nearest_to_text("match")
+            .offset(offset)
+            .limit(0)
+        )
+        with pytest.raises(ValueError, match="k must be positive"):
+            await query.to_arrow()
+    assert query_ks == []
+
+
 def test_create_client():
     mandatory_args = {
         "uri": "db://dev",
