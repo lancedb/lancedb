@@ -2955,12 +2955,28 @@ def test_bad_vectors_preserve_declared_nullable_parent(
         {"id": 2, "vector": [np.nan, 6.0], "embedding_history": [12.0, 13.0]},
         {"id": 3, "vector": [7.0, 8.0], "embedding_history": [np.nan, 15.0]},
     ]
-    data = pa.Table.from_pylist(rows, schema=schema) if input_type == "arrow" else rows
+    input_schema = schema
+    if operation == "overwrite":
+        # The existing schema establishes nullability, not the replacement width.
+        input_schema = schema.set(1, pa.field("vector", pa.list_(pa.float32(), 3)))
+        rows = [{**row, "vector": [*row["vector"], 7.0]} for row in rows]
+
+    data = (
+        pa.RecordBatch.from_pylist(rows, schema=input_schema)
+        if input_type == "arrow"
+        else rows
+    )
     options = {"on_bad_vectors": policy, "fill_value": -1.0}
 
     initial = {"id": -1, "vector": [9.0, 9.0], "embedding_history": None}
     if operation == "create":
-        mem_db.create_table("test", data=data, schema=schema, **options)
+        # An Arrow batch already declares its field types and nullability.
+        mem_db.create_table(
+            "test",
+            data=data,
+            schema=schema if input_type == "rows" else None,
+            **options,
+        )
     else:
         table = mem_db.create_table("test", data=[initial], schema=schema)
         table.add(data, mode=operation, **options)
@@ -2970,13 +2986,13 @@ def test_bad_vectors_preserve_declared_nullable_parent(
     if policy == "fill":
         expected.extend(
             [
-                {**rows[2], "vector": [-1.0, 6.0]},
+                {**rows[2], "vector": [-1.0, *rows[2]["vector"][1:]]},
                 {**rows[3], "embedding_history": [-1.0, 15.0]},
             ]
         )
 
     reopened = mem_db.open_table("test")
-    assert reopened.schema == schema
+    assert reopened.schema == input_schema
     assert reopened.to_arrow().to_pylist() == expected
 
 
@@ -2985,9 +3001,7 @@ def test_bad_vectors_inferred_reader_uses_surviving_rows(
     mem_db: DBConnection, bad_prefix
 ):
     first = pa.record_batch({"id": [0], "text_embedding": [bad_prefix]})
-    second = pa.record_batch(
-        {"id": [1, 2], "text_embedding": [[1.0, 2.0], [3.0, 4.0]]}
-    )
+    second = pa.record_batch({"id": [1, 2], "text_embedding": [[1.0, 2.0], [3.0, 4.0]]})
     third = pa.record_batch(
         {
             "id": [3, 4, 5],

@@ -356,27 +356,19 @@ def test_embedding_with_bad_results(tmp_path):
     assert tbl["vector"].null_count == 1
 
 
-def test_embedding_with_empty_output_vectors(tmp_path):
-    """Regression test for issue #1672.
-
-    When an embedding function returns an empty list (e.g. for empty-string
-    inputs), _append_vector_columns used to crash because PyArrow cannot cast
-    [] into a fixed-size list element.  The fix replaces wrong-length vectors
-    with None before building the Arrow array so that _handle_bad_vectors can
-    process them normally.
-    """
+@pytest.mark.parametrize("operation", ["create", "append"])
+@pytest.mark.parametrize("policy", ["error", "drop", "fill", "null"])
+def test_embedding_with_empty_output_vectors(tmp_path, operation, policy):
+    """Unusable generated embeddings must still obey the bad-vector policy."""
 
     @register("empty-vec-embedding")
     class EmptyVecEmbeddingFunction(TextEmbeddingFunction):
         def ndims(self):
-            return 128
+            return 2
 
         def generate_embeddings(self, texts: Union[List[str], np.ndarray]) -> list:
-            # Simulate a model that returns an empty list for blank inputs
-            return [
-                [] if text.strip() == "" else np.random.randn(self.ndims()).tolist()
-                for text in texts
-            ]
+            outputs = {"empty": [], "missing": None, "wrong_width": [6.0]}
+            return [outputs.get(text, [1.0, 2.0]) for text in texts]
 
     db = lancedb.connect(tmp_path)
     registry = EmbeddingFunctionRegistry.get_instance()
@@ -384,19 +376,39 @@ def test_embedding_with_empty_output_vectors(tmp_path):
 
     class Schema(LanceModel):
         text: str = model.SourceField()
-        vector: Vector(model.ndims()) = model.VectorField()
+        feature: Vector(model.ndims(), nullable=True) = model.VectorField()
 
-    table = db.create_table("test_empty_vec", schema=Schema, mode="overwrite")
+    table_name = "test_empty_vec"
+    if operation == "append":
+        table = db.create_table(table_name, schema=Schema)
 
-    # Should not crash; the row with the empty string should be dropped
-    table.add(
-        [{"text": "hello world"}, {"text": ""}, {"text": "foo"}],
-        on_bad_vectors="drop",
-    )
+    good = {"text": "good", "feature": [1.0, 2.0]}
+    texts = ["good", "empty", "missing", "wrong_width"]
+    data = [{"text": text} for text in texts]
 
-    assert len(table) == 2
-    texts = table.to_arrow()["text"].to_pylist()
-    assert "" not in texts
+    def write():
+        options = dict(on_bad_vectors=policy, fill_value=-1.0)
+        if operation == "append":
+            table.add(data, **options)
+        else:
+            config = EmbeddingFunctionConfig(
+                source_column="text", vector_column="feature", function=model
+            )
+            db.create_table(table_name, data, embedding_functions=[config], **options)
+
+    if policy == "error":
+        with pytest.raises((RuntimeError, ValueError), match="Vector column 'feature'"):
+            write()
+        if operation == "append":
+            assert db.open_table(table_name).count_rows() == 0
+        return
+
+    write()
+    expected = [good]
+    if policy != "drop":
+        replacement = [-1.0, -1.0] if policy == "fill" else None
+        expected.extend({"text": text, "feature": replacement} for text in texts[1:])
+    assert db.open_table(table_name).to_arrow().to_pylist() == expected
 
 
 def test_with_existing_vectors(tmp_path):

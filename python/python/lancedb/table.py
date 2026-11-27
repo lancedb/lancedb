@@ -689,6 +689,7 @@ def _sanitize_data(
     fill_value: float = 0.0,
     *,
     allow_subschema: bool = False,
+    overwrite_schema: Optional[pa.Schema] = None,
 ) -> pa.RecordBatchReader:
     """
     Handle input data, applying all standard transformations.
@@ -710,6 +711,10 @@ def _sanitize_data(
         If True, the input table is allowed to omit columns from the target schema.
         The target schema will be filtered to only include columns that are present
         in the input table before casting.
+    overwrite_schema : Optional[pa.Schema], default None
+        For an overwrite, use existing fixed-size vector fields as a fallback
+        for parent nullability. Infer the replacement types and dimensions from
+        the incoming data.
     metadata : Optional[dict], default None
         The embedding metadata to add to the schema.
     on_bad_vectors : Literal["error", "drop", "fill", "null"], default "error"
@@ -735,6 +740,7 @@ def _sanitize_data(
         fill_value=fill_value,
         target_schema=target_schema,
         metadata=metadata,
+        overwrite_schema=overwrite_schema,
     )
 
     if target_schema is None:
@@ -1321,6 +1327,8 @@ def sanitize_create_table(
     metadata=None,
     on_bad_vectors: OnBadVectorsType = "error",
     fill_value: float = 0.0,
+    *,
+    overwrite_schema: Optional[pa.Schema] = None,
 ):
     if inspect.isclass(schema) and issubclass(schema, LanceModel):
         # convert LanceModel to pyarrow schema
@@ -1337,6 +1345,7 @@ def sanitize_create_table(
             metadata=metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
+            overwrite_schema=overwrite_schema,
         )
         schema = data.schema
     else:
@@ -1430,26 +1439,26 @@ def _append_vector_columns(
                     col_data = func.compute_source_embeddings_with_retry(
                         batch[conf.source_column]
                     )
-                    # Replace vectors with wrong length (including empty lists
-                    # returned for inputs like empty strings) with None so that
-                    # _handle_bad_vectors can process them according to the
-                    # on_bad_vectors policy instead of crashing when PyArrow
-                    # tries to cast them into a fixed-size list array.
+                    # Represent generation failures as a non-null list of null
+                    # components. This fits a fixed-size list while letting the
+                    # bad-vector policy distinguish it from a valid null parent.
+                    field = schema.field(vector_column)
                     expected_ndims = conf.function.ndims()
+                    if pa.types.is_fixed_size_list(field.type):
+                        expected_ndims = field.type.list_size
+                    invalid_vector = [None] * expected_ndims
                     col_data = [
-                        v if v is not None and len(v) == expected_ndims else None
+                        v
+                        if v is not None and len(v) == expected_ndims
+                        else invalid_vector
                         for v in col_data
                     ]
+                    array = pa.array(col_data, type=field.type)
                     if no_vector_column:
-                        batch = batch.append_column(
-                            schema.field(vector_column),
-                            pa.array(col_data, type=schema.field(vector_column).type),
-                        )
+                        batch = batch.append_column(field, array)
                     else:
                         batch = batch.set_column(
-                            batch.column_names.index(vector_column),
-                            schema.field(vector_column),
-                            pa.array(col_data, type=schema.field(vector_column).type),
+                            batch.column_names.index(vector_column), field, array
                         )
             yield batch
 
@@ -6939,8 +6948,12 @@ def _handle_bad_vectors(
     fill_value: float = 0.0,
     target_schema: Optional[pa.Schema] = None,
     metadata: Optional[dict] = None,
+    *,
+    overwrite_schema: Optional[pa.Schema] = None,
 ) -> pa.RecordBatchReader:
-    vector_columns = _find_vector_columns(reader.schema, target_schema, metadata)
+    vector_columns = _find_vector_columns(
+        reader.schema, target_schema, metadata, overwrite_schema=overwrite_schema
+    )
     if not vector_columns:
         return reader
 
@@ -6988,36 +7001,55 @@ def _find_vector_columns(
     reader_schema: pa.Schema,
     target_schema: Optional[pa.Schema],
     metadata: Optional[dict],
+    *,
+    overwrite_schema: Optional[pa.Schema] = None,
 ) -> List[dict]:
+    active_metadata = _merge_metadata(
+        target_schema.metadata if target_schema is not None else None, metadata
+    )
+    embedding_function_columns = set(
+        EmbeddingFunctionRegistry.get_instance().parse_functions(active_metadata).keys()
+    )
     if target_schema is None:
+        existing_fields = (
+            {field.name: field for field in overwrite_schema}
+            if overwrite_schema is not None
+            else {}
+        )
         vector_columns = []
         for field in reader_schema:
-            named_vector_col = (
-                _is_list_like(field.type)
-                and pa.types.is_floating(field.type.value_type)
-                and _name_suggests_vector_column(field.name)
-            )
-            likely_vector_col = (
-                pa.types.is_fixed_size_list(field.type)
-                and pa.types.is_floating(field.type.value_type)
-                and (field.type.list_size >= 10)
-            )
-            if named_vector_col or likely_vector_col:
+            if not _is_list_like(field.type) or not pa.types.is_floating(
+                field.type.value_type
+            ):
+                continue
+
+            fixed_size = pa.types.is_fixed_size_list(field.type)
+            if (
+                field.name in embedding_function_columns
+                or _name_suggests_vector_column(field.name)
+                or (fixed_size and field.type.list_size >= 10)
+            ):
+                # Typed input declares its own nullability. For inferred list
+                # input on overwrite, carry forward the old null policy only.
+                declared_field = (
+                    field if fixed_size else existing_fields.get(field.name)
+                )
                 vector_columns.append(
                     {
                         "name": field.name,
-                        "expected_dim": None,
+                        "expected_dim": field.type.list_size if fixed_size else None,
                         "expected_value_type": None,
-                        "preserve_parent_nulls": False,
+                        "preserve_parent_nulls": (
+                            declared_field is not None
+                            and declared_field.nullable
+                            and pa.types.is_fixed_size_list(declared_field.type)
+                            and pa.types.is_floating(declared_field.type.value_type)
+                        ),
                     }
                 )
         return vector_columns
 
     reader_column_names = set(reader_schema.names)
-    active_metadata = _merge_metadata(target_schema.metadata, metadata)
-    embedding_function_columns = set(
-        EmbeddingFunctionRegistry.get_instance().parse_functions(active_metadata).keys()
-    )
     vector_columns = []
     for field in target_schema:
         if field.name not in reader_column_names:
@@ -8385,6 +8417,7 @@ class AsyncTable:
                 None,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
+                overwrite_schema=schema,
             )
             if blob_v2_column_paths(schema):
                 # Plain bytes cannot be inferred as blob v2. Keep matching blob
