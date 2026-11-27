@@ -10,6 +10,7 @@ import io
 import warnings
 
 from ..util import attempt_import_or_raise
+from .utils import url_retrieve
 from .base import EmbeddingFunction
 from .registry import register
 from .utils import TEXT, IMAGES, is_flash_attn_2_available
@@ -284,9 +285,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
             for image in images:
                 if isinstance(image, str):
                     if image.startswith(("http://", "https://")):
-                        response = requests.get(image, timeout=10)
-                        response.raise_for_status()
-                        pil_images.append(PIL_Image.open(io.BytesIO(response.content)))
+                        pil_images.append(PIL_Image.open(io.BytesIO(url_retrieve(image))))
                     else:
                         with PIL_Image.open(image) as im:
                             pil_images.append(im.copy())
