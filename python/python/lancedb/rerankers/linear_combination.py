@@ -19,6 +19,7 @@ class LinearCombinationReranker(Reranker):
     fill : float, default 1.0
         The score to give to results that are only in one of the two result sets.
         This is treated as penalty, so a higher value means a lower score.
+        The same weighting and penalty apply when one result set is empty.
         TODO: We should just hardcode this--
         its pretty confusing as we invert scores to calculate final score
     return_score : str, default "relevance"
@@ -53,12 +54,20 @@ class LinearCombinationReranker(Reranker):
     def merge_results(
         self, vector_results: pa.Table, fts_results: pa.Table, fill: float
     ):
-        # If one is empty then return the other and add _relevance_score
-        # column equal the existing vector or fts score
+        # Apply the same missing-score penalty whether one row or an entire
+        # result set is missing its vector distance or FTS score.
+        missing_fts_score = 1 - fill
         if len(vector_results) == 0:
+            missing_vector_score = self._invert_score(fill)
             results = fts_results.append_column(
                 "_relevance_score",
-                pa.array(fts_results["_score"], type=pa.float32()),
+                pa.array(
+                    [
+                        self._combine_score(missing_vector_score, score)
+                        for score in fts_results["_score"].to_pylist()
+                    ],
+                    type=pa.float32(),
+                ),
             )
             if self.score == "relevance":
                 results = self._keep_relevance_score(results)
@@ -75,7 +84,9 @@ class LinearCombinationReranker(Reranker):
                 "_relevance_score",
                 pa.array(
                     [
-                        self._invert_score(distance)
+                        self._combine_score(
+                            self._invert_score(distance), missing_fts_score
+                        )
                         for distance in vector_results["_distance"].to_pylist()
                     ],
                     type=pa.float32(),
@@ -109,7 +120,7 @@ class LinearCombinationReranker(Reranker):
             # Missing FTS entries are penalised symmetrically: we use
             # `1 - fill` so that the same `fill` value drives both missing-vector
             # and missing-FTS penalties in the same direction.
-            fts_score = result.get("_score", 1 - fill)
+            fts_score = result.get("_score", missing_fts_score)
             result["_relevance_score"] = self._combine_score(vector_score, fts_score)
             combined_list.append(result)
 
