@@ -340,6 +340,8 @@ class _EmptyRejectingBedrockClient:
         payload = json.loads(body)
         self.calls.append(payload)
         text = payload["inputText"]
+        if not isinstance(text, str):
+            raise ValueError("inputText: expected a string")
         if not text:
             raise ValueError("inputText: Minimum length is 1")
         body = json.dumps({"embedding": [float(len(text))]}).encode()
@@ -356,3 +358,18 @@ def test_empty_or_null_texts_are_skipped(empty):
 
     assert result == [[5.0], None, [2.0]]
     assert [c["inputText"] for c in client.calls] == ["alpha", "be"]
+
+
+def test_add_surfaces_non_string_error_with_drop(tmp_path, monkeypatch):
+    client = _EmptyRejectingBedrockClient()
+    monkeypatch.setattr(boto3.Session, "client", lambda *args, **kwargs: client)
+    model = get_registry().get("bedrock-text").create(max_retries=0)
+
+    class Row(LanceModel):
+        text: bool = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    table = lancedb.connect(tmp_path).create_table("texts", schema=Row)
+    with pytest.raises(RuntimeError, match="expected a string"):
+        table.add([{"text": False}], on_bad_vectors="drop")
+    assert table.count_rows() == 0

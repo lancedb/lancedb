@@ -182,7 +182,7 @@ class BedRockText(_BedrockEmbeddingFunction, TextEmbeddingFunction):
         """
         results = []
         for text in texts:
-            if not text:
+            if text is None or (isinstance(text, str) and not text):
                 results.append(None)
                 continue
             response = self._generate_embedding(text, *args, **kwargs)
