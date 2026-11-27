@@ -255,7 +255,7 @@ fn bigint_range(start: BigInt, end: BigInt) -> napi::Result<Range<u64>> {
     Ok(start..end)
 }
 
-pub(crate) fn parse_u64(value: BigInt, name: &str) -> napi::Result<u64> {
+fn parse_u64(value: BigInt, name: &str) -> napi::Result<u64> {
     let (negative, value, lossless) = value.get_u64();
     if negative {
         return Err(napi::Error::from_reason(format!(
