@@ -12,7 +12,7 @@ This will download the appropriate native library for your platform. We currentl
 support:
 
 - Linux (x86_64 and aarch64 on glibc and musl)
-- MacOS (Intel and ARM/M1/M2)
+- macOS (Apple silicon / arm64)
 - Windows (x86_64 and aarch64)
 
 ## Usage
