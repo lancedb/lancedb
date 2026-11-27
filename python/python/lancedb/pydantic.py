@@ -257,7 +257,7 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif get_origin(py_type) is Literal:
         # Store a Literal as the type of its values, e.g. Literal["a", "b"] as utf8.
         # A None value makes the field nullable and has no type of its own.
-        value_types = {type(value) for value in get_args(py_type) if value is not None}
+        value_types = {type(value) for value in _literal_values_without_none(py_type)}
         if len(value_types) != 1:
             raise TypeError(
                 "Converting Pydantic type to Arrow Type: unsupported type "
@@ -346,11 +346,26 @@ def _pydantic_list_child_to_arrow(child: Any, field: FieldInfo) -> pa.DataType:
     return pa.list_(_pydantic_type_to_arrow_type(child, field))
 
 
+def _literal_values_without_none(literal: Any) -> tuple:
+    """Return the values of a Literal, dropping None, which makes it nullable.
+
+    A plain Enum member is stored as its value and does not equal it, so a
+    nullable Literal of one could not be read back. Its None is kept, and the
+    Literal is rejected for mixing value types, as it was before None counted
+    as nullability.
+    """
+    values = get_args(literal)
+    non_none = tuple(value for value in values if value is not None)
+    if any(isinstance(v, Enum) and not isinstance(v, type(v.value)) for v in non_none):
+        return values
+    return non_none
+
+
 def _unwrap_optional_annotation(annotation: Any) -> Any | None:
     if get_origin(annotation) is Literal:
         # Literal["a", None] is the same type as Optional[Literal["a"]] (PEP 586).
         values = get_args(annotation)
-        non_none = tuple(value for value in values if value is not None)
+        non_none = _literal_values_without_none(annotation)
         if non_none and len(non_none) != len(values):
             return Literal[non_none]
         return None
