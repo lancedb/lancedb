@@ -19,6 +19,7 @@ import {
   Table,
   TableDelta,
   TableDeltaReader,
+  TagContents,
   VectorQuery,
   blob,
   connect,
@@ -4117,6 +4118,34 @@ describe("when dealing with tags", () => {
     await table.checkout("live");
     await tags.create("tag-checkout");
     expect(await tags.getVersion("tag-checkout")).toBe(2);
+  });
+
+  it("returns serializable TagContents instances from list()", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    const tagsManager = await table.tags();
+    await tagsManager.create("tag1", 1);
+
+    const list = await tagsManager.list();
+    const tag1 = list["tag1"];
+
+    // The runtime class export and instance identity are preserved.
+    expect(tag1).toBeInstanceOf(TagContents);
+
+    // version and manifestSize are own enumerable properties, so spread
+    // and JSON serialization see them.
+    expect(Object.keys(tag1)).toEqual(
+      expect.arrayContaining(["version", "manifestSize"]),
+    );
+    expect({ ...tag1 }.version).toBe(1);
+
+    const serialized = JSON.parse(JSON.stringify(list));
+    expect(serialized["tag1"].version).toBe(1);
+    expect(serialized["tag1"].manifestSize).toBeGreaterThan(0);
   });
 });
 
