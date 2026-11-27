@@ -120,20 +120,14 @@ class GeminiText(TextEmbeddingFunction):
         task_type = kwargs.get("task_type")
 
         # Build content objects for embed_content
-        contents = []
-        for text in texts:
-            if task_type == "retrieval_document":
-                # Provide a title for retrieval_document task
-                contents.append(
-                    {"parts": [{"text": "Embedding of a document"}, {"text": text}]}
-                )
-            else:
-                contents.append({"parts": [{"text": text}]})
+        contents = [{"parts": [{"text": text}]} for text in texts]
 
         # Build config
         config_kwargs = {"output_dimensionality": self.ndims()}
         if task_type:
             config_kwargs["task_type"] = task_type.upper()  # API expects uppercase
+            if task_type.lower() == "retrieval_document":
+                config_kwargs["title"] = kwargs.get("title", "Embedding of a document")
 
         config = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
 

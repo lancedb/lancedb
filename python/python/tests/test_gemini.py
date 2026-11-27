@@ -99,7 +99,7 @@ class TestGeminiText:
                 assert np.allclose(embeddings[1], 0.2)
 
     def test_generate_embeddings_retrieval_document(self):
-        """Test that retrieval_document task type prepends the document title part."""
+        """Test retrieval_document sets title on EmbedContentConfig."""
         with patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}):
             with patch("lancedb.embeddings.gemini_text.attempt_import_or_raise"):
                 registry = get_registry()
@@ -114,21 +114,43 @@ class TestGeminiText:
                 mock_embedding.values = [0.3] * 768
                 self.mock_response.embeddings = [mock_embedding]
 
-                embeddings = func.generate_embeddings(
-                    texts, task_type="retrieval_document"
-                )
+                embeddings = func.compute_source_embeddings(texts)
 
-                # Check call arguments for retrieval_document
+                # Content carries only the document text; title is in config
                 call_kwargs = self.mock_client.models.embed_content.call_args.kwargs
-                assert call_kwargs["contents"][0] == {
-                    "parts": [{"text": "Embedding of a document"}, {"text": "doc text"}]
-                }
+                assert call_kwargs["contents"] == [{"parts": [{"text": "doc text"}]}]
                 mock_types.EmbedContentConfig.assert_called_once_with(
-                    output_dimensionality=768, task_type="RETRIEVAL_DOCUMENT"
+                    output_dimensionality=768,
+                    task_type="RETRIEVAL_DOCUMENT",
+                    title="Embedding of a document",
                 )
 
                 assert len(embeddings) == 1
                 assert np.allclose(embeddings[0], 0.3)
+
+    def test_generate_embeddings_retrieval_query_omits_title(self):
+        """Test that retrieval_query does not set title on EmbedContentConfig."""
+        with patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}):
+            with patch("lancedb.embeddings.gemini_text.attempt_import_or_raise"):
+                registry = get_registry()
+                func = registry.get("gemini-text").create()
+
+                mock_embedding = MagicMock()
+                mock_embedding.values = [0.4] * 768
+                self.mock_response.embeddings = [mock_embedding]
+
+                embeddings = func.compute_query_embeddings("where are vectors stored")
+
+                call_kwargs = self.mock_client.models.embed_content.call_args.kwargs
+                assert call_kwargs["contents"] == [
+                    {"parts": [{"text": "where are vectors stored"}]}
+                ]
+                mock_types.EmbedContentConfig.assert_called_once_with(
+                    output_dimensionality=768,
+                    task_type="RETRIEVAL_QUERY",
+                )
+                assert len(embeddings) == 1
+                assert np.allclose(embeddings[0], 0.4)
 
     def test_custom_dimension(self):
         """Test that custom dimension (dim) can be configured and passed to config."""
