@@ -32,6 +32,7 @@ def _is_redirect_error(error: Exception) -> bool:
     status = _get_http_status(error)
     return status is not None and 300 <= status < 400
 
+
 MAX_BATCH_SIZE = 96
 
 
