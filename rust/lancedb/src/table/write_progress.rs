@@ -30,9 +30,11 @@ impl WriteProgress {
         self.elapsed
     }
 
-    /// Number of rows processed by the input scan.
+    /// Number of rows processed by the writer.
     ///
-    /// This does not indicate that the rows have been committed.
+    /// Remote multipart writes count rows in acknowledged IPC parts, starting
+    /// at zero and counting retransmissions once. Other writers report rows
+    /// processed by the input scan. Neither indicates a successful commit.
     pub fn output_rows(&self) -> usize {
         self.output_rows
     }
@@ -101,8 +103,8 @@ pub(crate) struct WriteProgressTracker {
     /// Wire bytes tracked separately by the insert layer. When set (> 0),
     /// this takes precedence over the in-memory bytes from `rows_and_bytes`.
     wire_bytes: AtomicUsize,
-    /// Multipart writes select this before scanning, including zero acknowledgements.
-    wire_bytes_enabled: AtomicBool,
+    /// Multipart progress excludes input scanning and counts only acknowledged parts.
+    acknowledged_parts: AtomicBool,
     active_tasks: Arc<AtomicUsize>,
     total_tasks: AtomicUsize,
     start: Instant,
@@ -116,7 +118,7 @@ impl WriteProgressTracker {
         Self {
             rows_and_bytes: std::sync::Mutex::new((0, 0)),
             wire_bytes: AtomicUsize::new(0),
-            wire_bytes_enabled: AtomicBool::new(false),
+            acknowledged_parts: AtomicBool::new(false),
             active_tasks: Arc::new(AtomicUsize::new(0)),
             total_tasks: AtomicUsize::new(1),
             start: Instant::now(),
@@ -125,9 +127,9 @@ impl WriteProgressTracker {
         }
     }
 
-    /// Select wire-byte progress, including zero, before polling the input plan.
-    pub fn use_wire_bytes(&self) {
-        self.wire_bytes_enabled.store(true, Ordering::Relaxed);
+    /// Select acknowledged rows and wire bytes before polling the input plan.
+    pub fn use_acknowledged_parts(&self) {
+        self.acknowledged_parts.store(true, Ordering::Relaxed);
     }
 
     /// Set the total number of parallel write tasks (the write parallelism).
@@ -150,8 +152,24 @@ impl WriteProgressTracker {
             .rows_and_bytes
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if !self.acknowledged_parts.load(Ordering::Relaxed) {
+            guard.0 += rows;
+            guard.1 += bytes;
+        }
+        let progress = self.snapshot(guard.0, guard.1, false);
+        drop(guard);
+        cb(&progress);
+    }
+
+    /// Record one successfully staged part, after any retries have finished.
+    pub fn record_acknowledged_part(&self, rows: usize, bytes: usize) {
+        let mut cb = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .rows_and_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         guard.0 += rows;
-        guard.1 += bytes;
+        self.wire_bytes.fetch_add(bytes, Ordering::Relaxed);
         let progress = self.snapshot(guard.0, guard.1, false);
         drop(guard);
         cb(&progress);
@@ -194,7 +212,7 @@ impl WriteProgressTracker {
         let wire = self.wire_bytes.load(Ordering::Relaxed);
         // Prefer wire bytes (actual I/O size) when the insert layer is
         // tracking them; fall back to in-memory Arrow size otherwise.
-        let output_bytes = if self.wire_bytes_enabled.load(Ordering::Relaxed) || wire > 0 {
+        let output_bytes = if self.acknowledged_parts.load(Ordering::Relaxed) || wire > 0 {
             wire
         } else {
             in_memory_bytes

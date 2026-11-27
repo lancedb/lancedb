@@ -258,3 +258,94 @@ using an underlying bitmap index.
 #### Returns
 
 [`Index`](Index.md)
+
+***
+
+### plugin()
+
+```ts
+static plugin(indexType, params?): Index
+```
+
+Create a scalar index of a type recognized by a registered database plugin.
+
+Use this for index types without a dedicated factory on `Index`.
+Prefer a dedicated factory when one is available.
+
+An unknown plugin name or invalid parameters cause `createIndex` to fail.
+
+#### Parameters
+
+* **indexType**: `string`
+    The index type, case-insensitive.
+    Surrounding whitespace is ignored. Must not be empty.
+
+* **params?**: `string` \| `Record`&lt;`string`, `unknown`&gt;
+    The index parameters, as an object or as a string
+    holding a JSON object. They are passed as given. Each plugin defines
+    its parameters and defaults; refer to the plugin's documentation
+    for guidance.
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Throws
+
+If `indexType` is empty, or `params` is not a JSON object.
+
+#### Example
+
+```ts
+await table.createIndex("id", {
+  config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+});
+```
+
+***
+
+### rtree()
+
+```ts
+static rtree(options?): Index
+```
+
+Create an RTree index.
+
+An RTree index is a scalar index on a GeoArrow geometry column, that is, a
+column whose Arrow field metadata sets `ARROW:extension:name` to a GeoArrow
+type such as `geoarrow.point`, `geoarrow.polygon` or `geoarrow.wkb`. It
+stores the bounding box of each geometry and accelerates spatial filters.
+
+The index accelerates `ST_Intersects`, `ST_Contains`, `ST_Within`,
+`ST_Touches`, `ST_Crosses`, `ST_Overlaps`, `ST_Covers` and `ST_CoveredBy`
+between the indexed column and a constant geometry, in either argument
+order, for example
+`ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))`, as well as
+`geom IS NULL`. These filters can be combined with other conditions using
+`AND`.
+
+See the R-tree section of https://docs.lancedb.com/indexing/scalar-index
+for storing geometry, the other spatial functions, and spatial filters on
+vector search.
+
+Remote tables send the `RTREE` index type to the server, which must
+support it.
+
+#### Parameters
+
+* **options?**: `Partial`&lt;[`RTreeOptions`](../interfaces/RTreeOptions.md)&gt;
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Example
+
+```ts
+await table.createIndex("geom", { config: Index.rtree() });
+await table
+  .query()
+  .where("ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))")
+  .toArray();
+```

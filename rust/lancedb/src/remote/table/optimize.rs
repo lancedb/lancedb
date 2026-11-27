@@ -4,6 +4,25 @@
 //! Compaction options supported by the remote SQL submission protocol.
 use crate::error::{Error, Result};
 
+pub(super) fn statement(
+    table: &str,
+    branch: Option<&str>,
+    options: &crate::table::optimize::CompactionOverrides,
+) -> Result<String> {
+    let mut settings = compaction_sql_options(options)?;
+    if let Some(branch) = branch {
+        settings.insert(0, format!("branch = {}", super::quote_sql_string(branch)));
+    }
+    let mut sql = format!(
+        "OPTIMIZE {} REWRITE DATA",
+        super::quote_sql_identifier(table)
+    );
+    if !settings.is_empty() {
+        sql.push_str(&format!(" WITH ({})", settings.join(", ")));
+    }
+    Ok(sql)
+}
+
 pub(super) fn compaction_sql_options(
     options: &crate::table::optimize::CompactionOverrides,
 ) -> Result<Vec<String>> {

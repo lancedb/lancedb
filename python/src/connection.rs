@@ -20,19 +20,20 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::{
+    BasePath,
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
-    database::{CreateTableMode, Database, ReadConsistency},
+    database::{CreateTableMode, Database, JobListFilter, JobListState, ReadConsistency},
     function::{GpuClass as LanceGpuClass, RefreshColumnResult},
     graph::PropertyGraphDefinition,
     materialized_view::CreateMaterializedViewBuilder,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyAnyMethods, PyDict, PyDictMethods, PyList},
+    types::{PyAnyMethods, PyBool, PyDict, PyDictMethods, PyList},
 };
 
 fn materialized_view_builder(
@@ -54,6 +55,139 @@ fn materialized_view_builder(
             "query cannot be combined with source, select, where or limit",
         )),
     }
+}
+
+/// Parse `initial_bases` into Lance base paths.
+///
+/// Accepts LanceDB's lightweight `BasePath`, a mapping with the same keys, or
+/// a duck-typed `lance.DatasetBasePath`. `None` maps to no bases. Object
+/// attributes follow `DatasetBasePath`: a reported `id` of `0` means
+/// automatic assignment, while a mapping that sets `id=0` explicitly is
+/// rejected because `0` is reserved for unregistered blob URIs. Explicit
+/// non-zero ids must be unique.
+fn parse_initial_bases(initial_bases: Option<Bound<'_, PyAny>>) -> PyResult<Option<Vec<BasePath>>> {
+    let Some(value) = initial_bases else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        return Ok(None);
+    }
+
+    let mut bases = Vec::new();
+    let mut explicit_ids: HashSet<u32> = HashSet::new();
+    for (index, item) in value.try_iter()?.enumerate() {
+        let item = item?;
+        let base = parse_base_path(&item, index)?;
+        if base.id != 0 && !explicit_ids.insert(base.id) {
+            return Err(PyValueError::new_err(format!(
+                "initial_bases[{index}] reuses base id {}; explicit ids must be unique",
+                base.id
+            )));
+        }
+        bases.push(base);
+    }
+    Ok(Some(bases))
+}
+
+fn parse_base_path(item: &Bound<'_, PyAny>, index: usize) -> PyResult<BasePath> {
+    let (path, name, is_dataset_root, id) = if let Ok(dict) = item.cast::<PyDict>() {
+        let path = required_string(dict.get_item("path")?, index, "path")?;
+        let name = optional_string(dict.get_item("name")?, index, "name")?;
+        let is_dataset_root =
+            optional_bool(dict.get_item("is_dataset_root")?, index, "is_dataset_root")?;
+        let id = match dict.get_item("id")? {
+            None => 0,
+            Some(value) if value.is_none() => 0,
+            Some(value) => {
+                let id = base_id(&value, index)?;
+                if id == 0 {
+                    return Err(PyValueError::new_err(format!(
+                        "initial_bases[{index}] sets id=0, which is reserved for unregistered \
+                         blob URIs; pass id=None to let Lance assign an ID"
+                    )));
+                }
+                id
+            }
+        };
+        (path, name, is_dataset_root, id)
+    } else {
+        let path = item.getattr("path").map_err(|_| {
+            PyTypeError::new_err(format!(
+                "initial_bases[{index}] must be a BasePath, dict, or DatasetBasePath"
+            ))
+        })?;
+        let path = required_string(Some(path), index, "path")?;
+        let name = item.getattr("name").ok().filter(|value| !value.is_none());
+        let name = optional_string(name, index, "name")?;
+        let is_dataset_root = match item.getattr("is_dataset_root") {
+            Ok(value) if !value.is_none() => value.extract::<bool>().map_err(|_| {
+                PyTypeError::new_err(format!(
+                    "initial_bases[{index}].is_dataset_root must be a bool"
+                ))
+            })?,
+            _ => false,
+        };
+        let id = match item.getattr("id") {
+            Ok(value) if !value.is_none() => base_id(&value, index)?,
+            _ => 0,
+        };
+        (path, name, is_dataset_root, id)
+    };
+
+    if path.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "initial_bases[{index}].path must not be empty"
+        )));
+    }
+    Ok(BasePath::new(id, path, name, is_dataset_root))
+}
+
+fn required_string(value: Option<Bound<'_, PyAny>>, index: usize, field: &str) -> PyResult<String> {
+    let Some(value) = value else {
+        return Err(PyValueError::new_err(format!(
+            "initial_bases[{index}] is missing '{field}'"
+        )));
+    };
+    value.extract::<String>().map_err(|_| {
+        PyTypeError::new_err(format!("initial_bases[{index}].{field} must be a string"))
+    })
+}
+
+fn optional_string(
+    value: Option<Bound<'_, PyAny>>,
+    index: usize,
+    field: &str,
+) -> PyResult<Option<String>> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => value.extract::<String>().map(Some).map_err(|_| {
+            PyTypeError::new_err(format!("initial_bases[{index}].{field} must be a string"))
+        }),
+    }
+}
+
+fn optional_bool(value: Option<Bound<'_, PyAny>>, index: usize, field: &str) -> PyResult<bool> {
+    match value {
+        None => Ok(false),
+        Some(value) if value.is_none() => Ok(false),
+        Some(value) => value.extract::<bool>().map_err(|_| {
+            PyTypeError::new_err(format!("initial_bases[{index}].{field} must be a bool"))
+        }),
+    }
+}
+
+fn base_id(value: &Bound<'_, PyAny>, index: usize) -> PyResult<u32> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(format!(
+            "initial_bases[{index}].id must be a positive integer, not a bool"
+        )));
+    }
+    value.extract::<u32>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "initial_bases[{index}].id must be a positive integer that fits in a u32"
+        ))
+    })
 }
 
 #[pyclass]
@@ -241,19 +375,29 @@ impl Connection {
         self.get_inner().map(|inner| inner.uri().to_string())
     }
 
-    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None, timeout=None, read_timeout=None, cancel_on_drop=false))]
     pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
         parameters: Option<PyArrowType<RecordBatch>>,
+        timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
+        cancel_on_drop: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
             let mut operation = inner
                 .execute_query_async(query)
-                .default_namespace_path(default_namespace_path);
+                .default_namespace_path(default_namespace_path)
+                .cancel_on_drop(cancel_on_drop);
+            if let Some(timeout) = timeout {
+                operation = operation.timeout(timeout);
+            }
+            if let Some(timeout) = read_timeout {
+                operation = operation.read_timeout(timeout);
+            }
             if let Some(PyArrowType(parameters)) = parameters {
                 operation = operation.parameters(parameters);
             }
@@ -311,7 +455,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, data, namespace_path=None, storage_options=None, location=None, namespace_client=None))]
+    #[pyo3(signature = (name, mode, data, namespace_path=None, storage_options=None, location=None, namespace_client=None, initial_bases=None, allow_external_blob_outside_bases=false))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -321,11 +465,14 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         location: Option<String>,
         namespace_client: Option<Py<PyAny>>,
+        initial_bases: Option<Bound<'_, PyAny>>,
+        allow_external_blob_outside_bases: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
 
         let mode = Self::parse_create_mode_str(mode)?;
+        let initial_bases = parse_initial_bases(initial_bases)?;
 
         let batches: Box<dyn arrow::array::RecordBatchReader + Send> =
             Box::new(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
@@ -333,6 +480,12 @@ impl Connection {
         let ns_path = namespace_path.clone().unwrap_or_default();
         let mut builder = inner.create_table(name.clone(), batches).mode(mode);
 
+        if let Some(bases) = initial_bases {
+            builder = builder.initial_bases(bases);
+        }
+        if allow_external_blob_outside_bases {
+            builder = builder.allow_external_blob_outside_bases(true);
+        }
         builder = builder.namespace(ns_path.clone());
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
@@ -359,7 +512,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, schema, namespace_path=None, storage_options=None, location=None, namespace_client=None))]
+    #[pyo3(signature = (name, mode, schema, namespace_path=None, storage_options=None, location=None, namespace_client=None, initial_bases=None))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -369,11 +522,13 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         location: Option<String>,
         namespace_client: Option<Py<PyAny>>,
+        initial_bases: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
 
         let mode = Self::parse_create_mode_str(mode)?;
+        let initial_bases = parse_initial_bases(initial_bases)?;
 
         let schema = Schema::from_pyarrow_bound(&schema)?;
 
@@ -382,6 +537,9 @@ impl Connection {
             .create_empty_table(name.clone(), Arc::new(schema))
             .mode(mode);
 
+        if let Some(bases) = initial_bases {
+            builder = builder.initial_bases(bases);
+        }
         builder = builder.namespace(ns_path.clone());
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
@@ -457,7 +615,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true, *, exist_ok=false))]
     pub fn clone_table(
         self_: PyRef<'_, Self>,
         target_table_name: String,
@@ -466,6 +625,7 @@ impl Connection {
         source_version: Option<u64>,
         source_tag: Option<String>,
         is_shallow: bool,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -477,7 +637,7 @@ impl Connection {
         if let Some(tag) = source_tag {
             builder = builder.source_tag(tag);
         }
-        builder = builder.is_shallow(is_shallow);
+        builder = builder.is_shallow(is_shallow).exist_ok(exist_ok);
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
@@ -505,7 +665,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -516,7 +676,14 @@ impl Connection {
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
         query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let builder = materialized_view_builder(
@@ -527,13 +694,29 @@ impl Connection {
             projections.is_some() || filter.is_some() || limit.is_some(),
         )?;
         future_into_py(self_.py(), async move {
-            let mut builder = builder;
+            let mut builder = builder.exist_ok(exist_ok);
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }
             if let Some(seconds) = auto_refresh_interval_seconds {
                 builder = builder.auto_refresh_interval_seconds(seconds);
             }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -550,7 +733,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, *, query=None))]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -561,7 +744,14 @@ impl Connection {
         with_no_data: bool,
         auto_refresh_enabled: Option<bool>,
         auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
         query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let builder = materialized_view_builder(
@@ -572,13 +762,29 @@ impl Connection {
             projections.is_some() || filter.is_some() || limit.is_some(),
         )?;
         future_into_py(self_.py(), async move {
-            let mut builder = builder;
+            let mut builder = builder.exist_ok(exist_ok);
             if let Some(enabled) = auto_refresh_enabled {
                 builder = builder.auto_refresh_enabled(enabled);
             }
             if let Some(seconds) = auto_refresh_interval_seconds {
                 builder = builder.auto_refresh_interval_seconds(seconds);
             }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -898,20 +1104,34 @@ impl Connection {
                         job.into_typed::<RefreshColumnResult>().infer_error()?,
                     ))
                 }
+                Some("prewarm_page_cache") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::PrewarmDataResult>()
+                        .infer_error()?,
+                )),
+                Some("cleanup") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::CleanupResult>()
+                        .infer_error()?,
+                )),
+                Some("compact") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::CompactionResult>()
+                        .infer_error()?,
+                )),
                 _ => Ok(crate::job::Job::new(job)),
             }
         })
     }
 
-    #[pyo3(signature = (request_json, namespace_path=None))]
+    #[pyo3(signature = (request_json, namespace_path=None, *, exist_ok=false))]
     pub fn create_function_async(
         self_: PyRef<'_, Self>,
         request_json: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
+        let mut request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
             .infer_error()?;
+        request.exist_ok = exist_ok;
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
@@ -1158,18 +1378,20 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, query, namespace_path=None))]
+    #[pyo3(signature = (name, query, namespace_path=None, *, exist_ok=false))]
     pub fn create_view(
         self_: PyRef<'_, Self>,
         name: String,
         query: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             let view = inner
                 .create_view(name, query, &namespace_path)
+                .exist_ok(exist_ok)
                 .await
                 .infer_error()?;
             view_description_to_py(view)
@@ -1311,15 +1533,47 @@ impl Connection {
         ))
     }
 
-    #[pyo3(signature = (*, page_token=None, page_limit=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (*, page_token=None, page_limit=None, table=None, namespace_path=None, state=None, job_type=None, job_types=None, created_at_gte_millis=None, created_at_lt_millis=None))]
     pub fn list_jobs(
         &self,
         page_token: Option<String>,
         page_limit: Option<u32>,
+        table: Option<String>,
+        namespace_path: Option<Vec<String>>,
+        state: Option<String>,
+        job_type: Option<String>,
+        job_types: Option<Vec<String>>,
+        created_at_gte_millis: Option<i64>,
+        created_at_lt_millis: Option<i64>,
     ) -> PyResult<crate::listing::JobListing> {
+        if job_type.is_some() && job_types.is_some() {
+            return Err(PyValueError::new_err(
+                "set only one of job_type and job_types",
+            ));
+        }
+        let mut filter = JobListFilter::default();
+        filter.table = table;
+        filter.namespace_path = namespace_path.unwrap_or_default();
+        filter.state = state
+            .as_deref()
+            .map(|state| match state {
+                "in_progress" => Ok(JobListState::InProgress),
+                "succeeded" => Ok(JobListState::Succeeded),
+                "failed" => Ok(JobListState::Failed),
+                "canceled" => Ok(JobListState::Canceled),
+                "timed_out" => Ok(JobListState::TimedOut),
+                _ => Err(PyValueError::new_err(
+                    "state must be one of: in_progress, succeeded, failed, canceled, timed_out",
+                )),
+            })
+            .transpose()?;
+        filter.job_types = job_types.unwrap_or_else(|| job_type.into_iter().collect());
+        filter.created_at_gte_millis = created_at_gte_millis;
+        filter.created_at_lt_millis = created_at_lt_millis;
         Ok(crate::listing::JobListing::new(
             self.get_inner()?
-                .list_jobs(crate::listing::options(page_token, page_limit)),
+                .list_jobs_filtered(filter, crate::listing::options(page_token, page_limit)),
         ))
     }
 

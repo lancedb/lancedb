@@ -249,11 +249,13 @@ impl MergeInsertBuilder {
         Ok(())
     }
 
-    /// The existing columns a matched row takes from `source`: every source
-    /// column but the join keys, which a match leaves equal. An insert-only
-    /// merge rewrites none; its new rows get Function outputs from the next
-    /// refresh, as appended rows do.
-    pub(crate) fn function_guarded_columns(&self, source: &Fields) -> Vec<String> {
+    /// The source columns a matched row writes: every column but the join
+    /// keys, which a match leaves equal. Function inputs stay writable; the
+    /// merge records their changed signatures so the next refresh recomputes
+    /// the affected rows. Computed outputs and assignment columns remain
+    /// protected by the direct-write guard. An insert-only merge writes none;
+    /// its new rows get Function outputs from the next refresh.
+    pub(crate) fn matched_source_columns(&self, source: &Fields) -> Vec<String> {
         if !self.when_matched_update_all {
             return Vec::new();
         }
@@ -351,10 +353,10 @@ pub(crate) async fn execute_merge_insert(
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
     let schema = table.schema().await?;
-    super::computed_columns::ensure_not_function_bound(
+    let matched_columns = params.matched_source_columns(new_data.schema().fields());
+    super::computed_columns::ensure_not_written(
         schema.as_ref(),
-        "merge_insert",
-        params.function_guarded_columns(new_data.schema().fields()),
+        matched_columns.iter().map(String::as_str),
     )?;
     // Normalize blob layouts and JSON extension metadata just as on append.
     // Keep arrow.json text labelled until Lance encodes it as JSONB.
@@ -970,10 +972,11 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 2);
     }
 
-    /// A matched row takes every non-key source column, so the merge is
-    /// refused only when one of those is a binding's input or output.
+    /// A matched row takes every non-key source column. Function inputs are
+    /// writable and become stale for the next refresh; computed outputs stay
+    /// protected, and a mixed input/output source is rejected before commit.
     #[tokio::test]
-    async fn merge_update_on_a_function_table_refuses_only_bound_columns() {
+    async fn merge_update_allows_function_inputs_but_protects_outputs() {
         let table = crate::table::computed_columns::test_support::bound_table_from(
             arrow_array::record_batch!(
                 ("id", Int32, [1]),
@@ -998,18 +1001,47 @@ mod tests {
 
         let mut merge = table.merge_insert(&["id"]);
         merge.when_matched_update_all(None);
-        let err = merge
+        let result = merge
             .execute(reader(
                 arrow_array::record_batch!(("id", Int32, [1]), ("title", Utf8, ["z"])).unwrap(),
             ))
             .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, crate::Error::InvalidInput { message }
-                if message.contains("merge_insert of 'title'")
-                    && message.contains("a Function binding reads or writes it")),
-            "{err:?}"
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(
+            table
+                .count_rows(Some("title = 'z' AND search_text = 'a b'".into()))
+                .await
+                .unwrap(),
+            1
         );
+
+        let version = table.version().await.unwrap();
+        for source in [
+            arrow_array::record_batch!(("id", Int32, [1]), ("search_text", Utf8, ["uncomputed"]))
+                .unwrap(),
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("title", Utf8, ["must not commit"]),
+                ("search_text", Utf8, ["uncomputed"])
+            )
+            .unwrap(),
+        ] {
+            let mut merge = table.merge_insert(&["id"]);
+            merge.when_matched_update_all(None);
+            let err = merge.execute(reader(source)).await.unwrap_err();
+            assert!(
+                matches!(&err, crate::Error::InvalidInput { message }
+                    if message.contains("is computed")
+                        && message.contains("cannot be written directly")),
+                "{err:?}"
+            );
+            assert_eq!(table.version().await.unwrap(), version);
+            assert_eq!(
+                table.count_rows(Some("title = 'z'".into())).await.unwrap(),
+                1
+            );
+        }
     }
 }
 

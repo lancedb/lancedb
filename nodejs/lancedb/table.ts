@@ -2,12 +2,29 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
+  CleanupOptions,
+  CleanupPlan,
+  CleanupResult,
+  decodeCleanupPlan,
+  decodeCleanupResult,
+  validateCleanupOptions,
+} from "./cleanup";
+import { CompactionResult, decodeCompactionResult } from "./compaction";
+import {
+  PrewarmDataPlan,
+  PrewarmDataResult,
+  decodePrewarmDataPlan,
+  decodePrewarmDataResult,
+} from "./prewarm";
+
+import {
   Table as ArrowTable,
   Data,
   DataType,
   Field,
   IntoVector,
   MultiVector,
+  RecordBatch,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
@@ -18,12 +35,23 @@ import {
 } from "./arrow";
 
 import {
+  BlobDescriptor,
   BlobFile,
   BlobRangeRequest,
   BlobReadOptions,
   runWithSignal,
+  toNativeBlobDescriptor,
 } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import {
+  type FunctionErrorRowsOptions,
+  type FunctionFailedRow,
+  type RefreshColumnJobResult,
+  type RetryFailedOptions,
+  type UpgradeColumnOptions,
+  decodeRefreshColumnJobResult,
+  readFailedRows,
+} from "./function_recovery";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
 import { validateNonNegativeInteger } from "./materialized_view";
@@ -38,10 +66,16 @@ import {
   DropColumnsResult,
   FunctionErrors,
   FunctionErrorsOptions,
+  FunctionProvenance,
+  FunctionProvenanceOptions,
+  FunctionQuarantineOptions,
   IndexConfig,
   IndexStatistics,
   JobFailureInfo,
+  RecordBatchIterator as NativeBatchIterator,
   Branches as NativeBranches,
+  DeltaRef as NativeDeltaRef,
+  TableDelta as NativeTableDelta,
   OptimizeStats,
   RTEStats,
   RefreshColumnOptions,
@@ -57,12 +91,14 @@ import {
   AutoQuery,
   FullTextQuery,
   Query,
+  RecordBatchIterator,
   TakeQuery,
   VectorQuery,
   createAutoQuery,
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
+import { QueryParameters, toParameterBuffer } from "./sql";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 export {
@@ -165,6 +201,18 @@ export interface UpdateOptions {
   where: string;
 }
 
+/** Settings for data-cache prewarm submissions and metadata previews. */
+export interface PrewarmDataOptions {
+  /** Lance field paths to warm; omitted or empty means every column. */
+  columns?: string[];
+  /** A single SQL predicate for conservative metadata pruning. */
+  filter?: string;
+  /** Typed positional or named filter values, sent separately from SQL. */
+  parameters?: QueryParameters;
+  /** Positive per-executor concurrency, at most 4294967295. */
+  concurrency?: number;
+}
+
 /** Per-invocation compaction settings. Values must be safe integers. */
 export interface CompactionOptions {
   /** Positive target rows per output fragment; also affects candidate selection. */
@@ -222,6 +270,42 @@ export interface Version {
   version: number;
   timestamp: Date;
   metadata: Record<string, string>;
+}
+
+/**
+ * One endpoint of a table delta: a positive version number/bigint or a tag on
+ * the table handle's current branch.
+ *
+ * Use a `bigint` when the version may exceed `Number.MAX_SAFE_INTEGER`.
+ * Strings are always tags.
+ */
+export type DeltaVersion = number | bigint | string;
+
+/** A committed transaction in a table delta range. */
+export interface TableDeltaTransaction {
+  /** The version the transaction was based on. Exact u64 value. */
+  readVersion: bigint;
+  uuid: string;
+  operation: string;
+  tag?: string;
+  transactionProperties?: Record<string, string>;
+}
+
+/**
+ * A streaming table-delta reader.
+ *
+ * `schema()` is available before consuming the stream, including when the
+ * range is empty. The stream yields Arrow record batches without
+ * materializing the full result.
+ *
+ * A reader owns one native cursor. It is single-use:
+ * `[Symbol.asyncIterator]()` returns the same iterator, concurrent pulls are
+ * serialized, and `return()` releases the native stream on early drop.
+ */
+export interface TableDeltaReader
+  extends AsyncIterable<RecordBatch>,
+    AsyncIterator<RecordBatch> {
+  schema(): Promise<Schema>;
 }
 
 /** Token produced by the tokenizer configured on a full-text search index. */
@@ -562,21 +646,82 @@ export abstract class Table {
   /**
    * Prewarm one or more columns of data in the table.
    *
-   * @param columns The columns to prewarm. If undefined, all columns are prewarmed.
-   *
    * This will load the column data into the page cache so that future queries that
    * read those columns avoid the initial cold-start latency.  This call initiates
    * prewarming and returns once the request is accepted; the warming itself may
-   * continue in the background.  Calling it on already-prewarmed columns is a
-   * no-op on the server.
+   * continue in the background. Submission uses SQL PREWARM and needs Flight
+   * SQL connectivity. Use {@link prewarmDataAsync} to retain the job handle.
    *
    * Prewarming is generally useful for columns used in filters or projections.
    * Large columns (e.g. high-dimensional vectors or binary data) may not be
    * practical to prewarm.
    *
    * This feature is currently only supported in LanceDB Enterprise.
+   *
+   * @param options Columns, a metadata-pruning filter, and per-executor concurrency.
+   * Omitted or empty columns warm every column.
+   *
+   * @example
+   * await table.prewarmData({
+   *   columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+   * });
+   */
+  abstract prewarmData(options?: PrewarmDataOptions): Promise<void>;
+
+  /**
+   * Submit data prewarm using the columns-array form and return after acceptance.
+   * @param columns Columns to warm; omitted or empty means every column.
    */
   abstract prewarmData(columns?: string[]): Promise<void>;
+
+  /**
+   * Submit data prewarm through SQL and return its durable warming-job handle.
+   *
+   * The table handle supplies the branch and namespace. Requires a compatible
+   * SQL PREWARM server and Flight SQL connectivity. Standard authorization
+   * requires table Select and database/namespace Usage. Status/wait use generic
+   * HTTP job APIs; events and cancellation retain their own privileges.
+   * No REST fallback or option-dropping retry is performed. Historical-version
+   * handles are unsupported; call `checkoutLatest()` first.
+   *
+   * Submission returns after acceptance. Use `job.wait()` for completion, or
+   * save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+   * the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+   *
+   * @example
+   * const job = await table.prewarmDataAsync({
+   *   columns: ["video"], filter: "quality > $minimum",
+   *   parameters: { minimum: 0.7 }, concurrency: 4,
+   * });
+   * await job.wait();
+   */
+  abstract prewarmDataAsync(
+    options?: PrewarmDataOptions,
+  ): Promise<Job<PrewarmDataResult>>;
+
+  /**
+   * Preview prewarm with the same options as {@link prewarmDataAsync}, without
+   * submitting a warming job. Requires LanceDB Enterprise with structured SQL
+   * previews, table Select and database/namespace Usage. Reads metadata and
+   * returns the source version, readable plan, and conservative pruning summary.
+   * A later submission plans its own snapshot. Historical and Embedded handles
+   * are unsupported. Unknown measurements remain null.
+   * Custom table implementations can override this method; its default rejects
+   * with an unsupported-operation error.
+   *
+   * @example
+   * const plan = await table.explainPrewarmData({
+   *   columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+   * });
+   * console.log(plan.pruning.selectedFragments);
+   */
+  async explainPrewarmData(
+    _options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan> {
+    throw new Error(
+      "data prewarm previews are not supported by this table implementation",
+    );
+  }
 
   /**
    * Waits for asynchronous indexing to complete on the table.
@@ -729,6 +874,48 @@ export abstract class Table {
   ): Promise<(BlobFile | null)[]>;
 
   /**
+   * Opens a lazy handle from a source-bearing SQL `blob_descriptor` result.
+   *
+   * The descriptor's source pins the table version, branch, column and row
+   * identity, so opening does not change this table's checkout. Null
+   * descriptors return `null`. Payload bytes load only when the returned
+   * handle is read. Pass {@link BlobReadOptions.signal} to cancel the open.
+   *
+   * @example
+   * ```ts
+   * const rows = await table
+   *   .query()
+   *   .select({ video: "blob_descriptor(video)" })
+   *   .toArray();
+   * const handle = await table.openBlobFile(rows[0].video);
+   * if (handle) {
+   *   const header = await handle.readRange(0n, 16n);
+   *   await handle.close();
+   * }
+   * ```
+   */
+  async openBlobFile(
+    _descriptor: BlobDescriptor | null,
+    _options?: BlobReadOptions,
+  ): Promise<BlobFile | null> {
+    throw new Error("openBlobFile is not supported on this table type");
+  }
+
+  /**
+   * Opens source-bearing descriptors in iteration order, preserving nulls.
+   * Handles open lazily as the iterable advances. Close each non-null handle
+   * after use.
+   */
+  async *openBlobFiles(
+    descriptors: Iterable<BlobDescriptor | null>,
+    options?: BlobReadOptions,
+  ): AsyncGenerator<BlobFile | null> {
+    for (const descriptor of descriptors) {
+      yield await this.openBlobFile(descriptor, options);
+    }
+  }
+
+  /**
    * Create a search query to find the nearest neighbors
    * of the given query
    * @param {string | IntoVector} query - the query, a vector or string
@@ -831,20 +1018,18 @@ export abstract class Table {
    * `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
    * `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
    * and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
-   * `maxConcurrency`, `resourceBudget` and
-   * `maxExecutorProcessesPerWorker` size registered Function refreshes.
+   * `maxConcurrency`, `totalCpuMillis`, `totalMemoryBytes`, `supervisorResources`,
+   * `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
+   * Function refreshes. `retryPolicy` overrides user-code retries only when
+   * repeating partial work is safe; set `maxAttempts: 1` to disable retries.
    * `maxConcurrency` overrides the registered default for this logical
    * execution only and is a positive integer; it is not an account-wide
-   * quota. A `resourceBudget` requires `cpuMillis` and
-   * `memoryBytes`; its `gpuCount` defaults to zero for a CPU-only Function.
-   * The budget applies only to this explicit refresh and does not configure
-   * a later automatic refresh.
-   * `gpuCount` at the top level is the shorthand that preserves the
-   * deployment defaults for CPU and memory, and cannot be combined with
-   * `resourceBudget`. `numWorkers` applies only to expression columns; use
-   * `resourceBudget` for registered Functions. All are LanceDB Enterprise
-   * only; a LanceDB Embedded refresh rejects every option other than
-   * `batchSize`, `gpuClass` and `gpuCount`.
+   * quota. `totalCpuMillis`, `totalMemoryBytes`, and `totalGpuCount` override
+   * their corresponding execution-wide resource limits independently. Unset
+   * values inherit column defaults, then Function defaults, then deployment
+   * defaults. A zero GPU limit is valid for CPU-only Functions.
+   * `supervisorResources` and `planningWorkers.resources` are per-pod sizes.
+   * `numWorkers` applies only to expression columns.
    * `publicationIntervalRows` opts into publishing completed Function split
    * ranges once their accumulated unpublished rows reach the threshold.
    * It must be a positive safe integer and requires non-Blob Function outputs.
@@ -854,10 +1039,8 @@ export abstract class Table {
    * ```ts
    * const job = await table.refreshColumnAsync("embedding", {
    *   where: "published_at > '2026-01-01'",
-   *   resourceBudget: {
-   *     cpuMillis: 8000,
-   *     memoryBytes: 16 * 1024 ** 3,
-   *   },
+   *   totalCpuMillis: 8000,
+   *   totalMemoryBytes: 16 * 1024 ** 3,
    *   maxConcurrency: 4,
    *   publicationIntervalRows: 10000,
    *   errorPolicy: "skip",
@@ -874,25 +1057,86 @@ export abstract class Table {
   ): Promise<Job>;
 
   /**
-   * The per-row errors Function refreshes recorded on this table.
+   * List the per-row errors recorded by Function refreshes on this table.
    *
-   * A refresh running under a skip policy records each row it skipped with
-   * the input that failed and the error. This lists those records, newest
-   * job first, plus a summary for any fragment whose per-row detail was
-   * capped. LanceDB Enterprise only; reading errors needs read
-   * access to the table, since a message carries the value that failed.
-   * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
-   * `column`, and `limit` (server default 10000, cap 100000).
-   * @returns {Promise<FunctionErrors>} The records, the capped fragments,
-   * and whether the listing stopped at its limit.
+   * On LanceDB Enterprise with workflow version 1 or later, the default
+   * lists current failures. Set `history: true` to include retained attempts
+   * for repaired rows. Older deployments keep their existing default listing.
+   * Reading errors requires table read access because messages can include the
+   * input that failed. `errorGroups` describes the returned records.
+   *
    * @example
    * ```ts
-   * const { records, truncated } = await table.functionErrors({ column: "embedding" });
+   * const errors = await table.functionErrors({ column: "embedding" });
+   * console.log(errors.records, errors.errorGroups);
    * ```
    */
   abstract functionErrors(
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors>;
+
+  /**
+   * Read current failing inputs, one result per error record.
+   * Requires a complete LanceDB Enterprise workflow version 1 listing with
+   * row identities. Throws if a failed row is no longer addressable in the
+   * table's read snapshot. For materialized views, see the source identities
+   * on each error record returned by {@link Table#functionErrors}.
+   */
+  async functionErrorRows(
+    options?: FunctionErrorRowsOptions,
+  ): Promise<FunctionFailedRow[]> {
+    const { columns, column, jobId, limit } = options ?? {};
+    const errors = await this.functionErrors({ column, jobId, limit });
+    return readFailedRows(this, errors, columns);
+  }
+
+  /**
+   * Start a job to retry exactly the current failures of one Function column.
+   * Filters apply on the server. Quarantined rows are excluded by default.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async retryFailed(
+    _column: string,
+    _options?: RetryFailedOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    throw new Error("retryFailed is not supported on this table type");
+  }
+
+  /**
+   * Start an upgrade to an existing immutable Function version and choose
+   * which rows to recompute. New and changed inputs use the new version.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async upgradeColumn(
+    _column: string,
+    _options: UpgradeColumnOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    throw new Error("upgradeColumn is not supported on this table type");
+  }
+
+  /**
+   * Quarantine current failures and return the number of affected rows.
+   * Set `quarantined: false` to release them for future refreshes.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async quarantineFailed(
+    _column: string,
+    _options?: FunctionQuarantineOptions,
+  ): Promise<number> {
+    throw new Error("quarantineFailed is not supported on this table type");
+  }
+
+  /**
+   * Read the producing Function version and job for each returned value.
+   * Check `truncated` before treating the result as a complete listing.
+   * Requires LanceDB Enterprise Function failure workflow version 1 or later.
+   */
+  async functionProvenance(
+    _column: string,
+    _options?: FunctionProvenanceOptions,
+  ): Promise<FunctionProvenance> {
+    throw new Error("functionProvenance is not supported on this table type");
+  }
 
   /**
    * Return exact freshness status for Function-backed output columns.
@@ -930,6 +1174,11 @@ export abstract class Table {
   abstract refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    totalCpuMillis?: number,
+    totalMemoryBytes?: number,
+    totalGpuCount?: number,
+    gpuClass?: string,
+    gpuCount?: number,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -1051,6 +1300,56 @@ export abstract class Table {
    * @returns {Promise<RTEWriteSpec | undefined>}
    */
   abstract getRTESpec(): Promise<RTEWriteSpec | undefined>;
+  /**
+   * Read the stored overrides for a remote Enterprise table.
+   *
+   * Overrides configure background behavior such as automatic compaction,
+   * cleanup, and reindex execution. Keys use the server's snake_case names.
+   * Returns an empty object when no overrides are set. Local tables are unsupported.
+   * Custom table implementations inherit a default rejection unless they override
+   * this method.
+   */
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("getTableOverrides is not supported on this table type");
+  }
+
+  /**
+   * Recursively merge overrides into a remote Enterprise table's stored overrides.
+   *
+   * Fetches the current overrides, merges nested objects locally, then sends the
+   * complete replacement using REST PUT. Other values replace existing values;
+   * unrelated fields from the read snapshot are preserved. This read-modify-write
+   * is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+   * Coordinate writers when concurrent edits must be preserved. An empty update
+   * only reads and returns the current overrides.
+   *
+   * Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+   * without merging. Use {@link Table.resetTableOverrides} to clear all overrides.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
+   *
+   * @example
+   * ```ts
+   * await table.updateTableOverrides({
+   *   job_types: { compaction: { enabled: false } },
+   * });
+   * ```
+   */
+  async updateTableOverrides(
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    overrides: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    throw new Error("updateTableOverrides is not supported on this table type");
+  }
+
+  /**
+   * Clear a remote Enterprise table's overrides and return an empty object.
+   * Local tables and custom table implementations without override support reject
+   * this operation.
+   */
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    throw new Error("resetTableOverrides is not supported on this table type");
+  }
   /**
    * Drain and close any cached RTE shard writers held for this table.
    *
@@ -1203,6 +1502,87 @@ export abstract class Table {
    * out state and the read_consistency_interval, if any, will apply.
    */
   abstract restore(): Promise<void>;
+
+  /**
+   * Compare two persisted versions or same-branch tags on an Embedded table.
+   *
+   * `fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+   * `toVersion` uses the version currently visible through this handle,
+   * including a checked-out version. The endpoints are fixed when the delta is
+   * created.
+   *
+   * Row readers require stable row IDs at both endpoints. Create the table with
+   * `storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+   * them. `listTransactions()` works without stable row IDs.
+   *
+   * Row readers reject ranges containing a Restore, or ranges whose transaction
+   * history cannot prove they are restore-free. Recompute the checkpoint with a
+   * full rescan and reinitialize it at the range end version.
+   *
+   * LanceDB Enterprise tables reject this operation.
+   *
+   * @example
+   * const delta = await table.delta("baseline");
+   * const reader = delta.insertedRows();
+   * console.log((await reader.schema()).fields.map((field) => field.name));
+   * for await (const batch of reader) {
+   *   console.log(batch.getChild("id")?.toJSON());
+   * }
+   * console.log(await delta.listTransactions());
+   */
+  async delta(
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    fromVersion: DeltaVersion,
+    // biome-ignore lint/correctness/noUnusedVariables: retain the public parameter name in generated docs
+    toVersion?: DeltaVersion,
+  ): Promise<TableDelta> {
+    throw new Error("table.delta is only supported on LanceDB Embedded tables");
+  }
+
+  /**
+   * Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+   * Requires table Ownership and parent Usage. Retention inherits from the table
+   * then deployment when omitted. Local/historical handles are unsupported.
+   * Before submission, disable/drain automatic cleanup and prevent other cleanup,
+   * tag/branch publication and restore until completion, including direct clients.
+   * Coordination is not enforced by the server. Cancellation cannot undo deletion
+   * or prove storage I/O stopped. Preview is available without deletion.
+   * Wait timeout leaves work running; save the ID and reopen with db.openJob().
+   * @example
+   * const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+   * const result = await job.wait({ timeoutMs: 600000 });
+   */
+  async cleanupAsync(_options?: CleanupOptions): Promise<Job<CleanupResult>> {
+    throw new Error("durable cleanup jobs are only supported on remote tables");
+  }
+
+  /** Preview version deletion without creating a job. Execution re-evaluates current state. */
+  async explainCleanup(_options?: CleanupOptions): Promise<CleanupPlan> {
+    throw new Error("cleanup previews require LanceDB Enterprise");
+  }
+
+  /**
+   * Submit remote compaction and return its durable job after acceptance.
+   *
+   * Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+   * a compatible remote server and table Ownership plus parent Usage. Local and
+   * historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+   * Waiting tracks the rewrite itself and returns actual row/file statistics.
+   * Missing result payloads are errors; older workers can omit file counts.
+   * Status, progress, events and cancellation reuse the generic HTTP job APIs.
+   * Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+   *
+   * @example
+   * const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+   * const result = await job.wait();
+   * console.log(result.rowsSucceeded, result.fragmentsRemoved);
+   */
+  async compactAsync(
+    _options?: CompactionOptions,
+  ): Promise<Job<CompactionResult>> {
+    throw new Error("compaction jobs are only supported on remote tables");
+  }
+
   /**
    * Optimize the on-disk data and indices for better performance.
    *
@@ -1499,8 +1879,37 @@ export class LocalTable extends Table {
     await this.inner.prewarmIndex(name);
   }
 
-  async prewarmData(columns?: string[]): Promise<void> {
-    await this.inner.prewarmData(columns);
+  async prewarmData(options?: PrewarmDataOptions): Promise<void>;
+  async prewarmData(columns?: string[]): Promise<void>;
+  async prewarmData(
+    columnsOrOptions?: string[] | PrewarmDataOptions,
+  ): Promise<void> {
+    await this.prewarmDataAsync(
+      Array.isArray(columnsOrOptions)
+        ? { columns: columnsOrOptions }
+        : columnsOrOptions,
+    );
+  }
+
+  async prewarmDataAsync(
+    options?: PrewarmDataOptions,
+  ): Promise<Job<PrewarmDataResult>> {
+    return new Job(
+      await this.inner.prewarmDataAsync(
+        await toNativePrewarmDataOptions(options),
+      ),
+      decodePrewarmDataResult,
+    );
+  }
+
+  async explainPrewarmData(
+    options?: PrewarmDataOptions,
+  ): Promise<PrewarmDataPlan> {
+    return decodePrewarmDataPlan(
+      await this.inner.explainPrewarmData(
+        await toNativePrewarmDataOptions(options),
+      ),
+    );
   }
 
   async waitForIndex(
@@ -1569,6 +1978,19 @@ export class LocalTable extends Table {
     return files.map((file) =>
       file == null ? null : BlobFile.fromNative(file),
     );
+  }
+
+  async openBlobFile(
+    descriptor: BlobDescriptor | null,
+    options?: BlobReadOptions,
+  ): Promise<BlobFile | null> {
+    if (descriptor == null) {
+      return null;
+    }
+    const file = await runWithSignal(options?.signal, (signal) =>
+      this.inner.openBlobFile(toNativeBlobDescriptor(descriptor), signal),
+    );
+    return BlobFile.fromNative(file);
   }
 
   query(): Query {
@@ -1720,7 +2142,56 @@ export class LocalTable extends Table {
     options?: FunctionErrorsOptions,
   ): Promise<FunctionErrors> {
     validateNonNegativeInteger(options?.limit, "limit");
-    return await this.inner.functionErrors(options);
+    return this.inner.functionErrors(options);
+  }
+
+  override async retryFailed(
+    column: string,
+    options?: RetryFailedOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    const {
+      errorType,
+      jobId,
+      includeQuarantined,
+      functionVersion,
+      ...refresh
+    } = options ?? {};
+    const job = await this.inner.refreshColumnAsync(column, refresh, {
+      retryErrors: true,
+      retryErrorType: errorType,
+      retryJobId: jobId,
+      includeQuarantined,
+      functionVersion,
+      recompute: functionVersion === undefined ? undefined : "failed",
+    });
+    return new Job(job, decodeRefreshColumnJobResult);
+  }
+
+  override async upgradeColumn(
+    column: string,
+    options: UpgradeColumnOptions,
+  ): Promise<Job<RefreshColumnJobResult>> {
+    const { version, recompute = "all", ...refresh } = options;
+    const job = await this.inner.refreshColumnAsync(column, refresh, {
+      functionVersion: version,
+      recompute,
+    });
+    return new Job(job, decodeRefreshColumnJobResult);
+  }
+
+  override async quarantineFailed(
+    column: string,
+    options?: FunctionQuarantineOptions,
+  ): Promise<number> {
+    return this.inner.quarantineFunctionErrors(column, options);
+  }
+
+  override async functionProvenance(
+    column: string,
+    options?: FunctionProvenanceOptions,
+  ): Promise<FunctionProvenance> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    return this.inner.functionProvenance(column, options);
   }
 
   async functionColumnStatuses(
@@ -1751,8 +2222,21 @@ export class LocalTable extends Table {
   async refreshMaterializedView(
     sourceVersion?: number,
     full?: boolean,
+    totalCpuMillis?: number,
+    totalMemoryBytes?: number,
+    totalGpuCount?: number,
+    gpuClass?: string,
+    gpuCount?: number,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion, full);
+    return await this.inner.refreshMaterializedView(
+      sourceVersion,
+      full,
+      totalCpuMillis,
+      totalMemoryBytes,
+      totalGpuCount,
+      gpuClass,
+      gpuCount,
+    );
   }
 
   async materializedViewDefinition(): Promise<string> {
@@ -1817,6 +2301,20 @@ export class LocalTable extends Table {
       | undefined;
   }
 
+  async getTableOverrides(): Promise<Record<string, unknown>> {
+    return await this.inner.getTableOverrides();
+  }
+
+  async updateTableOverrides(
+    overrides: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return await this.inner.updateTableOverrides(overrides);
+  }
+
+  async resetTableOverrides(): Promise<Record<string, unknown>> {
+    return await this.inner.resetTableOverrides();
+  }
+
   async closeRTEWriters(): Promise<void> {
     return await this.inner.closeRTEWriters();
   }
@@ -1854,6 +2352,18 @@ export class LocalTable extends Table {
     await this.inner.checkoutLatest();
   }
 
+  async delta(
+    fromVersion: DeltaVersion,
+    toVersion?: DeltaVersion,
+  ): Promise<TableDelta> {
+    return new TableDelta(
+      await this.inner.delta(
+        toNativeDeltaRef(fromVersion),
+        toVersion === undefined ? undefined : toNativeDeltaRef(toVersion),
+      ),
+    );
+  }
+
   async listVersions(): Promise<Version[]> {
     return (await this.inner.listVersions()).map((version) => ({
       version: version.version,
@@ -1878,20 +2388,33 @@ export class LocalTable extends Table {
     return this.inner.currentBranch() ?? null;
   }
 
+  async compactAsync(
+    options?: CompactionOptions,
+  ): Promise<Job<CompactionResult>> {
+    validateCompactionOptions(options);
+    return new Job(
+      await this.inner.compactAsync(options),
+      decodeCompactionResult,
+    );
+  }
+
+  async cleanupAsync(options?: CleanupOptions): Promise<Job<CleanupResult>> {
+    validateCleanupOptions(options);
+    return new Job(
+      await this.inner.cleanupAsync(options?.minAgeSeconds),
+      decodeCleanupResult,
+    );
+  }
+
+  async explainCleanup(options?: CleanupOptions): Promise<CleanupPlan> {
+    validateCleanupOptions(options);
+    return decodeCleanupPlan(
+      await this.inner.explainCleanup(options?.minAgeSeconds),
+    );
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    // JavaScript callers can supply extra keys that TypeScript would reject.
-    // Refuse them before the native binding can silently discard a work limit.
-    const supported = new Set([
-      "targetRowsPerFragment",
-      "maxSourceRows",
-      "ioBufferSize",
-      "batchSize",
-    ]);
-    for (const key of Object.keys(options?.compactionOptions ?? {})) {
-      if (!supported.has(key)) {
-        throw new Error(`Unsupported compaction option: ${key}`);
-      }
-    }
+    validateCompactionOptions(options?.compactionOptions);
     return await this.inner.optimize(
       options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
@@ -2097,6 +2620,251 @@ export interface CherryPickResult {
 }
 
 /**
+ * Options for creating a branch from a named source.
+ */
+export interface CreateBranchOptions {
+  /**
+   * Tag to fork from. The tag keeps the branch and version it points to.
+   * Cannot be combined with `fromRef` or `fromVersion`.
+   */
+  fromTag: string;
+}
+
+/**
+ * A handle for reading changes between two pinned table versions.
+ *
+ * Created by {@link Table.delta}. Endpoints are fixed at creation; later writes
+ * or tag moves do not change this delta.
+ */
+export class TableDelta {
+  readonly #inner: NativeTableDelta;
+
+  /**
+   * Construct a table-delta handle. Internal use only.
+   * @hidden
+   */
+  constructor(inner: NativeTableDelta) {
+    this.#inner = inner;
+  }
+
+  /** The exclusive start version, as an exact u64 bigint. */
+  get beginVersion(): bigint {
+    return this.#inner.beginVersion();
+  }
+
+  /** The inclusive end version, as an exact u64 bigint. */
+  get endVersion(): bigint {
+    return this.#inner.endVersion();
+  }
+
+  /** Stream rows inserted in `(beginVersion, endVersion]`. */
+  insertedRows(): TableDeltaReader {
+    return tableDeltaReader(() => this.#inner.insertedRows());
+  }
+
+  /** Stream rows updated in `(beginVersion, endVersion]`. */
+  updatedRows(): TableDeltaReader {
+    return tableDeltaReader(() => this.#inner.updatedRows());
+  }
+
+  /** Stream inserted and updated rows in `(beginVersion, endVersion]`. */
+  upsertedRows(): TableDeltaReader {
+    return tableDeltaReader(() => this.#inner.upsertedRows());
+  }
+
+  /** Stream deleted row IDs. Each batch has one `_rowid: uint64` column. */
+  deletedRowIds(): TableDeltaReader {
+    return tableDeltaReader(() => this.#inner.deletedRowIds());
+  }
+
+  /** List readable transactions committed in `(beginVersion, endVersion]`. */
+  async listTransactions(): Promise<TableDeltaTransaction[]> {
+    const transactions = await this.#inner.listTransactions();
+    return transactions.map((transaction) => ({
+      readVersion: transaction.readVersion,
+      uuid: transaction.uuid,
+      operation: transaction.operation,
+      tag: transaction.tag ?? undefined,
+      transactionProperties: transaction.transactionProperties ?? undefined,
+    }));
+  }
+}
+
+function toNativeDeltaRef(value: DeltaVersion): NativeDeltaRef {
+  if (typeof value === "string") {
+    if (value.length === 0) {
+      throw new Error("delta tag must be a non-empty string");
+    }
+    return { tag: value };
+  }
+  if (typeof value === "bigint") {
+    if (value <= 0n) {
+      throw new Error("delta version must be a positive u64 bigint");
+    }
+    return { version: value };
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      "delta version must be a positive safe integer; use bigint for larger versions",
+    );
+  }
+  return { version: BigInt(value) };
+}
+
+function tableDeltaReader(
+  open: () => Promise<NativeBatchIterator>,
+): TableDeltaReader {
+  return new TableDeltaReaderImpl(open);
+}
+
+class TableDeltaReaderImpl implements TableDeltaReader {
+  readonly #open: () => Promise<NativeBatchIterator>;
+  #setup?: Promise<NativeBatchIterator>;
+  #schema?: Schema;
+  #schemaSetup?: Promise<Schema>;
+  #iterator?: AsyncIterator<RecordBatch>;
+  #error?: unknown;
+  #done = false;
+  #pullQueue: Promise<void> = Promise.resolve();
+
+  constructor(open: () => Promise<NativeBatchIterator>) {
+    this.#open = open;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RecordBatch> {
+    return this;
+  }
+
+  async schema(): Promise<Schema> {
+    if (this.#schema !== undefined) {
+      return this.#schema;
+    }
+    if (this.#error !== undefined) {
+      throw this.#error;
+    }
+    if (this.#schemaSetup === undefined) {
+      this.#schemaSetup = this.#loadSchema();
+    }
+    return this.#schemaSetup;
+  }
+
+  async #loadSchema(): Promise<Schema> {
+    try {
+      const native = await this.#getNative();
+      const schema = tableFromIPC(await native.schema()).schema;
+      this.#schema = schema;
+      return schema;
+    } catch (error) {
+      return this.#fail(error);
+    }
+  }
+
+  next(): Promise<IteratorResult<RecordBatch>> {
+    return this.#serialize(() => this.#pull());
+  }
+
+  async return(): Promise<IteratorResult<RecordBatch>> {
+    await this.#serialize(async () => {
+      this.#done = true;
+      await this.#release();
+    });
+    return { done: true, value: undefined };
+  }
+
+  async throw(error?: unknown): Promise<IteratorResult<RecordBatch>> {
+    await this.#serialize(async () => {
+      this.#done = true;
+      await this.#release();
+    });
+    throw error;
+  }
+
+  async #pull(): Promise<IteratorResult<RecordBatch>> {
+    if (this.#error !== undefined) {
+      throw this.#error;
+    }
+    if (this.#done) {
+      return { done: true, value: undefined };
+    }
+
+    // Capture the schema before polling the reader's shared native iterator.
+    await this.schema();
+    try {
+      const result = await this.#getIterator().next();
+      if (result.done) {
+        this.#done = true;
+        await this.#release();
+      }
+      return result;
+    } catch (error) {
+      return this.#fail(error);
+    }
+  }
+
+  #getIterator(): AsyncIterator<RecordBatch> {
+    if (this.#iterator === undefined) {
+      this.#iterator = RecordBatchIterator(this.#getNative())[
+        Symbol.asyncIterator
+      ]();
+    }
+    return this.#iterator;
+  }
+
+  async #getNative(): Promise<NativeBatchIterator> {
+    if (this.#error !== undefined) {
+      throw this.#error;
+    }
+    if (this.#done) {
+      throw new Error("table delta reader is already consumed");
+    }
+    if (this.#setup === undefined) {
+      try {
+        this.#setup = this.#open();
+      } catch (error) {
+        return this.#fail(error);
+      }
+    }
+    try {
+      return await this.#setup;
+    } catch (error) {
+      return this.#fail(error);
+    }
+  }
+
+  async #fail(error: unknown): Promise<never> {
+    if (this.#error === undefined) {
+      this.#done = true;
+      this.#error = error;
+      await this.#release();
+    }
+    throw this.#error;
+  }
+
+  async #release(): Promise<void> {
+    const iterator = this.#iterator;
+    this.#iterator = undefined;
+    this.#setup = undefined;
+    if (iterator?.return !== undefined) {
+      try {
+        await iterator.return();
+      } catch {
+        // The native stream already failed or completed; releasing the
+        // reference is enough.
+      }
+    }
+  }
+
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.#pullQueue.then(operation, operation);
+    this.#pullQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+}
+
+/**
  * Branch manager for a {@link Table}.
  *
  * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
@@ -2119,6 +2887,18 @@ export class Branches {
   }
 
   /**
+   * Create a branch from a tag and return a handle scoped to it.
+   *
+   * @param name Name of the new branch.
+   * @param options Named source. `fromTag` keeps the tag's branch and version.
+   * @example
+   * ```typescript
+   * const branches = await table.branches();
+   * const branch = await branches.create("exp", { fromTag: "baseline" });
+   * ```
+   */
+  async create(name: string, options: CreateBranchOptions): Promise<Table>;
+  /**
    * Create a branch and return a handle scoped to it.
    *
    * @param name Name of the new branch.
@@ -2129,8 +2909,35 @@ export class Branches {
     name: string,
     fromRef?: string,
     fromVersion?: number,
+  ): Promise<Table>;
+  async create(
+    name: string,
+    fromRefOrOptions?: string | CreateBranchOptions,
+    fromVersion?: number,
   ): Promise<Table> {
-    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
+    if (typeof fromRefOrOptions === "object" && fromRefOrOptions !== null) {
+      // The public options shape only adds `fromTag`. Forward any runtime
+      // `fromRef`/`fromVersion` fields so the native check remains the single
+      // authority for rejecting mixed sources before `main` normalization.
+      const options = fromRefOrOptions as CreateBranchOptions & {
+        fromRef?: string;
+        fromVersion?: number;
+      };
+      if (typeof options.fromTag !== "string") {
+        throw new Error("branch source options must include fromTag");
+      }
+      return new LocalTable(
+        await this.#inner.create(
+          name,
+          options.fromRef,
+          fromVersion ?? options.fromVersion,
+          options.fromTag,
+        ),
+      );
+    }
+    return new LocalTable(
+      await this.#inner.create(name, fromRefOrOptions, fromVersion),
+    );
   }
 
   /**
@@ -2190,4 +2997,41 @@ function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
     }
     return BigInt(id);
   });
+}
+
+function validateCompactionOptions(options?: CompactionOptions): void {
+  // JavaScript callers can supply extra keys that TypeScript would reject.
+  // Refuse them before the native binding can silently discard a work limit.
+  const supported = new Set([
+    "targetRowsPerFragment",
+    "maxSourceRows",
+    "ioBufferSize",
+    "batchSize",
+  ]);
+  for (const key of Object.keys(options ?? {})) {
+    if (!supported.has(key)) {
+      throw new Error(`Unsupported compaction option: ${key}`);
+    }
+  }
+}
+
+async function toNativePrewarmDataOptions(options?: PrewarmDataOptions) {
+  validatePrewarmDataOptions(options);
+  return options === undefined
+    ? undefined
+    : {
+        ...options,
+        parameters:
+          options.parameters === undefined
+            ? undefined
+            : await toParameterBuffer(options.parameters),
+      };
+}
+
+function validatePrewarmDataOptions(options?: PrewarmDataOptions): void {
+  for (const key of Object.keys(options ?? {})) {
+    if (!["columns", "filter", "concurrency", "parameters"].includes(key)) {
+      throw new Error(`Unsupported data prewarm option: ${key}`);
+    }
+  }
 }

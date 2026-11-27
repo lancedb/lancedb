@@ -29,8 +29,10 @@ Selecting a parent struct or directly aliasing a blob or struct also returns
 bytes. Blobs inside lists keep their descriptors. Arbitrary projection
 expressions are not materialized as bytes.
 
-The rows and the bytes come from the same table version. If the table
-changes while the query runs, the query runs again, up to three times.
+The rows and bytes come from the same snapshot. Remote queries require
+authoritative query version and snapshot identity headers, verified again
+by the blob response. Older servers can still return `"descriptions"`.
+Local queries retry up to three times if the table changes while they run.
 
 #### Example
 

@@ -9,7 +9,7 @@ import functools
 import importlib.util
 import inspect
 import types
-from datetime import date
+from datetime import date, datetime, timedelta
 import http.server
 import json
 import os
@@ -19,17 +19,21 @@ import sys
 import typing
 import urllib.parse
 import warnings
-from typing import Optional
+from decimal import Decimal
+from typing import Annotated, Optional
 
 import pyarrow as pa
 import pytest
 
 import lancedb
 from lancedb import BlobReader
-from lancedb.db import AsyncConnection
+from lancedb.db import AsyncConnection, DBConnection, LanceDBConnection
 from lancedb.functions import (
+    FunctionRegistrationRequest,
+    FunctionSignature,
     FunctionVersion,
     HuggingFaceModel,
+    PythonEnvironmentBuild,
     PythonRuntimeSpec,
     SecretBinding,
     SecretReference,
@@ -81,6 +85,63 @@ def analyze_caption(caption: str) -> str:
     return caption.strip()
 
 
+def _function_version_with_resolved_environment():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environment"] = {
+        "packages": [
+            {
+                "name": "torch",
+                "version": "2.9.0+cu130",
+                "source": "https://packages.example/simple",
+            },
+            {"name": "transformers", "version": "4.57.1"},
+        ],
+        "provenance": {
+            "configured_index_urls": ["https://packages.example/simple"],
+            "configured_find_links": ["https://downloads.example/wheels"],
+            "resolved_indexes": ["https://packages.example/simple"],
+            "cuda_toolkit": "12.8",
+            "torch_version": "torch==2.9.0+cu130",
+        },
+        "warnings": [
+            "transformers resolved to transformers==4.57.1 but is not pinned "
+            "exactly; add transformers==4.57.1 to pin it."
+        ],
+    }
+    return version
+
+
+def _function_version_with_resolved_environments():
+    version = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    version["runtime"] = json.loads(
+        normalize_score.registration_request.runtime.to_canonical_json()
+    )
+    version["resolved_environments"] = {
+        "linux/amd64": {
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple",
+                }
+            ],
+            "warnings": ["amd64 environment warning"],
+        },
+        "linux/arm64": {
+            "packages": [],
+            "warnings": ["arm64 environment warning"],
+        },
+    }
+    return version
+
+
 def test_scalar_function_matches_shared_registration_golden_and_remains_callable():
     assert isinstance(normalize_score, FunctionDefinition)
     assert normalize_score(25.0) == 0.25
@@ -95,6 +156,118 @@ def test_scalar_function_matches_shared_registration_golden_and_remains_callable
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def test_refresh_lock_is_a_registration_option_not_part_of_identity():
+    default = normalize_score.registration_request
+    old_json = default.to_canonical_json()
+    assert "refresh_lock" not in json.loads(old_json)
+
+    refreshed = default.with_refresh_lock(True)
+    payload = json.loads(refreshed.to_canonical_json())
+    assert payload["refresh_lock"] is True
+    assert (
+        FunctionRegistrationRequest.from_json(
+            refreshed.to_canonical_json()
+        ).refresh_lock
+        is True
+    )
+    assert refreshed.artifact.digest == default.artifact.digest
+    assert refreshed.runtime.digest == default.runtime.digest
+    assert default.with_refresh_lock(False).to_canonical_json() == old_json
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        default.with_refresh_lock(1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exist_ok", [False, True])
+async def test_async_create_function_forwards_refresh_lock(exist_ok):
+    calls = []
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            calls.append((json.loads(request_json), namespace_path, exist_ok))
+            return object()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    await connection.create_function_async(normalize_score)
+    await connection.create_function_async(
+        normalize_score, refresh_lock=True, exist_ok=exist_ok, namespace_path=["team"]
+    )
+    with pytest.raises(ValueError, match="refresh_lock must be a boolean"):
+        await connection.create_function_async(normalize_score, refresh_lock=1)
+
+    assert len(calls) == 2
+    assert "refresh_lock" not in calls[0][0]
+    assert calls[0][1:] == (None, False)
+    assert calls[1][0]["refresh_lock"] is True
+    assert calls[1][1:] == (["team"], exist_ok)
+
+
+@pytest.mark.parametrize("exist_ok", [False, True])
+def test_sync_create_function_paths_forward_refresh_lock(exist_ok):
+    calls = []
+
+    class AsyncInner:
+        async def create_function_async(
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
+        ):
+            calls.append(("wrapped", refresh_lock, namespace_path, exist_ok))
+            return object()
+
+    for connection_type in (LanceDBConnection, RemoteDBConnection):
+        connection = object.__new__(connection_type)
+        connection._conn = AsyncInner()
+        connection.create_function_async(
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
+        )
+
+    class BlockingConnection:
+        def create_function_async(
+            self,
+            definition,
+            *,
+            secrets=None,
+            exist_ok=False,
+            namespace_path=None,
+            refresh_lock=False,
+        ):
+            calls.append(("blocking", refresh_lock, namespace_path, exist_ok))
+
+            class ImmediateJob:
+                def wait(self):
+                    return "version"
+
+            return ImmediateJob()
+
+    blocking = BlockingConnection()
+    assert (
+        DBConnection.create_function(
+            blocking,
+            normalize_score,
+            refresh_lock=True,
+            exist_ok=exist_ok,
+            namespace_path=["team"],
+        )
+        == "version"
+    )
+    assert calls == [
+        ("wrapped", True, ["team"], exist_ok),
+        ("wrapped", True, ["team"], exist_ok),
+        ("blocking", True, ["team"], exist_ok),
+    ]
 
 
 def test_function_declares_pinned_hugging_face_models():
@@ -661,7 +834,7 @@ def test_function_image_requires_digest_reference(image):
 def test_function_gpu_marker_uses_gpu_runtime():
     with pytest.warns(UserWarning, match="uses a scalar callable"):
 
-        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g")
+        @function(pip=["cupy-cuda12x"], gpu=True, gpu_class="a10g", gpu_count=2)
         def double_on_gpu(value: int) -> int:
             return value * 2
 
@@ -669,6 +842,7 @@ def test_function_gpu_marker_uses_gpu_runtime():
     assert request["runtime"]["kind"] == "python_v2"
     assert request["runtime"]["gpu"] is True
     assert request["runtime"]["gpu_class"] == "a10g"
+    assert request["runtime"]["gpus_per_worker"] == 2
 
     @function(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -684,14 +858,29 @@ def test_function_gpu_marker_uses_gpu_runtime():
     def identity(value: int) -> int:
         return value
 
-    for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
-        with pytest.raises(ValueError, match="gpu must be a boolean"):
+    for invalid in [
+        0,
+        1,
+        -1,
+        1.5,
+        "",
+        "true",
+        "1",
+        "a_b",
+        "-a10g",
+        "a10g-",
+        "a" * 64,
+    ]:
+        with pytest.raises(ValueError, match="gpu"):
             function(name="invalid_gpu", gpu=invalid)(identity)
-    for invalid in ["H100", "a_b", "-a10g", "a10g-", "a" * 64]:
+    for enabled in (None, False):
+        for options in ({"gpu_class": "h100"}, {"gpu_count": 2}):
+            with pytest.raises(ValueError, match="require gpu=True"):
+                function(gpu=enabled, **options)(identity)
+    for invalid_class in ("H100", "a_b", "-h100", "h100-", "", "a" * 64):
         with pytest.raises(ValueError, match="gpu_class"):
-            function(name="invalid_gpu_class", gpu=True, gpu_class=invalid)(identity)
-    with pytest.raises(ValueError, match="requires gpu=True"):
-        function(name="gpu_class_without_gpu", gpu_class="a10g")(identity)
+            function(gpu=True, gpu_class=invalid_class)(identity)
+    assert function(gpu=False)(identity).registration_request.runtime.gpu is None
 
     base_runtime = {
         "kind": "python_v2",
@@ -721,6 +910,66 @@ class _GpuScalarFunction:
 class _GpuArrayFunction:
     def __call__(self, value: pa.Array) -> pa.Array:
         return value
+
+
+@pytest.mark.parametrize(
+    "name, count", [(None, 1), ("h100", 2), ("a10g", 4), ("any", 2)]
+)
+def test_gpu_count_is_part_of_runtime_identity(name, count):
+    with pytest.warns(UserWarning):
+        definition = function(gpu=True, gpu_class=name, gpu_count=count)(
+            normalize_score.__wrapped__
+        )
+    runtime = definition.registration_request.runtime
+    assert runtime.gpu is True
+    assert runtime.gpu_class == name
+    assert runtime.gpus_per_worker == count
+    encoded = definition.registration_request.to_canonical_json()
+    assert json.loads(encoded)["runtime"]["gpus_per_worker"] == count
+    different = runtime._copy(update={"gpus_per_worker": count + 1})
+    assert runtime.digest != different.digest
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5, "2", 2**32])
+def test_gpu_annotation_rejects_invalid_counts(count):
+    with pytest.raises(ValueError, match="gpu_count"):
+        function(gpu=True, gpu_count=count)(normalize_score.__wrapped__)
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5, "2", 2**32])
+def test_gpu_wire_count_is_a_strict_positive_uint32(count):
+    with pytest.raises(ValueError):
+        PythonRuntimeSpec.model_validate(
+            {
+                "kind": "python_v2",
+                "python_version": "3.12",
+                "environment": {"kind": "pip"},
+                "gpu": True,
+                "gpus_per_worker": count,
+            }
+        )
+
+
+def test_function_annotation_carries_independent_total_defaults():
+    definition = function(
+        total_cpu_millis=8000,
+        total_memory_bytes=16 * 1024**3,
+        total_gpu_count=0,
+    )(normalize_score.__wrapped__)
+    request = json.loads(definition.registration_request.to_canonical_json())
+    assert request["total_cpu_millis"] == 8000
+    assert request["total_memory_bytes"] == 16 * 1024**3
+    assert request["total_gpu_count"] == 0
+    assert "gpu" not in request["runtime"]
+    for values in (
+        {"total_cpu_millis": 0},
+        {"total_memory_bytes": True},
+        {"total_memory_bytes": 2**64},
+        {"total_gpu_count": -1},
+        {"total_gpu_count": 2**32},
+    ):
+        with pytest.raises(ValueError):
+            function(**values)(normalize_score.__wrapped__)
 
 
 def test_gpu_scalar_warning_names_the_vectorized_alternative():
@@ -883,12 +1132,10 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
         == "large_list<float32>"
     )
     for outside in [
-        pa.timestamp("us"),
-        pa.decimal128(10, 2),
         pa.binary(4),
-        pa.duration("s"),
+        pa.time32("s"),
+        pa.time64("us"),
         pa.list_(pa.float32(), 0),
-        pa.list_(pa.timestamp("us")),
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
             _canonical_arrow_type(outside)
@@ -1212,6 +1459,340 @@ def test_explicit_arrow_schema_is_deterministic():
     assert signature.inputs[0].nullable is True
     assert signature.output.arrow_type == "fixed_size_list<float32, 3>"
     assert signature.output.nullable is False
+
+
+def test_timestamp_annotation_and_explicit_schema_serialization():
+    for unit in ("s", "ms", "us", "ns"):
+        for timezone in (None, "UTC", "America/New_York", "+08:00", "-05:00"):
+            encoded = json.loads(_canonical_arrow_type(pa.timestamp(unit, tz=timezone)))
+            if unit == "us" and timezone is None:
+                assert encoded == {"type": "timestamp"}
+            else:
+                suffix = timezone if timezone is not None else "-"
+                assert encoded == {"type": f"timestamp:{unit}:{suffix}"}
+
+    with pytest.raises(TypeError, match="reserved for no timezone"):
+        _canonical_arrow_type(pa.timestamp("us", tz="-"))
+
+    @function
+    def normalize(
+        ts: Annotated[datetime, pa.timestamp("ns", tz="UTC")],
+    ) -> Annotated[datetime, pa.timestamp("ns", tz="UTC")]:
+        return ts
+
+    signature = normalize.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {"type": "timestamp:ns:UTC"}
+    assert json.loads(signature.output.arrow_type) == {"type": "timestamp:ns:UTC"}
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def optional_timestamp(
+        ts: Optional[Annotated[datetime, pa.timestamp("ms", tz="UTC")]],
+    ) -> int:
+        return 0
+
+    optional_input = optional_timestamp.registration_request.signature.inputs[0]
+    assert optional_input.nullable is True
+    assert json.loads(optional_input.arrow_type) == {"type": "timestamp:ms:UTC"}
+
+    @function
+    def legacy(ts: datetime) -> datetime:
+        return ts
+
+    legacy_signature = legacy.registration_request.signature
+    assert json.loads(legacy_signature.inputs[0].arrow_type) == {"type": "timestamp"}
+    assert json.loads(legacy_signature.output.arrow_type) == {"type": "timestamp"}
+    legacy_round_trip = FunctionSignature.from_json(
+        legacy_signature.to_canonical_json()
+    )
+    assert legacy_round_trip.inputs[0].arrow_type == '{"type":"timestamp"}'
+
+    input_schema = pa.schema(
+        [pa.field("ts", pa.timestamp("ms", tz="America/New_York"), nullable=True)]
+    )
+    output_schema = pa.schema(
+        [
+            pa.field("ts", pa.timestamp("ns", tz="+08:00"), nullable=True),
+            pa.field("elapsed", pa.duration("ms"), nullable=False),
+        ]
+    )
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def nested(ts):
+        return {"ts": ts, "elapsed": None}
+
+    nested_signature = nested.registration_request.signature
+    assert nested_signature.inputs[0].nullable is True
+    assert json.loads(nested_signature.inputs[0].arrow_type) == {
+        "type": "timestamp:ms:America/New_York"
+    }
+    assert nested_signature.output.kind == "named_struct"
+    assert nested_signature.output.fields[0].nullable is True
+    assert json.loads(nested_signature.output.fields[0].arrow_type) == {
+        "type": "timestamp:ns:+08:00"
+    }
+    assert json.loads(nested_signature.output.fields[1].arrow_type) == {
+        "type": "duration:ms"
+    }
+
+    list_type = pa.list_(pa.field("item", pa.timestamp("ms", tz="UTC"), nullable=False))
+    assert json.loads(_canonical_arrow_type(list_type)) == {
+        "type": "list",
+        "fields": [
+            {
+                "name": "item",
+                "nullable": False,
+                "type": {"type": "timestamp:ms:UTC"},
+            }
+        ],
+    }
+
+
+def test_duration_annotation_and_explicit_schema_serialization():
+    for unit in ("s", "ms", "us", "ns"):
+        encoded = json.loads(_canonical_arrow_type(pa.duration(unit)))
+        expected = (
+            {"type": "duration"} if unit == "us" else {"type": f"duration:{unit}"}
+        )
+        assert encoded == expected
+
+    @function
+    def elapsed(
+        value: Annotated[timedelta, pa.duration("s")],
+    ) -> Annotated[timedelta, pa.duration("ns")]:
+        return value
+
+    signature = elapsed.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {"type": "duration:s"}
+    assert json.loads(signature.output.arrow_type) == {"type": "duration:ns"}
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def optional_elapsed(
+        value: Optional[Annotated[timedelta, pa.duration("ms")]],
+    ) -> int:
+        return 0
+
+    optional_input = optional_elapsed.registration_request.signature.inputs[0]
+    assert optional_input.nullable is True
+    assert json.loads(optional_input.arrow_type) == {"type": "duration:ms"}
+
+    with pytest.raises(
+        TypeError, match="timedelta Function annotations require an explicit unit"
+    ):
+
+        @function
+        def missing(value: timedelta) -> timedelta:
+            return value
+
+    input_schema = pa.schema([pa.field("elapsed", pa.duration("ms"), nullable=True)])
+    output_schema = pa.field("result", pa.duration("us"), nullable=False)
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(elapsed: timedelta) -> timedelta:
+        return elapsed
+
+    explicit_signature = explicit.registration_request.signature
+    assert explicit_signature.inputs[0].nullable is True
+    assert json.loads(explicit_signature.inputs[0].arrow_type) == {
+        "type": "duration:ms"
+    }
+    assert json.loads(explicit_signature.output.arrow_type) == {"type": "duration"}
+    explicit_round_trip = FunctionSignature.from_json(
+        explicit_signature.to_canonical_json()
+    )
+    assert explicit_round_trip.output.arrow_type == '{"type":"duration"}'
+
+
+def test_map_annotation_and_explicit_schema_serialization():
+    @function
+    def map_round_trip(values: dict[str, int]) -> dict[str, int]:
+        return values
+
+    signature = map_round_trip.registration_request.signature
+    expected = {
+        "type": "map",
+        "fields": [
+            {
+                "name": "entries",
+                "nullable": False,
+                "type": {
+                    "type": "struct",
+                    "fields": [
+                        {
+                            "name": "key",
+                            "nullable": False,
+                            "type": {"type": "utf8"},
+                        },
+                        {
+                            "name": "value",
+                            "nullable": False,
+                            "type": {"type": "int64"},
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+    assert json.loads(signature.inputs[0].arrow_type) == expected
+    assert json.loads(signature.output.arrow_type) == expected
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+
+    @function
+    def nullable_values(
+        values: dict[str, Optional[int]],
+    ) -> dict[str, Optional[int]]:
+        return values
+
+    nullable_signature = nullable_values.registration_request.signature
+    nullable_map = json.loads(nullable_signature.inputs[0].arrow_type)
+    assert nullable_map["fields"][0]["type"]["fields"][1] == {
+        "name": "value",
+        "nullable": True,
+        "type": {"type": "int64"},
+    }
+
+    input_schema = pa.schema(
+        [
+            pa.field(
+                "values",
+                pa.map_(pa.string(), pa.field("custom", pa.int64(), nullable=True)),
+                nullable=False,
+            )
+        ]
+    )
+    output_schema = pa.field(
+        "result",
+        pa.map_(pa.string(), pa.field("value", pa.int64(), nullable=False)),
+        nullable=False,
+    )
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(values):
+        return {}
+
+    explicit_signature = explicit.registration_request.signature
+    explicit_input = json.loads(explicit_signature.inputs[0].arrow_type)
+    assert explicit_input["fields"][0]["type"]["fields"][1] == {
+        "name": "custom",
+        "nullable": True,
+        "type": {"type": "int64"},
+    }
+    explicit_output = json.loads(explicit_signature.output.arrow_type)
+    assert explicit_output["fields"][0]["type"]["fields"][1]["nullable"] is False
+
+
+def test_map_rejects_unsupported_boundaries():
+    with pytest.raises(TypeError, match="map keys_sorted=true"):
+        _canonical_arrow_type(pa.map_(pa.string(), pa.int64(), keys_sorted=True))
+    with pytest.raises(TypeError, match="map keys must be non-nullable utf8"):
+        _canonical_arrow_type(pa.map_(pa.int64(), pa.int64()))
+    with pytest.raises(TypeError, match="Blob v2 fields nested under"):
+        _canonical_arrow_type(pa.map_(pa.string(), lancedb.blob("image").type))
+    with pytest.raises(TypeError, match="map keys must be str"):
+
+        @function
+        def invalid_keys(values: dict[int, int]) -> int:
+            return 0
+
+
+def test_decimal_annotation_and_explicit_schema_serialization():
+    @function
+    def price(
+        amount: Annotated[Decimal, pa.decimal128(10, 2)],
+    ) -> Annotated[Decimal, pa.decimal256(50, 4)]:
+        return Decimal("1.0000")
+
+    signature = price.registration_request.signature
+    assert json.loads(signature.inputs[0].arrow_type) == {
+        "type": "decimal128",
+        "length": 10002,
+    }
+    assert json.loads(signature.output.arrow_type) == {
+        "type": "decimal256",
+        "length": 50004,
+    }
+    round_trip = FunctionSignature.from_json(signature.to_canonical_json())
+    assert round_trip.inputs[0].arrow_type == signature.inputs[0].arrow_type
+    assert round_trip.output.arrow_type == signature.output.arrow_type
+    assert json.loads(_canonical_arrow_type(pa.decimal128(10, -2))) == {
+        "type": "decimal128",
+        "length": 9998,
+    }
+    decimal_map = json.loads(
+        _canonical_arrow_type(pa.map_(pa.string(), pa.decimal128(10, 2)))
+    )
+    assert decimal_map["fields"][0]["type"]["fields"][1]["type"] == {
+        "type": "decimal128",
+        "length": 10002,
+    }
+
+    input_schema = pa.schema([pa.field("amount", pa.decimal128(12, 2), nullable=False)])
+    output_schema = pa.field("result", pa.decimal256(60, 6), nullable=False)
+
+    @function(input_schema=input_schema, output_schema=output_schema)
+    def explicit(amount: Decimal) -> Decimal:
+        return amount
+
+    explicit_signature = explicit.registration_request.signature
+    assert json.loads(explicit_signature.inputs[0].arrow_type) == {
+        "type": "decimal128",
+        "length": 12002,
+    }
+    assert json.loads(explicit_signature.output.arrow_type) == {
+        "type": "decimal256",
+        "length": 60006,
+    }
+
+    with pytest.raises(
+        TypeError, match="Decimal Function annotations require precision and scale"
+    ):
+
+        @function
+        def missing(amount: Decimal) -> Decimal:
+            return amount
+
+
+def test_nullable_scalar_output_annotation_and_explicit_schema():
+    input_schema = pa.schema([pa.field("value", pa.int64(), nullable=False)])
+
+    @function(input_schema=input_schema)
+    def optional_annotation(value: int) -> Optional[int]:
+        return None if value == 0 else value * 2
+
+    @function(input_schema=input_schema)
+    def optional_union(value: int) -> int | None:
+        return None if value == 0 else value * 2
+
+    @function(
+        input_schema=input_schema,
+        output_schema=pa.field("result", pa.int64(), nullable=True),
+    )
+    def explicit_schema(value: int):
+        return None if value == 0 else value * 2
+
+    for definition in (optional_annotation, optional_union, explicit_schema):
+        signature = definition.registration_request.signature
+        assert (signature.output.kind, signature.output.arrow_type) == (
+            "scalar",
+            "int64",
+        )
+        assert signature.output.nullable is True
+        assert json.loads(signature.to_canonical_json())["output"] == {
+            "kind": "scalar",
+            "arrow_type": "int64",
+            "nullable": True,
+        }
+        assert (
+            FunctionSignature.from_json(signature.to_canonical_json()).output.nullable
+            is True
+        )
 
 
 def test_blob_fields_use_the_scalar_function_semantic_type():
@@ -1848,12 +2429,6 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def unsupported(value: set[str]) -> str:
             return ""
 
-    with pytest.raises(ValueError, match="output must be non-nullable"):
-
-        @function
-        def nullable_output(value: int) -> Optional[int]:
-            return value
-
     with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @function(input_schema=pa.schema([pa.field("value", pa.int64())]))
@@ -1873,10 +2448,25 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
 
         @function(
             input_schema=pa.schema([pa.field("value", pa.int64())]),
-            output_schema=pa.field("result", pa.int64(), nullable=True),
+            output_schema=pa.field(
+                "result",
+                pa.struct([pa.field("value", pa.int64(), nullable=False)]),
+                nullable=True,
+            ),
         )
-        def nullable_explicit(value):
-            return value
+        def nullable_struct(value):
+            return {"value": value}
+
+    with pytest.raises(
+        ValueError, match="Blob v2 Function output must be non-nullable"
+    ):
+
+        @function(
+            input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+            output_schema=lancedb.blob("result", nullable=True),
+        )
+        def nullable_blob(image):
+            return image
 
     for invalid_field in [
         pa.field("", pa.int32(), nullable=False),
@@ -2011,6 +2601,251 @@ class _RawFunctionCatalog:
 
     def page_token(self):
         return None
+
+
+def test_function_version_reads_requested_and_resolved_environments():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.runtime is None
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.environment.requested is None
+    assert legacy_version.environment.resolved is None
+
+    payload = _function_version_with_resolved_environment()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.environment.requested is version.runtime
+    assert version.environment.resolved is version.resolved_environment
+    assert version.runtime.kind == "python"
+    resolved = version.resolved_environment
+    assert resolved.packages[0].version == "2.9.0+cu130"
+    assert resolved.packages[0].source == "https://packages.example/simple"
+    assert resolved.packages[1].source is None
+    assert resolved.provenance.torch_version == "torch==2.9.0+cu130"
+    assert resolved.warnings == tuple(payload["resolved_environment"]["warnings"])
+
+    encoded = json.loads(version.to_canonical_json())
+    assert encoded["runtime"]["kind"] == "python"
+    assert encoded["resolved_environment"]["packages"][0]["version"] == "2.9.0+cu130"
+    assert "source" not in encoded["resolved_environment"]["packages"][1]
+    assert (
+        encoded["resolved_environment"]["provenance"]["torch_version"]
+        == "torch==2.9.0+cu130"
+    )
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environment"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "build",
+    [
+        {},
+        {"build": None},
+        {"build": {}},
+        {"build": {"index_url": None}},
+        {"build": {"index_url": 1}},
+        {"build": "invalid-build"},
+        {
+            "build": {
+                "index_url": "https://requested.example/simple/",
+                "find_links": ["https://downloads.example/wheels"],
+            },
+        },
+    ],
+)
+async def test_get_pinned_function_preserves_only_the_requested_index_url(build):
+    payload = _function_version_with_resolved_environment()
+    payload["runtime"]["environment"].update(build)
+    catalog = _RawFunctionCatalog(payload, encode=True)
+    connection = AsyncConnection(catalog)
+
+    version = await connection.get_function(payload["name"], version=1)
+
+    assert catalog.requested_versions == ["1"]
+    assert version.version == "1"
+    requested = version.runtime.environment.build
+    raw_build = build.get("build")
+    index_url = raw_build.get("index_url") if isinstance(raw_build, dict) else None
+    canonical = version.to_canonical_json()
+    encoded = json.loads(canonical)["runtime"]["environment"]
+    if not isinstance(index_url, str):
+        assert requested is None
+        assert "build" not in encoded
+    else:
+        assert isinstance(requested, PythonEnvironmentBuild)
+        assert requested.index_url == index_url
+        assert encoded["build"] == {"index_url": index_url}
+    assert version.resolved_environment.provenance.configured_index_urls == (
+        "https://packages.example/simple",
+    )
+    assert FunctionVersion.from_json(canonical) == version
+
+
+def test_function_version_reads_resolved_environments_by_platform():
+    legacy = json.loads(
+        (FIXTURES / "remote_function_version.canonical.json").read_text()
+    )
+    legacy_version = FunctionVersion.from_json(json.dumps(legacy))
+    assert legacy_version.resolved_environment is None
+    assert legacy_version.resolved_environments == {}
+    assert legacy_version.environment_report == {}
+
+    payload = _function_version_with_resolved_environments()
+    version = FunctionVersion.from_json(json.dumps(payload))
+    assert version.resolved_environment is None
+    assert version.resolved_environments == version.environment_report
+    assert set(version.environment_report) == {"linux/amd64", "linux/arm64"}
+    assert (
+        version.environment_report["linux/amd64"].packages[0].version == "2.9.0+cu130"
+    )
+    assert version.environment_report["linux/arm64"].packages == ()
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+
+    encoded = json.loads(version.to_canonical_json())
+    assert "resolved_environment" not in encoded
+    assert (
+        encoded["resolved_environments"]["linux/amd64"]["packages"][0]["version"]
+        == "2.9.0+cu130"
+    )
+    assert encoded["resolved_environments"]["linux/arm64"]["packages"] == []
+    assert FunctionVersion.from_json(version.to_canonical_json()) == version
+
+    missing_platform = json.loads(json.dumps(payload))
+    del missing_platform["resolved_environments"]["linux/arm64"]
+    missing_version = FunctionVersion.from_json(json.dumps(missing_platform))
+    assert "linux/arm64" not in missing_version.environment_report
+    assert "linux/amd64" in missing_version.environment_report
+
+    empty_map = json.loads(json.dumps(payload))
+    empty_map["resolved_environments"] = {}
+    empty_version = FunctionVersion.from_json(json.dumps(empty_map))
+    assert empty_version.resolved_environments == {}
+    assert "resolved_environments" not in json.loads(empty_version.to_canonical_json())
+
+    invalid = json.loads(json.dumps(payload))
+    del invalid["resolved_environments"]["linux/amd64"]["packages"]
+    with pytest.raises(ValueError):
+        FunctionVersion.from_json(json.dumps(invalid))
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_server_environment_warnings_once():
+    payload = _function_version_with_resolved_environment()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            assert "refresh_lock" not in json.loads(request_json)
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == list(
+        payload["resolved_environment"]["warnings"]
+    )
+    assert version.environment.resolved.warnings == tuple(
+        payload["resolved_environment"]["warnings"]
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+@pytest.mark.asyncio
+async def test_registration_job_emits_per_platform_environment_warnings():
+    payload = _function_version_with_resolved_environments()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(AsyncConnection)
+    connection._inner = Inner()
+    job = await connection.create_function_async(normalize_score)
+    with pytest.warns(UserWarning) as recorded:
+        version = await job.wait()
+    assert [str(w.message) for w in recorded] == [
+        "amd64 environment warning",
+        "arm64 environment warning",
+    ]
+    assert version.environment_report["linux/arm64"].warnings == (
+        "arm64 environment warning",
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert await job.wait() is not None
+    assert caught == []
+
+
+def test_blocking_create_function_emits_server_environment_warnings():
+    payload = _function_version_with_resolved_environment()
+
+    class InnerJob:
+        async def wait(self):
+            return json.dumps(payload)
+
+    class Inner:
+        async def create_function_async(
+            self, request_json, namespace_path=None, *, exist_ok=False
+        ):
+            return InnerJob()
+
+    connection = object.__new__(RemoteDBConnection)
+    connection._conn = AsyncConnection(Inner())
+    with pytest.warns(UserWarning) as recorded:
+        version = DBConnection.create_function(connection, normalize_score)
+    assert [str(w.message) for w in recorded] == list(
+        payload["resolved_environment"]["warnings"]
+    )
+    assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_registration_warnings():
+    payload = _function_version_with_resolved_environment()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment.resolved.packages[0].version == "2.9.0+cu130"
+    assert listed[0].environment.resolved == version.resolved_environment
+
+
+@pytest.mark.asyncio
+async def test_catalog_readback_does_not_replay_per_platform_warnings():
+    payload = _function_version_with_resolved_environments()
+    connection = AsyncConnection(_RawFunctionCatalog(payload, encode=True))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        version = await connection.get_function("embed")
+        listed = [item async for item in connection.list_functions()]
+    assert caught == []
+    assert version.environment_report == listed[0].environment_report
 
 
 def _assert_execution_control_encoding(version):

@@ -221,6 +221,13 @@ and check inserted or deleted counts when the SDK returns them. Repeating a
 merge is only safe when its keys, conditions and update values produce the
 intended result on retry.
 
+To override the transport retry budget for one merge, pass `retries=0` to
+Python's synchronous or asynchronous `builder.execute(data, retries=0)`, or
+use TypeScript's `builder.execute(data, { retries: 0 })`. The override applies
+only to that execution. A larger budget does not make an ambiguous 5xx result
+safe to replay. See [write retry boundaries](/ingestion/insert#performance)
+for the distinction between retryable failures and an unknown commit outcome.
+
 ### Embeddings and expression predicates {#advanced}
 
 When a table uses an [embedding definition](/embedding), behavior depends on

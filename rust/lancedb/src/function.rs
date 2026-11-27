@@ -111,7 +111,7 @@ fn from_json<T: DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(invalid_json)
 }
 
-fn validate_literal(value: &Value) -> Result<()> {
+pub(crate) fn validate_literal(value: &Value) -> Result<()> {
     match value {
         Value::Number(number) if number.is_f64() => Err(Error::InvalidInput {
             message: "floating-point Function literals are not part of the Slice 1 canonical wire contract"
@@ -162,15 +162,23 @@ fn application_has_unknown_nested_fields(value: &Value) -> bool {
         return true;
     }
     application.get("output").is_some_and(|output| {
-        has_unknown_keys(output, &["kind", "arrow_type", "nullable", "fields"])
-            || output
-                .get("fields")
-                .and_then(Value::as_array)
-                .is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
-                })
+        has_unknown_keys(
+            output,
+            &[
+                "kind",
+                "arrow_type",
+                "nullable",
+                "fields",
+                "blob_writer_paths",
+            ],
+        ) || output
+            .get("fields")
+            .and_then(Value::as_array)
+            .is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
+            })
     })
 }
 
@@ -224,6 +232,23 @@ pub struct FunctionResultField {
     pub nullable: bool,
 }
 
+/// One step from the Function result root to a writer-capable Blob v2 leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum BlobWriterPathStep {
+    /// A struct child addressed by its literal Arrow field name.
+    Field { field: String },
+    /// A list value field, independent of its name.
+    ListItem(BlobWriterListItem),
+}
+
+/// The list step in a Blob writer path, encoded as `"item"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobWriterListItem {
+    Item,
+}
+
 /// Scalar or named-struct Function output.
 ///
 /// `kind` remains a string so unknown future result shapes can be decoded.
@@ -236,6 +261,11 @@ pub struct FunctionOutput {
     pub nullable: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FunctionResultField>,
+    /// Writer-capable Blob v2 leaves in `scalar_blob_writer` and
+    /// `named_struct_blob_writer` results. An empty path denotes a scalar
+    /// Blob result; an empty list denotes a result with no writer leaves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blob_writer_paths: Vec<Vec<BlobWriterPathStep>>,
 }
 
 /// Ordered language-neutral Function signature.
@@ -305,6 +335,7 @@ pub enum PythonRuntimeSpec {
     ///     },
     ///     env: BTreeMap::new(),
     ///     gpu_class: Some("a10g".to_string()),
+    ///     gpus_per_worker: std::num::NonZeroU32::new(2),
     /// };
     /// assert!(runtime.requires_gpu());
     /// ```
@@ -312,8 +343,10 @@ pub enum PythonRuntimeSpec {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
-        /// Operator-defined GPU class; absent uses the deployment default.
+        /// Operator-defined GPU class; absent accepts any eligible configured class.
         gpu_class: Option<String>,
+        /// GPUs allocated together to each worker.
+        gpus_per_worker: Option<std::num::NonZeroU32>,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -365,17 +398,30 @@ impl PythonRuntimeSpec {
         matches!(self, Self::PythonV2 { .. })
     }
 
-    /// Operator-defined GPU class, or `None` to use the deployment default.
+    /// Requested GPU class; `None` and `"any"` both accept any eligible class.
+    /// This does not identify the hardware selected for execution.
     pub fn gpu_class(&self) -> Option<&str> {
         match self {
             Self::PythonV2 { gpu_class, .. } => gpu_class.as_deref(),
             _ => None,
         }
     }
+
+    /// GPUs allocated to one worker; zero for CPU runtimes.
+    pub fn gpus_per_worker(&self) -> u32 {
+        match self {
+            Self::PythonV2 {
+                gpus_per_worker, ..
+            } => gpus_per_worker.map_or(1, std::num::NonZeroU32::get),
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct PythonRuntimeV1Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<Value>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -388,6 +434,8 @@ struct PythonRuntimeV1Wire {
 
 #[derive(Deserialize)]
 struct PythonRuntimeV2Wire {
+    #[serde(default)]
+    gpus_per_worker: Option<std::num::NonZeroU32>,
     python_version: String,
     environment: PythonEnvironmentSpec,
     #[serde(default)]
@@ -420,6 +468,11 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                         "python runtime with gpu_class requires kind='python_v2'",
                     ));
                 }
+                if wire.gpus_per_worker.is_some() {
+                    return Err(de::Error::custom(
+                        "gpus_per_worker requires kind='python_v2'",
+                    ));
+                }
                 Ok(Self::Python {
                     python_version: wire.python_version,
                     environment: wire.environment,
@@ -440,6 +493,7 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
                     environment: wire.environment,
                     env: wire.env,
                     gpu_class: wire.gpu_class,
+                    gpus_per_worker: wire.gpus_per_worker,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -460,6 +514,8 @@ impl Serialize for PythonRuntimeSpec {
             gpu: Option<bool>,
             #[serde(skip_serializing_if = "Option::is_none")]
             gpu_class: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpus_per_worker: Option<std::num::NonZeroU32>,
         }
 
         #[derive(Serialize)]
@@ -479,6 +535,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: None,
                 gpu_class: None,
+                gpus_per_worker: None,
             }
             .serialize(serializer),
             Self::PythonV2 {
@@ -486,6 +543,7 @@ impl Serialize for PythonRuntimeSpec {
                 environment,
                 env,
                 gpu_class,
+                gpus_per_worker,
             } => PythonRuntimeRef {
                 kind: "python_v2",
                 python_version,
@@ -493,6 +551,7 @@ impl Serialize for PythonRuntimeSpec {
                 env,
                 gpu: Some(true),
                 gpu_class: gpu_class.as_deref(),
+                gpus_per_worker: *gpus_per_worker,
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -519,6 +578,59 @@ pub struct HuggingFaceModel {
     pub repo: String,
     /// Exact repository commit containing the model snapshot.
     pub revision: String,
+}
+
+/// One installed Python distribution as measured from a Function's baked
+/// environment.
+///
+/// `version` is the complete version string reported by the package metadata,
+/// including local labels such as `+cu130`. `source` is present only when the
+/// submitted lock retained a per-package source; a missing value is unknown and
+/// must not be inferred from other package indexes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedPackage {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Sanitized source and accelerator provenance retained with a resolved
+/// environment.
+///
+/// `configured_*` records what the build was asked to use. `resolved_indexes`
+/// records indexes visible in the submitted lock, so a configured source is
+/// not mistaken for evidence that a package came from it. Empty lists and
+/// absent fields remain absent rather than being synthesized by the client.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedEnvironmentProvenance {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_index_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_find_links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_indexes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_toolkit: Option<String>,
+    /// The fully resolved `torch==<version>` when torch was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torch_version: Option<String>,
+}
+
+/// Actual installed distributions and registration warnings for one native
+/// Function environment.
+///
+/// A missing environment means its measurement is unknown, not an empty
+/// installed-package list. The field keeps the complete versions and only the
+/// provenance the producer recorded; SDK readers do not recompute package
+/// policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedEnvironment {
+    pub packages: Vec<ResolvedPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ResolvedEnvironmentProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A complete OCI Function image. Its digest is independent of catalog names.
@@ -569,6 +681,39 @@ impl<'de> Deserialize<'de> for RowTimeoutSeconds {
     }
 }
 
+// Function inspection includes this build setting alongside the SDK's authored
+// runtime spec. Keep it on the readback model so registration keeps its own wire shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestedPythonRuntime {
+    spec: PythonRuntimeSpec,
+    index_url: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RequestedPythonRuntime {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let document = Value::deserialize(deserializer)?;
+        let index_url = document
+            .pointer("/environment/build/index_url")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let spec: PythonRuntimeSpec =
+            serde_json::from_value(document).map_err(de::Error::custom)?;
+        let index_url = spec.environment().and(index_url);
+        Ok(Self { spec, index_url })
+    }
+}
+
+impl Serialize for RequestedPythonRuntime {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let Some(index_url) = &self.index_url else {
+            return self.spec.serialize(serializer);
+        };
+        let mut document = serde_json::to_value(&self.spec).map_err(serde::ser::Error::custom)?;
+        document["environment"]["build"] = serde_json::json!({"index_url": index_url});
+        document.serialize(serializer)
+    }
+}
+
 /// One immutable Function object revision and its executable artifact.
 ///
 /// The Function is named by its parts, `name` and `namespace_path`, the way a
@@ -578,7 +723,9 @@ impl<'de> Deserialize<'de> for RowTimeoutSeconds {
 /// decoding, but they are not part of this value and are omitted from
 /// canonical JSON. Known fields retain their complete values, while unknown
 /// fields inside the open [`FunctionImage::descriptor`] JSON object remain
-/// available.
+/// available. Single-platform measurements use `resolved_environment`;
+/// multiarchitecture measurements use `resolved_environments`, keyed by OCI
+/// `os/architecture`, without flattening the platforms.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
@@ -620,12 +767,52 @@ pub struct FunctionVersion {
         deserialize_with = "deserialize_max_concurrency"
     )]
     max_concurrency: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_cpu_millis"
+    )]
+    total_cpu_millis: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_memory_bytes"
+    )]
+    total_memory_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_gpu_count"
+    )]
+    total_gpu_count: Option<u32>,
     /// Per-call deadline in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     row_timeout_seconds: Option<RowTimeoutSeconds>,
     /// Result-stability value declared at registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     result_stability: Option<String>,
+    /// The runtime requested at registration, with submitted lock bytes omitted.
+    ///
+    /// This is a specification, not the measured installation. Compare it with
+    /// [`Self::resolved_environment`] when the caller needs actual package
+    /// versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<RequestedPythonRuntime>,
+    /// Actual installed distributions, provenance, and registration warnings.
+    ///
+    /// This is the single-platform compatibility field. `None` on a
+    /// multiarchitecture version is expected; use
+    /// [`Self::resolved_environments`] for its per-platform measurements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_environment: Option<ResolvedEnvironment>,
+    /// Measurements for a multiarchitecture image, keyed by OCI
+    /// `os/architecture`.
+    ///
+    /// Unmeasured platforms are absent. An empty map is unknown, not an
+    /// aggregate of packages from the available platforms. Single-platform
+    /// images use [`Self::resolved_environment`] instead.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    resolved_environments: BTreeMap<String, ResolvedEnvironment>,
 }
 
 impl FunctionVersion {
@@ -684,7 +871,8 @@ impl FunctionVersion {
 
     /// Digest of canonical runtime inputs, when provided by the server.
     ///
-    /// Includes Python version, environment sources, variables, and GPU settings.
+    /// Compare it with the digest of a locally authored runtime. The runtime
+    /// projection on this version can omit inputs needed to reproduce the digest.
     /// A missing digest cannot establish that a local runtime matches. Reusing a
     /// version also requires matching its source and other registration inputs.
     pub fn runtime_digest(&self) -> Option<&str> {
@@ -694,6 +882,21 @@ impl FunctionVersion {
     /// Operator-defined GPU class declared at registration.
     pub fn gpu_class(&self) -> Option<&str> {
         self.gpu_class.as_deref()
+    }
+
+    /// Default total CPU budget for executions of this pinned Function.
+    pub fn total_cpu_millis(&self) -> Option<u64> {
+        self.total_cpu_millis
+    }
+
+    /// Default total memory budget for executions of this pinned Function.
+    pub fn total_memory_bytes(&self) -> Option<u64> {
+        self.total_memory_bytes
+    }
+
+    /// Default aggregate GPU budget, independent of the per-worker device count.
+    pub fn total_gpu_count(&self) -> Option<u32> {
+        self.total_gpu_count
     }
 
     /// Default maximum rows in one callable batch, when declared.
@@ -714,6 +917,44 @@ impl FunctionVersion {
     /// Result-stability value declared at registration, when present.
     pub fn result_stability(&self) -> Option<&str> {
         self.result_stability.as_deref()
+    }
+
+    /// Runtime metadata requested at registration and exposed by the server.
+    ///
+    /// This view can omit input needed to reproduce [`Self::runtime_digest`].
+    /// Read the explicit primary package index with [`Self::requested_index_url`],
+    /// and inspect installed distributions with [`Self::resolved_environment`].
+    pub fn runtime(&self) -> Option<&PythonRuntimeSpec> {
+        self.runtime.as_ref().map(|runtime| &runtime.spec)
+    }
+
+    /// Explicit primary package index URL requested for this Function version.
+    ///
+    /// An absent value can still accompany extra indexes, other sources, or
+    /// service defaults. For build provenance, see [`ResolvedEnvironmentProvenance`].
+    pub fn requested_index_url(&self) -> Option<&str> {
+        self.runtime.as_ref()?.index_url.as_deref()
+    }
+
+    /// Actual installed distributions and registration warnings for a
+    /// single-platform image, when measured by the server.
+    ///
+    /// `None` is unknown, not an empty environment. Package versions are
+    /// retained verbatim, including local labels such as `+cu130`; `source`
+    /// remains absent when the producer did not retain it.
+    pub fn resolved_environment(&self) -> Option<&ResolvedEnvironment> {
+        self.resolved_environment.as_ref()
+    }
+
+    /// Per-platform measurements for a multiarchitecture image, keyed by OCI
+    /// `os/architecture`.
+    ///
+    /// The map is returned without flattening or synthesis. A missing platform
+    /// means its measurement is unknown; an empty environment value is a
+    /// measured empty environment and is retained. Single-platform images use
+    /// [`Self::resolved_environment`] instead.
+    pub fn resolved_environments(&self) -> &BTreeMap<String, ResolvedEnvironment> {
+        &self.resolved_environments
     }
 
     pub fn signature(&self) -> &FunctionSignature {
@@ -794,6 +1035,44 @@ where
     Ok(value)
 }
 
+fn deserialize_total_cpu_millis<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_cpu_millis: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom("total_cpu_millis must be positive"));
+    }
+    Ok(value)
+}
+
+fn deserialize_total_memory_bytes<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_memory_bytes: {error}")))?;
+    if value == Some(0) {
+        return Err(de::Error::custom("total_memory_bytes must be positive"));
+    }
+    Ok(value)
+}
+
+fn deserialize_total_gpu_count<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u32>::deserialize(deserializer)
+        .map_err(|error| de::Error::custom(format!("total_gpu_count: {error}")))
+}
+
 fn deserialize_max_concurrency<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u32>, D::Error>
@@ -827,6 +1106,10 @@ fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'s
     Ok(())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
@@ -834,12 +1117,16 @@ fn validate_row_timeout_value(value: Option<f64>) -> std::result::Result<(), &'s
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
+    /// Preserve an existing named Function version instead of registering a new one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exist_ok: bool,
     /// Default retries of failed user-code calls. Enterprise only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<FunctionRetryPolicy>,
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
+    #[serde(deserialize_with = "deserialize_registration_runtime")]
     pub runtime: PythonRuntimeSpec,
     /// Maximum rows in one execution batch; the executor may use fewer.
     #[serde(
@@ -857,6 +1144,27 @@ pub struct FunctionRegistrationRequest {
         deserialize_with = "deserialize_max_concurrency"
     )]
     pub max_concurrency: Option<u32>,
+    /// Default total CPU capacity for one execution, in millicores.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_cpu_millis"
+    )]
+    pub total_cpu_millis: Option<u64>,
+    /// Default total memory for one execution, in bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_memory_bytes"
+    )]
+    pub total_memory_bytes: Option<u64>,
+    /// Default total GPUs across one execution's workers.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_total_gpu_count"
+    )]
+    pub total_gpu_count: Option<u32>,
     /// Deadline for each Python call, in seconds: one row for scalar Functions
     /// and one batch for vectorized Functions. It does not govern Function
     /// initialization.
@@ -874,10 +1182,31 @@ pub struct FunctionRegistrationRequest {
     /// Model snapshots prepared by the service before user code runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<HuggingFaceModel>,
+    /// Ask the service to resolve a fresh environment lock for this request
+    /// instead of reusing the published version's lock. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh_lock: bool,
+}
+
+fn deserialize_registration_runtime<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<PythonRuntimeSpec, D::Error> {
+    let document = Value::deserialize(deserializer)?;
+    match document.pointer("/environment/build") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(build)) if build.is_empty() => {}
+        Some(_) => {
+            return Err(de::Error::custom(
+                "runtime.environment.build is unsupported in typed Function registration",
+            ));
+        }
+    }
+    serde_json::from_value(document).map_err(de::Error::custom)
 }
 
 impl FunctionRegistrationRequest {
     /// Decode a registration request supplied by an SDK language binding.
+    /// Nonempty environment build settings are rejected by this typed API.
     pub fn from_json(json: &str) -> Result<Self> {
         from_json(json)
     }
@@ -893,6 +1222,11 @@ impl FunctionRegistrationRequest {
         let invalid_input = |message: &'static str| Error::InvalidInput {
             message: message.to_string(),
         };
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
+            return Err(invalid_input(
+                "total_cpu_millis and total_memory_bytes must be positive integers",
+            ));
+        }
         validate_batch_size_value(self.batch_size).map_err(invalid_input)?;
         validate_max_concurrency_value(self.max_concurrency).map_err(invalid_input)?;
         validate_row_timeout_value(self.row_timeout_seconds).map_err(invalid_input)?;
@@ -1011,6 +1345,18 @@ pub struct InputBinding {
     pub nullable: bool,
 }
 
+/// Constant value bound to a Function parameter for every input row.
+///
+/// Values use the same canonical JSON domain as [`ApplicationInput`]. The
+/// Enterprise service validates their types against the exact Function version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiteralInputBinding {
+    /// Function parameter name, distinct from all column-bound parameters.
+    pub parameter: String,
+    /// Immutable canonical JSON value.
+    pub value: Value,
+}
+
 /// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// `nullable` describes the logical Function result. Physical computed-column
@@ -1025,8 +1371,8 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Internal physical column preserving the parent validity of a flattened
-/// named-struct result.
+/// Internal physical column preserving assignment of a nullable scalar result
+/// or the parent validity of a flattened named-struct result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssignmentMapping {
     pub output_name: String,
@@ -1039,6 +1385,8 @@ pub struct FunctionBinding {
     binding_id: String,
     function: FunctionVersionRef,
     inputs: Vec<InputBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    literal_inputs: Vec<LiteralInputBinding>,
     outputs: Vec<OutputMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     assignment: Option<AssignmentMapping>,
@@ -1069,6 +1417,30 @@ impl FunctionBinding {
         &self.inputs
     }
 
+    /// Constants supplied for every row; these are not table dependencies.
+    pub fn literal_inputs(&self) -> &[LiteralInputBinding] {
+        &self.literal_inputs
+    }
+
+    pub(crate) fn validate_inputs(&self) -> Result<()> {
+        let mut parameters = std::collections::HashSet::new();
+        for parameter in self
+            .inputs
+            .iter()
+            .map(|input| &input.parameter)
+            .chain(self.literal_inputs.iter().map(|input| &input.parameter))
+        {
+            if !parameters.insert(parameter) {
+                return Err(invalid_json(format!(
+                    "duplicate Function parameter '{parameter}'"
+                )));
+            }
+        }
+        self.literal_inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))
+    }
+
     pub fn outputs(&self) -> &[OutputMapping] {
         &self.outputs
     }
@@ -1091,7 +1463,60 @@ impl FunctionBinding {
     }
 }
 
-impl_json!(FunctionBinding);
+impl FunctionBinding {
+    /// Decode an immutable binding, validating its canonical input values.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let binding: Self = from_json(json)?;
+        binding.validate_inputs()?;
+        Ok(binding)
+    }
+
+    /// Encode this binding without dropping its constant inputs.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.validate_inputs()?;
+        canonical_json(self)
+    }
+}
+
+/// One byte-bounded size tier of a Function refresh plan.
+///
+/// A row belongs to the first tier whose `max_row_bytes` admits its total
+/// descriptor payload size. The final tier has no upper bound and carries the
+/// largest configured worker class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRefreshTier {
+    /// Inclusive upper bound of the rows this tier admits. `None` on the last
+    /// tier, which also serves rows larger than every configured class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_row_bytes: Option<u64>,
+    /// Worker resource class selected for this tier.
+    pub worker_class: String,
+    /// Worker container memory limit for `worker_class`.
+    pub worker_memory_bytes: u64,
+    /// Logical UDF executor budget derived from the worker limit.
+    pub executor_budget_bytes: u64,
+    /// Byte target for one materialized Blob input batch on this tier.
+    pub batch_bytes: u64,
+    /// Rows assigned to this tier.
+    pub rows: u64,
+    /// Byte-bounded batches the assigned rows form at `batch_bytes`.
+    pub batches: u64,
+}
+
+/// Descriptor-derived tier plan for one Function refresh.
+///
+/// The plan is computed from Blob descriptor sizes before any payload read. It
+/// names the same worker classes the refresh supervisor uses for routing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRefreshPlan {
+    /// Worker class the supervisor starts ordinary work on.
+    pub default_worker_class: String,
+    /// Row cap supplied through the `batch_size` override, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<u32>,
+    /// Tiers ordered from the smallest to the largest worker class.
+    pub tiers: Vec<FunctionRefreshTier>,
+}
 
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
@@ -1100,6 +1525,12 @@ impl_json!(FunctionBinding);
 /// Enterprise decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
+    /// Grouped row failures, when the server reports them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_groups: Vec<FunctionErrorGroup>,
+    /// Whether the grouped counts omit any failures.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error_groups_truncated: bool,
     /// Rows assigned a value by this refresh.
     pub rows_assigned: u64,
     /// Rows whose computation failed.
@@ -1111,6 +1542,10 @@ pub struct RefreshColumnResult {
     /// Table version made visible by the refresh, when one was published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_version: Option<u64>,
+    /// Descriptor-derived tier plan, when the refresh is Function-backed and
+    /// its inputs expose Blob descriptor sizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<FunctionRefreshPlan>,
 }
 
 /// Which per-row errors [`crate::Table::function_errors`] lists. Every
@@ -1118,6 +1553,8 @@ pub struct RefreshColumnResult {
 /// covers every refresh of every column.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FunctionErrorsRequest {
+    /// Include retained historical errors, including repaired rows.
+    pub history: bool,
     /// Only errors recorded by this job.
     pub job_id: Option<String>,
     /// Only errors on this column.
@@ -1125,9 +1562,17 @@ pub struct FunctionErrorsRequest {
     /// At most this many records; the server default is 10000 and its cap
     /// 100000. [`FunctionErrors::truncated`] says whether the cap was hit.
     pub limit: Option<usize>,
+    /// Empty starts retained history for an exact job_id, including repaired rows.
+    /// A returned token continues that history regardless of `history`.
+    pub page_token: Option<String>,
 }
 
 impl FunctionErrorsRequest {
+    /// Include retained historical records instead of current failures.
+    pub fn history(mut self, history: bool) -> Self {
+        self.history = history;
+        self
+    }
     /// A request with no filter.
     pub fn new() -> Self {
         Self::default()
@@ -1150,6 +1595,13 @@ impl FunctionErrorsRequest {
         self.limit = Some(limit);
         self
     }
+
+    /// Start with an empty token, then continue using the response's token.
+    /// Paging requires an exact job_id and a supporting backend.
+    pub fn page_token(mut self, token: impl Into<String>) -> Self {
+        self.page_token = Some(token.into());
+        self
+    }
 }
 
 /// One row a Function refresh skipped, as the server recorded it. The
@@ -1157,6 +1609,18 @@ impl FunctionErrorsRequest {
 /// read access to the table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrorRecord {
+    /// Earliest retained failure time for this current failure.
+    #[serde(default)]
+    pub first_seen_at_millis: Option<i64>,
+    /// Most recent failure time.
+    #[serde(default)]
+    pub last_seen_at_millis: Option<i64>,
+    /// Whether normal refreshes skip this row until explicitly retried.
+    #[serde(default)]
+    pub quarantined: bool,
+    /// Source identities for a materialized-view Function invocation.
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
     /// Number of user-code calls for this failed invocation, when recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempts: Option<u32>,
@@ -1217,6 +1681,12 @@ pub struct FunctionErrorFragment {
 /// A table's per-row Function errors; see [`crate::Table::function_errors`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionErrors {
+    /// Version of the server's current-failure, retry, upgrade, and quarantine contract.
+    #[serde(default)]
+    pub workflow_version: Option<u16>,
+    /// Grouped causes for the returned records. Counts are bounded by the listing.
+    #[serde(default)]
+    pub error_groups: Vec<FunctionErrorGroup>,
     /// The recorded rows, newest job first.
     pub records: Vec<FunctionErrorRecord>,
     /// Fragments whose detail was capped.
@@ -1224,6 +1694,83 @@ pub struct FunctionErrors {
     pub fragments: Vec<FunctionErrorFragment>,
     /// Whether the listing stopped at its limit.
     #[serde(default)]
+    pub truncated: bool,
+    /// Continue this exact job/filter, or `None` when a paged read is complete.
+    /// Older servers and legacy non-paged reads omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_token: Option<String>,
+}
+
+/// Which existing rows to recompute when upgrading a Function column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionRecompute {
+    /// Recompute exactly the current failures.
+    Failed,
+    /// Recompute all live rows.
+    All,
+    /// Preserve existing values; new and changed rows use the new Function.
+    None,
+}
+
+/// One cause in a Function failure listing or refresh result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorGroup {
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub rows_failed: u64,
+}
+
+/// Selection and state for explicitly quarantining or releasing failed rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionQuarantineOptions {
+    pub quarantined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_attempts: Option<u32>,
+}
+
+impl Default for FunctionQuarantineOptions {
+    fn default() -> Self {
+        Self {
+            quarantined: true,
+            job_id: None,
+            error_type: None,
+            after_attempts: None,
+        }
+    }
+}
+
+/// Which snapshot and how much producing-version metadata to read.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FunctionProvenanceOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// The Function and job that produced one stored value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionValueProvenance {
+    pub job_id: String,
+    pub column: String,
+    pub function_name: String,
+    pub function_version: String,
+    pub row_id: Option<u64>,
+    pub row_address: Option<u64>,
+    pub source_version: u64,
+    pub published_version: u64,
+}
+
+/// A bounded set of per-row producing-version records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionProvenance {
+    pub records: Vec<FunctionValueProvenance>,
     pub truncated: bool,
 }
 
@@ -1242,8 +1789,53 @@ impl RefreshColumnResult {
 impl_json!(RefreshColumnResult);
 
 #[cfg(test)]
+mod refresh_result_tests {
+    use super::{FunctionRefreshPlan, FunctionRefreshTier, RefreshColumnResult};
+
+    fn result(plan: Option<FunctionRefreshPlan>) -> RefreshColumnResult {
+        RefreshColumnResult {
+            rows_assigned: 3,
+            rows_failed: 0,
+            rows_remaining: 0,
+            source_version: 7,
+            published_version: Some(8),
+            plan,
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
+        }
+    }
+
+    #[test]
+    fn absent_plan_stays_out_of_the_terminal_payload() {
+        let encoded = serde_json::to_value(result(None)).unwrap();
+        assert!(encoded.get("plan").is_none());
+    }
+
+    #[test]
+    fn descriptor_plan_round_trips_through_the_terminal_payload() {
+        let plan = FunctionRefreshPlan {
+            default_worker_class: "medium".to_string(),
+            batch_size: Some(1),
+            tiers: vec![FunctionRefreshTier {
+                max_row_bytes: None,
+                worker_class: "large".to_string(),
+                worker_memory_bytes: 16 << 30,
+                executor_budget_bytes: 11 << 30,
+                batch_bytes: 1 << 20,
+                rows: 3,
+                batches: 2,
+            }],
+        };
+        let encoded = serde_json::to_value(result(Some(plan.clone()))).unwrap();
+        let decoded: RefreshColumnResult = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.plan, Some(plan));
+    }
+}
+
+#[cfg(test)]
 mod conda_environment_tests {
     use super::{PythonEnvironmentSpec, PythonRuntimeSpec};
+    use serde_json::Value;
 
     #[test]
     fn conda_channels_round_trip_and_pip_stays_bare() {
@@ -1305,6 +1897,28 @@ mod conda_environment_tests {
             super::canonical_json(&runtime).unwrap(),
             r#"{"environment":{"kind":"pip"},"gpu":true,"gpu_class":"a10g","kind":"python_v2","python_version":"3.12"}"#
         );
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true,"gpu_class":"any","gpus_per_worker":2}"#,
+        ).unwrap();
+        assert_eq!(runtime.gpus_per_worker(), 2);
+        assert_eq!(runtime.gpu_class(), Some("any"));
+        let encoded = super::canonical_json(&runtime).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).unwrap()["gpus_per_worker"],
+            2
+        );
+        for count in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(true),
+            serde_json::json!("2"),
+            serde_json::json!(1.5),
+            serde_json::json!(4294967296_u64),
+        ] {
+            let mut value: Value = serde_json::from_str(&encoded).unwrap();
+            value["gpus_per_worker"] = count;
+            assert!(serde_json::from_value::<PythonRuntimeSpec>(value).is_err());
+        }
 
         for invalid in [
             r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
@@ -1404,6 +2018,243 @@ mod tests {
         assert_eq!(encoded["max_concurrency"], 4);
 
         document["max_concurrency"] = serde_json::json!(0);
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_exposes_the_explicit_primary_index() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        const PRIMARY: &str = "https://primary.example/simple/";
+        const EXTRA: &str = "https://extra.example/simple/";
+        const DIGEST: &str = "sha256:requested-runtime";
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {"kind": "pip", "packages": ["example==1.0"]},
+        });
+        document["runtime_digest"] = serde_json::json!(DIGEST);
+        document["resolved_environment"] = serde_json::json!({
+            "packages": [],
+            "provenance": {"configured_index_urls": [EXTRA]},
+        });
+
+        let legacy = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(legacy.requested_index_url(), None);
+        let legacy_json = legacy.to_canonical_json().unwrap();
+        for (build, index) in [
+            (Value::Null, None),
+            (serde_json::json!({}), None),
+            (serde_json::json!({"extra_index_urls": [EXTRA]}), None),
+            (serde_json::json!({"index_url": 1}), None),
+            (serde_json::json!("invalid-build"), None),
+            (
+                serde_json::json!({"index_url": PRIMARY, "extra_index_urls": [EXTRA]}),
+                Some(PRIMARY),
+            ),
+        ] {
+            document["runtime"]["environment"]["build"] = build;
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.requested_index_url(), index);
+            assert_eq!(version.runtime_digest(), Some(DIGEST));
+            let canonical = version.to_canonical_json().unwrap();
+            if let Some(index) = index {
+                let mut expected: Value = serde_json::from_str(&legacy_json).unwrap();
+                expected["runtime"]["environment"]["build"] =
+                    serde_json::json!({"index_url": index});
+                assert_eq!(serde_json::from_str::<Value>(&canonical).unwrap(), expected);
+            } else {
+                assert_eq!(canonical, legacy_json);
+            }
+            assert_eq!(FunctionVersion::from_json(&canonical).unwrap(), version);
+        }
+    }
+
+    #[test]
+    fn typed_registration_rejects_environment_build_settings() {
+        const REQUEST: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        let mut document: Value = serde_json::from_str(REQUEST).unwrap();
+        let expected = FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        for build in [Value::Null, serde_json::json!({})] {
+            document["runtime"]["environment"]["build"] = build;
+            assert_eq!(
+                FunctionRegistrationRequest::from_json(&document.to_string()).unwrap(),
+                expected
+            );
+        }
+        for build in [
+            serde_json::json!({"index_url": "https://primary.example/simple/"}),
+            serde_json::json!({"extra_index_urls": ["https://extra.example/simple/"]}),
+            serde_json::json!("invalid-build"),
+        ] {
+            document["runtime"]["environment"]["build"] = build;
+            let error = FunctionRegistrationRequest::from_json(&document.to_string()).unwrap_err();
+            assert!(error.to_string().contains(
+                "runtime.environment.build is unsupported in typed Function registration"
+            ));
+        }
+    }
+
+    #[test]
+    fn function_version_preserves_requested_and_resolved_environments() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert!(legacy.runtime().is_none());
+        assert!(legacy.resolved_environment().is_none());
+        assert!(legacy.resolved_environments().is_empty());
+
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {
+                "kind": "pip",
+                "packages": ["vllm==0.11.0"]
+            }
+        });
+        document["resolved_environment"] = serde_json::json!({
+            "packages": [
+                {
+                    "name": "torch",
+                    "version": "2.9.0+cu130",
+                    "source": "https://packages.example/simple"
+                },
+                {
+                    "name": "transformers",
+                    "version": "4.57.1"
+                }
+            ],
+            "provenance": {
+                "configured_index_urls": ["https://packages.example/simple"],
+                "configured_find_links": ["https://downloads.example/wheels"],
+                "resolved_indexes": ["https://packages.example/simple"],
+                "cuda_toolkit": "12.8",
+                "torch_version": "torch==2.9.0+cu130"
+            },
+            "warnings": [
+                "transformers resolved to transformers==4.57.1 but is not pinned exactly; add transformers==4.57.1 to pin it."
+            ]
+        });
+
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(version.runtime().unwrap().kind(), "python");
+        assert!(version.resolved_environments().is_empty());
+        let resolved = version.resolved_environment().unwrap();
+        assert_eq!(resolved.packages[0].version, "2.9.0+cu130");
+        assert_eq!(
+            resolved.packages[0].source.as_deref(),
+            Some("https://packages.example/simple")
+        );
+        assert_eq!(resolved.packages[1].source, None);
+        assert_eq!(
+            resolved
+                .provenance
+                .as_ref()
+                .unwrap()
+                .torch_version
+                .as_deref(),
+            Some("torch==2.9.0+cu130")
+        );
+        assert_eq!(resolved.warnings.len(), 1);
+
+        let encoded = version.to_canonical_json().unwrap();
+        let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            encoded_value["resolved_environment"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert!(
+            encoded_value["resolved_environment"]["packages"][1]
+                .get("source")
+                .is_none()
+        );
+        assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+
+        document["resolved_environment"] = serde_json::json!({"warnings": []});
+        assert!(FunctionVersion::from_json(&document.to_string()).is_err());
+    }
+
+    #[test]
+    fn function_version_preserves_resolved_environments_by_platform() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["runtime"] = serde_json::json!({
+            "kind": "python",
+            "python_version": "3.12",
+            "environment": {
+                "kind": "pip",
+                "packages": ["vllm==0.11.0"]
+            }
+        });
+        document["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {
+                "packages": [
+                    {"name": "torch", "version": "2.9.0+cu130"}
+                ],
+                "warnings": ["amd64 measurement"]
+            },
+            "linux/arm64": {
+                "packages": [],
+                "warnings": ["arm64 measurement"]
+            }
+        });
+
+        let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(version.resolved_environment().is_none());
+        let environments = version.resolved_environments();
+        assert_eq!(environments.len(), 2);
+        assert_eq!(
+            environments["linux/amd64"].packages[0].version,
+            "2.9.0+cu130"
+        );
+        assert!(environments["linux/arm64"].packages.is_empty());
+        assert_eq!(environments["linux/arm64"].warnings, ["arm64 measurement"]);
+
+        let encoded = version.to_canonical_json().unwrap();
+        let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+        assert!(encoded_value.get("resolved_environment").is_none());
+        assert_eq!(
+            encoded_value["resolved_environments"]["linux/amd64"]["packages"][0]["version"],
+            "2.9.0+cu130"
+        );
+        assert_eq!(
+            encoded_value["resolved_environments"]["linux/arm64"]["packages"],
+            serde_json::json!([])
+        );
+        assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+
+        document["resolved_environments"]
+            .as_object_mut()
+            .unwrap()
+            .remove("linux/arm64");
+        let missing_platform = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(
+            !missing_platform
+                .resolved_environments()
+                .contains_key("linux/arm64")
+        );
+
+        document["resolved_environments"] = serde_json::json!({});
+        let empty_map = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert!(empty_map.resolved_environments().is_empty());
+        assert!(
+            !empty_map
+                .to_canonical_json()
+                .unwrap()
+                .contains("resolved_environments")
+        );
+
+        document["resolved_environments"] = serde_json::json!({
+            "linux/amd64": {"warnings": []}
+        });
         assert!(FunctionVersion::from_json(&document.to_string()).is_err());
     }
 

@@ -8,8 +8,7 @@
 
 Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
 option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
-`batchSize`, `gpuClass` and `gpuCount` and rejects the rest, including
-`resourceBudget`.
+`batchSize`, `gpuClass` and `totalGpuCount` and rejects the rest.
 
 ## Properties
 
@@ -29,8 +28,8 @@ Maximum rows per Function call; must be greater than zero.
 optional errorPolicy: string;
 ```
 
-`"fail"` (default) stops on a row error; `"skip"` writes null and
-records the error, subject to the failure limits.
+`"fail"` stops on a row error; `"skip"` records it and continues,
+subject to the failure limits. The default is server-dependent.
 
 ***
 
@@ -50,7 +49,7 @@ GPU class for Function workers.
 optional gpuCount: number;
 ```
 
-Positive aggregate GPU budget for Function workers.
+Positive GPU count allocated to each Function worker.
 
 ***
 
@@ -117,6 +116,16 @@ Worker count for an expression column; Function columns reject it.
 
 ***
 
+### planningWorkers?
+
+```ts
+optional planningWorkers: FunctionRefreshPlanningConfig;
+```
+
+Resources and sizing for the refresh planning fleet.
+
+***
+
 ### publicationIntervalRows?
 
 ```ts
@@ -130,14 +139,13 @@ Requires LanceDB Enterprise with non-Blob Function outputs.
 
 ***
 
-### resourceBudget?
+### retryPolicy?
 
 ```ts
-optional resourceBudget: FunctionWorkerResourceBudget;
+optional retryPolicy: FunctionRetryPolicy;
 ```
 
-Complete aggregate CPU and memory budget for a registered Function
-refresh. `gpuCount` inside the budget defaults to zero.
+Override retries of failed user-code calls for this refresh.
 
 ***
 
@@ -148,6 +156,46 @@ optional rowTimeoutSeconds: number;
 ```
 
 Deadline for one Function call, in seconds.
+
+***
+
+### supervisorResources?
+
+```ts
+optional supervisorResources: FunctionRefreshPodResources;
+```
+
+CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+
+***
+
+### totalCpuMillis?
+
+```ts
+optional totalCpuMillis: number;
+```
+
+Override the total CPU budget in millicores for this refresh.
+
+***
+
+### totalGpuCount?
+
+```ts
+optional totalGpuCount: number;
+```
+
+Nonnegative total GPU budget for Function workers.
+
+***
+
+### totalMemoryBytes?
+
+```ts
+optional totalMemoryBytes: number;
+```
+
+Override the total memory budget in bytes for this refresh.
 
 ***
 
