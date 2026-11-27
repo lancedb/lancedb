@@ -28,6 +28,7 @@ import {
   RecordBatchStreamWriter,
   Schema,
   Struct,
+  TimeUnit,
   Timestamp,
   Type,
   Utf8,
@@ -376,6 +377,7 @@ export class MakeArrowTableOptions {
  *  - bigint => Int64
  *  - String => Utf8
  *  - Buffer => Binary
+ *  - Date => Timestamp (millisecond)
  *  - Record<String, any> => Struct
  *  - Array<any> => List
  * @example
@@ -845,6 +847,115 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
   return listBuilder.finish().toVector();
 }
 
+/** True for Timestamp(ms) and for a list, at any depth, of Timestamp(ms). */
+function holdsMillisecondTimestamps(type: DataType): boolean {
+  if (DataType.isTimestamp(type)) {
+    return type.unit === TimeUnit.MILLISECOND;
+  }
+  return isList(type) && holdsMillisecondTimestamps(type.children[0].type);
+}
+
+/**
+ * Build a Timestamp(ms) vector by writing the 64-bit values directly.
+ *
+ * Arrow 15 rounds the high 32 bits of a negative timestamp toward zero, so a
+ * date before 1970 comes back 2^32 ms (about 49.7 days) late.  The bytes
+ * written here are the same in every supported Arrow version.
+ *
+ * Returns undefined when a value is not a Date, an integer or a bigint, so
+ * the caller can leave those inputs to Arrow as before.
+ */
+function makeSignedTimestampVector(
+  values: unknown[],
+  type: DataType,
+): Vector | undefined {
+  const millis = new BigInt64Array(values.length);
+  const validity: boolean[] = [];
+  for (const [i, value] of values.entries()) {
+    if (value === null || value === undefined) {
+      validity.push(false);
+      continue;
+    }
+    if (value instanceof Date) {
+      const time = value.getTime();
+      if (Number.isNaN(time)) {
+        // Arrow 15 would store 1970-01-01; newer versions throw a BigInt
+        // conversion error that does not name the cause.
+        throw new Error("Cannot store an Invalid Date in a timestamp column");
+      }
+      millis[i] = BigInt(time);
+    } else if (typeof value === "bigint") {
+      millis[i] = value;
+    } else if (typeof value === "number" && Number.isInteger(value)) {
+      millis[i] = BigInt(value);
+    } else {
+      return undefined;
+    }
+    validity.push(true);
+  }
+  const nullCount = validity.filter((valid) => !valid).length;
+  return arrowMakeVector(
+    makeData({
+      type: type as Timestamp,
+      length: values.length,
+      nullCount,
+      nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
+      // Arrow 15 and 16 type this buffer as Int32Array; same bytes.
+      data: millis as unknown as Timestamp["TArray"],
+    }),
+  );
+}
+
+/**
+ * Build a list of Timestamp(ms) so its items go through
+ * `makeSignedTimestampVector`; Arrow's own list builder would skip it.
+ *
+ * Returns undefined when a list is neither an array nor a typed array, so
+ * the caller can leave those inputs to Arrow as before.
+ */
+function makeTimestampListVector(
+  values: unknown[],
+  type: List,
+): Vector | undefined {
+  const childField = type.children[0];
+  const flattened: unknown[] = [];
+  const validity: boolean[] = [];
+  const offsets: number[] = [0];
+  for (const value of values) {
+    if (value === null || value === undefined) {
+      validity.push(false);
+    } else if (Array.isArray(value)) {
+      validity.push(true);
+      for (const item of value) flattened.push(item);
+    } else if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+      validity.push(true);
+      for (const item of value as unknown as Iterable<unknown>) {
+        flattened.push(item);
+      }
+    } else {
+      return undefined;
+    }
+    offsets.push(flattened.length);
+  }
+  const child = makeVector(
+    flattened,
+    childField.type,
+    undefined,
+    childField.nullable,
+  );
+  const nullCount = validity.filter((valid) => !valid).length;
+  return arrowMakeVector(
+    makeData({
+      type,
+      length: values.length,
+      nullCount,
+      nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
+      valueOffsets: Int32Array.from(offsets),
+      child: child.data[0],
+    }),
+  );
+}
+
 /** Helper function to convert an Array of JS values to an Arrow Vector */
 function makeVector(
   values: unknown[],
@@ -871,6 +982,15 @@ function makeVector(
           nullBitmap,
         });
         return arrowMakeVector(data);
+      }
+    }
+
+    if (holdsMillisecondTimestamps(type)) {
+      const vector = isList(type)
+        ? makeTimestampListVector(values, type)
+        : makeSignedTimestampVector(values, type);
+      if (vector !== undefined) {
+        return vector;
       }
     }
 

@@ -127,6 +127,7 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
     Float32,
     FixedSizeList,
     Precision,
+    TimestampMillisecond,
     tableFromIPC,
     DataType,
     Dictionary,
@@ -520,6 +521,173 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
       expect(vectorType.children[0].type.toString()).toEqual(
         new Float32().toString(),
       );
+    });
+
+    it("will infer Timestamp<MILLISECOND> from Date values", function () {
+      const first = new Date("2024-01-02T03:04:05.678Z");
+      const table = makeArrowTable([
+        { id: "a", created: first },
+        { id: "b", created: null },
+        { id: "c", created: new Date(0) },
+      ]);
+
+      const created = table.getChild("created");
+      expect(created?.type.toString()).toEqual(
+        new TimestampMillisecond().toString(),
+      );
+      expect(Number(created?.get(0))).toBe(first.getTime());
+      expect(created?.get(1)).toBeNull();
+      expect(Number(created?.get(2))).toBe(0);
+      expect(() =>
+        makeArrowTable([{ created: first }, { created: "yesterday" }]),
+      ).toThrow("Failed to infer schema for data.");
+    });
+
+    // Arrow 15 rounds the high 32 bits of a negative timestamp toward zero, so
+    // it comes back 2^32 ms late.  CI resolves `apache-arrow` to 19 and later;
+    // swap in 15 to see these fail without the workaround.
+    it("preserves dates before 1970 through IPC", async function () {
+      const dates = [
+        new Date(-1),
+        null,
+        new Date("1890-06-15T12:00:00.000Z"),
+        new Date("2024-01-02T03:04:05.678Z"),
+      ];
+      const millis = dates.map((d) => (d === null ? null : d.getTime()));
+      const read = (table: Awaited<ReturnType<typeof currentTableFromIPC>>) =>
+        dates.map((_, i) => {
+          const value = table.getChild("created")?.get(i);
+          return value === null ? null : Number(value);
+        });
+
+      const inferred = currentTableFromIPC(
+        await fromDataToBuffer(dates.map((created) => ({ created }))),
+      );
+      expect(read(inferred)).toEqual(millis);
+
+      const schema = new Schema([
+        new Field("created", new TimestampMillisecond(), true),
+      ]);
+      const withSchema = currentTableFromIPC(
+        await fromDataToBuffer(
+          dates.map((created) => ({ created })),
+          undefined,
+          schema,
+        ),
+      );
+      expect(read(withSchema)).toEqual(millis);
+    });
+
+    it("preserves dates before 1970 inside lists and structs through IPC", async function () {
+      const early = new Date(-1);
+      const older = new Date("1890-06-15T12:00:00.000Z");
+      const late = new Date("2024-01-02T03:04:05.678Z");
+      const rows = [
+        {
+          events: [early, null, late],
+          nested: [[older], [], [early, late]],
+          info: { at: older, history: [early] },
+        },
+        {
+          events: null,
+          nested: [[late]],
+          info: { at: null, history: [] },
+        },
+        {
+          events: [],
+          nested: null,
+          info: { at: late, history: [older, late] },
+        },
+      ];
+      // biome-ignore lint/suspicious/noExplicitAny: nested Arrow values
+      const plain = (value: any): unknown => {
+        if (value === null || value === undefined) return null;
+        if (typeof value === "bigint" || typeof value === "number") {
+          return Number(value);
+        }
+        if (value instanceof Date) return value.getTime();
+        if (Array.isArray(value)) return value.map(plain);
+        // Arrow lists and struct rows both turn into plain JS with toJSON.
+        if (typeof value.toJSON === "function") return plain(value.toJSON());
+        return Object.fromEntries(
+          Object.entries(value).map(([key, item]) => [key, plain(item)]),
+        );
+      };
+
+      const result = currentTableFromIPC(await fromDataToBuffer(rows));
+      for (const column of ["events", "nested", "info"] as const) {
+        expect(
+          rows.map((_, i) => plain(result.getChild(column)?.get(i))),
+        ).toEqual(rows.map((row) => plain(row[column])));
+      }
+    });
+
+    // On every Arrow version this also fails if a Date-bearing shape stops
+    // going through the signed timestamp writer.
+    it("rejects an Invalid Date instead of storing a wrong timestamp", function () {
+      const invalid = new Date("not a date");
+      const message = "Cannot store an Invalid Date in a timestamp column";
+      for (const row of [
+        { created: invalid },
+        { events: [invalid] },
+        { nested: [[invalid]] },
+        { info: { at: invalid } },
+        { info: { history: [invalid] } },
+      ]) {
+        expect(() => makeArrowTable([row])).toThrow(message);
+      }
+      const schema = new Schema([
+        new Field("created", new TimestampMillisecond(), true),
+        new Field(
+          "events",
+          new List(new Field("item", new TimestampMillisecond(), true)),
+          true,
+        ),
+      ]);
+      expect(() => makeArrowTable([{ created: invalid }], { schema })).toThrow(
+        message,
+      );
+      expect(() => makeArrowTable([{ events: [invalid] }], { schema })).toThrow(
+        message,
+      );
+    });
+
+    it("will infer a list, not a vector, for dates in a vector-named column", function () {
+      const date = new Date("2024-01-02T03:04:05.678Z");
+      const table = makeArrowTable([{ ["embedding_dates"]: [date, date] }]);
+      const column = table.getChild("embedding_dates");
+      expect(DataType.isList(column?.type)).toBe(true);
+      expect(Number(column?.get(0).get(1))).toBe(date.getTime());
+    });
+
+    it("keeps epoch numbers and typed arrays working in timestamp columns", async function () {
+      const schema = new Schema([
+        new Field("at", new TimestampMillisecond(), true),
+        new Field(
+          "stamps",
+          new List(new Field("item", new TimestampMillisecond(), true)),
+          true,
+        ),
+      ]);
+      const rows = [
+        { at: new Date(-1), stamps: [0, -1, new Date(-2), null] },
+        { at: -3, stamps: Float64Array.from([5, -6]) },
+        { at: -4n, stamps: null },
+        { at: null, stamps: [] },
+      ];
+      const result = currentTableFromIPC(
+        await fromDataToBuffer(rows, undefined, schema),
+      );
+      const numbers = (column: string) =>
+        rows.map((_, i) => {
+          const value = result.getChild(column)?.get(i);
+          if (value === null) return null;
+          return typeof value === "bigint" || typeof value === "number"
+            ? Number(value)
+            : [...value].map((item) => (item === null ? null : Number(item)));
+        });
+      expect(numbers("at")).toEqual([-1, -3, -4, null]);
+      expect(numbers("stamps")).toEqual([[0, -1, -2, null], [5, -6], null, []]);
     });
 
     it("will infer FixedSizeList<Uint8> from Uint8Array values", async function () {

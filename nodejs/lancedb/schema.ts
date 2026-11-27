@@ -15,6 +15,7 @@ import {
   List,
   Schema,
   Struct,
+  TimestampMillisecond,
   Utf8,
   util as arrowUtil,
 } from "apache-arrow";
@@ -227,6 +228,9 @@ class SchemaInferrer {
     if (typeof value === "boolean") {
       return new Bool();
     }
+    if (value instanceof Date) {
+      return new TimestampMillisecond();
+    }
     if (value instanceof Buffer) {
       return new Binary();
     }
@@ -257,7 +261,9 @@ class SchemaInferrer {
       return undefined;
     }
 
-    return nameSuggestsVectorColumn(path[path.length - 1])
+    // A list of dates is never a vector, whatever the column is called.
+    return nameSuggestsVectorColumn(path[path.length - 1]) &&
+      !holdsTimestamps(itemType)
       ? new FixedSizeList(value.length, new Field("item", new Float32(), true))
       : new List(new Field("item", itemType, true));
   }
@@ -633,6 +639,13 @@ function schemaInferenceError(
     `Failed to infer schema for data. Previously inferred type ${currentType} ` +
       `but found ${newType} for field ${path.join(".")} at row ${row}. ` +
       "Consider providing an explicit schema.",
+  );
+}
+
+function holdsTimestamps(type: DataType): boolean {
+  return (
+    DataType.isTimestamp(type) ||
+    (DataType.isList(type) && holdsTimestamps(type.children[0].type))
   );
 }
 
