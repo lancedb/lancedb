@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 mod lsm;
 
@@ -9,6 +12,7 @@ use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
+use crate::index::scalar::{FtsQuery, Operator as FullTextOperator};
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
@@ -17,19 +21,27 @@ use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
-use datafusion_common::{Column, DataFusionError, SchemaError};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_common::{Column, DataFusionError, ScalarValue, SchemaError};
+use datafusion_expr::Operator;
+use datafusion_physical_expr::expressions::{BinaryExpr, Column as PhysicalColumn, Literal};
+use datafusion_physical_plan::PhysicalExpr;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
+use datafusion_physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
+use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
+use lance_index::IndexType;
+use lance_index::scalar::FullTextSearchQuery;
+use lance_index::vector::DIST_COL;
+use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
-    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery, StructuredFtsQuery,
 };
 
 #[derive(Debug, Clone)]
@@ -94,9 +106,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
     {
         return Ok(false);
     }
-    // A MemWAL write spec means reads auto-route through the LSM scanner in
-    // `create_plan` even when `use_lsm` is unset. The namespace request has no
-    // use_lsm field, so pushing the default query down would silently omit
+    // An RTE write spec means reads auto-route through the LSM scanner in
+    // `create_plan` even when `use_rte` is unset. The namespace request has no
+    // use_rte field, so pushing the default query down would silently omit
     // un-compacted rows — force local execution whenever a spec is installed.
     let dataset = table.dataset.get().await?;
     if dataset.mem_wal_index_details().await?.is_some() {
@@ -106,16 +118,30 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode or use_lsm.
-    // For use_lsm that is worse than a tuning miss: MemWAL read routing lives only
-    // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
+    // The namespace QueryTable request cannot represent approx_mode, search_effort,
+    // use_rte, order_by or scan_in_order. For use_rte that is worse than a tuning miss:
+    // RTE read routing lives only in `create_plan`, so a pushed-down query would return
+    // stale base-only data. A dropped order_by would return the wrong top-K rows, and a
+    // dropped ordered scan would silently stop guaranteeing manifest order.
+    if query.base().use_rte.is_some()
+        || query.base().has_take()
+        || query.base().scan_in_order == Some(true)
+        || query
+            .base()
+            .order_by
+            .as_ref()
+            .is_some_and(|order_by| !order_by.is_empty())
+    {
+        return true;
+    }
+    if matches!(query, AnyQuery::Query(query) if query.fast_search && query.full_text_search.is_some())
+    {
         return true;
     }
     matches!(
         query,
         AnyQuery::VectorQuery(vector_query)
-            if vector_query.approx_mode.is_some()
+            if vector_query.approx_mode.is_some() || vector_query.search_effort.is_some()
     )
 }
 
@@ -126,6 +152,47 @@ pub async fn analyze_query_plan(
 ) -> Result<String> {
     let plan = create_plan(table, query, options).await?;
     Ok(lance_analyze_plan(plan, Default::default()).await?)
+}
+
+/// Reject requests that ask for storage order in a query shape that cannot
+/// preserve it, or that also define a different result order.
+fn validate_scan_in_order(query: &AnyQuery) -> Result<()> {
+    if query.base().scan_in_order != Some(true) {
+        return Ok(());
+    }
+
+    let ranked = match query {
+        AnyQuery::VectorQuery(_) => true,
+        AnyQuery::Query(query) => {
+            query.full_text_search.is_some() || query.reranker.is_some() || query.norm.is_some()
+        }
+    };
+    if ranked {
+        return Err(Error::InvalidInput {
+            message: "scan_in_order(true) is only supported for ordinary scans; vector, \
+                      full-text, hybrid, and reranked queries return ranked results"
+                .to_string(),
+        });
+    }
+
+    if query
+        .base()
+        .order_by
+        .as_ref()
+        .is_some_and(|order_by| !order_by.is_empty())
+    {
+        return Err(Error::InvalidInput {
+            message: "scan_in_order(true) conflicts with a nonempty order_by; remove the \
+                      ordering to keep manifest order, or remove scan_in_order(true) to sort"
+                .to_string(),
+        });
+    }
+
+    if query.base().has_take() {
+        return crate::query::validate_take_scan_in_order(query.base());
+    }
+
+    Ok(())
 }
 
 /// Local Execution Path (DataFusion)
@@ -151,10 +218,11 @@ pub async fn create_plan(
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let query = query.canonicalized()?;
+    validate_scan_in_order(&query)?;
     if let AnyQuery::Query(request) = &query
-        && let Some(offsets) = &request.take_offsets
+        && request.has_take()
     {
-        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
+        return crate::query::create_take_plan(table, request, options, request.preserve_order)
             .await;
     }
 
@@ -163,28 +231,29 @@ pub async fn create_plan(
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query),
     };
     query.base.check_filter()?;
+    query.validate_search_effort()?;
 
     let ds_ref = table.dataset.get().await?;
 
-    // MemWAL read routing driven by `use_lsm`:
+    // RTE read routing driven by `use_rte`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
-    //   * Some(true)  — force LSM routing; error if the table has no write spec
-    //   * Some(false) — read the base table only, bypassing the MemWAL
+    //   * Some(true)  — force RTE routing; error if the table has no write spec
+    //   * Some(false) — read the base table only, bypassing the RTE
     // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
-    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    // memtables + SSTables); validation and dispatch live in `lsm`.
     let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
-    let use_lsm = match query.base.use_lsm {
+    let use_rte = match query.base.use_rte {
         Some(true) if !has_spec => {
             return Err(Error::InvalidInput {
-                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
-                    install one with set_lsm_write_spec or leave use_lsm unset"
+                message: "use_rte(true) was set but the table has no RTE write spec; \
+                    install one with enable_rte or leave use_rte unset"
                     .to_string(),
             });
         }
         Some(enable) => enable,
         None => has_spec,
     };
-    if use_lsm {
+    if use_rte {
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
@@ -202,13 +271,11 @@ pub async fn create_plan(
                 Some(query.query_vector[0].len() as i32),
             )?);
         }
-        let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
-        let (_, element_type) =
+        let (vector_type, element_type) =
             lance::index::vector::utils::get_vector_type(schema, column.as_ref().unwrap())?;
+        let is_list_vector = matches!(&vector_type, DataType::List(_));
         let is_binary = matches!(element_type, DataType::UInt8);
-        if matches!(vector_field.data_type(), DataType::List(_))
-            || (query.base.offset.unwrap_or(0) == 0 && !is_binary)
-        {
+        if is_list_vector || (query.base.offset.unwrap_or(0) == 0 && !is_binary) {
             // Lance distinguishes these cases from the vector column type: a
             // list-like query against a List column is one multivector query,
             // while the same query against a FixedSizeList column is a batch of
@@ -244,7 +311,7 @@ pub async fn create_plan(
                 fsl_builder.append(true);
             }
             query_vector = Some(Arc::new(fsl_builder.finish()));
-            is_batch_query = !matches!(vector_field.data_type(), DataType::List(_));
+            is_batch_query = !is_list_vector;
         } else {
             // Lance's batch path has no per-query offset, and its binary path
             // requires primitive UInt8 queries rather than a fixed-size list.
@@ -279,7 +346,13 @@ pub async fn create_plan(
 
         let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
         let is_binary = matches!(element_type, DataType::UInt8);
-        let top_k = query.base.limit.unwrap_or(DEFAULT_TOP_K) + query.base.offset.unwrap_or(0);
+        let top_k = query
+            .base
+            .limit
+            .unwrap_or(DEFAULT_TOP_K)
+            .saturating_add(query.base.offset.unwrap_or(0))
+            // Lance allocates candidates from k; no search can return more rows than the table.
+            .min(ds_ref.count_rows(None).await?.max(1));
 
         if is_binary {
             let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
@@ -293,7 +366,9 @@ pub async fn create_plan(
             scanner.approx_mode(approx_mode.into());
         }
 
-        if let Some(nprobes) = query.nprobes {
+        if query.search_effort.is_none()
+            && let Some(nprobes) = query.nprobes
+        {
             if query.maximum_nprobes == Some(0) {
                 scanner.minimum_nprobes(nprobes);
             } else {
@@ -306,14 +381,26 @@ pub async fn create_plan(
         if let Some(maximum_nprobes) = query.maximum_nprobes.filter(|nprobes| *nprobes != 0) {
             scanner.maximum_nprobes(maximum_nprobes);
         }
+        if let Some(search_effort) = query.search_effort {
+            scanner.search_effort(search_effort)?;
+        }
     }
 
     // For a batch query, `nearest` already applies k to each query vector.
     // Adding Scanner's global limit would truncate the combined result to k rows.
     if !is_batch_query {
+        let offset = query
+            .base
+            .offset
+            .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX));
         scanner.limit(
-            query.base.limit.map(|limit| limit as i64),
-            query.base.offset.map(|offset| offset as i64),
+            // Lance's FTS planner adds limit + offset as i64.
+            query.base.limit.map(|limit| {
+                i64::try_from(limit)
+                    .unwrap_or(i64::MAX)
+                    .min(i64::MAX - offset.unwrap_or(0))
+            }),
+            offset,
         )?;
     }
 
@@ -388,10 +475,41 @@ pub async fn create_plan(
         scanner.order_by(Some(order_by.clone()))?;
     }
 
-    scanner
+    if let Some(scan_in_order) = query.base.scan_in_order {
+        scanner.scan_in_order(scan_in_order);
+        if scan_in_order {
+            // Legacy scalar-index plans can union materialized index rows with
+            // unindexed fragments and emit a different sequence. Explicit
+            // storage order must come from the manifest scan, so filters fall
+            // back to evaluating over the ordered fragments.
+            scanner.use_scalar_index(false);
+        }
+    }
+
+    let mut plan = scanner
         .create_plan()
         .await
-        .map_err(|error| enrich_lance_field_not_found(error, schema))
+        .map_err(|error| enrich_lance_field_not_found(error, schema))?;
+    let normalized_l2_indices = normalized_l2_ann_indices(plan.as_ref()).await?;
+    if !normalized_l2_indices.is_empty() {
+        // Rebuild only the affected ANN nodes with internal normalized squared-L2
+        // bounds. Exact branches keep the public cosine bounds from `plan`.
+        let internal_plan = if query.lower_bound.is_some() || query.upper_bound.is_some() {
+            scanner.distance_range(
+                query.lower_bound.map(|bound| bound / COSINE_ANN_SCALE),
+                query.upper_bound.map(|bound| bound / COSINE_ANN_SCALE),
+            );
+            scanner
+                .create_plan()
+                .await
+                .map_err(|error| enrich_lance_field_not_found(error, schema))?
+        } else {
+            plan.clone()
+        };
+        plan = normalize_ann_branches(plan, internal_plan, &normalized_l2_indices)?;
+    }
+
+    Ok(plan)
 }
 
 /// Replace DataFusion's top-level field candidates with qualified leaf paths.
@@ -407,6 +525,7 @@ fn enrich_lance_field_not_found(
     let Some(field) = find_missing_field(&error) else {
         return error.into();
     };
+    log::info!("Query field rejected: {error}");
     field_not_found_error(field, &Schema::from(schema))
 }
 
@@ -427,7 +546,14 @@ fn field_not_found_error(field: &Column, schema: &Schema) -> Error {
     }
     message.push('.');
 
-    Error::InvalidInput { message }
+    Error::FieldNotFound {
+        name: field.name.clone(),
+        message,
+        source: Box::new(lance::Error::field_not_found(
+            field.name.clone(),
+            valid_fields,
+        )),
+    }
 }
 
 fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Column> {
@@ -482,6 +608,247 @@ fn leaf_field_paths(schema: &Schema) -> Vec<String> {
 }
 
 //Helper functions below
+
+const COSINE_ANN_SCALE: f32 = 0.5;
+
+#[derive(Clone, Copy)]
+enum AnnExecRef<'a> {
+    Single(&'a ANNIvfSubIndexExec),
+    Batch(&'a ANNIvfBatchExec),
+}
+
+impl<'a> AnnExecRef<'a> {
+    fn from_plan(plan: &'a dyn ExecutionPlan) -> Option<Self> {
+        if let Some(single) = plan.downcast_ref::<ANNIvfSubIndexExec>() {
+            return Some(Self::Single(single));
+        }
+        plan.downcast_ref::<ANNIvfBatchExec>().map(Self::Batch)
+    }
+
+    fn query(self) -> &'a lance_index::vector::Query {
+        match self {
+            Self::Single(ann) => ann.query(),
+            Self::Batch(ann) => ann.query(),
+        }
+    }
+
+    fn dataset(self) -> &'a Arc<lance::Dataset> {
+        match self {
+            Self::Single(ann) => ann.dataset(),
+            Self::Batch(ann) => ann.dataset(),
+        }
+    }
+
+    fn indices(self) -> &'a [lance_table::format::IndexMetadata] {
+        match self {
+            Self::Single(ann) => ann.indices(),
+            Self::Batch(ann) => ann.indices(),
+        }
+    }
+
+    fn query_count(self) -> Option<usize> {
+        match self {
+            Self::Single(_) => None,
+            Self::Batch(ann) => Some(ann.query_count()),
+        }
+    }
+
+    fn same_kind(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Single(_), Self::Single(_)) | (Self::Batch(_), Self::Batch(_))
+        )
+    }
+}
+
+/// Find ANN index segments whose scores use normalized squared L2 for cosine search.
+///
+/// Cosine PQ/SQ/RQ indices normalize their vectors and use squared L2 internally.  This
+/// preserves ranking, but squared L2 over unit vectors is twice the cosine distance.  Flat
+/// cosine indices calculate cosine directly, so they are not included.
+async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<uuid::Uuid>> {
+    let mut ann_plans = Vec::new();
+    find_ann_plans(plan, &mut ann_plans);
+
+    let mut checked = HashSet::new();
+    let mut normalized_l2 = HashSet::new();
+    for ann in ann_plans {
+        if ann.query().metric_type != Some(LanceDistanceType::Cosine) {
+            continue;
+        }
+        let uuids: Vec<_> = ann
+            .indices()
+            .iter()
+            .map(|index| index.uuid)
+            .filter(|uuid| checked.insert(*uuid))
+            .collect();
+        if uuids.is_empty() {
+            continue;
+        }
+        let types = ann
+            .dataset()
+            .vector_index_types(&ann.query().column, &uuids)
+            .await?;
+        for (uuid, index_type) in uuids.into_iter().zip(types) {
+            if matches!(
+                index_type,
+                IndexType::IvfPq
+                    | IndexType::IvfSq
+                    | IndexType::IvfRq
+                    | IndexType::IvfHnswPq
+                    | IndexType::IvfHnswSq
+            ) {
+                normalized_l2.insert(uuid);
+            }
+        }
+    }
+    Ok(normalized_l2)
+}
+
+/// Normalize affected ANN outputs before their parent plan nodes consume them.
+///
+/// This is used by planners that do not support distance ranges, such as the MemWAL
+/// LSM planner. The standard scanner path rebuilds a second plan when it also needs
+/// to translate range bounds, then calls [`normalize_ann_branches`] directly.
+pub(super) async fn normalize_cosine_ann_branches(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let normalized_l2_indices = normalized_l2_ann_indices(plan.as_ref()).await?;
+    if normalized_l2_indices.is_empty() {
+        return Ok(plan);
+    }
+    normalize_ann_branches(plan.clone(), plan, &normalized_l2_indices)
+}
+
+fn find_ann_plans<'a>(plan: &'a dyn ExecutionPlan, ann_plans: &mut Vec<AnnExecRef<'a>>) {
+    if let Some(ann) = AnnExecRef::from_plan(plan) {
+        ann_plans.push(ann);
+        return;
+    }
+    for child in plan.children() {
+        find_ann_plans(child.as_ref(), ann_plans);
+    }
+}
+
+fn collect_ann_plans(
+    plan: &Arc<dyn ExecutionPlan>,
+    ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
+) {
+    if AnnExecRef::from_plan(plan.as_ref()).is_some() {
+        ann_plans.push_back(plan.clone());
+        return;
+    }
+    for child in plan.children() {
+        collect_ann_plans(child, ann_plans);
+    }
+}
+
+/// Replace normalized-L2 ANN nodes with equivalent nodes that use internal bounds, then
+/// convert their output to the public cosine scale before any generic plan node consumes it.
+fn normalize_ann_branches(
+    public_plan: Arc<dyn ExecutionPlan>,
+    internal_plan: Arc<dyn ExecutionPlan>,
+    normalized_l2_indices: &HashSet<uuid::Uuid>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut internal_ann_plans = VecDeque::new();
+    collect_ann_plans(&internal_plan, &mut internal_ann_plans);
+    let normalized =
+        replace_ann_branches(public_plan, &mut internal_ann_plans, normalized_l2_indices)?;
+    if !internal_ann_plans.is_empty() {
+        return Err(Error::Runtime {
+            message: "internal and public vector plans contained different ANN branches"
+                .to_string(),
+        });
+    }
+    Ok(normalized)
+}
+
+fn replace_ann_branches(
+    public_plan: Arc<dyn ExecutionPlan>,
+    internal_ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
+    normalized_l2_indices: &HashSet<uuid::Uuid>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if let Some(public_ann) = AnnExecRef::from_plan(public_plan.as_ref()) {
+        let internal_plan = internal_ann_plans
+            .pop_front()
+            .ok_or_else(|| Error::Runtime {
+                message: "internal vector plan was missing an ANN branch".to_string(),
+            })?;
+        let internal_ann =
+            AnnExecRef::from_plan(internal_plan.as_ref()).ok_or_else(|| Error::Runtime {
+                message: "internal vector plan contained a non-ANN branch where an ANN branch was expected"
+                    .to_string(),
+            })?;
+        let same_indices = public_ann
+            .indices()
+            .iter()
+            .map(|index| &index.uuid)
+            .eq(internal_ann.indices().iter().map(|index| &index.uuid));
+        if !public_ann.same_kind(internal_ann)
+            || public_ann.query_count() != internal_ann.query_count()
+            || public_ann.query().column != internal_ann.query().column
+            || public_ann.query().metric_type != internal_ann.query().metric_type
+            || !same_indices
+        {
+            return Err(Error::Runtime {
+                message: "internal and public vector plans had mismatched ANN branches".to_string(),
+            });
+        }
+
+        let normalized_count = public_ann
+            .indices()
+            .iter()
+            .filter(|index| normalized_l2_indices.contains(&index.uuid))
+            .count();
+        if normalized_count == 0 {
+            return Ok(public_plan);
+        }
+        if normalized_count != public_ann.indices().len() {
+            return Err(Error::Runtime {
+                message: "one ANN branch mixed public and normalized-L2 distance scales"
+                    .to_string(),
+            });
+        }
+        return scale_distance_column(internal_plan, COSINE_ANN_SCALE);
+    }
+
+    let children = public_plan
+        .children()
+        .into_iter()
+        .cloned()
+        .map(|child| replace_ann_branches(child, internal_ann_plans, normalized_l2_indices))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(replace_children_if_necessary(public_plan, children)?)
+}
+
+fn scale_distance_column(
+    plan: Arc<dyn ExecutionPlan>,
+    scale: f32,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let schema = plan.schema();
+    if schema.column_with_name(DIST_COL).is_none() {
+        return Ok(plan);
+    }
+
+    let expressions: Vec<(Arc<dyn PhysicalExpr>, String)> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let column: Arc<dyn PhysicalExpr> = Arc::new(PhysicalColumn::new(field.name(), index));
+            let expression = if field.name() == DIST_COL {
+                let scale: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Float32(Some(scale))));
+                Arc::new(BinaryExpr::new(column, Operator::Multiply, scale))
+                    as Arc<dyn PhysicalExpr>
+            } else {
+                column
+            };
+            (expression, field.name().clone())
+        })
+        .collect();
+    Ok(Arc::new(ProjectionExec::try_new(expressions, plan)?))
+}
 
 // Take many execution plans and map them into a single plan that adds
 // a query_index column and unions them.
@@ -562,6 +929,33 @@ async fn execute_namespace_query(
     parse_arrow_ipc_response(response_bytes).await
 }
 
+fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableRequestFullTextQuery>> {
+    if !matches!(&fts.query, FtsQuery::Match(query) if query.operator == FullTextOperator::Or) {
+        let query = serde_json::to_value(&fts.query)
+            .and_then(serde_json::from_value)
+            .map_err(|error| Error::InvalidInput {
+                message: format!("Cannot serialize namespace full-text query: {error}"),
+            })?;
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: None,
+            structured_query: Some(Box::new(StructuredFtsQuery::new(query))),
+        }))
+    } else {
+        let columns = fts.columns();
+        Ok(Box::new(QueryTableRequestFullTextQuery {
+            string_query: Some(Box::new(StringFtsQuery {
+                query: fts.query.query().clone(),
+                columns: if columns.is_empty() {
+                    None
+                } else {
+                    Some(columns.into_iter().collect())
+                },
+            })),
+            structured_query: None,
+        }))
+    }
+}
+
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
@@ -604,6 +998,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Check for unsupported features
+            if vq.search_effort.is_some() {
+                return Err(Error::NotSupported {
+                    message: "namespace QueryTable does not support search_effort; execute the query locally".to_string(),
+                });
+            }
             if vq.base.reranker.is_some() {
                 return Err(Error::NotSupported {
                     message: "Reranker is not supported for server-side queries".to_string(),
@@ -611,21 +1010,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             }
 
             // Convert FTS query if present
-            let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
-                let columns = fts.columns();
-                let columns_vec = if columns.is_empty() {
-                    None
-                } else {
-                    Some(columns.into_iter().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = vq
+                .base
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             Ok(NsQueryTableRequest {
                 id: None, // Will be set in namespace_query
@@ -660,6 +1050,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 });
             }
 
+            let k = match q.limit {
+                Some(limit) => limit as i32,
+                None => i32::MAX,
+            };
+
             let filter = q.filter.as_ref().map(filter_to_sql).transpose()?;
 
             let columns = match &q.select {
@@ -688,20 +1083,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Handle full text search if present
-            let full_text_query = q.full_text_search.as_ref().map(|fts| {
-                let columns_vec = if fts.columns().is_empty() {
-                    None
-                } else {
-                    Some(fts.columns().iter().cloned().collect())
-                };
-                Box::new(QueryTableRequestFullTextQuery {
-                    string_query: Some(Box::new(StringFtsQuery {
-                        query: fts.query.to_string(),
-                        columns: columns_vec,
-                    })),
-                    structured_query: None,
-                })
-            });
+            let full_text_query = q
+                .full_text_search
+                .as_ref()
+                .map(namespace_fts_query)
+                .transpose()?;
 
             // Empty vector for non-vector queries
             let vector = Box::new(QueryTableRequestVector {
@@ -712,10 +1098,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             Ok(NsQueryTableRequest {
                 id: None, // Will be set by caller
                 vector,
-                k: q.limit.unwrap_or(10) as i32,
+                k,
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
+                fast_search: Some(q.fast_search),
                 offset: q.offset.map(|o| o as i32),
                 vector_column: None, // No vector column for plain queries
                 with_row_id: Some(q.with_row_id),
@@ -840,6 +1227,7 @@ async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBa
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
+    use crate::index::scalar::MatchQuery;
     use arrow_array::{
         ArrayRef, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
         StructArray,
@@ -857,6 +1245,21 @@ mod tests {
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
+    }
+
+    fn collect_i32(batches: &[RecordBatch]) -> Vec<i32> {
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -962,6 +1365,19 @@ mod tests {
         let default_query = AnyQuery::VectorQuery(VectorQueryRequest::default());
         assert!(!requires_local_namespace_execution(&default_query));
 
+        for effort in [0.0, 0.5, 1.0] {
+            let effort_query = AnyQuery::VectorQuery(VectorQueryRequest {
+                query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+                search_effort: Some(effort),
+                ..Default::default()
+            });
+            assert!(requires_local_namespace_execution(&effort_query));
+            assert!(matches!(
+                convert_to_namespace_query(&effort_query),
+                Err(Error::NotSupported { message }) if message.contains("search_effort")
+            ));
+        }
+
         let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
             query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             nprobes: Some(20),
@@ -1047,6 +1463,92 @@ mod tests {
         assert!(ns_request.vector_column.is_none());
 
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest::default());
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_with_explicit_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            limit: Some(10),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_vector_without_limit() {
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let any_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![query_vector as ArrayRef],
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_fts_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                "hello world".to_string(),
+            )),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_namespace_fts_operators_and_unbounded_counts() {
+        for columns in [
+            vec!["text".to_string()],
+            vec!["title".to_string(), "body".to_string()],
+        ] {
+            let fts = FullTextSearchQuery::new_query(
+                MatchQuery::new("gripper closed".to_string())
+                    .with_operator(FullTextOperator::And)
+                    .into(),
+            )
+            .with_columns(&columns)
+            .unwrap();
+            let request = convert_to_namespace_query(&AnyQuery::Query(QueryRequest {
+                full_text_search: Some(fts),
+                ..Default::default()
+            }))
+            .unwrap();
+            assert_eq!(request.k, i32::MAX);
+            let full_text_query = request.full_text_query.unwrap();
+            assert!(full_text_query.string_query.is_none());
+            let query =
+                serde_json::to_value(full_text_query.structured_query.unwrap().query).unwrap();
+            if columns.len() == 1 {
+                assert_eq!(query["match"]["operator"], "And");
+                assert_eq!(query["match"]["column"], "text");
+            } else {
+                let leaves = query["multi_match"]["match_queries"].as_array().unwrap();
+                assert_eq!(leaves.len(), 2);
+                assert!(leaves.iter().all(|leaf| leaf["operator"] == "And"));
+            }
+        }
+        let request =
+            namespace_fts_query(&FullTextSearchQuery::new("gripper closed".to_string())).unwrap();
+        assert_eq!(request.string_query.unwrap().query, "gripper closed");
+        assert!(request.structured_query.is_none());
     }
 
     #[tokio::test]
@@ -1171,7 +1673,7 @@ mod tests {
 
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::unsharded())
+            .enable_rte(crate::table::RTEWriteSpec::unsharded())
             .await
             .unwrap();
         let lsm_error = table
@@ -1242,6 +1744,13 @@ mod tests {
             Box::new(None),
         );
         let error = field_not_found_diagnostic(&source, &schema).unwrap();
+        assert!(matches!(&error, Error::FieldNotFound { name, .. } if name == "missing"));
+        assert!(matches!(
+            std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<lance::Error>(),
+            Some(lance::Error::FieldNotFound { .. })
+        ));
         assert!(
             error.to_string().contains(
                 "Valid fields are `a`.`b`.`c`.`d`.`e`, `metadata`.`child.with.dot`, `metadata`.`Title`, `metadata`.`123child`, `metadata`.`child``tick`"
@@ -1371,7 +1880,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_query_use_lsm_with_namespace_pushdown_runs_locally() {
+    async fn test_execute_query_use_rte_with_namespace_pushdown_runs_locally() {
         use crate::connect;
         use crate::table::query::execute_query;
         use arrow_array::{Int32Array, RecordBatch};
@@ -1394,7 +1903,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table("test_use_lsm_namespace_fallback", batch)
+            .create_table("test_use_rte_namespace_fallback", batch)
             .execute()
             .await
             .unwrap();
@@ -1405,13 +1914,13 @@ mod tests {
             .pushdown_operations
             .insert(NamespaceClientPushdownOperation::QueryTable);
 
-        // `use_lsm` set (even to false) must force local execution — the namespace
-        // request has no use_lsm field, so a pushdown would silently ignore it.
+        // `use_rte` set (even to false) must force local execution — the namespace
+        // request has no use_rte field, so a pushdown would silently ignore it.
         let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
         let query = AnyQuery::VectorQuery(VectorQueryRequest {
             base: QueryRequest {
                 limit: Some(1),
-                use_lsm: Some(false),
+                use_rte: Some(false),
                 ..Default::default()
             },
             column: Some("vector".to_string()),
@@ -1426,6 +1935,60 @@ mod tests {
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
         assert_eq!(count, 1);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_order_by_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        // Insertion order differs from ascending id, so a pushed-down query that
+        // drops order_by would return 3 instead of the correct top-1 row 1.
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![3, 1, 2]))]).unwrap();
+
+        let table = conn
+            .create_table("test_order_by_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            limit: Some(1),
+            order_by: Some(vec![ColumnOrdering::asc_nulls_first("id".to_string())]),
+            ..Default::default()
+        });
+
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let ids: Vec<i32> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+
+        assert_eq!(ids, vec![1]);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -1531,6 +2094,464 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_plan_batch_vector_missing_column_returns_sdk_error() {
+        use crate::connect;
+        use crate::table::query::create_plan;
+        use arrow_array::{Float32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::new_empty(schema);
+        let table = conn
+            .create_table("test_batch_vector_missing_column", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let native_table = table.as_native().unwrap();
+
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(1),
+                ..Default::default()
+            },
+            column: Some("missing_vector".to_string()),
+            query_vector: vec![
+                Arc::new(Float32Array::from(vec![1.0, 2.0])),
+                Arc::new(Float32Array::from(vec![3.0, 4.0])),
+            ],
+            ..Default::default()
+        });
+
+        let error = create_plan(native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                Error::Lance {
+                    source: lance::Error::Index { message, .. }
+                } if message.contains("column missing_vector does not exist in schema")
+            ),
+            "expected ordinary vector column validation error, got: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cold_cosine_rq_plan_only_needs_index_header() {
+        use crate::index::{Index, vector::IvfRqIndexBuilder};
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let conn = crate::connect(uri).execute().await.unwrap();
+        let vectors = Arc::new(fixed_size_list_array(
+            (0..512 * 8).map(|n| (1 + n % 31) as f32).collect(),
+            8,
+        ));
+        let schema = Arc::new(Schema::new(vec![arrow_schema::Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![vectors]).unwrap();
+        let table = conn.create_table("vectors", batch).execute().await.unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(
+                    IvfRqIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let indices = dataset.load_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        // The quantizer is needed to execute the search. Planning should only read
+        // the segment's type from index.idx, even with an empty session cache.
+        let auxiliary = dir
+            .path()
+            .join("vectors.lance/_indices")
+            .join(indices[0].uuid.to_string())
+            .join(lance_index::INDEX_AUXILIARY_FILE_NAME);
+        std::fs::remove_file(auxiliary).unwrap();
+        let conn = crate::connect(uri).execute().await.unwrap();
+        let table = conn.open_table("vectors").execute().await.unwrap();
+        let plan = table
+            .vector_search([1.0_f32; 8].as_slice())
+            .unwrap()
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let mut ann = Vec::new();
+        find_ann_plans(plan.as_ref(), &mut ann);
+        assert_eq!(ann.len(), 1);
+        assert_eq!(ann[0].query().metric_type, Some(LanceDistanceType::Cosine));
+    }
+
+    #[rstest::rstest]
+    #[case::modern(false)]
+    #[case::legacy(true)]
+    #[tokio::test]
+    async fn test_cosine_pq_distance_uses_public_cosine_scale(#[case] legacy: bool) {
+        use arrow_array::{
+            Float32Array, Int32Array, RecordBatch,
+            types::{Float32Type, Int32Type},
+        };
+        use arrow_schema::{DataType, Field, Schema};
+
+        use crate::connect;
+        use crate::index::{Index, vector::IvfPqIndexBuilder};
+        use lance::index::{
+            DatasetIndexExt, DatasetIndexInternalExt,
+            vector::{IndexFileVersion, VectorIndexParams},
+        };
+        use lance_index::metrics::NoOpMetricsCollector;
+
+        fn normalized_vector(state: &mut u64, dimension: usize) -> Vec<f32> {
+            let mut vector = (0..dimension)
+                .map(|_| {
+                    *state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    ((*state >> 32) as u32 as f32 / u32::MAX as f32) * 2.0 - 1.0
+                })
+                .collect::<Vec<_>>();
+            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            vector.iter_mut().for_each(|value| *value /= norm);
+            vector
+        }
+
+        fn distances(batches: &[RecordBatch]) -> Vec<f32> {
+            batches
+                .iter()
+                .flat_map(|batch| {
+                    batch[DIST_COL]
+                        .as_primitive::<Float32Type>()
+                        .values()
+                        .to_vec()
+                })
+                .collect()
+        }
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let dimension = 8;
+        let num_rows = 256;
+        let mut state = 42;
+        let values = (0..num_rows)
+            .flat_map(|_| normalized_vector(&mut state, dimension))
+            .collect::<Vec<_>>();
+        let query_vector = normalized_vector(&mut state, dimension);
+        let vectors = Arc::new(fixed_size_list_array(values, dimension as i32));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows)), vectors],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_cosine_pq_distance", batch)
+            .execute()
+            .await
+            .unwrap();
+        if legacy {
+            let mut dataset = (*table.dataset().unwrap().get().await.unwrap()).clone();
+            dataset
+                .create_index(
+                    &["vector"],
+                    IndexType::Vector,
+                    None,
+                    VectorIndexParams::ivf_pq(1, 8, 1, LanceDistanceType::Cosine, 10)
+                        .version(IndexFileVersion::Legacy),
+                    true,
+                )
+                .await
+                .unwrap();
+            table.dataset().unwrap().update(dataset);
+        } else {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfPq(
+                        IvfPqIndexBuilder::default()
+                            .distance_type(crate::DistanceType::Cosine)
+                            .num_partitions(1)
+                            .num_sub_vectors(1),
+                    ),
+                )
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let expected_index_version = if legacy { "Legacy" } else { "V3" };
+        let index_file_version = {
+            let dataset = table.dataset().unwrap().get().await.unwrap();
+            let metadata = dataset
+                .load_indices()
+                .await
+                .unwrap()
+                .first()
+                .unwrap()
+                .clone();
+            let index = dataset
+                .open_vector_index("vector", &metadata.uuid, &NoOpMetricsCollector)
+                .await
+                .unwrap();
+            index.statistics().unwrap()["index_file_version"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(index_file_version, expected_index_version);
+
+        let plan = table
+            .dataset()
+            .unwrap()
+            .get()
+            .await
+            .unwrap()
+            .scan()
+            .nearest("vector", &Float32Array::from(query_vector.clone()), 5)
+            .unwrap()
+            .create_plan()
+            .await
+            .unwrap();
+        let mut ann_plans = Vec::new();
+        find_ann_plans(plan.as_ref(), &mut ann_plans);
+        assert!(!ann_plans.is_empty());
+
+        let approximate = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let refined = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(5)
+            .refine_factor(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let approximate_distances = distances(&approximate);
+        let refined_distances = distances(&refined);
+        assert_eq!(approximate_distances.len(), 5);
+        assert_eq!(approximate_distances.len(), refined_distances.len());
+        for (approximate, refined) in approximate_distances.iter().zip(&refined_distances) {
+            assert!(
+                (approximate - refined).abs() < 1e-5,
+                "approximate cosine distance {approximate} did not use the public scale; refined distance was {refined}"
+            );
+        }
+
+        // Distance range bounds are public cosine distances too. Lance applies them to
+        // internal ANN scores, so the planner must translate the bounds before execution.
+        let nearest = approximate_distances[0];
+        let ranged = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(1)
+            .distance_range(Some(nearest - 1e-5), Some(nearest + 1e-5))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let ranged_distances = distances(&ranged);
+        assert_eq!(ranged_distances.len(), 1);
+        assert!((ranged_distances[0] - nearest).abs() < 1e-5);
+
+        if !legacy {
+            fn batch_distances_by_query(
+                batches: &[RecordBatch],
+                query_count: usize,
+            ) -> Vec<Vec<f32>> {
+                let mut distances = vec![Vec::new(); query_count];
+                for batch in batches {
+                    let query_index_column = batch["query_index"].as_primitive::<Int32Type>();
+                    let distance_column = batch[DIST_COL].as_primitive::<Float32Type>();
+                    for row in 0..batch.num_rows() {
+                        let query_index = query_index_column.value(row) as usize;
+                        distances[query_index].push(distance_column.value(row));
+                    }
+                }
+                distances
+            }
+
+            fn sorted(mut values: Vec<f32>) -> Vec<f32> {
+                values.sort_by(|left, right| left.partial_cmp(right).unwrap());
+                values
+            }
+
+            let batch_query = table
+                .vector_search(query_vector.as_slice())
+                .unwrap()
+                .add_query_vector(query_vector.as_slice())
+                .unwrap()
+                .nprobes(1)
+                .unwrap()
+                .limit(5);
+            let batch_plan = batch_query.explain_plan(false).await.unwrap();
+            assert!(batch_plan.contains("ANNIvfBatch"), "{batch_plan}");
+            let batched = batch_query
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batched_distances = batch_distances_by_query(&batched, 2);
+            let expected_distances = sorted(approximate_distances.clone());
+            for (query_index, actual) in batched_distances.into_iter().enumerate() {
+                assert_eq!(
+                    actual.len(),
+                    expected_distances.len(),
+                    "query {query_index} returned the wrong number of rows"
+                );
+                for (actual, expected) in sorted(actual).into_iter().zip(&expected_distances) {
+                    assert!(
+                        (actual - expected).abs() < 1e-5,
+                        "batch distance {actual} for query {query_index} must use single-query public scale {expected}"
+                    );
+                }
+            }
+
+            let batched_ranged = table
+                .vector_search(query_vector.as_slice())
+                .unwrap()
+                .add_query_vector(query_vector.as_slice())
+                .unwrap()
+                .nprobes(1)
+                .unwrap()
+                .limit(1)
+                .distance_range(None, Some(nearest + 1e-5))
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batched_ranged_distances = batch_distances_by_query(&batched_ranged, 2);
+            for (query_index, query_distances) in batched_ranged_distances.into_iter().enumerate() {
+                assert_eq!(
+                    query_distances.len(),
+                    1,
+                    "public cosine range must return one hit for query {query_index}"
+                );
+                assert!(
+                    (query_distances[0] - nearest).abs() < 1e-5,
+                    "ranged batch distance {} for query {query_index} must match {nearest}",
+                    query_distances[0]
+                );
+            }
+        }
+
+        let refined_ranged = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(1)
+            .refine_factor(1)
+            .distance_range(None, Some(nearest + 1e-5))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            distances(&refined_ranged).len(),
+            1,
+            "refinement must not apply public cosine bounds to internal ANN scores"
+        );
+
+        let aliased = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(1)
+            .select(Select::dynamic(&[("aliased_distance", "_distance")]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = &aliased[0];
+        let aliased_distance = batch["aliased_distance"]
+            .as_primitive::<Float32Type>()
+            .value(0);
+        let public_distance = batch[DIST_COL].as_primitive::<Float32Type>().value(0);
+        assert!(
+            (aliased_distance - public_distance).abs() < 1e-5,
+            "distance aliases and auto-projected distances must use the same public scale"
+        );
+
+        // Appended rows take an exact fallback branch. Its public range filter must stay
+        // independent of the translated ANN bounds before both branches are merged.
+        let mut orthogonal = normalized_vector(&mut state, dimension);
+        let projection = orthogonal
+            .iter()
+            .zip(&query_vector)
+            .map(|(left, right)| left * right)
+            .sum::<f32>();
+        for (value, query_value) in orthogonal.iter_mut().zip(&query_vector) {
+            *value -= projection * query_value;
+        }
+        let norm = orthogonal
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        orthogonal.iter_mut().for_each(|value| *value /= norm);
+        let appended_vectors = Arc::new(fixed_size_list_array(orthogonal, dimension as i32));
+        let appended = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![num_rows])), appended_vectors],
+        )
+        .unwrap();
+        table.add(appended).execute().await.unwrap();
+
+        let mixed = table
+            .vector_search(query_vector.as_slice())
+            .unwrap()
+            .limit(5)
+            .distance_range(None, Some(nearest + 1e-5))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mixed_distances = distances(&mixed);
+        assert_eq!(mixed_distances.len(), 1);
+        assert!((mixed_distances[0] - nearest).abs() < 1e-5);
+    }
+
+    #[tokio::test]
     async fn test_create_plan_applies_approx_mode_to_ann_query() {
         use arrow_array::RecordBatch;
         use arrow_schema::{DataType, Field, Schema};
@@ -1621,5 +2642,301 @@ mod tests {
             find_ann_approx_mode(plan.as_ref()),
             Some(ApproxMode::Accurate)
         );
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_local_multi_fragment_contract() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+
+        let table = conn
+            .create_table("scan_in_order_contract", batch(vec![0, 1]))
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch(vec![2, 3])).execute().await.unwrap();
+        table.add(batch(vec![4, 5])).execute().await.unwrap();
+
+        let fragments = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .get_fragments()
+            .len();
+        assert_eq!(fragments, 3, "the test needs real multi-fragment data");
+
+        // An ordered scan must not introduce a global sort.
+        let plan = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(true)
+            .explain_plan(false)
+            .await
+            .unwrap();
+        assert!(
+            !plan.contains("SortExec"),
+            "scan_in_order(true) must not add a sort, got:\n{plan}"
+        );
+
+        // Pin one version so repeated executions describe the same manifest.
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        for _ in 0..2 {
+            let batches = table
+                .query()
+                .select(Select::columns(&["id"]))
+                .scan_in_order(true)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(collect_i32(&batches), vec![0, 1, 2, 3, 4, 5]);
+        }
+
+        // The default keeps the ordered local behavior.
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![0, 1, 2, 3, 4, 5]);
+
+        // Allowing unordered scans changes no membership.
+        let mut unordered = collect_i32(
+            &table
+                .query()
+                .select(Select::columns(&["id"]))
+                .scan_in_order(false)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap(),
+        );
+        unordered.sort();
+        assert_eq!(unordered, vec![0, 1, 2, 3, 4, 5]);
+
+        // An explicit sort still wins when storage order is not required.
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(false)
+            .order_by(Some(vec![ColumnOrdering::desc_nulls_last(
+                "id".to_string(),
+            )]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![5, 4, 3, 2, 1, 0]);
+
+        // Deletions keep manifest order, and small output batches plus
+        // limit/offset must not disturb it.
+        table.checkout_latest().await.unwrap();
+        table.delete("id = 3").await.unwrap();
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .scan_in_order(true)
+            .offset(1)
+            .limit(2)
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(
+            batches.iter().all(|batch| batch.num_rows() <= 1),
+            "max_batch_length must stay bounded"
+        );
+        assert_eq!(collect_i32(&batches), vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_rejects_ranked_and_sorted_queries() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let vector = fixed_size_list_array(vec![0.0, 0.0, 1.0, 0.0, 2.0, 0.0], 2);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vector.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(vector)],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("scan_in_order_conflicts", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_last("id".to_string())]))
+            .execute()
+            .await
+            .err()
+            .expect("ranked and sorted scans must be rejected");
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("nonempty order_by")),
+            "unexpected error: {err}"
+        );
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .nearest_to(vec![0.0f32, 0.0])
+            .unwrap()
+            .execute()
+            .await
+            .err()
+            .expect("ranked scans must be rejected");
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("ranked results")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::ColumnOrdering;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+        // Insertion order differs from sorted order so a dropped scan order or
+        // an accidental sort changes the result.
+        let table = conn
+            .create_table("scan_in_order_namespace", batch(vec![3, 1]))
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch(vec![2])).execute().await.unwrap();
+
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql("id >= 1".to_string())),
+            select: Select::columns(&["id"]),
+            limit: Some(2),
+            scan_in_order: Some(true),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&query));
+
+        let batches = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![3, 1]);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+
+        // Allowing unordered scans does not require local execution.
+        let allow_unordered = AnyQuery::Query(QueryRequest {
+            scan_in_order: Some(false),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&allow_unordered));
+
+        // An explicit sort is already local because the namespace request has
+        // no order_by field.
+        let sorted = AnyQuery::Query(QueryRequest {
+            order_by: Some(vec![ColumnOrdering::asc_nulls_last("id".to_string())]),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&sorted));
+    }
+
+    #[tokio::test]
+    async fn test_scan_in_order_true_rejected_on_rte() {
+        use crate::connect;
+        use crate::table::RTEWriteSpec;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![0, 1]))]).unwrap();
+        let table = conn
+            .create_table("scan_in_order_rte", batch)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+
+        let err = table
+            .query()
+            .scan_in_order(true)
+            .execute()
+            .await
+            .err()
+            .expect("RTE scans cannot guarantee manifest order");
+        assert!(
+            matches!(&err, Error::NotSupported { message }
+                if message.contains("scan_in_order(true)") && message.contains("use_rte(false)")),
+            "unexpected error: {err}"
+        );
+
+        // The base table can still be read in storage order explicitly.
+        let batches = table
+            .query()
+            .scan_in_order(true)
+            .use_rte(false)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(collect_i32(&batches), vec![0, 1]);
     }
 }

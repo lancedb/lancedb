@@ -79,6 +79,51 @@ def test_embedding_aws_usage() -> None:
     # --8<-- [end:embedding_aws_usage]
 
 
+def test_embedding_aws_image_usage() -> None:
+    require_flag("RUN_AWS_BEDROCK_SNIPPETS")
+
+    # --8<-- [start:embedding_aws_image_usage]
+    import io
+    import tempfile
+    from pathlib import Path
+
+    import lancedb
+    from lancedb.embeddings import get_registry
+    from lancedb.pydantic import LanceModel, Vector
+    from PIL import Image
+
+    model = get_registry().get("bedrock-image").create()
+
+    class Photo(LanceModel):
+        label: str
+        image: bytes = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    def png_bytes(color: str) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    db_path = Path(tempfile.mkdtemp()) / "bedrock-image-demo"
+    db = lancedb.connect(db_path)
+    table = db.create_table("photos", schema=Photo, mode="overwrite")
+
+    table.add(
+        [
+            {"label": "red", "image": png_bytes("red")},
+            {"label": "blue", "image": png_bytes("blue")},
+        ]
+    )
+
+    text_matches = table.search("red square").limit(1).to_list()
+    print(text_matches[0]["label"])
+
+    query_image = Image.new("RGB", (64, 64), "blue")
+    image_matches = table.search(query_image).limit(1).to_list()
+    print(image_matches[0]["label"])
+    # --8<-- [end:embedding_aws_image_usage]
+
+
 def test_embedding_cohere_usage() -> None:
     require_env("COHERE_API_KEY")
 
@@ -93,7 +138,7 @@ def test_embedding_cohere_usage() -> None:
     cohere = (
         EmbeddingFunctionRegistry.get_instance()
         .get("cohere")
-        .create(name="embed-multilingual-v2.0")
+        .create(name="embed-multilingual-v3.0")
     )
 
     class TextModel(LanceModel):
@@ -106,6 +151,39 @@ def test_embedding_cohere_usage() -> None:
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
     tbl.add(data)
     # --8<-- [end:embedding_cohere_usage]
+
+
+def test_embedding_cohere_foundry(monkeypatch) -> None:
+    from lancedb.embeddings import EmbeddingFunctionRegistry
+
+    monkeypatch.setenv("FOUNDRY_COHERE_API_KEY", "test-foundry-key")
+    registry = EmbeddingFunctionRegistry.get_instance()
+    monkeypatch.setattr(registry, "_variables", {})
+    monkeypatch.setattr(registry, "_allowed_endpoints", set())
+
+    # --8<-- [start:embedding_cohere_foundry]
+    import os
+
+    from lancedb.embeddings import get_registry
+    from lancedb.pydantic import LanceModel
+
+    registry = get_registry()
+    registry.set_var("foundry-cohere-key", os.environ["FOUNDRY_COHERE_API_KEY"])
+    endpoint = "https://<resource>.services.ai.azure.com/providers/cohere"
+    embed = registry.get("cohere").create(
+        name="embed-v-4-0",
+        base_url=endpoint,
+        output_dimension=1536,
+        api_key="$var:foundry-cohere-key",
+    )
+
+    class Document(LanceModel):
+        text: str = embed.SourceField()
+        vector: list[float] = embed.VectorField()
+
+    # --8<-- [end:embedding_cohere_foundry]
+
+    assert Document.to_arrow_schema().field("vector").type.list_size == 1536
 
 
 def test_embedding_gemini_usage() -> None:
@@ -167,46 +245,31 @@ def test_embedding_huggingface_usage() -> None:
 def test_frameworks_lerobot_lancedb_usage() -> None:
     require_flag("RUN_LEROBOT_LANCEDB_SNIPPETS")
 
-    # --8<-- [start:frameworks_lerobot_lancedb_image_dataset]
-    from lerobot_lancedb import LeRobotLanceDataset
+    # --8<-- [start:frameworks_lerobot_lancedb_dataset]
+    from lerobot_lancedb import LanceDBDataset, lance_mp_context
+    from torch.utils.data import DataLoader
 
-    dataset = LeRobotLanceDataset(
-        repo_id="your-org/your-lerobot-lance-images",
-        delta_timestamps={
-            "observation.images.front": [-0.2, -0.1, 0.0],
-        },
-        return_uint8=True,
-    )
-
+    dataset = LanceDBDataset(root="hf://datasets/lance-format/pusht-lance")
     sample = dataset[0]
     print(sample["observation.state"].shape)
     print(sample["action"].shape)
-    # --8<-- [end:frameworks_lerobot_lancedb_image_dataset]
 
-    # --8<-- [start:frameworks_lerobot_lancedb_video_dataset]
-    from lerobot_lancedb import LeRobotLanceVideoDataset
-
-    video_dataset = LeRobotLanceVideoDataset(
-        repo_id="lance-format/lerobot-pusht-lance",
-        delta_timestamps={
-            "observation.images.image": [-0.2, -0.1, 0.0],
-        },
-        return_uint8=True,
+    loader = DataLoader(
+        dataset,
+        batch_size=32,
+        num_workers=8,
+        multiprocessing_context=lance_mp_context(),
     )
-
-    video_sample = video_dataset[0]
-    print(video_sample["observation.images.image"].shape)
-    # --8<-- [end:frameworks_lerobot_lancedb_video_dataset]
+    # --8<-- [end:frameworks_lerobot_lancedb_dataset]
 
     # --8<-- [start:frameworks_lerobot_open_lance_tables]
     import lancedb
 
-    db = lancedb.connect("hf://datasets/lance-format/lerobot-pusht-lance/data")
+    db = lancedb.connect("hf://datasets/lance-format/pusht-lance")
     frames = db.open_table("frames")
-    episodes = db.open_table("episodes")
     videos = db.open_table("videos")
 
-    print(len(frames), len(episodes), len(videos))
+    print(len(frames), len(videos))
     print(frames.schema)
     # --8<-- [end:frameworks_lerobot_open_lance_tables]
 
@@ -723,7 +786,9 @@ def test_embedding_voyageai_multimodal() -> None:
     # Add images using URLs
     tbl.add(
         [
-            {"image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"},
+            {
+                "image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"
+            },
         ]
     )
 
@@ -740,13 +805,16 @@ def test_reranking_answerdotai_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_answerdotai_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import AnswerdotaiRerankers
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "answerdotai-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -756,18 +824,20 @@ def test_reranking_answerdotai_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = AnswerdotaiRerankers()
 
     # Run vector search with a reranker
     result = tbl.search("hello").rerank(reranker=reranker).to_list()
 
+    # Build the full-text index before either FTS or hybrid search.
+    tbl.create_fts_index("text", replace=True)
+
     # Run FTS search with a reranker
     result = tbl.search("hello", query_type="fts").rerank(reranker=reranker).to_list()
 
     # Run hybrid search with a reranker
-    tbl.create_fts_index("text", replace=True)
     result = (
         tbl.search("hello", query_type="hybrid").rerank(reranker=reranker).to_list()
     )
@@ -819,13 +889,16 @@ def test_reranking_colbert_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_colbert_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import ColbertReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "colbert-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -835,18 +908,20 @@ def test_reranking_colbert_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = ColbertReranker()
 
     # Run vector search with a reranker
     result = tbl.search("hello").rerank(reranker=reranker).to_list()
 
+    # Build the full-text index before either FTS or hybrid search.
+    tbl.create_fts_index("text", replace=True)
+
     # Run FTS search with a reranker
     result = tbl.search("hello", query_type="fts").rerank(reranker=reranker).to_list()
 
     # Run hybrid search with a reranker
-    tbl.create_fts_index("text", replace=True)
     result = (
         tbl.search("hello", query_type="hybrid").rerank(reranker=reranker).to_list()
     )
@@ -857,13 +932,16 @@ def test_reranking_cross_encoder_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_cross_encoder_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import CrossEncoderReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "cross-encoder-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -873,18 +951,20 @@ def test_reranking_cross_encoder_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = CrossEncoderReranker()
 
     # Run vector search with a reranker
     result = tbl.search("hello").rerank(reranker=reranker).to_list()
 
+    # Build the full-text index before either FTS or hybrid search.
+    tbl.create_fts_index("text", replace=True)
+
     # Run FTS search with a reranker
     result = tbl.search("hello", query_type="fts").rerank(reranker=reranker).to_list()
 
     # Run hybrid search with a reranker
-    tbl.create_fts_index("text", replace=True)
     result = (
         tbl.search("hello", query_type="hybrid").rerank(reranker=reranker).to_list()
     )
@@ -936,13 +1016,16 @@ def test_reranking_linear_combination_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_linear_combination_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import LinearCombinationReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "linear-combination-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -952,7 +1035,7 @@ def test_reranking_linear_combination_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = LinearCombinationReranker()
 
@@ -1007,13 +1090,16 @@ def test_reranking_rrf_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_rrf_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import RRFReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "rrf-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -1023,7 +1109,7 @@ def test_reranking_rrf_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = RRFReranker()
 
@@ -1039,13 +1125,16 @@ def test_reranking_mrr_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_mrr_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import MRRReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "mrr-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -1055,7 +1144,7 @@ def test_reranking_mrr_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = MRRReranker(weight_vector=0.7, weight_fts=0.3)
 
@@ -1335,6 +1424,8 @@ def test_frameworks_pydantic_examples() -> None:
     # --8<-- [end:frameworks_pydantic_base_model]
 
     # --8<-- [start:frameworks_pydantic_set_url]
+    import lancedb
+
     db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "pydantic-docs"))
     # --8<-- [end:frameworks_pydantic_set_url]
 
@@ -1390,9 +1481,12 @@ def test_frameworks_pydantic_examples() -> None:
             {"text": "goodbye world", "vector": [0.0, 1.0]},
         ]
     )
-    results = table.search("hello world").limit(1).to_pydantic(LanceDocs)
+    results = table.search([1.0, 0.0]).limit(1).to_pydantic(LanceDocs)
     print(results[0].text)
+    # hello world
     # --8<-- [end:frameworks_pydantic_base_example]
+    assert isinstance(results[0], LanceDocs)
+    assert results[0].text == "hello world"
 
 
 # Platform integrations
@@ -1664,6 +1758,8 @@ def test_platforms_pandas_examples() -> None:
 
     # --8<-- [end:platforms_pandas_imports]
     # --8<-- [start:platforms_pandas_create_table]
+    import lancedb
+
     pandas_df = pd.DataFrame(
         [
             {"id": "1", "text": "dragon", "vector": [0.9, 0.1, 0.3]},
@@ -1686,7 +1782,9 @@ def test_platforms_pandas_examples() -> None:
     # --8<-- [end:platforms_pandas_vector_search]
 
     # --8<-- [start:platforms_pandas_async_example]
-    async def run_pandas_async_example() -> None:
+    import lancedb
+
+    async def run_pandas_async_example() -> pd.DataFrame:
         async_db = await lancedb.connect_async(
             str(Path(tempfile.mkdtemp()) / "pandas-async")
         )
@@ -1699,16 +1797,16 @@ def test_platforms_pandas_examples() -> None:
         async_table = await async_db.create_table(
             "creatures_async", data=async_df, mode="overwrite"
         )
-        async_results = await (
-            async_table.search([0.6, 0.4, 0.8])
-            .select(["text", "_distance"])
-            .limit(1)
-            .to_pandas()
-        )
+        # An async search returns its query builder from an await
+        query = await async_table.search([0.6, 0.4, 0.8])
+        async_results = await query.select(["text", "_distance"]).limit(1).to_pandas()
         print(async_results)
+        return async_results
 
-    asyncio.run(run_pandas_async_example())
+    async_results = asyncio.run(run_pandas_async_example())
     # --8<-- [end:platforms_pandas_async_example]
+    assert async_results["text"].tolist() == ["sage"]
+    assert async_results["_distance"].tolist() == [0.0]
 
 
 def test_platforms_polars_examples() -> None:
@@ -1725,6 +1823,8 @@ def test_platforms_polars_examples() -> None:
 
     # --8<-- [end:platforms_polars_imports]
     # --8<-- [start:platforms_polars_create_table]
+    import lancedb
+
     birds = pl.DataFrame(
         {
             "text": ["phoenix", "sparrow"],

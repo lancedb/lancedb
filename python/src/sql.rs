@@ -31,6 +31,11 @@ impl Query {
         self.inner.id()
     }
 
+    #[getter]
+    pub fn job_id(&self) -> Option<String> {
+        self.inner.job_id()
+    }
+
     pub fn describe(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
@@ -63,6 +68,7 @@ impl Query {
 #[derive(Clone)]
 pub struct QueryDescription {
     id: Uuid,
+    job_id: Option<String>,
     status: String,
     progress: Option<f64>,
     expires_at: Option<DateTime<Utc>>,
@@ -72,8 +78,8 @@ pub struct QueryDescription {
 impl QueryDescription {
     fn __repr__(&self) -> String {
         format!(
-            "QueryDescription(id={:?}, status={:?}, progress={:?}, expires_at={:?})",
-            self.id, self.status, self.progress, self.expires_at
+            "QueryDescription(id={:?}, job_id={:?}, status={:?}, progress={:?}, expires_at={:?})",
+            self.id, self.job_id, self.status, self.progress, self.expires_at
         )
     }
 }
@@ -82,6 +88,7 @@ impl From<lancedb::sql::QueryDescription> for QueryDescription {
     fn from(description: lancedb::sql::QueryDescription) -> Self {
         Self {
             id: description.id,
+            job_id: description.job_id,
             status: description.status.to_string(),
             progress: description.progress,
             expires_at: description.expires_at,

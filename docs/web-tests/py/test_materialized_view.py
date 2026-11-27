@@ -12,7 +12,9 @@ def test_materialized_view_create_and_refresh(tmp_path, monkeypatch):
 
     db = lancedb.connect("./.lancedb")
     table = db.create_table(
-        "people", [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
+        "people",
+        [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
     )
 
     view = db.create_materialized_view(
@@ -29,12 +31,11 @@ def test_materialized_view_create_and_refresh(tmp_path, monkeypatch):
     # --8<-- [start:materialized_view_refresh]
     table.add([{"name": "bea", "age": 41}])
 
-    result = view.refresh()
-    print(result.rows_written)
+    view.refresh()
+    print(view.table.count_rows())
     # 2
     # --8<-- [end:materialized_view_refresh]
-    assert result.mode == "rebuild"
-    assert result.rows_written == 2
+    assert view.table.count_rows() == 2
     assert sorted(row["shout"] for row in view.table.to_arrow().to_pylist()) == [
         "ADA",
         "BEA",
@@ -45,7 +46,11 @@ def test_materialized_view_with_no_data(tmp_path):
     import lancedb
 
     db = lancedb.connect(tmp_path)
-    db.create_table("people", [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}])
+    db.create_table(
+        "people",
+        [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
     view = db.create_materialized_view(
         "adults", "people", where="age >= 18", with_no_data=True
     )
@@ -58,11 +63,16 @@ def test_materialized_view_refresh_to_source_version(tmp_path):
     import lancedb
 
     db = lancedb.connect(tmp_path)
-    table = db.create_table("people", [{"name": "ada", "age": 36}])
+    table = db.create_table(
+        "people",
+        [{"name": "ada", "age": 36}],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
     view = db.create_materialized_view("adults", "people", where="age >= 18")
     first = table.version
     table.add([{"name": "bea", "age": 41}])
-    assert view.refresh().rows_written == 2
+    view.refresh()
+    assert view.table.count_rows() == 2
 
     result = view.refresh(source_version=first)
     assert (result.source_version, result.rows_written) == (first, 1)

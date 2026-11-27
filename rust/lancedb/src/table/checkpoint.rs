@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Converging a table's LSM write path into its base table.
+//! Converging a table's RTE write path into its base table.
 //!
-//! `checkpoint_lsm` seals once, then triggers compaction and watches
-//! generation numbers until the L0 that existed at the start is gone.
+//! `checkpoint_rte` freezes once, then triggers compaction and watches
+//! generation numbers until the SSTables that existed at the start are gone.
 //!
-//! The loop runs in the client, not the server: `compact_lsm` dispatches a
+//! The loop runs in the client, not the server: `compact_rte` dispatches a
 //! pass and returns, so nothing holds a socket and a client can vanish
 //! mid-operation with nothing to reconcile. Completion is read from
 //! generation numbers in the shard manifest — durable state, unlike a count
 //! in a compact response, which a concurrent write invalidates.
 //!
-//! The target set is fixed at the start, so generations created *during* the
+//! The target set is fixed at the start, so SSTables created *during* the
 //! checkpoint are ignored. That is what lets it terminate under write load,
 //! and what makes it best-effort: it converges the fresh tier as of some
 //! instant. Idempotent, abandonable at any point, safe on a cadence.
@@ -68,7 +68,7 @@ fn is_lost_claim(e: &Error) -> bool {
     status_of(e) == Some(421)
 }
 
-/// Interval between `get_lsm_stats` polls. One interval is roughly one
+/// Interval between `get_rte_stats` polls. One interval is roughly one
 /// compaction pass, the granularity at which the answer can change.
 ///
 /// Fixed rather than configurable, matching `wait_for_index`. It costs
@@ -149,15 +149,15 @@ where
     }
 }
 
-/// Drive [`Table::checkpoint_lsm`]: seal once, fix the target watermark
-/// from the resulting L0, then trigger and poll until it drains.
-pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
+/// Drive [`Table::checkpoint_rte`]: freeze once, fix the target watermark
+/// from the resulting SSTables, then trigger and poll until they drain.
+pub(crate) async fn checkpoint_rte(table: &Table) -> Result<()> {
     for reissue in 0..=MAX_REISSUES {
-        // The seal turns everything written before this call into a
-        // generation, so the watermark has to be read after it. Idempotent:
-        // sealing an empty memtable is a no-op, so a re-issue does not churn
-        // empty generations.
-        match issue(|| table.flush_lsm()).await? {
+        // The freeze turns everything written before this call into an
+        // SSTable, so the watermark has to be read after it. Idempotent:
+        // freezing an empty memtable is a no-op, so a re-issue does not churn
+        // empty SSTables.
+        match issue(|| table.flush_rte()).await? {
             Attempt::Ok(()) => {}
             Attempt::ReissueFromFlush => {
                 backoff(reissue).await;
@@ -165,7 +165,7 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
             }
         }
 
-        let stats = match issue(|| table.get_lsm_stats(false)).await? {
+        let stats = match issue(|| table.get_rte_stats(false)).await? {
             Attempt::Ok(stats) => stats,
             Attempt::ReissueFromFlush => {
                 backoff(reissue).await;
@@ -173,13 +173,13 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
             }
         };
         let Some(stats) = stats else {
-            // Not WAL-backed; `flush_lsm` would have errored first but for a race.
+            // Not WAL-backed; `flush_rte` would have errored first but for a race.
             return Ok(());
         };
         let targets: HashMap<String, u64> = stats
-            .buckets
+            .table_shards
             .iter()
-            .filter_map(|b| Some((b.shard_id.clone(), b.newest_generation()?)))
+            .filter_map(|b| Some((b.shard_id.clone(), b.newest_sstable_generation()?)))
             .collect();
         if targets.is_empty() {
             return Ok(());
@@ -194,18 +194,18 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
         }
     }
     Err(Error::Runtime {
-        message: "checkpoint_lsm: the owning node kept losing its claim; \
+        message: "checkpoint_rte: the owning node kept losing its claim; \
                   re-issued from flush the maximum number of times"
             .into(),
     })
 }
 
-/// Trigger and poll until no bucket holds a generation at or below its
+/// Trigger and poll until no table shard holds an SSTable generation at or below its
 /// target.
 ///
 /// No liveness bound, deliberately. The pod-wide compactor pool (a semaphore
 /// of 2 by default, shared across every table on the node) is taken *inside*
-/// the pass, after the bucket latch, so a checkpoint queued behind unrelated
+/// the pass, after the table shard latch, so a checkpoint queued behind unrelated
 /// tables is indistinguishable from one that is merging. An idle-poll counter
 /// here could only ever have fired on a table that would have finished.
 async fn drain_to_targets(
@@ -213,24 +213,24 @@ async fn drain_to_targets(
     targets: &HashMap<String, u64>,
 ) -> Result<CheckpointOutcome> {
     loop {
-        let stats = match issue(|| table.get_lsm_stats(false)).await? {
+        let stats = match issue(|| table.get_rte_stats(false)).await? {
             Attempt::Ok(stats) => stats,
             Attempt::ReissueFromFlush => return Ok(CheckpointOutcome::ReissueFromFlush),
         };
         let Some(stats) = stats else {
             return Ok(CheckpointOutcome::Done);
         };
-        // `compacting` is the bucket's compaction latch, held from dispatch
+        // `compacting` is the table shard's compaction latch, held from dispatch
         // until the pass ends — including while it waits on the pod-wide
-        // permit. So it answers one question only: do not pile on. Buckets
-        // with nothing outstanding are skipped, not counted as idle.
+        // permit. So it answers one question only: do not pile on. Table
+        // shards with nothing outstanding are skipped, not counted as idle.
         let mut outstanding = 0;
         let mut all_compacting = true;
-        for b in &stats.buckets {
+        for b in &stats.table_shards {
             let Some(target) = targets.get(&b.shard_id) else {
                 continue;
             };
-            let n = b.outstanding_generations(*target);
+            let n = b.outstanding_sstables(*target);
             if n > 0 {
                 outstanding += n;
                 all_compacting &= b.compacting;
@@ -241,11 +241,11 @@ async fn drain_to_targets(
         }
 
         if !all_compacting {
-            match table.compact_lsm().await {
+            match table.compact_rte().await {
                 Ok(()) => {}
                 Err(e) if is_lost_claim(&e) => return Ok(CheckpointOutcome::ReissueFromFlush),
                 Err(e) if !is_retryable(&e) => return Err(e),
-                // A 429 here means the server could latch no bucket at all,
+                // A 429 here means the server could latch no table shard at all,
                 // which the poll above already handles. Not retried in place:
                 // the latch it would contend for is the one doing the work, so
                 // fall through and re-read — `POLL_INTERVAL` is the backoff.

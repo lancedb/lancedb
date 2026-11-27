@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+import json
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from ._lancedb import (
     IndexConfig,
@@ -85,7 +86,7 @@ class LabelList:
     """Describe a LabelList index configuration.
 
     `LabelList` is a scalar index that can be used on `List<T>` columns to
-    support queries with `array_contains_all` and `array_contains_any`
+    support queries with `array_has_all` and `array_has_any`
     using an underlying bitmap index.
 
     For example, it works with `tags`, `categories`, `keywords`, etc.
@@ -106,6 +107,162 @@ class Fm:
     """
 
     pass
+
+
+@dataclass
+class NGram:
+    """Describe an NGram index configuration.
+
+    An `NGram` index is a scalar index on a UTF-8 string column that
+    accelerates substring filters such as `contains(col, 'needle')`, along
+    with some `LIKE` and regular-expression predicates. It tokenizes values
+    into overlapping character n-grams (using Lance's default trigram
+    parameters) and narrows a scan to the rows that share the query's n-grams;
+    the exact predicate is then evaluated on those candidates, so the results
+    are the same with or without the index.
+
+    Unlike the `Fm` index, which matches arbitrary substrings of the raw
+    bytes, `NGram` is trigram based, so a query shorter than the n-gram length
+    cannot be served by the index.
+
+    For example, it works with `text`, `description`, `comment`, etc.
+    """
+
+    pass
+
+
+@dataclass
+class ZoneMap:
+    """Describe a ZoneMap index configuration.
+
+    A `ZoneMap` index stores compact min and max summaries for contiguous
+    ranges (zones) of rows. During a scan it skips any zone whose summary
+    cannot satisfy the predicate, so it accelerates range and equality
+    filters such as `col > 10`, `col BETWEEN a AND b`, and `col = x`,
+    without changing the results.
+
+    It suits large numeric or temporal columns whose values are correlated
+    with row order (for example `timestamp`, `price`, `id`).
+    """
+
+    pass
+
+
+@dataclass
+class RTree:
+    """Describe an RTree index configuration.
+
+    `RTree` is a scalar index on a GeoArrow geometry column, that is, a column
+    whose Arrow field metadata sets ``ARROW:extension:name`` to a GeoArrow type
+    such as ``geoarrow.point``, ``geoarrow.polygon`` or ``geoarrow.wkb``. It
+    stores the bounding box of each geometry and accelerates spatial filters
+    passed to ``where()``.
+
+    The index accelerates ``ST_Intersects``, ``ST_Contains``, ``ST_Within``,
+    ``ST_Touches``, ``ST_Crosses``, ``ST_Overlaps``, ``ST_Covers`` and
+    ``ST_CoveredBy`` between the indexed column and a constant geometry, in
+    either argument order, for example
+    ``ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))``, as well as
+    ``geom IS NULL``. These filters can be combined with other conditions
+    using ``AND``.
+
+    See the R-tree section of <https://docs.lancedb.com/indexing/scalar-index>
+    for storing geometry, the other spatial functions, and spatial filters on
+    vector search.
+
+    Remote tables send the ``RTREE`` index type to the server, which must
+    support it.
+
+    Examples
+    --------
+    >>> config = RTree(page_size=1024)
+
+    Attributes
+    ----------
+    page_size : int, optional
+        The maximum number of entries in each R-tree page. Must be at least 2.
+        ``None`` uses Lance's default of 4096.
+    """
+
+    page_size: Optional[int] = None
+
+
+@dataclass
+class ScalarPlugin:
+    """Configure a scalar index of a type recognized by a registered database plugin.
+
+    Use this for index types without a dedicated configuration class.
+    Prefer a dedicated class, such as [BTree][lancedb.index.BTree], when one
+    is available.
+
+    An unknown plugin name or invalid parameters cause index creation to fail.
+
+    Examples
+    --------
+    >>> from lancedb.index import ScalarPlugin
+    >>> ScalarPlugin("bloomfilter", params={"number_of_items": 4096})
+    ScalarPlugin(index_type='bloomfilter', params={'number_of_items': 4096})
+
+    Pass it as ``config`` to ``create_index``:
+
+    >>> table.create_index(  # doctest: +SKIP
+    ...     "id",
+    ...     config=ScalarPlugin("bloomfilter", '{"probability": 0.01}'),
+    ... )
+
+    Attributes
+    ----------
+    index_type: str
+        The index type, case-insensitive. Surrounding whitespace is ignored.
+        Must not be empty.
+    params: dict or str, optional
+        The index parameters, as a dict or as a string holding a JSON object.
+        They are passed as given. Each plugin defines its parameters and
+        defaults; refer to the plugin's documentation for guidance.
+
+    Raises
+    ------
+    ValueError
+        If ``index_type`` is empty, or ``params`` is a string that is not a
+        JSON object.
+    TypeError
+        If ``index_type`` is not a string, or ``params`` is not a dict, a
+        string or None.
+    """
+
+    index_type: str
+    params: Optional[Union[Dict[str, Any], str]] = None
+
+    def __post_init__(self):
+        if not isinstance(self.index_type, str):
+            raise TypeError(
+                "ScalarPlugin index_type must be a str, got "
+                + type(self.index_type).__name__
+            )
+        if not self.index_type.strip():
+            raise ValueError("ScalarPlugin index_type must not be empty")
+        if isinstance(self.params, str):
+            try:
+                parsed = json.loads(self.params)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"ScalarPlugin params are not valid JSON: {e}") from e
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "ScalarPlugin params must be a JSON object, got "
+                    + type(parsed).__name__
+                )
+        elif self.params is not None and not isinstance(self.params, dict):
+            raise TypeError(
+                "ScalarPlugin params must be a dict, a JSON string or None, got "
+                + type(self.params).__name__
+            )
+
+    @property
+    def _params_json(self) -> Optional[str]:
+        # Read by the native layer, which checks again that this is an object.
+        if self.params is None or isinstance(self.params, str):
+            return self.params
+        return json.dumps(self.params)
 
 
 @dataclass
@@ -145,9 +302,9 @@ class FTS:
     Lance tokenizer can panic on malformed triples; see
     https://github.com/lance-format/lance/issues/8812.
 
-    Remote tables use the same ``FTS()`` configuration and require a server
-    that supports JSON FTS. Wait for ``table.wait_for_index(["doc_idx"])``
-    before searching a newly created remote index with its default name.
+    LanceDB Enterprise uses the same ``FTS()`` configuration and requires a
+    server that supports JSON FTS. Wait for ``table.wait_for_index(["doc_idx"])``
+    before searching a newly created index there with its default name.
 
     Examples
     --------
@@ -159,6 +316,10 @@ class FTS:
 
     >>> from lancedb.query import DocumentGranularity
     >>> config = FTS(document_granularity=DocumentGranularity.LIST_ELEMENT)
+
+    Create an index that splits code identifiers into searchable subwords:
+
+    >>> config = FTS(analyzer="code", split_identifiers=True)
 
     Attributes
     ----------
@@ -210,17 +371,39 @@ class FTS:
     memory_limit : int, optional
         The total memory limit in MiB for the local FTS build stage. The limit
         is divided evenly among indexing workers. This build-only setting is
-        not persisted with the index and does not apply to remote tables.
+        not persisted with the index and does not apply to LanceDB Enterprise.
     num_workers : int, optional
         The number of workers for a local FTS build. By default Lance uses
         roughly half of the available CPU cores. The effective value is
         limited by the available compute capacity. This build-only setting is
-        not persisted with the index and does not apply to remote tables.
+        not persisted with the index and does not apply to LanceDB Enterprise.
     document_granularity : DocumentGranularity, default ROW
         ``ROW`` treats the selected text in one table row as one document.
         ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
         field path as one document and returns its physical coordinates in
         ``_doc_index`` for matching queries.
+    analyzer : {"text", "code"}, optional
+        ``"code"`` selects the code analyzer. ``"text"`` selects a text-family
+        analyzer with the selected ``base_tokenizer``; it does not reset an
+        explicit compatible tokenizer to ``"simple"``. ``None`` infers the
+        analyzer from ``base_tokenizer``. ``"code"`` cannot be combined with a
+        ``base_tokenizer`` other than ``"simple"`` (the default) or ``"code"``.
+        ``"text"`` cannot be combined with ``"code"``.
+    split_identifiers : bool, optional
+        Split code identifiers such as ``camelCase`` and ``snake_case`` into
+        subwords. Setting this to True requires the code analyzer. The default
+        is False, so ``analyzer="code"`` alone keeps identifiers whole.
+    split_on_numerics : bool, optional
+        Split identifier subwords at letter and number boundaries, for example
+        ``utf8`` into ``utf`` and ``8``. The code analyzer default is True, but
+        this only takes effect when ``split_identifiers=True``.
+    preserve_original : bool, optional
+        Also index the complete identifier next to its subwords. The code
+        analyzer default is True, but this only takes effect when
+        ``split_identifiers=True``.
+    index_operators : bool, optional
+        Index code operators such as ``::``, ``->`` and ``!=``. The code
+        analyzer default is False.
 
     Notes
     -----
@@ -246,6 +429,11 @@ class FTS:
     memory_limit: Optional[int] = None
     num_workers: Optional[int] = None
     document_granularity: DocumentGranularity = DocumentGranularity.ROW
+    analyzer: Optional[Literal["text", "code"]] = None
+    split_identifiers: Optional[bool] = None
+    split_on_numerics: Optional[bool] = None
+    preserve_original: Optional[bool] = None
+    index_operators: Optional[bool] = None
 
 
 @dataclass
@@ -882,8 +1070,12 @@ class IvfRq:
     num_partitions: int, default sqrt(num_rows)
         Number of IVF partitions to create.
 
-    num_bits: int, default 1
+    num_bits: int, optional
         Number of bits to encode each dimension in the RabitQ codebook.
+        If None, uses Lance's default (currently 5), matching Rust and Node.
+        Set to 1 to retain the previous Python default and maximum compression.
+        Five-bit vector codes use roughly five times the storage of one-bit codes,
+        in addition to other index overhead.
 
     max_iterations: int, default 50
         Max iterations to train kmeans when computing IVF partitions.
@@ -897,7 +1089,7 @@ class IvfRq:
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
     num_partitions: Optional[int] = None
-    num_bits: int = 1
+    num_bits: Optional[int] = None
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
@@ -926,4 +1118,7 @@ __all__ = [
     "Bitmap",
     "LabelList",
     "Fm",
+    "NGram",
+    "RTree",
+    "ScalarPlugin",
 ]

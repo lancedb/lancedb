@@ -11,14 +11,30 @@ export interface IvfPqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 8192 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 8192 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Number of sub-vectors of PQ.
@@ -117,8 +133,9 @@ export interface IvfRqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow. If this value is too small then the second
@@ -127,11 +144,27 @@ export interface IvfRqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Number of bits per dimension for residual quantization.
    *
    * This value controls how much each residual component is compressed. The more
    * bits, the more accurate the index will be but the slower search. Typical values
-   * are small integers; the default is 1 bit per dimension.
+   * are small integers. If unset, uses Lance's default (currently 5 bits per
+   * dimension). Set to 1 for maximum compression.
    */
   numBits?: number;
 
@@ -214,6 +247,8 @@ export interface HnswPqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -221,6 +256,21 @@ export interface HnswPqOptions {
    *
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Number of sub-vectors of PQ.
@@ -330,6 +380,8 @@ export interface HnswSqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -337,6 +389,21 @@ export interface HnswSqOptions {
    *
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Max iterations to train kmeans.
@@ -406,14 +473,30 @@ export interface IvfFlatOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Distance type to use to build the index.
@@ -595,6 +678,18 @@ export interface FtsOptions {
   blockSize?: 128 | 256;
 }
 
+/**
+ * Options to create an `RTREE` index
+ */
+export interface RTreeOptions {
+  /**
+   * The maximum number of entries in each R-tree page.
+   *
+   * Must be at least 2. The default is 4096.
+   */
+  pageSize?: number;
+}
+
 export class Index {
   private readonly inner: LanceDbIndex;
   private constructor(inner: LanceDbIndex) {
@@ -632,6 +727,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -660,6 +756,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -687,6 +784,7 @@ export class Index {
         options?.numPartitions,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -730,7 +828,7 @@ export class Index {
    * Create a label list index.
    *
    * LabelList index is a scalar index that can be used on `List<T>` columns to
-   * support queries with `array_contains_all` and `array_contains_any`
+   * support queries with `array_has_all` and `array_has_any`
    * using an underlying bitmap index.
    */
   static labelList() {
@@ -746,6 +844,84 @@ export class Index {
    */
   static fm() {
     return new Index(LanceDbIndex.fm());
+  }
+
+  /**
+   * Create an RTree index.
+   *
+   * An RTree index is a scalar index on a GeoArrow geometry column, that is, a
+   * column whose Arrow field metadata sets `ARROW:extension:name` to a GeoArrow
+   * type such as `geoarrow.point`, `geoarrow.polygon` or `geoarrow.wkb`. It
+   * stores the bounding box of each geometry and accelerates spatial filters.
+   *
+   * The index accelerates `ST_Intersects`, `ST_Contains`, `ST_Within`,
+   * `ST_Touches`, `ST_Crosses`, `ST_Overlaps`, `ST_Covers` and `ST_CoveredBy`
+   * between the indexed column and a constant geometry, in either argument
+   * order, for example
+   * `ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))`, as well as
+   * `geom IS NULL`. These filters can be combined with other conditions using
+   * `AND`.
+   *
+   * See the R-tree section of https://docs.lancedb.com/indexing/scalar-index
+   * for storing geometry, the other spatial functions, and spatial filters on
+   * vector search.
+   *
+   * Remote tables send the `RTREE` index type to the server, which must
+   * support it.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("geom", { config: Index.rtree() });
+   * await table
+   *   .query()
+   *   .where("ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))")
+   *   .toArray();
+   * ```
+   */
+  static rtree(options?: Partial<RTreeOptions>) {
+    const pageSize = options?.pageSize;
+    // napi converts a number to u32 by wrapping, so -1 would arrive as
+    // 4294967295; reject anything that is not a valid page size first.
+    if (
+      pageSize !== undefined &&
+      !(Number.isInteger(pageSize) && pageSize >= 2 && pageSize <= 0xffffffff)
+    ) {
+      throw new Error(
+        `RTree page_size must be at least 2, at most 4294967295, and an integer, got ${pageSize}`,
+      );
+    }
+    return new Index(LanceDbIndex.rtree(pageSize));
+  }
+
+  /**
+   * Create a scalar index of a type recognized by a registered database plugin.
+   *
+   * Use this for index types without a dedicated factory on `Index`.
+   * Prefer a dedicated factory when one is available.
+   *
+   * An unknown plugin name or invalid parameters cause `createIndex` to fail.
+   *
+   * @param indexType - The index type, case-insensitive.
+   *   Surrounding whitespace is ignored. Must not be empty.
+   * @param params - The index parameters, as an object or as a string
+   *   holding a JSON object. They are passed as given. Each plugin defines
+   *   its parameters and defaults; refer to the plugin's documentation
+   *   for guidance.
+   * @throws If `indexType` is empty, or `params` is not a JSON object.
+   *
+   * @example
+   * ```ts
+   * await table.createIndex("id", {
+   *   config: Index.plugin("bloomfilter", { number_of_items: 4096 }),
+   * });
+   * ```
+   */
+  static plugin(indexType: string, params?: Record<string, unknown> | string) {
+    const paramsJson =
+      params === undefined || typeof params === "string"
+        ? params
+        : JSON.stringify(params);
+    return new Index(LanceDbIndex.plugin(indexType, paramsJson));
   }
 
   /**
@@ -797,6 +973,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -819,6 +996,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -851,7 +1029,10 @@ export interface IndexOptions {
   /**
    * Timeout in seconds to wait for index creation to complete.
    *
-   * If not specified, the method will return immediately after starting the index creation.
+   * Only applies to LanceDB Enterprise tables, which build the index in the
+   * background.
+   * If not specified, `createIndex` returns once the build is scheduled.
+   * LanceDB Embedded tables always build the index before `createIndex` returns.
    */
   waitTimeoutSeconds?: number;
 

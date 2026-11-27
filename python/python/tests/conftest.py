@@ -9,6 +9,21 @@ import pytest
 import pytest_asyncio
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "experimental_functions: requires the experimental-functions build"
+    )
+
+
+def pytest_collection_modifyitems(items):
+    if lancedb._lancedb._experimental_functions_enabled:
+        return
+    skip = pytest.mark.skip(reason="requires the experimental-functions Cargo feature")
+    for item in items:
+        if item.get_closest_marker("experimental_functions"):
+            item.add_marker(skip)
+
+
 def pandas_string_type():
     """Return the PyArrow string type that pandas uses for string columns.
 

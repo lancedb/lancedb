@@ -47,7 +47,7 @@ pub struct MergeResult {
     /// Total number of rows written.
     ///
     /// On the standard `merge_insert` path this equals
-    /// `num_inserted_rows + num_updated_rows`. On the MemWAL LSM write path the
+    /// `num_inserted_rows + num_updated_rows`. On the RTE write path the
     /// insert/update breakdown is not known until compaction; in that mode
     /// `num_inserted_rows`, `num_updated_rows`, `num_deleted_rows`, `version`
     /// and `num_attempts` are all `0` and this field holds the total number of
@@ -75,8 +75,9 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) retries: Option<u8>,
     pub(crate) use_index: bool,
-    pub(crate) use_lsm: Option<bool>,
+    pub(crate) use_rte: Option<bool>,
     pub(crate) validate_single_shard: bool,
 }
 
@@ -91,10 +92,19 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
+            retries: None,
             use_index: true,
-            use_lsm: None,
+            use_rte: None,
             validate_single_shard: true,
         }
+    }
+
+    /// Override the remote transport retry budget for this operation. `0`
+    /// disables retries. Ambiguous write results are never replayed. This is
+    /// independent of local transaction conflict retries.
+    pub fn retries(&mut self, retries: u8) -> &mut Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Rows that exist in both the source table (new data) and
@@ -200,30 +210,30 @@ impl MergeInsertBuilder {
         self
     }
 
-    /// Control MemWAL routing for this `merge_insert`.
+    /// Control RTE routing for this `merge_insert`.
     ///
     /// By default (unset), a `merge_insert` on a table with an
-    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through Lance's
-    /// MemWAL shard writer; a table without one uses the standard path.
+    /// [`RTEWriteSpec`](super::RTEWriteSpec) installed is routed through Lance's
+    /// RTE shard writer; a table without one uses the standard path.
     ///
-    /// - `use_lsm(true)` forces MemWAL routing and errors if the table has no
-    ///   LSM write spec.
-    /// - `use_lsm(false)` forces the standard write path even when a spec is set.
-    pub fn use_lsm(&mut self, enable: bool) -> &mut Self {
-        self.use_lsm = Some(enable);
+    /// - `use_rte(true)` forces RTE routing and errors if the table has no
+    ///   RTE write spec.
+    /// - `use_rte(false)` forces the standard write path even when a spec is set.
+    pub fn use_rte(&mut self, enable: bool) -> &mut Self {
+        self.use_rte = Some(enable);
         self
     }
 
     /// Controls how an LSM `merge_insert` checks that its input targets a
     /// single shard.
     ///
-    /// When a table has an LSM write spec, every row in a `merge_insert` call
+    /// When a table has an RTE write spec, every row in a `merge_insert` call
     /// must route to the same shard. When `true` (the default), every row is
     /// inspected to verify this. When `false`, only the first row is inspected
     /// and the shard it routes to is used for the whole input — a faster path
     /// for callers that have already pre-sharded their input.
     ///
-    /// Has no effect on tables without an LSM write spec.
+    /// Has no effect on tables without an RTE write spec.
     pub fn validate_single_shard(&mut self, validate_single_shard: bool) -> &mut Self {
         self.validate_single_shard = validate_single_shard;
         self
@@ -248,6 +258,23 @@ impl MergeInsertBuilder {
             canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt.take())?;
         Ok(())
     }
+
+    /// The source columns a matched row writes: every column but the join
+    /// keys, which a match leaves equal. Function inputs stay writable; the
+    /// merge records their changed signatures so the next refresh recomputes
+    /// the affected rows. Computed outputs and assignment columns remain
+    /// protected by the direct-write guard. An insert-only merge writes none;
+    /// its new rows get Function outputs from the next refresh.
+    pub(crate) fn matched_source_columns(&self, source: &Fields) -> Vec<String> {
+        if !self.when_matched_update_all {
+            return Vec::new();
+        }
+        source
+            .iter()
+            .filter(|field| !self.on.iter().any(|key| key == field.name()))
+            .map(|field| field.name().clone())
+            .collect()
+    }
 }
 
 fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<MergeFilter>> {
@@ -264,7 +291,11 @@ fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<Merge
 // The JSON projection iterates target fields, so reject unknown source fields
 // before it can erase them. Missing and reordered fields remain valid merge
 // inputs; type compatibility is still checked by the cast and Lance writer.
-fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -> Result<()> {
+pub(crate) fn validate_merge_source_fields(
+    input: &Fields,
+    target: &Fields,
+    parent: &str,
+) -> Result<()> {
     let mut names = HashSet::with_capacity(input.len());
     for field in input {
         let path = if parent.is_empty() {
@@ -283,7 +314,9 @@ fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -
             .ok_or_else(|| Error::InvalidInput {
                 message: format!("merge source field '{path}' is not present in the table schema"),
             })?;
-        validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+        if !crate::blob::is_blob(target_field) {
+            validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+        }
     }
     Ok(())
 }
@@ -306,7 +339,13 @@ fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -
             | DataType::LargeListView(target),
         )
         | (DataType::Map(input, _), DataType::Map(target, _)) => {
-            validate_merge_source_type(input.data_type(), target.data_type(), path)
+            // Collection items carry extension metadata just like named fields.
+            // Blob coercion, rather than struct validation, checks range narrowing.
+            if crate::blob::is_blob(target) {
+                Ok(())
+            } else {
+                validate_merge_source_type(input.data_type(), target.data_type(), path)
+            }
         }
         (DataType::Dictionary(_, input), _) => validate_merge_source_type(input, target, path),
         (_, DataType::Dictionary(_, target)) => validate_merge_source_type(input, target, path),
@@ -323,35 +362,19 @@ pub(crate) async fn execute_merge_insert(
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
-    super::computed_columns::ensure_no_function_bindings_for_mutation(
-        table.schema().await?.as_ref(),
-        "merge_insert",
+    let schema = table.schema().await?;
+    let matched_columns = params.matched_source_columns(new_data.schema().fields());
+    super::computed_columns::ensure_not_written(
+        schema.as_ref(),
+        matched_columns.iter().map(String::as_str),
     )?;
-    match lsm::lsm_dispatch_decision(table, &params).await? {
-        lsm::LsmDispatch::Lsm(plan) => {
-            let future =
-                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, new_data);
-            return match params.timeout {
-                Some(timeout) => match tokio::time::timeout(timeout, future).await {
-                    Ok(result) => result,
-                    Err(_) => Err(Error::Runtime {
-                        message: "merge insert timed out".to_string(),
-                    }),
-                },
-                None => future.await,
-            };
-        }
-        lsm::LsmDispatch::Standard => {}
-    }
-
-    let dataset = table.dataset.get().await?;
-    let schema = arrow_schema::Schema::from(dataset.schema());
-    // JSON source fields must carry the stored extension metadata just as on
-    // append. Keep arrow.json text labelled until Lance encodes it as JSONB.
-    let source = if schema
-        .fields()
-        .iter()
-        .any(|field| lance_arrow::json::has_json_fields(field))
+    // Normalize blob layouts and JSON extension metadata just as on append.
+    // Keep arrow.json text labelled until Lance encodes it as JSONB.
+    let source = if crate::blob::has_blob_columns(&schema)
+        || schema
+            .fields()
+            .iter()
+            .any(|field| lance_arrow::json::has_json_fields(field))
     {
         validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
         let plan = Arc::new(super::datafusion::scannable_exec::ScannableExec::new(
@@ -366,6 +389,26 @@ pub(crate) async fn execute_merge_insert(
     } else {
         new_data.into_stream()
     };
+    match lsm::lsm_dispatch_decision(table, &params).await? {
+        lsm::LsmDispatch::Lsm(plan) => {
+            let future =
+                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, source);
+            return match params.timeout {
+                Some(timeout) => match tokio::time::timeout(timeout, future).await {
+                    Ok(result) => result,
+                    Err(_) => Err(Error::Runtime {
+                        message: "merge insert timed out".to_string(),
+                    }),
+                },
+                None => future.await,
+            };
+        }
+        lsm::LsmDispatch::Standard => {}
+    }
+
+    let dataset = table.dataset.get().await?;
+    let source_schema = source.schema();
+    let on = params.on.clone();
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -413,8 +456,21 @@ pub(crate) async fn execute_merge_insert(
         Either::Right(job.execute(source).map_err(|e| e.into()))
     };
     let (new_dataset, stats) = future.await?;
+    let mut new_dataset = new_dataset.as_ref().clone();
+    if let Err(error) = super::freshness::preserve_function_freshness(
+        &mut new_dataset,
+        super::freshness::FunctionWrite::Merge {
+            source_schema: &source_schema,
+            on: &on,
+            num_inserted_rows: stats.num_inserted_rows,
+        },
+    )
+    .await
+    {
+        log::warn!("merge committed but Function freshness could not be preserved: {error}");
+    }
     let version = new_dataset.manifest().version;
-    table.dataset.update(new_dataset.as_ref().clone());
+    table.dataset.update(new_dataset);
     Ok(MergeResult {
         version,
         num_updated_rows: stats.num_updated_rows,
@@ -886,6 +942,117 @@ mod tests {
         assert_eq!(result.num_deleted_rows, (ROW_COUNT - 1) as u64);
         assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
+
+    fn reader(batch: RecordBatch) -> Box<dyn RecordBatchReader + Send> {
+        let schema = batch.schema();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    /// Inserting rows through a merge is an append: the new rows' Function
+    /// outputs come from the next refresh, so a binding does not refuse it.
+    #[tokio::test]
+    async fn merge_insert_only_is_allowed_on_a_function_table() {
+        let table = crate::table::computed_columns::test_support::bound_table_from(
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("note", Utf8, ["n"]),
+                ("title", Utf8, ["a"]),
+                ("body", Utf8, ["b"]),
+                ("search_text", Utf8, ["a b"]),
+                ("search_token_count", Int64, [2])
+            )
+            .unwrap(),
+        )
+        .await;
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_insert_all();
+        let result = merge
+            .execute(reader(
+                arrow_array::record_batch!(
+                    ("id", Int32, [2]),
+                    ("note", Utf8, ["m"]),
+                    ("title", Utf8, ["c"]),
+                    ("body", Utf8, ["d"])
+                )
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.num_inserted_rows, 1);
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+    }
+
+    /// A matched row takes every non-key source column. Function inputs are
+    /// writable and become stale for the next refresh; computed outputs stay
+    /// protected, and a mixed input/output source is rejected before commit.
+    #[tokio::test]
+    async fn merge_update_allows_function_inputs_but_protects_outputs() {
+        let table = crate::table::computed_columns::test_support::bound_table_from(
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("note", Utf8, ["n"]),
+                ("title", Utf8, ["a"]),
+                ("body", Utf8, ["b"]),
+                ("search_text", Utf8, ["a b"]),
+                ("search_token_count", Int64, [2])
+            )
+            .unwrap(),
+        )
+        .await;
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(None);
+        let result = merge
+            .execute(reader(
+                arrow_array::record_batch!(("id", Int32, [1]), ("note", Utf8, ["m"])).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(None);
+        let result = merge
+            .execute(reader(
+                arrow_array::record_batch!(("id", Int32, [1]), ("title", Utf8, ["z"])).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(
+            table
+                .count_rows(Some("title = 'z' AND search_text = 'a b'".into()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        let version = table.version().await.unwrap();
+        for source in [
+            arrow_array::record_batch!(("id", Int32, [1]), ("search_text", Utf8, ["uncomputed"]))
+                .unwrap(),
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("title", Utf8, ["must not commit"]),
+                ("search_text", Utf8, ["uncomputed"])
+            )
+            .unwrap(),
+        ] {
+            let mut merge = table.merge_insert(&["id"]);
+            merge.when_matched_update_all(None);
+            let err = merge.execute(reader(source)).await.unwrap_err();
+            assert!(
+                matches!(&err, crate::Error::InvalidInput { message }
+                    if message.contains("is computed")
+                        && message.contains("cannot be written directly")),
+                "{err:?}"
+            );
+            assert_eq!(table.version().await.unwrap(), version);
+            assert_eq!(
+                table.count_rows(Some("title = 'z'".into())).await.unwrap(),
+                1
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -900,7 +1067,7 @@ mod lsm_tests {
 
     use crate::connect;
     use crate::error::Error;
-    use crate::table::{LsmWriteSpec, Table};
+    use crate::table::{RTEWriteSpec, Table};
 
     /// A reader of `[id: Int64, value: Int64]` rows; `value` is `0..n`.
     fn id_value_reader(ids: Vec<i64>) -> Box<dyn RecordBatchReader + Send> {
@@ -984,7 +1151,7 @@ mod lsm_tests {
         let table = id_value_table(&dir).await;
         // num_buckets = 1: every row routes to the single bucket.
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_rte(RTEWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -998,7 +1165,7 @@ mod lsm_tests {
             .await
             .unwrap();
 
-        // LSM path: rows go to the MemWAL, the breakdown is unknown until
+        // LSM path: rows go to the RTE, the breakdown is unknown until
         // compaction, so only `num_rows` is populated.
         assert_eq!(result.num_rows, 3);
         assert_eq!(result.version, 0);
@@ -1010,10 +1177,7 @@ mod lsm_tests {
     async fn lsm_merge_insert_unsharded() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let mut builder = table.merge_insert(&["id"]);
         builder
@@ -1040,7 +1204,7 @@ mod lsm_tests {
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .enable_rte(RTEWriteSpec::identity("region"))
             .await
             .unwrap();
 
@@ -1057,18 +1221,18 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_false_falls_back() {
+    async fn lsm_merge_insert_use_rte_false_falls_back() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_rte(RTEWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
-        // use_lsm(false) opts out: the standard path runs and commits even though
+        // use_rte(false) opts out: the standard path runs and commits even though
         // a spec is installed.
         let mut builder = table.merge_insert(&["id"]);
-        builder.when_not_matched_insert_all().use_lsm(false);
+        builder.when_not_matched_insert_all().use_rte(false);
         let result = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -1079,17 +1243,17 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_true_without_spec_errors() {
+    async fn lsm_merge_insert_use_rte_true_without_spec_errors() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
 
-        // use_lsm(true) demands MemWAL routing; without a write spec it errors
+        // use_rte(true) demands RTE routing; without a write spec it errors
         // rather than silently falling back to the standard path.
         let mut builder = table.merge_insert(&["id"]);
         builder
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_lsm(true);
+            .use_rte(true);
         let err = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -1102,7 +1266,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_rte(RTEWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1119,7 +1283,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_rte(RTEWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1135,7 +1299,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_rte(RTEWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1145,7 +1309,7 @@ mod lsm_tests {
             .when_not_matched_insert_all();
         builder.execute(id_value_reader(vec![7, 8])).await.unwrap();
 
-        table.close_lsm_writers().await.unwrap();
+        table.close_rte_writers().await.unwrap();
 
         // The writer reopens lazily on the next merge_insert.
         let mut builder = table.merge_insert(&[]);
@@ -1170,7 +1334,7 @@ mod lsm_tests {
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .enable_rte(RTEWriteSpec::identity("region"))
             .await
             .unwrap();
 
@@ -1207,10 +1371,10 @@ mod lsm_tests {
     #[tokio::test]
     async fn lsm_merge_insert_no_spec_uses_standard_path() {
         let dir = tempdir().unwrap();
-        // id_value_table sets a primary key but no LSM write spec.
+        // id_value_table sets a primary key but no RTE write spec.
         let table = id_value_table(&dir).await;
 
-        // Without a spec, a default merge_insert (use_lsm unset) simply uses
+        // Without a spec, a default merge_insert (use_rte unset) simply uses
         // the standard path and commits — no opt-out required, no error.
         let mut builder = table.merge_insert(&["id"]);
         builder
@@ -1238,7 +1402,7 @@ mod lsm_tests {
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .enable_rte(RTEWriteSpec::identity("region"))
             .await
             .unwrap();
 
@@ -1264,7 +1428,7 @@ mod lsm_tests {
         assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
 
         // After closing the writer, a different shard can be written.
-        table.close_lsm_writers().await.unwrap();
+        table.close_rte_writers().await.unwrap();
         let mut builder = table.merge_insert(&[]);
         builder
             .when_matched_update_all(None)
@@ -1276,7 +1440,7 @@ mod lsm_tests {
     }
 
     // ---------------------------------------------------------------------
-    // LSM read path
+    // RTE read path
     // ---------------------------------------------------------------------
 
     use crate::arrow::SendableRecordBatchStream;
@@ -1334,10 +1498,7 @@ mod lsm_tests {
     async fn lsm_read_sees_active_memtable() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: ids 1,2,3 (value 0,1,2)
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         // Insert ids 4,5 into the active memtable (not committed to base).
         lsm_upsert(&table, vec![4, 5]).await;
@@ -1350,8 +1511,8 @@ mod lsm_tests {
             vec![1, 2, 3, 4, 5]
         );
 
-        // use_lsm(false) bypasses the MemWAL and reads the base table only.
-        let base_only = table.query().use_lsm(false).execute().await.unwrap();
+        // use_rte(false) bypasses the RTE and reads the base table only.
+        let base_only = table.query().use_rte(false).execute().await.unwrap();
         let rows = collect_id_value(base_only).await;
         assert_eq!(
             rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -1359,14 +1520,169 @@ mod lsm_tests {
         );
     }
 
+    /// Another process re-initializing the MemWAL retires this process's
+    /// cached writer: its rows are not read, and the next write opens a
+    /// writer for the new MemWAL.
+    ///
+    /// `disable_rte` refuses while the writer holds rows, so the MemWAL index
+    /// is dropped through Lance directly, standing in for a write that lands
+    /// after that check. The writer's rows are lost to the base table either
+    /// way; what this pins is that they are not served from a directory the
+    /// index no longer names.
+    #[tokio::test]
+    async fn lsm_writer_of_a_retired_mem_wal_is_replaced() {
+        use lance::index::DatasetIndexExt;
+
+        let dir = tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(std::time::Duration::ZERO)
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_value_reader(vec![1, 2, 3]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+        let retired_dir_id = mem_wal_dir_id(&table).await;
+
+        let mut dataset = lance::Dataset::open(&table.uri().await.unwrap())
+            .await
+            .unwrap();
+        dataset
+            .drop_index(lance_index::mem_wal::MEM_WAL_INDEX_NAME)
+            .await
+            .unwrap();
+        let other = connect(uri)
+            .execute()
+            .await
+            .unwrap()
+            .open_table("t")
+            .execute()
+            .await
+            .unwrap();
+        other.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        let dir_id = mem_wal_dir_id(&table).await;
+        assert_ne!(dir_id, retired_dir_id);
+
+        let ids = || async {
+            let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids().await, vec![1, 2, 3]);
+
+        lsm_upsert(&table, vec![6]).await;
+        assert_eq!(ids().await, vec![1, 2, 3, 6]);
+        let native = table.as_native().unwrap();
+        assert!(
+            native
+                .dataset
+                .shard_writer()
+                .read_snapshot(&dir_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the write opened a writer for the new MemWAL"
+        );
+    }
+
+    /// `disable_rte` refuses while the MemWAL holds rows the base table does
+    /// not, since a MemWAL installed later would not read them.
+    #[tokio::test]
+    async fn lsm_disable_is_refused_while_rows_are_unmerged() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let err = table.disable_rte().await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not been merged into the base table"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            table.get_rte_spec().await.unwrap(),
+            Some(RTEWriteSpec::unsharded())
+        );
+        let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    /// Rows another process's writer has acknowledged but not flushed are in
+    /// its WAL only, and still refuse `disable_rte`.
+    #[tokio::test]
+    async fn lsm_disable_is_refused_while_another_writer_holds_rows() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let other = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap()
+            .open_table("t")
+            .execute()
+            .await
+            .unwrap();
+        let err = other.disable_rte().await.unwrap_err();
+        assert!(
+            err.to_string().contains("0 SSTable(s) not merged")
+                && !err.to_string().contains(" 0 WAL entry(ies) not flushed"),
+            "unexpected error: {err}"
+        );
+        let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn base_table_adapter_use_rte_false_scans_the_base_only() {
+        use crate::table::datafusion::BaseTableAdapter;
+        use datafusion::prelude::SessionContext;
+
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await; // base: ids 1,2,3
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        // Ids 4,5 land in the active memtable, not the base table.
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_use_rte(Some(false));
+        let ctx = SessionContext::new();
+        ctx.register_table("base_only", Arc::new(adapter)).unwrap();
+        let batches = ctx
+            .sql("SELECT id FROM base_only")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut ids: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| b.column(0).as_primitive::<Int64Type>().values().to_vec())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
     #[tokio::test]
     async fn query_snapshot_preserves_lsm_read_semantics() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         lsm_upsert(&table, vec![4, 5]).await;
 
         let snapshot = table.query_snapshot().await.unwrap();
@@ -1381,10 +1697,7 @@ mod lsm_tests {
     async fn query_snapshot_preserves_time_travel_lsm_guard() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         lsm_upsert(&table, vec![4]).await;
 
         let version = table.version().await.unwrap();
@@ -1401,10 +1714,7 @@ mod lsm_tests {
     async fn lsm_read_dedup_newest_wins() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: id 2 -> value 1
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         // Upsert ids 2,3,4 with values 0,1,2. id 2 and 3 shadow the base rows.
         lsm_upsert(&table, vec![2, 3, 4]).await;
@@ -1419,10 +1729,7 @@ mod lsm_tests {
     async fn lsm_read_point_lookup_filter() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         lsm_upsert(&table, vec![2, 3, 4]).await; // id 2 -> value 0 (shadows base)
 
         let lsm = table.query().only_if("id = 2").execute().await.unwrap();
@@ -1435,14 +1742,14 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .enable_rte(RTEWriteSpec::bucket("id", 8))
             .await
             .unwrap();
 
-        // Two single-row upserts that route to (likely) different buckets; each
+        // Two single-row upserts that route to (likely) different shards; each
         // closes the writer so the next opens a fresh shard.
         lsm_upsert(&table, vec![10]).await;
-        table.close_lsm_writers().await.unwrap();
+        table.close_rte_writers().await.unwrap();
         lsm_upsert(&table, vec![11]).await;
 
         let lsm = table.query().execute().await.unwrap();
@@ -1456,15 +1763,12 @@ mod lsm_tests {
     async fn lsm_read_after_close_sees_flushed() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         lsm_upsert(&table, vec![4, 5]).await;
         // close flushes the active memtable to an on-disk generation and drops
         // the cached writer; the read must still see those rows via the shard
         // manifest snapshot.
-        table.close_lsm_writers().await.unwrap();
+        table.close_rte_writers().await.unwrap();
 
         let lsm = table.query().execute().await.unwrap();
         let ids: Vec<i64> = collect_id_value(lsm)
@@ -1478,11 +1782,11 @@ mod lsm_tests {
     #[tokio::test]
     async fn lsm_read_without_spec_reads_base() {
         let dir = tempdir().unwrap();
-        let table = id_value_table(&dir).await; // no LSM write spec
+        let table = id_value_table(&dir).await; // no RTE write spec
 
         // With no spec installed there is nothing to route: the default read and
-        // an explicit use_lsm(false) both read the base table without error.
-        for query in [table.query(), table.query().use_lsm(false)] {
+        // an explicit use_rte(false) both read the base table without error.
+        for query in [table.query(), table.query().use_rte(false)] {
             let rows = collect_id_value(query.execute().await.unwrap()).await;
             assert_eq!(
                 rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -1492,16 +1796,13 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_read_unsupported_shape_errors_without_use_lsm_false() {
+    async fn lsm_read_unsupported_shape_errors_without_use_rte_false() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         lsm_upsert(&table, vec![4]).await;
 
-        // `with_row_id` is a shape the LSM scanner cannot honor. On a MemWAL
+        // `with_row_id` is a shape the LSM scanner cannot honor. On an RTE
         // table the default (auto-routed) read hard-errors rather than silently
         // reading a stale base-only result that would exclude un-compacted row 4.
         let err = table
@@ -1510,15 +1811,15 @@ mod lsm_tests {
             .execute()
             .await
             .err()
-            .expect("unsupported shape on a MemWAL table must error");
+            .expect("unsupported shape on an RTE table must error");
         assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
 
-        // use_lsm(false) is the escape hatch: it reads the base table only.
+        // use_rte(false) is the escape hatch: it reads the base table only.
         let rows = collect_id_value(
             table
                 .query()
                 .with_row_id()
-                .use_lsm(false)
+                .use_rte(false)
                 .execute()
                 .await
                 .unwrap(),
@@ -1530,7 +1831,7 @@ mod lsm_tests {
         );
     }
 
-    /// A table with `id`/`text` and a primary key, ready for an LSM write spec.
+    /// A table with `id`/`text` and a primary key, ready for an RTE write spec.
     async fn lsm_text_table(dir: &tempfile::TempDir) -> crate::Table {
         let conn = connect(dir.path().to_str().unwrap())
             .execute()
@@ -1545,7 +1846,7 @@ mod lsm_tests {
         table
     }
 
-    /// Upsert `rows` through the LSM write path.
+    /// Upsert `rows` through the RTE write path.
     async fn upsert_text(table: &crate::Table, rows: Vec<(i64, &str)>) {
         let mut builder = table.merge_insert(&[]);
         builder
@@ -1588,10 +1889,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = lsm_text_table(&dir).await;
         // The default set, on a table with no FTS index yet.
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         // Opens the writer, whose MemTable carries no FTS index.
         upsert_text(&table, vec![(99, "zebra")]).await;
@@ -1623,9 +1921,10 @@ mod lsm_tests {
 
     /// A spec is replaced by unsetting it and setting the new one.
     ///
-    /// `unset_lsm_write_spec` drains the open writer, so the rows it held
-    /// survive the replacement, and the writer the next write opens builds its
-    /// MemTables from the new set.
+    /// The writer the next write opens builds its MemTables from the new set.
+    /// Unsetting is refused while the MemWAL holds unmerged rows (see
+    /// `lsm_disable_is_refused_while_rows_are_unmerged`), so nothing is
+    /// written before the replacement.
     #[tokio::test]
     async fn lsm_spec_is_replaced_by_unsetting_it_first() {
         use crate::index::Index;
@@ -1640,28 +1939,24 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
 
-        // Installed maintaining nothing, then written to: the writer opens with
-        // no FTS index.
+        // Installed maintaining nothing.
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
             .await
             .unwrap();
-        upsert_text(&table, vec![(99, "zebra")]).await;
 
         // Setting over an installed spec is refused; unset, then set.
         let err = table
-            .set_lsm_write_spec(
-                LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index.clone()]),
-            )
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(vec![fts_index.clone()]))
             .await
             .expect_err("an installed spec cannot be set over");
         assert!(
             err.to_string().contains("already set"),
             "unexpected error: {err}"
         );
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_rte().await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1691,7 +1986,7 @@ mod lsm_tests {
     /// A row written before the index exists is searchable once it does.
     ///
     /// The MemTable holding it was built without the index. Creating the index
-    /// replaces the writer's configs, which seals that MemTable and waits for
+    /// replaces the writer's configs, which freezes that MemTable and waits for
     /// its flush, so no resident MemTable is left that cannot answer the read.
     #[tokio::test]
     async fn lsm_a_row_written_before_the_index_is_searchable_after_it() {
@@ -1701,10 +1996,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = lsm_text_table(&dir).await;
         // No index yet, and the default set: maintain whatever the table has.
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         // Opens the writer, whose MemTable therefore carries no FTS index.
         upsert_text(&table, vec![(99, "zebra")]).await;
@@ -1758,7 +2050,7 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1792,8 +2084,13 @@ mod lsm_tests {
         assert_eq!(rows, 1, "LSM FTS must still see base rows");
     }
 
-    #[tokio::test]
-    async fn lsm_read_vector_search() {
+    /// A table whose vector index the LSM maintains: base rows filled with
+    /// their id, and one memtable row filled with 1000, nearest to `[1000; 8]`.
+    /// `registry` replaces the table's memtable kinds.
+    async fn lsm_vector_table(
+        dir: &std::path::Path,
+        registry: Option<lance::dataset::mem_wal::MemIndexRegistry>,
+    ) -> Table {
         use crate::index::Index;
         use crate::index::vector::IvfPqIndexBuilder;
         use arrow::array::{FixedSizeListBuilder, Float32Builder};
@@ -1825,12 +2122,7 @@ mod lsm_tests {
             .unwrap()
         };
 
-        let dir = tempdir().unwrap();
-        let conn = connect(dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        // Base rows fill each vector with its own id (0..256); all far from 1000.
+        let conn = connect(dir.to_str().unwrap()).execute().await.unwrap();
         let base = make_batch((0..N).map(|i| (i, i as f32)).collect());
         let base_reader: Box<dyn RecordBatchReader + Send> =
             Box::new(RecordBatchIterator::new(vec![Ok(base)], schema.clone()));
@@ -1848,13 +2140,15 @@ mod lsm_tests {
             .execute()
             .await
             .unwrap();
+        if let Some(registry) = registry {
+            table.as_native().unwrap().set_mem_index_registry(registry);
+        }
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 
-        // Insert a vector (filled with 1000) that is nearest to the query.
         let mut builder = table.merge_insert(&[]);
         builder
             .when_matched_update_all(None)
@@ -1864,20 +2158,21 @@ mod lsm_tests {
             schema.clone(),
         ));
         builder.execute(insert_reader).await.unwrap();
+        table
+    }
 
-        // KNN near [1000; DIM]: the default (auto-routed) read surfaces the
-        // memtable row.
-        let stream = table
-            .query()
-            .nearest_to(&[1000.0_f32; 8])
-            .unwrap()
-            .limit(1)
-            .execute()
-            .await
-            .unwrap();
-        let ids = collect_ids(stream).await;
+    /// The ids of the nearest row to `[1000; 8]` through the default read.
+    async fn nearest_ids(table: &Table) -> Vec<i64> {
+        let query = table.query().nearest_to(&[1000.0_f32; 8]).unwrap().limit(1);
+        collect_ids(query.execute().await.unwrap()).await
+    }
+
+    #[tokio::test]
+    async fn lsm_read_vector_search() {
+        let dir = tempdir().unwrap();
+        let table = lsm_vector_table(dir.path(), None).await;
         assert_eq!(
-            ids,
+            nearest_ids(&table).await,
             vec![9999],
             "LSM vector search must rank the memtable row first"
         );
@@ -1902,5 +2197,789 @@ mod lsm_tests {
             let ids = collect_ids(query.execute().await.unwrap()).await;
             assert_eq!(ids, vec![255]);
         }
+    }
+
+    /// The built-in vector plugin, except that its index answers no search.
+    #[derive(Debug)]
+    struct AnswersNothing;
+
+    #[derive(Debug)]
+    struct AnswersNothingIndex(Arc<dyn lance::dataset::mem_wal::index::MemIndex>);
+
+    fn vector_plugin() -> Arc<dyn lance::dataset::mem_wal::index::MemIndexPlugin> {
+        Arc::new(lance::dataset::mem_wal::index::HnswMemIndexPlugin)
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndexPlugin for AnswersNothing {
+        fn name(&self) -> &str {
+            "AnswersNothing"
+        }
+        fn details_message(&self) -> &str {
+            "VectorIndexDetails"
+        }
+        fn flush_index_type(&self) -> lance_index::IndexType {
+            vector_plugin().flush_index_type()
+        }
+        fn training_criteria(&self) -> lance_index::scalar::registry::TrainingCriteria {
+            vector_plugin().training_criteria()
+        }
+        async fn resolve(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::ResolveContext<'_>,
+        ) -> lance_core::Result<lance::dataset::mem_wal::index::ResolvedIndex> {
+            vector_plugin().resolve(ctx).await
+        }
+        fn validate(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<()> {
+            vector_plugin().validate(ctx)
+        }
+        fn create(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<Arc<dyn lance::dataset::mem_wal::index::MemIndex>> {
+            Ok(Arc::new(AnswersNothingIndex(vector_plugin().create(ctx)?)))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndex for AnswersNothingIndex {
+        fn columns(&self) -> &[String] {
+            self.0.columns()
+        }
+        fn can_answer(&self, _query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
+            false
+        }
+        fn insert(&self, batch: &RecordBatch, row_offset: u64) -> lance_core::Result<()> {
+            self.0.insert(batch, row_offset)
+        }
+        fn insert_batches(
+            &self,
+            batches: &[lance::dataset::mem_wal::memtable::batch_store::StoredBatch],
+        ) -> lance_core::Result<()> {
+            self.0.insert_batches(batches)
+        }
+        fn resident_bytes(&self) -> usize {
+            self.0.resident_bytes()
+        }
+        fn search(
+            &self,
+            _query: &dyn lance::dataset::mem_wal::index::MemQuery,
+            _ctx: &lance::dataset::mem_wal::index::SearchContext,
+        ) -> lance_core::Result<Option<lance::dataset::mem_wal::index::MemMatches>> {
+            Ok(None)
+        }
+        async fn flush(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::FlushContext<'_>,
+        ) -> lance_core::Result<lance::dataset::mem_wal::index::FlushOutcome> {
+            self.0.flush(ctx).await
+        }
+    }
+
+    /// A resident memtable whose vector index answers nothing still serves an
+    /// LSM vector search: Lance compares every row instead.
+    #[tokio::test]
+    async fn lsm_vector_search_compares_every_row_when_no_resident_index_answers() {
+        let dir = tempdir().unwrap();
+        let mut registry = lance::dataset::mem_wal::MemIndexRegistry::default();
+        registry.replace_plugin(Arc::new(AnswersNothing)).unwrap();
+        let table = lsm_vector_table(dir.path(), Some(registry)).await;
+        assert_eq!(nearest_ids(&table).await, vec![9999]);
+
+        // The second page starts after the memtable row.
+        let page = table
+            .query()
+            .nearest_to(&[1000.0_f32; 8])
+            .unwrap()
+            .limit(2)
+            .offset(1);
+        assert_eq!(
+            collect_ids(page.execute().await.unwrap()).await,
+            vec![255, 254]
+        );
+    }
+
+    /// Claims the base table's bitmap index and keeps it as a B-tree.
+    #[derive(Debug)]
+    struct BitmapAsBTree;
+
+    #[derive(Debug)]
+    struct BitmapAsBTreeIndex(lance::dataset::mem_wal::index::BTreeMemIndex);
+
+    fn btree_plugin() -> Arc<dyn lance::dataset::mem_wal::index::MemIndexPlugin> {
+        lance::dataset::mem_wal::MemIndexRegistry::default()
+            .plugin_for_details_url("/lance.table.BTreeIndexDetails")
+            .unwrap()
+            .clone()
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndexPlugin for BitmapAsBTree {
+        fn name(&self) -> &str {
+            "BitmapAsBTree"
+        }
+        fn details_message(&self) -> &str {
+            "BitmapIndexDetails"
+        }
+        fn flush_index_type(&self) -> lance_index::IndexType {
+            lance_index::IndexType::Bitmap
+        }
+        fn training_criteria(&self) -> lance_index::scalar::registry::TrainingCriteria {
+            use lance_index::scalar::registry::{TrainingCriteria, TrainingOrdering};
+            TrainingCriteria::new(TrainingOrdering::Values).with_row_addr()
+        }
+        fn validate(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<()> {
+            btree_plugin().validate(ctx)
+        }
+        fn create(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<Arc<dyn lance::dataset::mem_wal::index::MemIndex>> {
+            let (column, field_id) = ctx.single_column()?;
+            Ok(Arc::new(BitmapAsBTreeIndex(
+                lance::dataset::mem_wal::index::BTreeMemIndex::new(field_id, column.to_string()),
+            )))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndex for BitmapAsBTreeIndex {
+        fn columns(&self) -> &[String] {
+            self.0.columns()
+        }
+        fn can_answer(&self, query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
+            self.0.can_answer(query)
+        }
+        fn insert(&self, batch: &RecordBatch, row_offset: u64) -> lance_core::Result<()> {
+            self.0.insert(batch, row_offset)
+        }
+        fn resident_bytes(&self) -> usize {
+            self.0.resident_bytes()
+        }
+        fn search(
+            &self,
+            query: &dyn lance::dataset::mem_wal::index::MemQuery,
+            ctx: &lance::dataset::mem_wal::index::SearchContext,
+        ) -> lance_core::Result<Option<lance::dataset::mem_wal::index::MemMatches>> {
+            self.0.search(query, ctx)
+        }
+        async fn flush(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::FlushContext<'_>,
+        ) -> lance_core::Result<lance::dataset::mem_wal::index::FlushOutcome> {
+            Ok(lance::dataset::mem_wal::index::FlushOutcome::from_batches(
+                self.0.to_training_batches(ctx.batch_size)?,
+            ))
+        }
+    }
+
+    /// A kind Lance has no memtable index for is refused when named until the
+    /// table's registry maintains it; then it is maintained, flushed into each
+    /// SSTable, and answers searches on the SSTables.
+    #[tokio::test]
+    async fn lsm_maintains_an_index_kind_from_the_tables_registry() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us"), (2, "eu"), (3, "us")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(&["region"], crate::index::Index::Bitmap(Default::default()))
+            .name("region_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+        let spec =
+            || RTEWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+
+        let refused = table.enable_rte(spec()).await.unwrap_err();
+        assert!(
+            refused.to_string().contains("region_bitmap")
+                && refused
+                    .to_string()
+                    .contains("no registered plugin maintains"),
+            "{refused:?}"
+        );
+
+        let registry = lance::dataset::mem_wal::MemIndexRegistry::default()
+            .with_plugin(Arc::new(BitmapAsBTree))
+            .unwrap();
+        table.as_native().unwrap().set_mem_index_registry(registry);
+        table.enable_rte(spec()).await.unwrap();
+
+        // The registry is not stored with the table.
+        let other = conn.open_table("t").execute().await.unwrap();
+        let mut builder = other.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let refused = builder
+            .execute(id_region_reader(vec![(20, "us")]))
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("no registered plugin maintains"),
+            "{refused:?}"
+        );
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder
+            .execute(id_region_reader(vec![
+                (10, "fresh"),
+                (11, "fresh"),
+                (12, "eu"),
+            ]))
+            .await
+            .unwrap();
+
+        let fresh = || async {
+            let query = table.query().only_if("region = 'fresh'");
+            let mut ids = collect_ids(query.execute().await.unwrap()).await;
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(fresh().await, vec![10, 11]);
+        let (_, _, memtables) = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .shard_writer()
+            .read_snapshot(&mem_wal_dir_id(&table).await)
+            .await
+            .unwrap()
+            .expect("the merge opened a writer");
+        let active = memtables.expect("the writer keeps memtables").active;
+        assert!(
+            active
+                .index_store
+                .index_names()
+                .contains(&"region_bitmap".to_string()),
+            "the memtable maintains the plugin's index: {:?}",
+            active.index_store.index_names()
+        );
+
+        table.close_rte_writers().await.unwrap();
+        assert_eq!(fresh().await, vec![10, 11]);
+        assert_sstables_answer_through_region_bitmap(&table, vec![10, 11]).await;
+    }
+
+    /// The `dir_id` of the table's current MemWAL, read from storage.
+    async fn mem_wal_dir_id(table: &Table) -> String {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        lance::Dataset::open(&table.uri().await.unwrap())
+            .await
+            .unwrap()
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("the table has a MemWAL")
+            .dir_id
+    }
+
+    /// The SSTables each shard's manifest publishes.
+    async fn published_sstables(table: &Table) -> Vec<lance::Dataset> {
+        use lance::dataset::mem_wal::ShardManifestStore;
+
+        let uri = table.uri().await.unwrap();
+        let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
+            .await
+            .unwrap();
+        let dir_id = mem_wal_dir_id(table).await;
+        let mem_wal = std::path::Path::new(&uri)
+            .join(lance::dataset::mem_wal::util::mem_wal_dir_name(&dir_id));
+        let mut sstables = Vec::new();
+        for shard in std::fs::read_dir(&mem_wal).unwrap() {
+            let Ok(shard_id) = shard.unwrap().file_name().to_string_lossy().parse() else {
+                continue;
+            };
+            let manifest = ShardManifestStore::new(store.clone(), &base, &dir_id, shard_id, 2)
+                .latest()
+                .await
+                .unwrap()
+                .expect("a shard directory has a manifest");
+            for sstable in manifest.sstables {
+                let path = mem_wal.join(shard_id.to_string()).join(&sstable.path);
+                sstables.push(lance::Dataset::open(path.to_str().unwrap()).await.unwrap());
+            }
+        }
+        sstables
+    }
+
+    /// Every published SSTable carries `region_bitmap` as a bitmap index on
+    /// `region`, and a search for `region = 'fresh'` on it uses that index.
+    async fn assert_sstables_answer_through_region_bitmap(table: &Table, fresh: Vec<i64>) {
+        use lance::index::DatasetIndexExt;
+
+        let sstables = published_sstables(table).await;
+        assert!(
+            !sstables.is_empty(),
+            "closing the writer flushed an SSTable"
+        );
+        let mut found = Vec::new();
+        for sstable in sstables {
+            let region = sstable.schema().field("region").unwrap().id;
+            let indices = sstable.load_indices().await.unwrap();
+            let index = indices
+                .iter()
+                .find(|index| index.name == "region_bitmap")
+                .expect("the SSTable carries the index the plugin trained");
+            assert_eq!(index.fields, vec![region]);
+            assert!(
+                index
+                    .index_details
+                    .as_ref()
+                    .is_some_and(|details| details.type_url.ends_with("BitmapIndexDetails")),
+                "{:?}",
+                index.index_details
+            );
+
+            let mut scan = sstable.scan();
+            scan.filter("region = 'fresh'").unwrap();
+            let plan = scan.explain_plan(false).await.unwrap();
+            assert!(plan.contains("ScalarIndexQuery"), "{plan}");
+            let batch = scan.try_into_batch().await.unwrap();
+            found.extend(
+                batch["id"]
+                    .as_primitive::<Int64Type>()
+                    .values()
+                    .iter()
+                    .copied(),
+            );
+        }
+        found.sort_unstable();
+        assert_eq!(found, fresh);
+    }
+
+    /// Under the default set, a kind only the registry maintains is picked up
+    /// when its index is created after the writer opened, and the table's
+    /// clones share the registry.
+    #[tokio::test]
+    async fn lsm_default_set_maintains_a_registry_kind_created_while_writing() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us"), (2, "eu")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        let registry = lance::dataset::mem_wal::MemIndexRegistry::default()
+            .with_plugin(Arc::new(BitmapAsBTree))
+            .unwrap();
+        table.as_native().unwrap().set_mem_index_registry(registry);
+        let clone = table.clone();
+        assert!(
+            clone
+                .as_native()
+                .unwrap()
+                .mem_index_registry()
+                .plugin_for_details_url("/lance.table.BitmapIndexDetails")
+                .is_some(),
+            "a clone shares the handle's registry"
+        );
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+
+        let upsert = |rows: Vec<(i64, &'static str)>| {
+            let table = table.clone();
+            async move {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                builder.execute(id_region_reader(rows)).await.unwrap();
+            }
+        };
+        // Opens the writer before the table has a bitmap index.
+        upsert(vec![(3, "us")]).await;
+        table
+            .create_index(&["region"], crate::index::Index::Bitmap(Default::default()))
+            .name("region_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+        upsert(vec![(10, "fresh"), (11, "fresh")]).await;
+
+        let (_, _, memtables) = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .shard_writer()
+            .read_snapshot(&mem_wal_dir_id(&table).await)
+            .await
+            .unwrap()
+            .expect("the merge opened a writer");
+        let active = memtables.expect("the writer keeps memtables").active;
+        assert!(
+            active
+                .index_store
+                .index_names()
+                .contains(&"region_bitmap".to_string()),
+            "the open writer picked up the new index: {:?}",
+            active.index_store.index_names()
+        );
+
+        table.close_rte_writers().await.unwrap();
+        // Only the SSTable written after the index exists carries it.
+        let sstables = published_sstables(&table).await;
+        let mut carrying = 0;
+        for sstable in &sstables {
+            use lance::index::DatasetIndexExt;
+            if sstable
+                .load_indices()
+                .await
+                .unwrap()
+                .iter()
+                .any(|index| index.name == "region_bitmap")
+            {
+                carrying += 1;
+            }
+        }
+        assert!(
+            carrying >= 1,
+            "{} SSTables, none carry the index",
+            sstables.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn lsm_cosine_distance_scale_and_mixed_tier_ordering() {
+        use arrow::array::{
+            FixedSizeListArray, FixedSizeListBuilder, Float32Array, Float32Builder,
+        };
+        use arrow::datatypes::Float32Type;
+
+        use crate::index::Index;
+        use crate::index::vector::IvfPqIndexBuilder;
+        use datafusion_physical_plan::{ExecutionPlan, displayable};
+        use lance::io::exec::ANNIvfSubIndexExec;
+        use std::any::Any;
+
+        const DIM: usize = 8;
+        const N: usize = 256;
+
+        fn normalized_vector(state: &mut u64) -> Vec<f32> {
+            let mut vector = (0..DIM)
+                .map(|_| {
+                    *state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    ((*state >> 32) as u32 as f32 / u32::MAX as f32) * 2.0 - 1.0
+                })
+                .collect::<Vec<_>>();
+            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            vector.iter_mut().for_each(|value| *value /= norm);
+            vector
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    DIM as i32,
+                ),
+                false,
+            ),
+        ]));
+        let make_batch = |rows: Vec<(i64, Vec<f32>)>| {
+            let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
+            for (_, vector) in &rows {
+                vectors.values().append_slice(vector);
+                vectors.append(true);
+            }
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(ids)), Arc::new(vectors.finish())],
+            )
+            .unwrap()
+        };
+        let first_result = |batches: &[RecordBatch]| {
+            let batch = &batches[0];
+            let id = batch["id"].as_primitive::<Int64Type>().value(0);
+            let distance = batch["_distance"].as_primitive::<Float32Type>().value(0);
+            (id, distance)
+        };
+
+        let mut state = 42;
+        let base_rows = (0..N)
+            .map(|id| (id as i64, normalized_vector(&mut state)))
+            .collect::<Vec<_>>();
+        let query = normalized_vector(&mut state);
+
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let base = make_batch(base_rows.clone());
+        let reader: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(base)], schema.clone()));
+        let table = conn
+            .create_table("cosine_lsm", reader)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(
+                &["vec"],
+                Index::IvfPq(
+                    IvfPqIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1)
+                        .num_sub_vectors(1),
+                ),
+            )
+            .name("vec_cosine".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["vec_cosine".to_string()]),
+            )
+            .await
+            .unwrap();
+
+        let base_only = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .use_rte(false)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (base_id, public_distance) = first_result(&base_only);
+
+        let lsm = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (lsm_id, lsm_distance) = first_result(&lsm);
+        assert_eq!(lsm_id, base_id);
+        assert!(
+            (lsm_distance - public_distance).abs() < 1e-5,
+            "LSM cosine distance {lsm_distance} did not use the public scale {public_distance}"
+        );
+
+        // Add an exact memtable result whose distance lies between the public ANN
+        // score and its doubled internal score. Correctly normalized plans still
+        // rank the ANN row first; mixed units would incorrectly rank this row first.
+        assert!(public_distance > 0.0 && public_distance < 4.0 / 3.0);
+        let memtable_distance = public_distance * 1.5;
+        let cosine_similarity = 1.0 - memtable_distance;
+        let mut orthogonal = normalized_vector(&mut state);
+        let projection = orthogonal
+            .iter()
+            .zip(&query)
+            .map(|(left, right)| left * right)
+            .sum::<f32>();
+        for (value, query_value) in orthogonal.iter_mut().zip(&query) {
+            *value -= projection * query_value;
+        }
+        let norm = orthogonal
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        orthogonal.iter_mut().for_each(|value| *value /= norm);
+        let sine = (1.0 - cosine_similarity * cosine_similarity).sqrt();
+        let memtable_vector = query
+            .iter()
+            .zip(&orthogonal)
+            .map(|(query_value, orthogonal_value)| {
+                cosine_similarity * query_value + sine * orthogonal_value
+            })
+            .collect::<Vec<_>>();
+
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let memtable = make_batch(vec![(N as i64, memtable_vector)]);
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(memtable)],
+                schema.clone(),
+            )))
+            .await
+            .unwrap();
+
+        let mixed = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (mixed_id, mixed_distance) = first_result(&mixed);
+        assert_eq!(
+            mixed_id, base_id,
+            "mixed LSM tiers must compare ANN and exact distances in public units"
+        );
+        assert!((mixed_distance - public_distance).abs() < 1e-5);
+
+        // Re-ingest every base row so the flushed SSTable generation owns a
+        // complete copy of the dataset. ANN ranking of the rebuilt index is an
+        // independent approximation, so exact row parity with the base scan is
+        // not guaranteed.
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let upsert_batch = make_batch(base_rows.clone());
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(upsert_batch)],
+                schema.clone(),
+            )))
+            .await
+            .unwrap();
+        assert!(
+            base_rows.iter().any(|(id, _)| *id == base_id),
+            "upsert source must still contain the nearest base row"
+        );
+
+        table.close_rte_writers().await.unwrap();
+        let sstables = published_sstables(&table).await;
+        assert_eq!(sstables.len(), 1, "expected one published SSTable");
+        assert_eq!(
+            sstables[0].count_rows(None).await.unwrap(),
+            N + 1,
+            "published SSTable must contain the complete replacement fixture"
+        );
+
+        // The public query sets no explicit refine factor. Because the upsert
+        // rewrote every base id, a newer generation exists, so the engine must
+        // auto-refine ANN results over the published SSTable.
+        let public_query = table.query().nearest_to(query.as_slice()).unwrap().limit(1);
+
+        fn collect_ann_nodes<'a>(
+            node: &'a dyn ExecutionPlan,
+            target_uri: &str,
+            out: &mut Vec<&'a ANNIvfSubIndexExec>,
+        ) {
+            // Local datasets may report their path with a different separator on Windows.
+            if let Some(ann) = (node as &dyn Any).downcast_ref::<ANNIvfSubIndexExec>()
+                && std::path::Path::new(ann.dataset().uri()) == std::path::Path::new(target_uri)
+            {
+                out.push(ann);
+            }
+            for child in node.children() {
+                collect_ann_nodes(child.as_ref(), target_uri, out);
+            }
+        }
+
+        let plan = public_query
+            .create_plan(crate::query::QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let mut ann_nodes = Vec::new();
+        collect_ann_nodes(plan.as_ref(), sstables[0].uri(), &mut ann_nodes);
+        assert!(
+            !ann_nodes.is_empty(),
+            "public plan must contain an ANN sub-index over the published SSTable"
+        );
+        assert_eq!(
+            ann_nodes[0].query().refine_factor,
+            Some(1),
+            "engine must auto-refine the SSTable ANN results"
+        );
+        println!(
+            "RTE LSM public query plan:\n{}",
+            displayable(plan.as_ref()).indent(true)
+        );
+
+        // Execute the same public query.
+        let published = public_query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (published_id, published_distance) = first_result(&published);
+        assert!(
+            (0_i64..=N as i64).contains(&published_id),
+            "SSTable result id {published_id} must belong to the complete 0..={N} replacement fixture"
+        );
+
+        // The maintained ANN index may rank near-tied rows differently than
+        // the base scan, so the durable contract is distance correctness: the
+        // auto-refined result carries its own stored vector, and the query
+        // returns the analytical cosine distance of that exact vector.
+        let expected_distance = {
+            let published_vec = published[0]["vec"]
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap()
+                .values()
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap();
+            // The query is a unit vector, so cosine distance is 1 - cos(q, v).
+            let dot = (0..DIM)
+                .map(|index| query[index] * published_vec.value(index))
+                .sum::<f32>();
+            let norm = (0..DIM)
+                .map(|index| published_vec.value(index) * published_vec.value(index))
+                .sum::<f32>()
+                .sqrt();
+            1.0 - dot / norm
+        };
+        assert!(
+            expected_distance > 0.0 && expected_distance.is_finite(),
+            "independent cosine oracle is degenerate: {expected_distance}"
+        );
+        assert!(
+            (published_distance - expected_distance).abs() < 1e-5,
+            "SSTable ANN distance {published_distance} must match the analytical cosine distance {expected_distance} of its returned vector"
+        );
+        println!(
+            "sstable_uri={} ann_nodes={} refine_factor={:?} observed_distance={} expected_cosine={}",
+            sstables[0].uri(),
+            ann_nodes.len(),
+            ann_nodes[0].query().refine_factor,
+            published_distance,
+            expected_distance,
+        );
     }
 }

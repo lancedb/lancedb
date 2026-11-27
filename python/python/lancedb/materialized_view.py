@@ -2,7 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Materialized views: tables defined by a query over a source table and
-maintained by refresh. See ``DBConnection.create_materialized_view``."""
+maintained by refresh. See ``DBConnection.create_materialized_view``.
+
+LanceDB Embedded creation and refresh require the ``experimental-functions``
+Cargo feature in a source build. Published packages disable it. Opening, reading,
+listing and dropping existing views and LanceDB Enterprise operations remain
+available.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ from dataclasses import dataclass
 
 from .background_loop import LOOP
 from .job import AsyncJob, Job, _typed_job
+from .resources import _resource_options
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -127,6 +134,16 @@ def _quote_identifier(name: str) -> str:
     return f"`{escaped}`"
 
 
+def _validate_create_materialized_view(source, query, select, where, limit):
+    if query is not None:
+        if any(value is not None for value in (source, select, where, limit)):
+            raise ValueError(
+                "query cannot be combined with source, select, where or limit"
+            )
+    elif source is None:
+        raise ValueError("either source or query must be provided")
+
+
 def normalize_select(select: SelectArg) -> Optional[List[Tuple[str, str]]]:
     """``select`` items may be a column name, an ``(alias, expression)`` pair,
     or a dict of the same. A bare name projects itself and is quoted, so any
@@ -148,6 +165,19 @@ def normalize_select(select: SelectArg) -> Optional[List[Tuple[str, str]]]:
             alias, expression = item
             normalized.append((alias, expression))
     return normalized
+
+
+def _refresh_execution_options(
+    total_cpu_millis, total_memory_bytes, total_gpu_count, gpu_class, gpu_count=None
+):
+    values = _resource_options(
+        total_cpu_millis,
+        total_memory_bytes,
+        total_gpu_count,
+        gpu_class=gpu_class,
+        gpu_count=gpu_count,
+    )
+    return {name: value for name, value in values.items() if value is not None}
 
 
 class AsyncMaterializedView:
@@ -179,31 +209,86 @@ class AsyncMaterializedView:
         return _definition_from_json(raw)
 
     async def refresh(
-        self, *, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        Every refresh rebuilds the complete view. For local views,
-        ``source_version`` refreshes to that source version instead of the
-        latest; remote SQL refreshes do not support source-version pinning.
+        In LanceDB Enterprise, ``full=True`` forces a rebuild; otherwise the
+        server chooses the refresh mode. LanceDB Embedded views always rebuild,
+        and ``source_version`` selects a source version instead of the latest.
+        LanceDB Enterprise SQL refreshes do not support source-version pinning.
+
+        ``total_cpu_millis`` (1000 = one core), ``total_memory_bytes``, and
+        ``total_gpu_count`` cap aggregate resources for this execution,
+        including its Function processes. Each resource may be overridden
+        independently. Unset values inherit the view defaults, then the sum
+        across distinct pinned Functions, then deployment defaults. GPU count
+        may be zero for CPU-only views.
+        ``gpu_class`` selects an operator-defined GPU class for this execution
+        only. Omitted options preserve defaults.
+        These options require an Enterprise backend that enforces isolation;
+        Embedded refreshes reject them. Other servers may reject the new options.
+
+        LanceDB Enterprise results leave ``mode``, ``rows_written``, and
+        ``source_version`` as ``None`` because the SQL job adapter does not expose
+        these metrics.
         """
         return await self._table._inner.refresh_materialized_view(
-            source_version=source_version
+            source_version=source_version,
+            full=full,
+            **_refresh_execution_options(
+                total_cpu_millis,
+                total_memory_bytes,
+                total_gpu_count,
+                gpu_class,
+                gpu_count=gpu_count,
+            ),
         )
 
     async def refresh_async(
-        self, *, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
-        The job may already be complete for a local view. Remote refreshes are
-        submitted through the SQL service.
+        The job may already be complete in LanceDB Embedded. In LanceDB
+        Distributed, refreshes are submitted through the SQL service and the
+        returned ``id`` is the registry job ID, usable with ``open_job`` for
+        progress, events, and cancellation while the refresh runs. Options and
+        result metrics follow
+        [refresh][lancedb.materialized_view.AsyncMaterializedView.refresh].
+
+        Servers without early registry-handle support return a connection-scoped
+        query job instead. Its ID cannot be reopened with ``open_job``.
         """
         from ._lancedb import RefreshMaterializedViewResult
 
         return _typed_job(
             await self._table._inner.refresh_materialized_view_async(
-                source_version=source_version
+                source_version=source_version,
+                full=full,
+                **_refresh_execution_options(
+                    total_cpu_millis,
+                    total_memory_bytes,
+                    total_gpu_count,
+                    gpu_class,
+                    gpu_count=gpu_count,
+                ),
             ),
             RefreshMaterializedViewResult.from_json,
         )
@@ -235,18 +320,60 @@ class MaterializedView:
         return LOOP.run(self._async.definition())
 
     def refresh(
-        self, *, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source. See
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
-        return LOOP.run(self._async.refresh(source_version=source_version))
+        return LOOP.run(
+            self._async.refresh(
+                full=full,
+                source_version=source_version,
+                **_refresh_execution_options(
+                    total_cpu_millis,
+                    total_memory_bytes,
+                    total_gpu_count,
+                    gpu_class,
+                    gpu_count=gpu_count,
+                ),
+            )
+        )
 
     def refresh_async(
-        self, *, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        total_cpu_millis: Optional[int] = None,
+        total_memory_bytes: Optional[int] = None,
+        total_gpu_count: Optional[int] = None,
+        gpu_class: Optional[str] = None,
+        gpu_count: Optional[int] = None,
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
         See
         [AsyncMaterializedView.refresh_async][lancedb.materialized_view.AsyncMaterializedView.refresh_async].
         """
-        return Job(LOOP.run(self._async.refresh_async(source_version=source_version)))
+        return Job(
+            LOOP.run(
+                self._async.refresh_async(
+                    full=full,
+                    source_version=source_version,
+                    **_refresh_execution_options(
+                        total_cpu_millis,
+                        total_memory_bytes,
+                        total_gpu_count,
+                        gpu_class,
+                        gpu_count=gpu_count,
+                    ),
+                )
+            )
+        )

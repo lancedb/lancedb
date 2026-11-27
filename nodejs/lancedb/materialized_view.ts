@@ -186,15 +186,50 @@ export class MaterializedView {
 
   /**
    * Recompute the view from its source.
+   * Local refresh requires a source build with `experimental-functions`.
    *
-   * Every refresh rebuilds the complete view. For local views,
-   * `sourceVersion` refreshes to that source version instead of the latest;
-   * remote SQL refreshes do not support source-version pinning.
+   * `full: true` forces a remote rebuild; otherwise the server chooses the
+   * refresh mode. Local views always rebuild, and `sourceVersion` selects a
+   * source version instead of the latest. Remote SQL refreshes do not support
+   * source-version pinning. Their results leave `mode`, `rowsWritten`, and
+   * `sourceVersion` absent because the SQL job adapter does not expose these metrics.
    */
   async refresh(options?: {
+    full?: boolean;
     sourceVersion?: number;
+    totalCpuMillis?: number;
+    totalMemoryBytes?: number;
+    totalGpuCount?: number;
+    gpuClass?: string;
+    gpuCount?: number;
   }): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
-    return await this.inner.refreshMaterializedView(options?.sourceVersion);
+    for (const [name, value] of [
+      ["totalCpuMillis", options?.totalCpuMillis],
+      ["totalMemoryBytes", options?.totalMemoryBytes],
+      ["totalGpuCount", options?.totalGpuCount],
+      ["gpuCount", options?.gpuCount],
+    ] as const) {
+      validateNonNegativeInteger(value, name);
+      if (value === 0 && name !== "totalGpuCount") {
+        throw new Error(`${name} must be positive`);
+      }
+      if (
+        (name === "gpuCount" || name === "totalGpuCount") &&
+        value !== undefined &&
+        value > 4294967295
+      ) {
+        throw new Error(`${name} exceeds 4294967295`);
+      }
+    }
+    return await this.inner.refreshMaterializedView(
+      options?.sourceVersion,
+      options?.full,
+      options?.totalCpuMillis,
+      options?.totalMemoryBytes,
+      options?.totalGpuCount,
+      options?.gpuClass,
+      options?.gpuCount,
+    );
   }
 }

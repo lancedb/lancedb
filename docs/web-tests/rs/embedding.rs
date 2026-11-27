@@ -17,7 +17,7 @@ use lancedb::{
 #[tokio::main]
 async fn main() -> Result<()> {
     let db = connect("./mydb").execute().await?;
-    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY is not set");
+    let api_key = "your-openai-api-key".to_string();
     let embedding = Arc::new(OpenAIEmbeddingFunction::new_with_model(
         api_key,
         "text-embedding-3-large",
@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use lancedb::embeddings::openai::OpenAIEmbeddingFunction;
 
-let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY is not set");
+let api_key = "your-openai-api-key".to_string();
 let embedding = Arc::new(
     OpenAIEmbeddingFunction::new_with_model(api_key, "text-embedding-3-small")
         .expect("failed to create OpenAI embedding function"),
@@ -77,7 +77,7 @@ use lancedb::{
 #[tokio::main]
 async fn main() -> Result<()> {
     let db = connect("./mydb").execute().await?;
-    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY is not set");
+    let api_key = "your-openai-api-key".to_string();
     let embedding = Arc::new(OpenAIEmbeddingFunction::new_with_model(
         api_key,
         "text-embedding-3-large",

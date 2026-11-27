@@ -23,6 +23,11 @@
 //! cargo add lancedb
 //! ```
 //!
+//! Use the Arrow crates re-exported from [`arrow`] when building schemas, arrays, and
+//! record batches for LanceDB. Arrow types from different crate versions are distinct
+//! Rust types, so declaring independent `arrow-array` or `arrow-schema` dependencies
+//! can cause type errors if their versions do not match LanceDB's dependencies.
+//!
 //! ## Crate Features
 //!
 //! - `aws` - Enable AWS S3 object store support.
@@ -30,7 +35,12 @@
 //! - `azure` - Enable Azure Blob Storage object store support.
 //! - `gcs` - Enable Google Cloud Storage object store support.
 //! - `oss` - Enable Alibaba Cloud OSS object store support.
-//! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `remote` - Enable the client for connecting to LanceDB Enterprise or LanceDB Cloud (legacy).
+//! - `experimental-functions` - Opt in to local SQL computed-column declarations
+//!   and refresh, and local materialized-view creation and refresh. Disabled by
+//!   default, including in published Python and TypeScript packages. LanceDB
+//!   Enterprise operations, reading existing data, metadata protections,
+//!   and ordinary eager `add_columns` transforms do not require this feature.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
 //! - `metrics` - Publish LanceDB's internal metrics through the
@@ -38,6 +48,8 @@
 //!   Install any `metrics`-compatible recorder to collect them.
 //! - `metrics-otel` - Add a pull-based adapter (the `metrics_otel` module) over
 //!   the `metrics` facade for bridging metrics into OpenTelemetry or similar.
+//! - `test-fixtures` - Expose shared golden data through `test_fixtures` for
+//!   downstream compatibility tests. Disabled by default.
 //!
 //! ### Quick Start
 //!
@@ -51,9 +63,10 @@
 //!
 //! LanceDB accepts the different form of database path:
 //!
-//! - `/path/to/database` - local database on file system.
+//! - `/path/to/database` - database on the local file system.
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
-//! - `db://dbname` - Lance Cloud
+//! - `db://dbname` - LanceDB Enterprise or LanceDB Cloud (legacy)
+//! - `db://` with a host override - LanceDB Enterprise tables in the storage root
 //!
 //! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
@@ -85,9 +98,11 @@
 //!
 //! ```rust
 //! # use std::sync::Arc;
-//! use arrow_array::{RecordBatch, RecordBatchIterator};
-//! use arrow_schema::{DataType, Field, Schema};
-//! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
+//! use lancedb::arrow::arrow_array::{RecordBatch, RecordBatchIterator};
+//! use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
+//! # use lancedb::arrow::arrow_array::{
+//! #     FixedSizeListArray, Float32Array, Int32Array, types::Float32Type,
+//! # };
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
@@ -132,9 +147,11 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
-//! #   RecordBatchIterator, Int32Array};
-//! # use arrow_schema::{Schema, Field, DataType};
+//! # use lancedb::arrow::arrow_array::{
+//! #     FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator,
+//! #     types::Float32Type,
+//! # };
+//! # use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
 //! use lancedb::index::Index;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
@@ -167,22 +184,25 @@
 //! # }
 //! ```
 
-// The MemWAL LSM read path (`table::query::lsm`) deepens the `create_plan` future's
+// The RTE read path (`table::query::lsm`) deepens the `create_plan` future's
 // type graph enough to overflow the default trait-recursion limit while evaluating
 // auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
 #![recursion_limit = "256"]
 
 pub mod arrow;
+pub mod authz;
 pub mod blob;
 pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
 pub mod dataloader;
+pub mod docs;
 pub mod embeddings;
 pub mod error;
 pub mod expr;
 pub mod function;
+pub mod graph;
 pub mod index;
 pub mod io;
 pub mod ipc;
@@ -198,8 +218,12 @@ pub mod query;
 pub mod remote;
 pub mod rerankers;
 pub mod secrets;
+pub mod server_info;
 pub mod sql;
+pub mod storage_integration;
 pub mod table;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
@@ -213,7 +237,8 @@ pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, JobFailure, Result};
 pub use function::FunctionVersion;
-pub use job::Job;
+pub use job::{Job, JobState};
+pub use lance::table::format::BasePath;
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use materialized_view::{
@@ -226,6 +251,19 @@ pub use materialized_view::{
 #[cfg(feature = "metrics")]
 pub use metrics;
 pub use table::{FtsToken, Table};
+
+/// Gate local execution without hiding client types or metadata protections.
+pub(crate) fn require_experimental_functions() -> Result<()> {
+    if !cfg!(feature = "experimental-functions") {
+        return Err(Error::NotSupported {
+            message: "local computed columns and materialized-view creation/refresh require \
+                      building LanceDB with the 'experimental-functions' Cargo feature; \
+                      official Python and TypeScript packages do not enable it"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 /// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
 ///
@@ -302,8 +340,9 @@ impl Display for DistanceType {
 
 /// Controls the speed / accuracy tradeoff for approximate vector search.
 ///
-/// This currently only affects RQ-quantized vector indexes, such as IVF_RQ.
-/// Other index types ignore this setting.
+/// This currently affects RQ-quantized vector indexes (such as IVF_RQ) and
+/// prefiltered search on HNSW sub-indexes, where `Fast` enables the ACORN
+/// traversal. Other index types ignore this setting.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]

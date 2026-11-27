@@ -115,14 +115,24 @@ impl NativeTable {
     pub(super) async fn prepare_index(
         &self,
         opts: &crate::index::IndexBuilder,
-    ) -> Result<PreparedIndex> {
+    ) -> Result<Option<PreparedIndex>> {
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
+        if opts.exist_ok
+            && let Some(name) = &opts.name
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| &index.name == name)
+        {
+            return Ok(None);
+        }
         if opts.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-        self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
         let (column, field) = if let Index::FTS(params) = &opts.index {
             let resolved = resolve_lance_fts_field_path(dataset.schema(), &opts.columns[0])?;
             if params.get_document_granularity().is_list_element() && resolved.list_depth == 0 {
@@ -137,9 +147,48 @@ impl NativeTable {
         } else {
             Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
         };
+        if let Some(name) = Self::guarded_index_name(opts, &column)?
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| index.name == name)
+        {
+            return Ok(None);
+        }
         let params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
-        Ok((column, params, index_type))
+        Ok(Some((column, params, index_type)))
+    }
+
+    fn guarded_index_name(
+        opts: &crate::index::IndexBuilder,
+        column: &str,
+    ) -> Result<Option<String>> {
+        let name = if opts.exist_ok {
+            Some(if let Some(name) = &opts.name {
+                name.clone()
+            } else {
+                let names = lance_core::datatypes::parse_field_path(column)?;
+                let default_name = if matches!(&opts.index, Index::FTS(_))
+                    || names.iter().any(|name| name.contains('.'))
+                {
+                    column.to_string()
+                } else {
+                    names.join(".")
+                };
+                let suffix = if matches!(&opts.index, Index::FTS(params) if params.get_document_granularity().is_list_element())
+                {
+                    "_list_element_idx"
+                } else {
+                    "_idx"
+                };
+                format!("{default_name}{suffix}")
+            })
+        } else {
+            None
+        };
+        Ok(name)
     }
 
     /// Builds a prepared index and publishes the new dataset version.
@@ -150,16 +199,42 @@ impl NativeTable {
     ) -> Result<()> {
         let (column, lance_idx_params, index_type) = prepared;
         let mut dataset = (*self.dataset.get().await?).clone();
+        let guarded_name = Self::guarded_index_name(&opts, &column)?;
+        if let Some(name) = &guarded_name
+            && dataset
+                .load_indices()
+                .await?
+                .iter()
+                .any(|index| &index.name == name)
+        {
+            return Ok(());
+        }
         let columns = [column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
-            .replace(opts.replace);
+            .replace(opts.replace && !opts.exist_ok);
 
-        if let Some(name) = opts.name {
+        if let Some(name) = guarded_name.clone().or(opts.name) {
             builder = builder.name(name);
         }
-        builder.await?;
+        if let Err(error) = builder.await {
+            if let Some(name) = guarded_name {
+                self.dataset.reload().await?;
+                if self
+                    .dataset
+                    .get()
+                    .await?
+                    .load_indices()
+                    .await?
+                    .iter()
+                    .any(|index| index.name == name)
+                {
+                    return Ok(());
+                }
+            }
+            return Err(error.into());
+        }
         // A writer already open was built before this index existed, so it has
         // to pick it up here or a read needing it is refused until it reopens.
         self.dataset
@@ -291,6 +366,15 @@ impl NativeTable {
                     ScalarIndexParams::for_builtin(BuiltinIndexType::RTree).with_params(&params),
                 ))
             }
+            // Lance resolves the plugin by name and the plugin checks the column
+            // and the parameters, so there is nothing to validate here.
+            Index::Plugin(plugin) => {
+                let mut params = ScalarIndexParams::new(plugin.index_type);
+                params.params = plugin
+                    .params
+                    .map(|params| serde_json::Value::Object(params).to_string());
+                Ok(Box::new(params))
+            }
             Index::FTS(fts_opts) => {
                 validate_fts_field(field)?;
                 Ok(Box::new(fts_opts))
@@ -355,7 +439,10 @@ impl NativeTable {
                     index.sample_rate,
                     index.max_iterations,
                 );
-                let rq_params = RQBuildParams::new(index.num_bits.unwrap_or(1) as u8);
+                let rq_params = index
+                    .num_bits
+                    .map(|num_bits| RQBuildParams::new(num_bits as u8))
+                    .unwrap_or_default();
                 let lance_idx_params = VectorIndexParams::with_ivf_rq_params(
                     index.distance_type.into(),
                     ivf_params,
@@ -454,6 +541,7 @@ impl NativeTable {
             Index::NGram(_) => IndexType::NGram,
             Index::BloomFilter(_) => IndexType::BloomFilter,
             Index::RTree(_) => IndexType::RTree,
+            Index::Plugin(_) => IndexType::Scalar,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
             | Index::IvfSq(_)
@@ -477,7 +565,7 @@ mod tests {
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
         LargeBinaryArray, LargeStringArray, ListArray, RecordBatch, StringArray, StructArray,
-        UInt32Array,
+        UInt32Array, UInt64Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
@@ -499,6 +587,55 @@ mod tests {
     use lance_index::scalar::FullTextSearchQuery;
     use lance_index::scalar::inverted::query::{FtsQuery, MatchQuery};
 
+    struct OrderPreservingShuffler;
+
+    struct SinglePartitionReader {
+        batches: Vec<RecordBatch>,
+    }
+
+    #[async_trait::async_trait]
+    impl lance_index::vector::v3::shuffler::Shuffler for OrderPreservingShuffler {
+        async fn shuffle(
+            &self,
+            data: Box<dyn lance_io::stream::RecordBatchStream + Unpin + 'static>,
+        ) -> lance_core::Result<Box<dyn lance_index::vector::v3::shuffler::ShuffleReader>> {
+            Ok(Box::new(SinglePartitionReader {
+                batches: data.try_collect().await?,
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl lance_index::vector::v3::shuffler::ShuffleReader for SinglePartitionReader {
+        async fn read_partition(
+            &self,
+            partition_id: usize,
+        ) -> lance_core::Result<
+            Option<Box<dyn lance_io::stream::RecordBatchStream + Unpin + 'static>>,
+        > {
+            if partition_id != 0 || self.batches.is_empty() {
+                return Ok(None);
+            }
+            let schema = self.batches[0].schema();
+            let stream = futures::stream::iter(self.batches.clone().into_iter().map(Ok));
+            Ok(Some(Box::new(
+                lance_io::stream::RecordBatchStreamAdapter::new(schema, stream),
+            )))
+        }
+
+        fn partition_size(&self, partition_id: usize) -> lance_core::Result<usize> {
+            Ok(if partition_id == 0 {
+                self.batches.iter().map(RecordBatch::num_rows).sum()
+            } else {
+                0
+            })
+        }
+
+        fn total_loss(&self) -> Option<f64> {
+            Some(0.0)
+        }
+    }
+
     fn create_fixed_size_list<T: Array>(
         values: T,
         list_size: i32,
@@ -514,6 +651,63 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_index_exist_ok_preserves_single_identity() {
+        let dir = tempdir().unwrap();
+        let db = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = db.create_table("t", batch).execute().await.unwrap();
+        let second = db.open_table("t").execute().await.unwrap();
+        let (left, right) = tokio::join!(
+            table
+                .create_index(&["id"], Index::BTree(Default::default()))
+                .exist_ok(true)
+                .execute(),
+            second
+                .create_index(&["id"], Index::BTree(Default::default()))
+                .exist_ok(true)
+                .execute()
+        );
+        left.unwrap();
+        right.unwrap();
+        table.checkout_latest().await.unwrap();
+        let indices = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .load_indices()
+            .await
+            .unwrap();
+        assert_eq!(indices.len(), 1);
+        let original_uuid = indices[0].uuid;
+        let version = table.version().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(Default::default()))
+            .replace(true)
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.version().await.unwrap(), version);
+        let indices = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .load_indices()
+            .await
+            .unwrap();
+        assert_eq!(indices[0].uuid, original_uuid);
     }
 
     #[tokio::test]
@@ -1010,6 +1204,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ivf_hnsw_sq_merge_preserves_shuffled_row_order() {
+        use lance::index::vector::builder::IvfIndexBuilder;
+        use lance_core::{ROW_ID, ROW_ID_FIELD, cache::LanceCache};
+        use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
+        use lance_file::reader::{FileReader, FileReaderOptions};
+        use lance_index::INDEX_AUXILIARY_FILE_NAME;
+        use lance_index::vector::hnsw::{HNSW, builder::HnswBuildParams};
+        use lance_index::vector::ivf::IvfBuildParams;
+        use lance_index::vector::sq::{ScalarQuantizer, builder::SQBuildParams};
+        use lance_io::ReadBatchParams;
+        use lance_io::object_store::ObjectStore;
+        use lance_io::scheduler::{ScanScheduler, SchedulerConfig};
+        use lance_io::stream::RecordBatchStreamAdapter;
+        use lance_io::utils::CachedFileSize;
+
+        const NUM_ROWS: usize = 64;
+        const DIMENSION: i32 = 16;
+
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let vector_field = Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIMENSION,
+            ),
+            false,
+        );
+        let values = Float32Array::from_iter_values(
+            (0..NUM_ROWS * DIMENSION as usize).map(|value| (value % 97) as f32),
+        );
+        let vectors = Arc::new(create_fixed_size_list(values, DIMENSION).unwrap());
+        let table_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![vector_field.clone()])),
+            vec![vectors.clone()],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test", table_batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset_guard = table.as_native().unwrap().dataset.get().await.unwrap();
+        let dataset = (*dataset_guard).clone();
+        drop(dataset_guard);
+
+        // Descending row IDs are a small sentinel for the removed merge-time
+        // sort. The old sort reordered this batch and used FixedSizeList::take,
+        // which overflowed for the large partitions reported in #3126.
+        let expected_row_ids = (0..NUM_ROWS as u64).rev().collect::<Vec<_>>();
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![ROW_ID_FIELD.clone(), vector_field])),
+            vec![
+                Arc::new(UInt64Array::from(expected_row_ids.clone())),
+                vectors,
+            ],
+        )
+        .unwrap();
+        let input = RecordBatchStreamAdapter::new(
+            input_batch.schema(),
+            futures::stream::iter(vec![Ok(input_batch)]),
+        );
+
+        let index_dir = dataset.indices_dir().join(uuid::Uuid::new_v4().to_string());
+        let mut builder = IvfIndexBuilder::<HNSW, ScalarQuantizer>::new(
+            dataset,
+            "embeddings".to_string(),
+            index_dir.clone(),
+            lance_linalg::distance::DistanceType::L2,
+            Box::new(OrderPreservingShuffler),
+            Some(IvfBuildParams::new(1)),
+            Some(SQBuildParams::default()),
+            HnswBuildParams::default(),
+            None,
+        )
+        .unwrap();
+        builder.shuffle_data_input(Some(input));
+        builder.build().await.unwrap();
+
+        let object_store = Arc::new(ObjectStore::local());
+        let scheduler = ScanScheduler::new(object_store, SchedulerConfig::default_for_testing());
+        let auxiliary_path = index_dir.join(INDEX_AUXILIARY_FILE_NAME);
+        let reader = FileReader::try_open(
+            scheduler
+                .open_file(&auxiliary_path, &CachedFileSize::unknown())
+                .await
+                .unwrap(),
+            None,
+            Arc::<DecoderPlugins>::default(),
+            &LanceCache::no_cache(),
+            FileReaderOptions::default(),
+        )
+        .await
+        .unwrap();
+        let batches = reader
+            .read_stream(
+                ReadBatchParams::RangeFull,
+                u32::MAX,
+                1,
+                FilterExpression::no_filter(),
+            )
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let stored_row_ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name(ROW_ID)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(stored_row_ids, expected_row_ids);
+    }
+
+    #[tokio::test]
     async fn test_create_index_ivf_hnsw_pq() {
         use std::iter::repeat_with;
 
@@ -1352,6 +1675,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_btree_index_on_large_utf8() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("explicit", DataType::LargeUtf8, true),
+            Field::new("auto", DataType::LargeUtf8, true),
+        ]));
+        let values = || {
+            Arc::new(LargeStringArray::from(vec![
+                Some("alpha"),
+                None,
+                Some("omega"),
+                Some("alpha"),
+            ])) as ArrayRef
+        };
+        let batch = RecordBatch::try_new(schema, vec![values(), values()]).unwrap();
+        let table = conn
+            .create_table("large_utf8_btree_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["explicit"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        // Auto picks BTree for string columns, so LargeUtf8 must get one too.
+        table
+            .create_index(&["auto"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["explicit_idx", "auto_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 2);
+        for index in index_configs {
+            assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        }
+
+        for column in ["explicit", "auto"] {
+            for (filter, expected_rows) in [
+                (format!("{column} = 'alpha'"), 2),
+                (format!("{column} > 'beta'"), 1),
+                (format!("{column} IS NULL"), 1),
+            ] {
+                let query = table.query().only_if(filter.as_str());
+                let plan = query.explain_plan(false).await.unwrap();
+                assert!(plan.contains("ScalarIndexQuery"), "{filter}: {plan}");
+                let num_rows = query
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|b| b.num_rows())
+                    .sum::<usize>();
+                assert_eq!(num_rows, expected_rows, "{filter}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_create_builtin_scalar_index() {
         for (index, index_type, predicate, invalid_column) in [
             (
@@ -1467,6 +1858,191 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    /// Lance's built-in plugins, created by name through the generic path, are
+    /// listed with the same type as their dedicated builders and serve filters.
+    #[tokio::test]
+    async fn test_create_plugin_index() {
+        use crate::index::IndexType;
+        use crate::index::scalar::PluginIndexBuilder;
+
+        for (name, params, column, index_type, predicate, expected_rows) in [
+            (
+                "ZoneMap",
+                None,
+                "id",
+                IndexType::ZoneMap,
+                "id >= 2 AND id < 4",
+                2,
+            ),
+            (
+                "bloomfilter",
+                Some(serde_json::json!({"number_of_items": 2, "probability": 0.01})),
+                "text",
+                IndexType::BloomFilter,
+                "text = 'abc'",
+                1,
+            ),
+            ("BTREE", None, "id", IndexType::BTree, "id = 3", 1),
+        ] {
+            let conn = connect("memory://").execute().await.unwrap();
+            let batch = record_batch!(
+                ("id", Int32, [1, 2, 3, 4]),
+                ("text", Utf8, [Some("abc"), Some("xyz"), None, Some("")])
+            )
+            .unwrap();
+            let table = conn.create_table("plugin", batch).execute().await.unwrap();
+
+            let mut plugin = PluginIndexBuilder::new(name).unwrap();
+            if let Some(params) = params.clone() {
+                plugin = plugin.params(params).unwrap();
+            }
+            table
+                .create_index(&[column], Index::Plugin(plugin))
+                .name("plugin_idx".into())
+                .execute()
+                .await
+                .unwrap();
+
+            let indices = table.list_indices().await.unwrap();
+            assert_eq!(indices.len(), 1);
+            assert_eq!(indices[0].index_type, index_type, "{name}");
+            assert_eq!(indices[0].columns, [column]);
+            let stats = table.index_stats("plugin_idx").await.unwrap().unwrap();
+            assert_eq!(stats.index_type, index_type);
+            assert_eq!(stats.num_indexed_rows, 4);
+
+            // Lance trained the plugin with the given params, not its defaults.
+            if let Some(params) = params {
+                let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+                let stats: serde_json::Value =
+                    serde_json::from_str(&dataset.index_statistics("plugin_idx").await.unwrap())
+                        .unwrap();
+                for (key, value) in params.as_object().unwrap() {
+                    assert_eq!(&stats["indices"][0][key], value, "{key}");
+                }
+            }
+
+            let query = table.query().only_if(predicate);
+            let plan = query.explain_plan(false).await.unwrap();
+            assert!(plan.contains("ScalarIndexQuery"), "{name}: {plan}");
+            let batches = query
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(
+                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                expected_rows,
+                "{name}"
+            );
+        }
+    }
+
+    /// A plugin LanceDB has no type for is listed as `Custom` with the name
+    /// the plugin reports.
+    #[tokio::test]
+    async fn test_create_plugin_index_without_lancedb_type_is_listed_as_custom() {
+        use crate::index::IndexType;
+        use crate::index::scalar::PluginIndexBuilder;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!((
+            "value",
+            Utf8,
+            ["alpha beta", "beta gamma", "gamma delta", "delta alpha"]
+        ))
+        .unwrap();
+        let table = conn.create_table("custom", batch).execute().await.unwrap();
+        table
+            .create_index(
+                &["value"],
+                Index::Plugin(PluginIndexBuilder::new("MinHashLSH").unwrap()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(
+            indices[0].index_type,
+            IndexType::Custom("MinHashLsh".into())
+        );
+        assert_eq!(indices[0].index_type.to_string(), "MinHashLsh");
+        assert_eq!(indices[0].columns, ["value"]);
+    }
+
+    /// Lance's errors for an unknown plugin, a column the plugin cannot index
+    /// and params the plugin rejects reach the caller, through both execute
+    /// paths, and leave no index behind.
+    #[tokio::test]
+    async fn test_create_plugin_index_errors() {
+        use crate::index::scalar::PluginIndexBuilder;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch =
+            record_batch!(("id", Int32, [1, 2, 3]), ("text", Utf8, ["a", "b", "c"])).unwrap();
+        let table = conn.create_table("errors", batch).execute().await.unwrap();
+
+        let plugin = |name: &str| PluginIndexBuilder::new(name).unwrap();
+        for (column, index, expected) in [
+            (
+                "id",
+                plugin("NoSuchPlugin"),
+                "No scalar index plugin found for name 'nosuchplugin'",
+            ),
+            ("id", plugin("ngram"), "ngram"),
+            (
+                "text",
+                plugin("bloomfilter")
+                    .params(serde_json::json!({"number_of_items": "many"}))
+                    .unwrap(),
+                "invalid type: string \"many\", expected u64",
+            ),
+        ] {
+            let error = table
+                .create_index(&[column], Index::Plugin(index.clone()))
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&expected.to_lowercase()),
+                "{error}"
+            );
+
+            let error = table
+                .create_index(&[column], Index::Plugin(index))
+                .execute_async()
+                .await
+                .unwrap()
+                .wait()
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&expected.to_lowercase()),
+                "{error}"
+            );
+        }
+        assert!(table.list_indices().await.unwrap().is_empty());
+
+        // A missing column is still caught before any build starts.
+        assert!(
+            table
+                .create_index(&["missing"], Index::Plugin(plugin("zonemap")))
+                .execute_async()
+                .await
+                .is_err()
+        );
     }
 
     #[cfg(feature = "geo")]

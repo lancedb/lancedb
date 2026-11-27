@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import type { Data as ArrowData } from "apache-arrow";
 import {
   Table as ArrowTable,
+  DataType,
+  Field,
   type IntoVector,
+  LargeBinary,
   RecordBatch,
+  Schema,
+  Struct,
   extractVectorBuffer,
   fromBufferToRecordBatch,
   fromRecordBatchToBuffer,
   tableFromIPC,
+  vectorFromArray,
 } from "./arrow";
+import { isBlobDescriptorField, isBlobField } from "./blob";
+import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
   JsFullTextQuery,
@@ -42,6 +51,208 @@ export async function* RecordBatchIterator(
 }
 
 /**
+ * How a query returns blob v2 columns. See {@link QueryExecutionOptions.blobMode}.
+ */
+export type BlobMode = "descriptions" | "bytes";
+
+/**
+ * The table a query reads, and the parts of the query that decide which blob
+ * columns `blobMode: "bytes"` fills in.
+ *
+ * @hidden
+ */
+export interface QueryBlobContext {
+  table: NativeTable;
+  withRowId: boolean;
+  projection?: [string, string][];
+}
+
+const BLOB_BYTES_ATTEMPTS = 3;
+
+interface BlobSource {
+  // Output names are literal: an alias containing dots is still one field.
+  output: string;
+  path: string[];
+  source: string;
+}
+
+function blobSources(
+  blobColumns: string[],
+  projection: [string, string][] | undefined,
+): BlobSource[] {
+  if (projection === undefined) {
+    return blobColumns.map((source) => {
+      const [output, ...path] = source.split(".");
+      return { output, path, source };
+    });
+  }
+  const sources: BlobSource[] = [];
+  for (const [output, source] of projection) {
+    for (const column of blobColumns) {
+      if (column === source || column.startsWith(`${source}.`)) {
+        sources.push({
+          output,
+          path:
+            column === source ? [] : column.slice(source.length + 1).split("."),
+          source: column,
+        });
+      }
+    }
+  }
+  return sources;
+}
+
+async function readBlobBytes(
+  table: ArrowTable,
+  sources: BlobSource[],
+  snapshot: NativeTable,
+  dropRowId: boolean,
+): Promise<ArrowTable> {
+  const rowIdColumn = table.getChild("_rowid");
+  if (table.numRows > 0 && rowIdColumn === null) {
+    throw new Error('blobMode "bytes" needs _rowid in the query result');
+  }
+  const rowIds =
+    rowIdColumn === null
+      ? []
+      : Array.from(rowIdColumn.toArray() as BigUint64Array);
+  const outputFields = new Map(
+    table.schema.fields.map((field) => [field.name, field]),
+  );
+  const replacements = new Map<Field, (Buffer | null)[]>();
+  for (const { output, path, source } of sources) {
+    let field = outputFields.get(output);
+    for (const name of path) {
+      field =
+        field !== undefined && DataType.isStruct(field.type)
+          ? field.type.children.find((child) => child.name === name)
+          : undefined;
+    }
+    if (field === undefined) {
+      continue;
+    }
+    const values =
+      rowIds.length === 0 ? [] : await snapshot.fetchBlobs(source, rowIds);
+    replacements.set(
+      field,
+      values.map((value) => value ?? null),
+    );
+  }
+  const result = withBinaryColumns(table, replacements);
+  if (!dropRowId) {
+    return result;
+  }
+  return result.select(
+    result.schema.fields
+      .map((field) => field.name)
+      .filter((name) => name !== "_rowid"),
+  );
+}
+
+// Discover descriptors from the executed query, not the live table's cached
+// schema. Projection names are literal aliases; only source paths use dots.
+function projectedBlobSources(
+  schema: Schema,
+  projection: [string, string][] | undefined,
+): BlobSource[] {
+  const sources: BlobSource[] = [];
+  for (const field of schema.fields) {
+    const source =
+      projection?.find(([output]) => output === field.name)?.[1] ?? field.name;
+    const visit = (child: Field, path: string[]) => {
+      if (isBlobField(child) || isBlobDescriptorField(child)) {
+        sources.push({
+          output: field.name,
+          path,
+          source: [source, ...path].join("."),
+        });
+      } else if (DataType.isStruct(child.type)) {
+        for (const nested of child.type.children) {
+          visit(nested, [...path, nested.name]);
+        }
+      }
+    };
+    visit(field, []);
+  }
+  return sources;
+}
+
+function withBinaryColumns(
+  table: ArrowTable,
+  replacements: Map<Field, (Buffer | null)[]>,
+): ArrowTable {
+  if (replacements.size === 0) {
+    return table;
+  }
+  const replaceField = (field: Field): Field => {
+    if (replacements.has(field)) {
+      // The descriptor's extension and encoding metadata must not follow bytes.
+      return new Field(field.name, new LargeBinary(), true);
+    }
+    if (DataType.isStruct(field.type)) {
+      const children = field.type.children.map(replaceField);
+      if (children.some((child, i) => child !== field.type.children[i])) {
+        return field.clone({ type: new Struct(children) });
+      }
+    }
+    return field;
+  };
+  const fields = table.schema.fields.map(replaceField);
+  const schema = new Schema(fields, table.schema.metadata);
+  let offset = 0;
+  const batches = table.batches.map((batch) => {
+    const replaceData = (
+      data: ArrowData,
+      field: Field,
+      updated: Field,
+    ): ArrowData => {
+      if (field === updated) {
+        return data;
+      }
+      const values = replacements.get(field);
+      if (values !== undefined) {
+        return vectorFromArray(
+          values.slice(offset, offset + batch.numRows),
+          new LargeBinary(),
+        ).data[0];
+      }
+      const children = data.children.map((child, index) =>
+        replaceData(
+          child,
+          field.type.children[index],
+          updated.type.children[index],
+        ),
+      );
+      // Keep the struct's validity bitmap and offset, including null parents.
+      return data.clone(
+        updated.type,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        children,
+      );
+    };
+    const children = batch.data.children.map((child, index) =>
+      replaceData(child, table.schema.fields[index], fields[index]),
+    );
+    offset += batch.numRows;
+    return new RecordBatch(
+      schema,
+      batch.data.clone(
+        new Struct(fields),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        children,
+      ),
+    );
+  });
+  return new ArrowTable(schema, batches);
+}
+
+/**
  * Options that control the behavior of a particular query execution
  */
 export interface QueryExecutionOptions {
@@ -55,8 +266,41 @@ export interface QueryExecutionOptions {
 
   /**
    * Timeout for query execution in milliseconds
+   *
+   * The timeout also covers reading the results, so consuming them slowly can
+   * exceed it.
    */
   timeoutMs?: number;
+
+  /**
+   * How to return blob v2 columns. Applies to `toArrow()` and `toArray()`.
+   *
+   * - `"descriptions"` (default): each blob is a descriptor. Read the bytes
+   *   with {@link Table.fetchBlobs} or {@link Table.fetchBlobFiles}.
+   * - `"bytes"`: each blob column, including blobs nested in structs, holds
+   *   the bytes as `LargeBinary`. The query also reads `_rowid` to fetch them, and
+   *   leaves it out of the result unless {@link QueryBase.withRowId} was
+   *   called. All the bytes are held in memory.
+   *
+   * Selecting a parent struct or directly aliasing a blob or struct also returns
+   * bytes. Blobs inside lists keep their descriptors. Arbitrary projection
+   * expressions are not materialized as bytes.
+   *
+   * The rows and bytes come from the same snapshot. Remote queries require
+   * authoritative query version and snapshot identity headers, verified again
+   * by the blob response. Older servers can still return `"descriptions"`.
+   * Local queries retry up to three times if the table changes while they run.
+   *
+   * @example
+   * ```ts
+   * const rows = await table
+   *   .query()
+   *   .select(["id", "image"])
+   *   .toArray({ blobMode: "bytes" });
+   * const image: Uint8Array | null = rows[0].image;
+   * ```
+   */
+  blobMode?: BlobMode;
 }
 
 export type AnalyzePlanDistributedMetrics = "aggregate" | "per_worker" | "full";
@@ -119,10 +363,19 @@ export class QueryBase<
   /**
    * @hidden
    */
-  protected constructor(inner?: NativeQueryType | Promise<NativeQueryType>) {
+  protected blobContext?: QueryBlobContext;
+
+  /**
+   * @hidden
+   */
+  protected constructor(
+    inner?: NativeQueryType | Promise<NativeQueryType>,
+    blobContext?: QueryBlobContext,
+  ) {
     if (inner !== undefined) {
       this.inner = inner;
     }
+    this.blobContext = blobContext;
   }
 
   // call a function on the inner (either a promise or the actual object)
@@ -193,14 +446,22 @@ export class QueryBase<
       });
     };
 
+    let projection: [string, string][];
     if (typeof columns === "string") {
       selectColumns([columns]);
+      projection = [[columns, columns]];
     } else if (Array.isArray(columns)) {
       selectColumns(columns);
+      projection = columns.map((column) => [column, column]);
     } else if (columns instanceof Map) {
-      selectMapping(Array.from(columns.entries()));
+      projection = Array.from(columns.entries());
+      selectMapping(projection);
     } else {
-      selectMapping(Object.entries(columns));
+      projection = Object.entries(columns);
+      selectMapping(projection);
+    }
+    if (this.blobContext !== undefined) {
+      this.blobContext = { ...this.blobContext, projection };
     }
 
     return this;
@@ -215,6 +476,9 @@ export class QueryBase<
    */
   withRowId(): this {
     this.doCall((inner: NativeQueryType) => inner.withRowId());
+    if (this.blobContext !== undefined) {
+      this.blobContext = { ...this.blobContext, withRowId: true };
+    }
     return this;
   }
 
@@ -223,9 +487,14 @@ export class QueryBase<
    */
   protected async nativeExecute(
     options?: Partial<QueryExecutionOptions>,
+    withRowId = false,
   ): Promise<NativeBatchIterator> {
     const inner = await this.getInner();
-    return inner.execute(options?.maxBatchLength, options?.timeoutMs);
+    return inner.execute(
+      options?.maxBatchLength,
+      options?.timeoutMs,
+      withRowId,
+    );
   }
 
   /**
@@ -257,15 +526,93 @@ export class QueryBase<
    * Empty results retain the query's output schema.
    */
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
+    const context = this.blobBytesContext(options?.blobMode);
+    if (context === undefined) {
+      return this.collect(options, false);
+    }
+    if (!context.table.isNative()) {
+      // Request row IDs in the same query so newly added Blob columns can be
+      // fetched without rerunning the query against a different snapshot.
+      const addRowId = !context.withRowId;
+      const table = await this.collect(options, addRowId);
+      const sources = projectedBlobSources(table.schema, context.projection);
+      if (sources.length === 0) {
+        return addRowId
+          ? table.select(
+              table.schema.fields
+                .map((field) => field.name)
+                .filter((name) => name !== "_rowid"),
+            )
+          : table;
+      }
+      const version = table.schema.metadata.get("lancedb:query_version");
+      const identity = table.schema.metadata.get("lancedb:query_snapshot");
+      if (version === undefined || identity === undefined) {
+        throw new Error(
+          'blobMode "bytes" requires a trustworthy query snapshot: missing, invalid, or inconsistent x-lancedb-query-version or x-lancedb-query-snapshot. Upgrade every serving node, or use blobMode "descriptions".',
+        );
+      }
+      const snapshot = await context.table.querySnapshotWithIdentity(
+        version,
+        identity,
+      );
+      return readBlobBytes(table, sources, snapshot, addRowId);
+    }
+    for (let attempt = 1; ; attempt++) {
+      // The snapshot pins the bytes. The query runs on the live table, so an
+      // unchanged version afterwards proves it read the snapshot's version.
+      const snapshot = await context.table.querySnapshot();
+      const version = await snapshot.version();
+      const sources = blobSources(
+        await snapshot.blobColumns(),
+        context.projection,
+      );
+      if (sources.length === 0) {
+        return this.collect(options, false);
+      }
+      const addRowId = !context.withRowId;
+      const table = await this.collect(options, addRowId);
+      if ((await context.table.version()) === version) {
+        return readBlobBytes(table, sources, snapshot, addRowId);
+      }
+      if (attempt === BLOB_BYTES_ATTEMPTS) {
+        throw new Error(
+          `blobMode "bytes": the table changed during each of ${BLOB_BYTES_ATTEMPTS} attempts to read it`,
+        );
+      }
+    }
+  }
+
+  private async collect(
+    options: Partial<QueryExecutionOptions> | undefined,
+    withRowId: boolean,
+  ): Promise<ArrowTable> {
     const batches = [];
-    const iterator = this.nativeExecute(options);
+    const iterator = this.nativeExecute(options, withRowId);
     for await (const batch of RecordBatchIterator(iterator)) {
       batches.push(batch);
     }
-    if (batches.length === 0) {
-      return tableFromIPC((await iterator).schema());
+    // Read metadata from the executed stream, including empty results and
+    // query types whose individual batches do not carry the stream metadata.
+    const schema = tableFromIPC((await iterator).schema()).schema;
+    return new ArrowTable(schema, batches);
+  }
+
+  private blobBytesContext(
+    mode: BlobMode | undefined,
+  ): QueryBlobContext | undefined {
+    if (mode === undefined || mode === "descriptions") {
+      return undefined;
     }
-    return new ArrowTable(batches);
+    if (mode !== "bytes") {
+      throw new Error(
+        `blobMode must be "descriptions" or "bytes", got "${String(mode)}"`,
+      );
+    }
+    if (this.blobContext === undefined) {
+      throw new Error('blobMode "bytes" is not supported for this query');
+    }
+    return this.blobContext;
   }
 
   /** Collect the results as an array of objects. */
@@ -355,18 +702,26 @@ export class StandardQueryBase<
   extends QueryBase<NativeQueryType>
   implements ExecutableQuery
 {
-  constructor(inner?: NativeQueryType | Promise<NativeQueryType>) {
-    super(inner);
+  constructor(
+    inner?: NativeQueryType | Promise<NativeQueryType>,
+    blobContext?: QueryBlobContext,
+  ) {
+    super(inner, blobContext);
   }
 
   /**
    * A filter statement to be applied to this query.
    *
-   * The filter should be supplied as an SQL query string.  For example:
+   * The filter may be an SQL query string or an expression built with `col`,
+   * which preserves case-sensitive column names. For example:
    * @example
    * x > 10
    * y > 0 AND y < 100
    * x > 5 OR y = 'test'
+   * @example
+   * ```ts
+   * table.query().where(col("firstName").eq("Alice"));
+   * ```
    *
    * Filtering performance can often be improved by creating a scalar index
    * on the filter column(s).
@@ -374,8 +729,14 @@ export class StandardQueryBase<
    * Calling this multiple times combines the filters with a logical AND rather
    * than replacing the previous filter.
    */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+  where(predicate: string | Expr): this {
+    this.doCall((inner: NativeQueryType) => {
+      if (predicate instanceof Expr) {
+        inner.onlyIf(predicate.toSql());
+      } else {
+        inner.onlyIf(predicate);
+      }
+    });
     return this;
   }
   /**
@@ -461,26 +822,26 @@ export class StandardQueryBase<
   }
 
   /**
-   * Control MemWAL read routing for this query.
+   * Control RTE read routing for this query.
    *
-   * By default (unset), when the table carries a MemWAL write spec (see
-   * {@link Table#setLsmWriteSpec}), reads are routed through the LSM scanner so
+   * By default (unset), when the table carries an RTE write spec (see
+   * {@link Table#enableRTE}), reads are routed through the LSM scanner so
    * they also return data written via the `mergeInsert` LSM path that has not yet
    * been compacted into the base table (the active/frozen in-memory memtables and
-   * the flushed generations), deduplicated by primary key; a table without a spec
+   * the SSTables), deduplicated by primary key; a table without a spec
    * reads the base table.
    *
    * @param enable - `true` forces the LSM scanner and errors if the table has no
-   * MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+   * RTE write spec. `false` bypasses the RTE and reads the base table only,
    * even when a spec is present.
    *
    * Note: the LSM scanner does not support every query shape (e.g. reranking,
-   * hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-   * `useLsm(false)` is set, because a base-only read would silently exclude
-   * un-compacted MemWAL data.
+   * hybrid search, `orderBy`). On an RTE table those shapes error unless
+   * `useRTE(false)` is set, because a base-only read would silently exclude
+   * un-compacted RTE data.
    */
-  useLsm(enable: boolean): this {
-    this.doCall((inner: NativeQueryType) => inner.useLsm(enable));
+  useRTE(enable: boolean): this {
+    this.doCall((inner: NativeQueryType) => inner.useRTE(enable));
     return this;
   }
 }
@@ -505,8 +866,11 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   /**
    * @hidden
    */
-  constructor(inner: NativeVectorQuery | Promise<NativeVectorQuery>) {
-    super(inner);
+  constructor(
+    inner: NativeVectorQuery | Promise<NativeVectorQuery>,
+    blobContext?: QueryBlobContext,
+  ) {
+    super(inner, blobContext);
   }
 
   /**
@@ -546,6 +910,32 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   nprobes(nprobes: number): VectorQuery {
     this.doVectorCall((inner) => inner.nprobes(nprobes));
 
+    return this;
+  }
+
+  /**
+   * Set the initial IVF search effort to a finite value in [0, 1].
+   *
+   * Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+   * 80% and 90% for L2, cosine and dot through k=100000. The probe budget
+   * adapts to the metric and k. Hamming and larger k remain uncalibrated;
+   * 100000 is not an API limit. Remote queries also require server support.
+   *
+   * The default, null, uses Auto (internally 0.5). Zero starts at the caller
+   * minimum; one searches all partitions within the caller maximum. Later
+   * probing may continue when too few candidates are found.
+   * Any explicit effort, including 0.5, overrides nprobes in either call order.
+   * Explicit minimum and maximum bounds still apply. This is not a recall
+   * guarantee and does not change refinement or HNSW ef. The RTE LSM
+   * scanner does not yet support this option.
+   *
+   * @example
+   * ```ts
+   * table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+   * ```
+   */
+  searchEffort(searchEffort: number | null): VectorQuery {
+    this.doVectorCall((inner) => inner.searchEffort(searchEffort));
     return this;
   }
 
@@ -600,6 +990,27 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    */
   ef(ef: number): VectorQuery {
     this.doVectorCall((inner) => inner.ef(ef));
+    return this;
+  }
+
+  /**
+   * Set the speed / accuracy tradeoff to use for approximate search
+   *
+   * This currently affects RQ-quantized indexes, such as IVF_RQ, and
+   * prefiltered search on HNSW indexes, where "fast" enables the ACORN
+   * traversal. Other index types ignore this setting.
+   *
+   * "fast" favors lower latency and may reduce recall, "normal" (the default)
+   * uses the index's default balance, and "accurate" favors higher recall and
+   * may increase latency.
+   *
+   * @example
+   * ```ts
+   * table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
+   * ```
+   */
+  approxMode(approxMode: "fast" | "normal" | "accurate"): VectorQuery {
+    super.doCall((inner) => inner.approxMode(approxMode));
     return this;
   }
 
@@ -739,7 +1150,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
         addQueryVectorToNative(inner, outcome.value);
         return inner;
       })();
-      return new VectorQuery(res);
+      return new VectorQuery(res, this.blobContext);
     } else {
       this.doVectorCall((inner) => addQueryVectorToNative(inner, vector));
       return this;
@@ -828,7 +1239,7 @@ export function createAutoQuery(
     return nearestToNative(route.table.query(), vector);
   };
 
-  return new AutoQuery(createInner);
+  return new AutoQuery(createInner, { table, withRowId: false });
 }
 
 /**
@@ -837,21 +1248,21 @@ export function createAutoQuery(
  * @hideconstructor
  */
 export class TakeQuery extends QueryBase<NativeTakeQuery> {
-  constructor(inner: NativeTakeQuery) {
-    super(inner);
+  constructor(inner: NativeTakeQuery, blobContext?: QueryBlobContext) {
+    super(inner, blobContext);
   }
 
   /**
-   * Control MemWAL read routing for this take query.
+   * Control RTE read routing for this take query.
    *
-   * `false` bypasses the MemWAL and reads the base table only — the escape hatch,
+   * `false` bypasses the RTE and reads the base table only — the escape hatch,
    * since take-by-row-id/offset is not supported on the LSM scanner and, on a
-   * MemWAL table, auto-routes to it and errors otherwise.
+   * RTE table, auto-routes to it and errors otherwise.
    *
    * @param enable - `false` reads the base table only.
    */
-  useLsm(enable: boolean): this {
-    this.doCall((inner: NativeTakeQuery) => inner.useLsm(enable));
+  useRTE(enable: boolean): this {
+    this.doCall((inner: NativeTakeQuery) => inner.useRTE(enable));
     return this;
   }
 }
@@ -877,8 +1288,9 @@ export class AutoQuery extends StandardQueryBase<
     private readonly createInner: () => Promise<
       NativeQuery | NativeVectorQuery
     >,
+    blobContext?: QueryBlobContext,
   ) {
-    super();
+    super(undefined, blobContext);
   }
 
   /** @hidden */
@@ -912,7 +1324,7 @@ export class Query extends StandardQueryBase<NativeQuery> {
    * @hidden
    */
   constructor(tbl: NativeTable) {
-    super(tbl.query());
+    super(tbl.query(), { table: tbl, withRowId: false });
   }
 
   /**
@@ -958,14 +1370,15 @@ export class Query extends StandardQueryBase<NativeQuery> {
       const nativeQuery = inner.then(async (resolvedInner) =>
         nearestToNative(resolvedInner, await vector),
       );
-      return new VectorQuery(nativeQuery);
+      return new VectorQuery(nativeQuery, this.blobContext);
     }
     if (vector instanceof Promise) {
       return new VectorQuery(
         vector.then((resolvedVector) => nearestToNative(inner, resolvedVector)),
+        this.blobContext,
       );
     }
-    return new VectorQuery(nearestToNative(inner, vector));
+    return new VectorQuery(nearestToNative(inner, vector), this.blobContext);
   }
 
   nearestToText(query: string | FullTextQuery, columns?: string[]): Query {

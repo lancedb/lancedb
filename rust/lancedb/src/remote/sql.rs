@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::future::{Future, pending};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -18,33 +18,47 @@ use arrow_flight::{
     FlightDescriptor, FlightEndpoint, FlightInfo, PollInfo,
 };
 use arrow_schema::{Schema, SchemaRef};
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use prost::Message;
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::sync::{Mutex, Notify, OnceCell, mpsc, watch};
+use tokio::sync::{Mutex, Notify, OnceCell, mpsc};
+use tonic::Request;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use uuid::Uuid;
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
 use crate::database::ExecuteQueryRequest;
-use crate::error::{Error, Result};
+use crate::error::{Error, JobFailure, Result};
 use crate::job::Job;
 use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
 
-mod exchange;
+mod function;
+pub(super) mod materialized_view;
+mod objects;
+pub(super) use objects::description;
+pub(super) mod receipt;
+mod secret;
+pub(super) use secret::SecretWriteOperation;
+mod stream;
+mod view;
 
-use exchange::{ExchangeQuery, ExchangeQueryHandle};
+const PREWARM_AZURE_HINT_CAPABILITY: &str = "lancedb.prewarm.azure_storage_account_name";
+
+use stream::{StreamingQuery, StreamingQueryHandle, Submission};
 
 const DEFAULT_SQL_PORT: u16 = 10025;
 const DEFAULT_SQL_TLS_PORT: u16 = 10026;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
+const AUTOMATIC_CANCELLATION_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_SQL_TIMEOUT: Duration = Duration::from_secs(99_999_999 * 60 * 60);
 const MAX_SQL_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+const SQL_JOB_ID_METADATA_KEY: &str = "x-lancedb-sql-job-id";
 const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
 const ABANDONED_QUERY_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -54,6 +68,12 @@ pub(super) struct SqlClient {
     queries: Arc<QueryRegistry>,
 }
 
+pub(super) struct SubmittedQuery {
+    pub(super) query: Query,
+    pub(super) materialized_view_job_handle_supported: bool,
+}
+
+#[derive(Clone)]
 struct SqlClientInner {
     database: String,
     database_prefix: Option<String>,
@@ -62,6 +82,8 @@ struct SqlClientInner {
     sql_host_override: Option<String>,
     client_config: ClientConfig,
     client: Arc<OnceCell<SqlConnection>>,
+    deadline: Option<tokio::time::Instant>,
+    cancel_on_drop: bool,
 }
 
 struct SqlConnection {
@@ -75,6 +97,12 @@ struct ResultEndpointStream {
     stream: FlightRecordBatchStream,
     request_id: String,
     read_timeout: Duration,
+    job_id: Option<String>,
+}
+
+struct PollResult {
+    info: PollInfo,
+    job_id: Option<String>,
 }
 
 struct PreparedSqlResult {
@@ -89,7 +117,7 @@ impl ResultEndpointStream {
         tokio::time::timeout(self.read_timeout, self.stream.try_next())
             .await
             .map_err(|_| sql_error(&self.request_id, "SQL result read timed out"))?
-            .map_err(|err| sql_error(&self.request_id, err))
+            .map_err(|err| sql_flight_error(&self.request_id, &err))
     }
 }
 
@@ -168,6 +196,13 @@ impl std::fmt::Debug for SqlClient {
 }
 
 impl SqlClient {
+    pub(super) async fn check_connection(&self) -> Result<()> {
+        self.inner
+            .connection(&Uuid::new_v4().to_string())
+            .await
+            .map(|_| ())
+    }
+
     pub(super) fn new(
         database: String,
         database_prefix: Option<String>,
@@ -185,28 +220,149 @@ impl SqlClient {
                 sql_host_override,
                 client_config,
                 client: Arc::new(OnceCell::new()),
+                deadline: None,
+                cancel_on_drop: false,
             }),
             queries: Arc::new(QueryRegistry::new()),
         }
     }
 
-    pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {
-        match request.parameters {
-            Some(parameters) => {
-                self.submit_with_parameters(
-                    &request.query,
-                    parameters,
-                    &request.default_namespace_path,
-                )
-                .await
-            }
-            None => {
-                self.submit(&request.query, &request.default_namespace_path)
-                    .await
-            }
-        }
+    /// Unknown headers are otherwise silently ignored by older SQL servers.
+    /// Probe only when a source-account hint is present, before submitting work.
+    pub(super) async fn execute_prewarm(&self, request: ExecuteQueryRequest) -> Result<Query> {
+        with_overall_timeout(
+            self.inner.overall_timeout()?,
+            "prewarm submission",
+            async {
+                validate_namespace_path(&request.default_namespace_path)?;
+                let request_id = Uuid::new_v4().to_string();
+                let headers = self
+                    .inner
+                    .headers(&request.default_namespace_path, &request_id)
+                    .await?;
+                if headers.contains_key("x-azure-storage-account-name") {
+                    let connection = self.inner.connection(&request_id).await?;
+                    let mut client = client_with_headers(connection.client.clone(), &headers)?;
+                    let command = CommandStatementQuery {
+                        query: request.query.clone(),
+                        transaction_id: None,
+                    };
+                    let descriptor = FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
+                    let read_timeout = resolve_timeout(
+                        self.inner.client_config.timeout_config.read_timeout,
+                        "LANCE_CLIENT_READ_TIMEOUT", Some(DEFAULT_READ_TIMEOUT),
+                    )?.unwrap();
+                    let info = tokio::time::timeout(read_timeout, client.get_flight_info(descriptor))
+                        .await.map_err(|_| Error::Runtime { message: format!("SQL PREWARM capability check timed out (request_id={request_id})") })?
+                        .map_err(|error| sql_flight_error(&request_id, &error))?;
+                    let supported = info.try_decode_schema().ok().is_some_and(|schema| {
+                        schema
+                            .metadata()
+                            .get(PREWARM_AZURE_HINT_CAPABILITY)
+                            .map(String::as_str)
+                            == Some("true")
+                    });
+                    if !supported {
+                        return Err(Error::NotSupported {
+                            message: format!(
+                                "SQL PREWARM server cannot acknowledge the Azure storage-account hint (request_id={request_id}); upgrade the server. No execution request was sent."
+                            ),
+                        });
+                    }
+                }
+                self.execute(request).await
+            },
+        )
+        .await
     }
 
+    pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {
+        Ok(self
+            .execute_with_materialized_view_job_handle(request, false)
+            .await?
+            .query)
+    }
+
+    pub(super) async fn execute_with_materialized_view_job_handle(
+        &self,
+        request: ExecuteQueryRequest,
+        materialized_view_job_handle: bool,
+    ) -> Result<SubmittedQuery> {
+        let mut client = self.inner.as_ref().clone();
+        client.deadline = request
+            .options
+            .timeout
+            .map(|timeout| {
+                if timeout > MAX_SQL_TIMEOUT {
+                    return Err(Error::InvalidInput {
+                        message: "SQL query timeout exceeds the gRPC limit".to_string(),
+                    });
+                }
+                tokio::time::Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "SQL query timeout is too large".to_string(),
+                    })
+            })
+            .transpose()?;
+        client.cancel_on_drop = request.options.cancel_on_drop;
+        if let Some(read_timeout) = request.options.read_timeout {
+            client.client_config.timeout_config.read_timeout = Some(read_timeout);
+        }
+        let client = Arc::new(client);
+        let timeout = client.execution_timeout()?;
+        with_overall_timeout(timeout, "SQL query submission", async {
+            validate_namespace_path(&request.default_namespace_path)?;
+            let query_id = Uuid::now_v7();
+            let opened = StreamingQuery::open(
+                client.clone(),
+                &request.query,
+                request.parameters,
+                &request.default_namespace_path,
+                materialized_view_job_handle,
+            )
+            .await?;
+            let stream::OpenedSubmission {
+                submission,
+                materialized_view_job_handle_supported,
+                job_id,
+            } = opened;
+            let query = match submission {
+                Submission::Stream(response) => {
+                    let query = Arc::new(StreamingQuery::new(
+                        query_id,
+                        client.clone(),
+                        response,
+                        job_id.clone(),
+                    ));
+                    self.queries
+                        .insert(query_id, RegisteredQuery::Streamed(query.clone()));
+                    query.start_deadline();
+                    Query::new(Arc::new(StreamingQueryHandle::new(query)))
+                }
+                Submission::Deferred(poll_info) => {
+                    let query = Arc::new(RemoteQuery::new(
+                        query_id,
+                        client.clone(),
+                        request.default_namespace_path,
+                        poll_info,
+                        job_id,
+                    )?);
+                    self.queries
+                        .insert(query_id, RegisteredQuery::Polled(query.clone()));
+                    query.start_deadline();
+                    Query::new(Arc::new(RemoteQueryHandle::new(query)))
+                }
+            };
+            Ok(SubmittedQuery {
+                query,
+                materialized_view_job_handle_supported,
+            })
+        })
+        .await
+    }
+
+    #[cfg(test)]
     pub(super) async fn submit(
         &self,
         query: &str,
@@ -227,6 +383,7 @@ impl SqlClient {
                 self.inner.clone(),
                 default_namespace_path.to_vec(),
                 poll_info,
+                None,
             )?);
             self.queries
                 .insert(query_id, RegisteredQuery::Polled(query.clone()));
@@ -235,69 +392,46 @@ impl SqlClient {
         .await
     }
 
-    pub(super) fn submit_as_job<T, F, Fut>(
+    pub(super) async fn submit_as_job<T, F, Fut>(
         &self,
         statement: String,
         namespace: Vec<String>,
         finish: F,
-    ) -> Job<T>
+    ) -> Result<Job<T>>
     where
         T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let client = self.clone();
-        let (query_tx, query_rx) = watch::channel(None::<Arc<Query>>);
+        let query = Arc::new(
+            self.execute(ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: namespace,
+                parameters: None,
+                options: Default::default(),
+            })
+            .await?,
+        );
+        Ok(self.query_job(query, finish))
+    }
+
+    pub(super) fn query_job<T, F, Fut>(&self, query: Arc<Query>, finish: F) -> Job<T>
+    where
+        T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let query_id = query.id();
+        let execution = query.clone();
         let task = tokio::spawn(async move {
-            let query = Arc::new(client.submit(&statement, &namespace).await?);
-            query_tx.send_replace(Some(query.clone()));
-            let mut reader = query.reader().await?;
+            let mut reader = execution.reader().await?;
             while reader.try_next().await?.is_some() {}
             finish().await
         });
-        Job::spawned_with_cancellation(task, move || {
-            let mut query_rx = query_rx.clone();
-            async move {
-                loop {
-                    let query = query_rx.borrow().clone();
-                    if let Some(query) = query {
-                        return query.cancel().await;
-                    }
-                    if query_rx.changed().await.is_err() {
-                        pending::<()>().await;
-                    }
-                }
-            }
+        Job::from_query_task(query_id, task, move || {
+            let query = query.clone();
+            async move { query.cancel().await }
         })
-    }
-
-    /// Values cannot ride on a poll, so a statement that has them is sent on
-    /// its own exchange instead.
-    pub(super) async fn submit_with_parameters(
-        &self,
-        query: &str,
-        parameters: RecordBatch,
-        default_namespace_path: &[String],
-    ) -> Result<Query> {
-        let timeout = self.inner.overall_timeout()?;
-        with_overall_timeout(timeout, "SQL query submission", async {
-            validate_namespace_path(default_namespace_path)?;
-            let query_id = Uuid::now_v7();
-            let query = Arc::new(
-                ExchangeQuery::open(
-                    query_id,
-                    self.inner.clone(),
-                    query,
-                    parameters,
-                    default_namespace_path,
-                )
-                .await?,
-            );
-            self.queries
-                .insert(query_id, RegisteredQuery::Exchanged(query.clone()));
-            Ok(Query::new(Arc::new(ExchangeQueryHandle::new(query))))
-        })
-        .await
     }
 
     pub(super) async fn describe(&self, query_id: Uuid) -> Result<QueryDescription> {
@@ -317,6 +451,21 @@ impl SqlClient {
 }
 
 impl SqlClientInner {
+    fn execution_timeout(&self) -> Result<Option<Duration>> {
+        match self.deadline {
+            Some(deadline) => Ok(Some(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )),
+            None => self.overall_timeout(),
+        }
+    }
+
+    fn set_execution_timeout<T>(&self, request: &mut Request<T>) {
+        if let Some(deadline) = self.deadline {
+            request.set_timeout(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        }
+    }
+
     fn overall_timeout(&self) -> Result<Option<Duration>> {
         resolve_timeout(
             self.client_config.timeout_config.timeout,
@@ -325,6 +474,7 @@ impl SqlClientInner {
         )
     }
 
+    #[cfg(test)]
     async fn poll(
         &self,
         descriptor: FlightDescriptor,
@@ -343,21 +493,36 @@ impl SqlClientInner {
         tokio::time::timeout(read_timeout, client.poll_flight_info(descriptor))
             .await
             .map_err(|_| sql_error(&request_id, "SQL query poll timed out"))?
-            .map_err(|err| sql_error(&request_id, err))
+            .map_err(|err| sql_flight_error(&request_id, &err))
     }
 
     async fn poll_status(
         &self,
         descriptor: FlightDescriptor,
         default_namespace_path: &[String],
-    ) -> Result<Option<PollInfo>> {
+    ) -> Result<Option<PollResult>> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let mut client = self
-            .client_with_headers(default_namespace_path, &request_id)
-            .await
-            .map_err(|err| sql_error(&request_id, err))?;
-        match tokio::time::timeout(STATUS_POLL_TIMEOUT, client.poll_flight_info(descriptor)).await {
-            Ok(result) => result.map(Some).map_err(|err| sql_error(&request_id, err)),
+        let connection = self.connection(&request_id).await?;
+        let headers = self.headers(default_namespace_path, &request_id).await?;
+        let metadata = client_with_headers(connection.client.clone(), &headers)?
+            .metadata()
+            .clone();
+        let mut request = Request::new(descriptor);
+        *request.metadata_mut() = metadata;
+        match tokio::time::timeout(
+            STATUS_POLL_TIMEOUT,
+            connection.client.clone().poll_flight_info(request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
+                let job_id = sql_job_id_from_metadata(response.metadata());
+                Ok(Some(PollResult {
+                    info: response.into_inner(),
+                    job_id,
+                }))
+            }
+            Ok(Err(status)) => Err(sql_status_error(&request_id, &status)),
             Err(_) => Ok(None),
         }
     }
@@ -366,7 +531,7 @@ impl SqlClientInner {
         &self,
         descriptor: FlightDescriptor,
         default_namespace_path: &[String],
-    ) -> Result<PollInfo> {
+    ) -> Result<PollResult> {
         let read_timeout = resolve_timeout(
             self.client_config.timeout_config.read_timeout,
             "LANCE_CLIENT_READ_TIMEOUT",
@@ -378,12 +543,18 @@ impl SqlClientInner {
         loop {
             let started = Instant::now();
             let request_id = uuid::Uuid::new_v4().to_string();
-            let mut client = self
-                .client_with_headers(default_namespace_path, &request_id)
-                .await?;
-            let result =
-                tokio::time::timeout(read_timeout, client.poll_flight_info(descriptor.clone()))
-                    .await;
+            let connection = self.connection(&request_id).await?;
+            let headers = self.headers(default_namespace_path, &request_id).await?;
+            let metadata = client_with_headers(connection.client.clone(), &headers)?
+                .metadata()
+                .clone();
+            let mut request = Request::new(descriptor.clone());
+            *request.metadata_mut() = metadata;
+            let result = tokio::time::timeout(
+                read_timeout,
+                connection.client.clone().poll_flight_info(request),
+            )
+            .await;
             let poll_info = match result {
                 Err(_) if retry_count < retry_config.read_retries => {
                     retry_count += 1;
@@ -391,7 +562,7 @@ impl SqlClientInner {
                     continue;
                 }
                 Err(_) => return Err(sql_error(&request_id, "SQL query poll timed out")),
-                Ok(Err(FlightError::Tonic(status)))
+                Ok(Err(status))
                     if matches!(
                         status.code(),
                         tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
@@ -401,8 +572,14 @@ impl SqlClientInner {
                     tokio::time::sleep(poll_retry_delay(&retry_config, retry_count)).await;
                     continue;
                 }
-                Ok(Err(error)) => return Err(sql_error(&request_id, error)),
-                Ok(Ok(poll_info)) => poll_info,
+                Ok(Err(status)) => return Err(sql_status_error(&request_id, &status)),
+                Ok(Ok(response)) => {
+                    let job_id = sql_job_id_from_metadata(response.metadata());
+                    PollResult {
+                        info: response.into_inner(),
+                        job_id,
+                    }
+                }
             };
             if let Some(delay) = MIN_POLL_INTERVAL.checked_sub(started.elapsed()) {
                 tokio::time::sleep(delay).await;
@@ -426,17 +603,28 @@ impl SqlClientInner {
         let ticket = endpoint.ticket.ok_or_else(|| {
             sql_error(&request_id, "SQL result endpoint did not include a ticket")
         })?;
-        let mut endpoint_client = self
-            .client_with_headers(default_namespace_path, &request_id)
-            .await?;
-        let stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
-            .await
-            .map_err(|_| sql_error(&request_id, "SQL result fetch timed out"))?
-            .map_err(|err| sql_error(&request_id, err))?;
+        let connection = self.connection(&request_id).await?;
+        let headers = self.headers(default_namespace_path, &request_id).await?;
+        let metadata = client_with_headers(connection.client.clone(), &headers)?
+            .metadata()
+            .clone();
+        let mut request = Request::new(ticket);
+        *request.metadata_mut() = metadata;
+        self.set_execution_timeout(&mut request);
+        let response =
+            tokio::time::timeout(read_timeout, connection.client.clone().do_get(request))
+                .await
+                .map_err(|_| sql_error(&request_id, "SQL result fetch timed out"))?
+                .map_err(|status| sql_status_error(&request_id, &status))?;
+        let job_id = sql_job_id_from_metadata(response.metadata());
+        let stream = response
+            .into_inner()
+            .map_err(|status| FlightError::Tonic(Box::new(status)));
         Ok(ResultEndpointStream {
-            stream,
+            stream: FlightRecordBatchStream::new_from_flight_data(stream),
             request_id,
             read_timeout,
+            job_id,
         })
     }
 
@@ -500,9 +688,9 @@ impl SqlClientInner {
             }
             Err(FlightError::Tonic(status)) if !cancellation_status_is_ambiguous(status.code()) => {
                 attempt.resolve();
-                return Err(sql_error(&request_id, status));
+                return Err(sql_status_error(&request_id, &status));
             }
-            Err(error) => return Err(sql_error(&request_id, error)),
+            Err(error) => return Err(sql_flight_error(&request_id, &error)),
         };
         let status = CancelStatus::try_from(result.status)
             .map_err(|_| sql_error(&request_id, "SQL query returned an invalid cancel status"))?;
@@ -512,6 +700,7 @@ impl SqlClientInner {
         Ok(CancelOutcome::Status(status))
     }
 
+    #[cfg(test)]
     async fn client_with_headers(
         &self,
         default_namespace_path: &[String],
@@ -586,14 +775,14 @@ impl SqlClientInner {
 #[derive(Clone)]
 enum RegisteredQuery {
     Polled(Arc<RemoteQuery>),
-    Exchanged(Arc<ExchangeQuery>),
+    Streamed(Arc<StreamingQuery>),
 }
 
 impl RegisteredQuery {
     fn touch(&self) {
         match self {
             Self::Polled(query) => query.touch(),
-            Self::Exchanged(query) => query.touch(),
+            Self::Streamed(query) => query.touch(),
         }
     }
 
@@ -602,14 +791,14 @@ impl RegisteredQuery {
     fn registry_expired(&self) -> bool {
         match self {
             Self::Polled(query) => query.registry_expired(Arc::strong_count(query) == 1),
-            Self::Exchanged(query) => query.registry_expired(Arc::strong_count(query) == 1),
+            Self::Streamed(query) => query.registry_expired(Arc::strong_count(query) == 1),
         }
     }
 
     async fn describe(&self) -> Result<QueryDescription> {
         match self {
             Self::Polled(query) => query.describe().await,
-            Self::Exchanged(query) => query.describe(),
+            Self::Streamed(query) => query.describe(),
         }
     }
 }
@@ -649,6 +838,7 @@ impl QueryRegistry {
 
 struct RemoteQuery {
     id: Uuid,
+    job_id: StdMutex<Option<String>>,
     client: Arc<SqlClientInner>,
     default_namespace_path: Vec<String>,
     state: Mutex<PollInfo>,
@@ -661,6 +851,10 @@ struct RemoteQuery {
     last_accessed: StdMutex<Instant>,
     lifecycle: StdMutex<QueryLifecycle>,
     cancel_request_uncertain: Arc<AtomicBool>,
+    failure: StdMutex<Option<String>>,
+    cleanup_started: AtomicBool,
+    runtime: tokio::runtime::Handle,
+    deadline_task: StdMutex<Option<tokio::task::AbortHandle>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -678,6 +872,7 @@ impl RemoteQuery {
         client: Arc<SqlClientInner>,
         default_namespace_path: Vec<String>,
         poll_info: PollInfo,
+        job_id: Option<String>,
     ) -> Result<Self> {
         let expires_at = query_expiration(&poll_info)?;
         let terminal_at = OnceLock::new();
@@ -689,6 +884,7 @@ impl RemoteQuery {
         };
         Ok(Self {
             id,
+            job_id: StdMutex::new(job_id.filter(|job_id| !job_id.is_empty())),
             client,
             default_namespace_path,
             state: Mutex::new(poll_info),
@@ -701,7 +897,73 @@ impl RemoteQuery {
             last_accessed: StdMutex::new(Instant::now()),
             lifecycle: StdMutex::new(lifecycle),
             cancel_request_uncertain: Arc::new(AtomicBool::new(false)),
+            failure: StdMutex::new(None),
+            cleanup_started: AtomicBool::new(false),
+            runtime: tokio::runtime::Handle::current(),
+            deadline_task: StdMutex::new(None),
         })
+    }
+
+    fn start_deadline(self: &Arc<Self>) {
+        let Some(deadline) = self.client.deadline else {
+            return;
+        };
+        let query = Arc::downgrade(self);
+        let task = self.runtime.spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            if let Some(query) = query.upgrade()
+                && !matches!(
+                    query.lifecycle(),
+                    QueryLifecycle::Completed | QueryLifecycle::Cancelled
+                )
+            {
+                query.fail(&sql_result_timeout());
+            }
+        });
+        *self.deadline_task.lock().unwrap() = Some(task.abort_handle());
+    }
+
+    fn stop_deadline(&self) {
+        if let Some(task) = self.deadline_task.lock().unwrap().take() {
+            task.abort();
+        }
+    }
+
+    fn fail(self: &Arc<Self>, error: &Error) {
+        let lifecycle = self.lifecycle.lock().unwrap();
+        if matches!(
+            *lifecycle,
+            QueryLifecycle::Completed | QueryLifecycle::Cancelled | QueryLifecycle::Cancelling
+        ) {
+            return;
+        }
+        self.failure
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| match error {
+                Error::Runtime { message } => message.clone(),
+                other => other.to_string(),
+            });
+        drop(lifecycle);
+        self.stop_deadline();
+        self.mark_terminal();
+        self.cancelled.notify_waiters();
+        self.cancel_in_background();
+    }
+
+    fn cancel_in_background(self: &Arc<Self>) {
+        if matches!(
+            self.lifecycle(),
+            QueryLifecycle::Completed | QueryLifecycle::Cancelled
+        ) || self.cleanup_started.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        let query = self.clone();
+        self.runtime.spawn(async move {
+            let _ =
+                tokio::time::timeout(AUTOMATIC_CANCELLATION_TIMEOUT, query.cancel_inner()).await;
+        });
     }
 
     fn registry_expired(&self, abandoned: bool) -> bool {
@@ -740,6 +1002,7 @@ impl RemoteQuery {
         }
         *lifecycle = QueryLifecycle::Cancelled;
         drop(lifecycle);
+        self.stop_deadline();
         self.mark_terminal();
         self.cancelled.notify_waiters();
         self.state_changed.notify_waiters();
@@ -774,13 +1037,17 @@ impl RemoteQuery {
 
     fn mark_result_completed(&self) -> Result<()> {
         let mut lifecycle = self.lifecycle.lock().unwrap();
-        if matches!(
-            *lifecycle,
-            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
-        ) {
+        if self.failure.lock().unwrap().is_some()
+            || matches!(
+                *lifecycle,
+                QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+            )
+        {
             return Err(self.cancelled_error());
         }
         *lifecycle = QueryLifecycle::Completed;
+        drop(lifecycle);
+        self.stop_deadline();
         Ok(())
     }
 
@@ -789,13 +1056,20 @@ impl RemoteQuery {
     }
 
     fn is_cancellation_requested(&self) -> bool {
-        matches!(
-            self.lifecycle(),
-            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
-        )
+        let failed = self.failure.lock().unwrap().is_some();
+        failed
+            || matches!(
+                self.lifecycle(),
+                QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+            )
     }
 
     fn cancelled_error(&self) -> Error {
+        if let Some(message) = self.failure.lock().unwrap().as_ref() {
+            return Error::Runtime {
+                message: message.clone(),
+            };
+        }
         Error::JobCancelled {
             job_id: Some(self.id.to_string()),
         }
@@ -813,6 +1087,44 @@ impl RemoteQuery {
 
     fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Instant::now();
+    }
+
+    fn job_id(&self) -> Option<String> {
+        self.job_id.lock().unwrap().clone()
+    }
+
+    fn observe_job_id(&self, job_id: Option<&str>) -> Result<()> {
+        let Some(job_id) = job_id.filter(|job_id| !job_id.is_empty()) else {
+            return Ok(());
+        };
+        let mut current = self.job_id.lock().unwrap();
+        match current.as_deref() {
+            None => *current = Some(job_id.to_string()),
+            Some(existing) if existing == job_id => {}
+            Some(existing) => {
+                return Err(Error::Runtime {
+                    message: format!(
+                        "SQL query changed durable job identity from {existing} to {job_id}"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn observe_error_job_id(&self, error: &Error) -> Result<()> {
+        self.observe_job_id(
+            error
+                .remote_error_metadata()
+                .and_then(|metadata| metadata.job_id.as_deref()),
+        )
+    }
+
+    fn record_error_job_id<T>(&self, result: Result<T>) -> Result<T> {
+        if let Err(error) = &result {
+            self.observe_error_job_id(error)?;
+        }
+        result
     }
 
     async fn poll_next_state(&self, descriptor: FlightDescriptor) -> Result<PollInfo> {
@@ -839,10 +1151,11 @@ impl RemoteQuery {
                 Err(_) if self.is_cancellation_requested() => {
                     return Err(self.cancelled_error());
                 }
-                result => result?,
+                result => self.record_error_job_id(result)?,
             },
         };
-        self.update_state(&descriptor, updated).await
+        self.observe_job_id(updated.job_id.as_deref())?;
+        self.update_state(&descriptor, updated.info).await
     }
 
     async fn prepare_result(self: &Arc<Self>) -> Result<PreparedSqlResult> {
@@ -859,8 +1172,9 @@ impl RemoteQuery {
                         result = self.client.open_result_endpoint(
                             endpoint,
                             &self.default_namespace_path,
-                        ) => result?,
+                        ) => self.record_error_job_id(result)?,
                     };
+                    self.observe_job_id(endpoint_stream.job_id.as_deref())?;
                     let buffered_batch = tokio::select! {
                         biased;
                         _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
@@ -873,6 +1187,7 @@ impl RemoteQuery {
                         .ok_or_else(|| Error::Runtime {
                             message: "SQL result endpoint did not include a schema".to_string(),
                         })?;
+                    self.observe_job_id(sql_job_id_from_schema(&schema).as_deref())?;
                     return Ok(PreparedSqlResult {
                         schema,
                         next_endpoint: 1,
@@ -890,6 +1205,7 @@ impl RemoteQuery {
                                 .map_err(|err| sql_error(&request_id, err))?,
                         )
                     };
+                    self.observe_job_id(sql_job_id_from_schema(&schema).as_deref())?;
                     return Ok(PreparedSqlResult {
                         schema,
                         next_endpoint: 0,
@@ -966,7 +1282,7 @@ impl RemoteQuery {
                     result = self.client.open_result_endpoint(
                         endpoint,
                         &self.default_namespace_path,
-                    ) => result?,
+                    ) => self.record_error_job_id(result)?,
                 });
                 continue;
             }
@@ -1030,26 +1346,27 @@ impl RemoteQuery {
 
     async fn describe_inner(&self) -> Result<QueryDescription> {
         self.touch();
+        if self.failure.lock().unwrap().is_some() {
+            return Err(self.cancelled_error());
+        }
         if self.is_cancellation_requested() {
             let state = self.state.lock().await.clone();
-            return query_description(self.id, &state, self.lifecycle());
+            return query_description(self.id, self.job_id(), &state, self.lifecycle());
         }
         let state = self.state.lock().await.clone();
         let state = if let Some(descriptor) = state.flight_descriptor.clone() {
             let poll_guard = tokio::select! {
                 biased;
-                _ = self.wait_for_cancellation() => return query_description(
-                    self.id,
-                    &state,
-                    self.lifecycle(),
-                ),
+                _ = self.wait_for_cancellation() => {
+                    return query_description(self.id, self.job_id(), &state, self.lifecycle())
+                }
                 poll_guard = tokio::time::timeout(
                     STATUS_POLL_TIMEOUT,
                     self.poll_gate.lock(),
                 ) => poll_guard,
             };
             let Ok(_poll_guard) = poll_guard else {
-                return query_description(self.id, &state, self.lifecycle());
+                return query_description(self.id, self.job_id(), &state, self.lifecycle());
             };
             let latest = self.state.lock().await.clone();
             if latest.flight_descriptor.as_ref() != Some(&descriptor) {
@@ -1057,25 +1374,28 @@ impl RemoteQuery {
             } else {
                 let updated = tokio::select! {
                     biased;
-                    _ = self.wait_for_cancellation() => return query_description(
-                        self.id,
-                        &latest,
-                        self.lifecycle(),
-                    ),
+                    _ = self.wait_for_cancellation() => {
+                        return query_description(self.id, self.job_id(), &latest, self.lifecycle())
+                    }
                     result = self.client.poll_status(
                         descriptor.clone(),
                         &self.default_namespace_path,
                     ) => match result {
-                        Err(_) if self.is_cancellation_requested() => return query_description(
-                            self.id,
-                            &latest,
-                            self.lifecycle(),
-                        ),
-                        result => result?,
+                        Err(error) if self.is_cancellation_requested() => {
+                            self.observe_error_job_id(&error)?;
+                            return query_description(
+                                self.id,
+                                self.job_id(),
+                                &latest,
+                                self.lifecycle(),
+                            );
+                        }
+                        result => self.record_error_job_id(result)?,
                     },
                 };
                 if let Some(updated) = updated {
-                    self.update_state(&descriptor, updated).await?
+                    self.observe_job_id(updated.job_id.as_deref())?;
+                    self.update_state(&descriptor, updated.info).await?
                 } else {
                     latest
                 }
@@ -1083,7 +1403,7 @@ impl RemoteQuery {
         } else {
             state
         };
-        query_description(self.id, &state, self.lifecycle())
+        query_description(self.id, self.job_id(), &state, self.lifecycle())
     }
 
     async fn cancel(&self) -> Result<()> {
@@ -1179,15 +1499,27 @@ impl RemoteQuery {
                     if self.state.lock().await.flight_descriptor.as_ref() != Some(&descriptor) {
                         continue;
                     }
-                    let updated = self.client.poll_continuation(
+                    let updated = self.record_error_job_id(
+                        self.client.poll_continuation(
                         descriptor.clone(),
                         &self.default_namespace_path,
-                    ).await?;
-                    self.update_state(&descriptor, updated).await?;
+                        )
+                        .await,
+                    )?;
+                    self.observe_job_id(updated.job_id.as_deref())?;
+                    self.update_state(&descriptor, updated.info).await?;
                 }
                 _ = notified => {}
             }
         }
+    }
+}
+
+struct CancelQueryOnDrop(Arc<RemoteQuery>);
+
+impl Drop for CancelQueryOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel_in_background();
     }
 }
 
@@ -1205,6 +1537,14 @@ impl RemoteQueryHandle {
     }
 }
 
+impl Drop for RemoteQueryHandle {
+    fn drop(&mut self) {
+        if self.query.client.cancel_on_drop && !self.result_started.load(Ordering::SeqCst) {
+            self.query.cancel_in_background();
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl QueryHandle for RemoteQueryHandle {
     fn id(&self) -> Uuid {
@@ -1212,12 +1552,19 @@ impl QueryHandle for RemoteQueryHandle {
         self.query.id
     }
 
+    fn job_id(&self) -> Option<String> {
+        self.query.job_id()
+    }
+
     async fn describe(&self) -> Result<QueryDescription> {
         self.query.describe().await
     }
 
     async fn reader(&self) -> Result<SendableRecordBatchStream> {
-        let timeout = self.query.client.overall_timeout()?;
+        let timeout = self.query.client.execution_timeout()?;
+        if self.query.failure.lock().unwrap().is_some() {
+            return Err(self.query.cancelled_error());
+        }
         if self
             .result_started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1228,9 +1575,22 @@ impl QueryHandle for RemoteQueryHandle {
             });
         }
         let result_start = ResultStartGuard::new(&self.result_started);
+        let cancel_on_drop = self
+            .query
+            .client
+            .cancel_on_drop
+            .then(|| CancelQueryOnDrop(self.query.clone()));
         let started = Instant::now();
         let prepared =
-            with_overall_timeout(timeout, "SQL query result", self.query.prepare_result()).await?;
+            match with_overall_timeout(timeout, "SQL query result", self.query.prepare_result())
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.query.fail(&error);
+                    return Err(error);
+                }
+            };
         let remaining_timeout = timeout.map(|timeout| timeout.saturating_sub(started.elapsed()));
         let schema = prepared.schema.clone();
         let (sender, receiver) = mpsc::channel(2);
@@ -1240,18 +1600,21 @@ impl QueryHandle for RemoteQueryHandle {
             let result = with_overall_timeout(
                 remaining_timeout,
                 "SQL query result",
-                query.run_result_stream(prepared, sender),
+                query.clone().run_result_stream(prepared, sender),
             )
             .await;
             if let Err(error) = result {
+                query.fail(&error);
                 let _ = error_sender.send(Err(error)).await;
             }
         });
-        let stream = futures::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|item| (item, receiver))
-        });
         result_start.commit();
-        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
+        let stream =
+            sql_result_stream(receiver, schema, self.query.client.deadline, cancel_on_drop);
+        Ok(match self.job_id() {
+            Some(job_id) => attach_sql_job_id(stream, &job_id),
+            None => stream,
+        })
     }
 
     async fn cancel(&self) -> Result<()> {
@@ -1259,14 +1622,43 @@ impl QueryHandle for RemoteQueryHandle {
     }
 }
 
+fn sql_result_timeout() -> Error {
+    Error::Runtime {
+        message: "SQL query result timed out".to_string(),
+    }
+}
+
+fn sql_result_stream<G: Send + 'static>(
+    receiver: mpsc::Receiver<Result<RecordBatch>>,
+    schema: SchemaRef,
+    deadline: Option<tokio::time::Instant>,
+    guard: G,
+) -> SendableRecordBatchStream {
+    let stream = futures::stream::unfold(Some((receiver, guard)), move |state| async move {
+        let (mut receiver, guard) = state?;
+        let item = match deadline {
+            Some(deadline) => tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => return Some((Err(sql_result_timeout()), None)),
+                item = receiver.recv() => item,
+            },
+            None => receiver.recv().await,
+        };
+        item.map(|item| (item, Some((receiver, guard))))
+    });
+    Box::pin(SimpleRecordBatchStream::new(stream, schema))
+}
+
 fn query_description(
     id: Uuid,
+    job_id: Option<String>,
     poll_info: &PollInfo,
     lifecycle: QueryLifecycle,
 ) -> Result<QueryDescription> {
     let expires_at = query_expiration(poll_info)?;
     Ok(QueryDescription {
         id,
+        job_id,
         status: match lifecycle {
             QueryLifecycle::Cancelling => QueryStatus::Cancelling,
             QueryLifecycle::Cancelled => QueryStatus::Cancelled,
@@ -1280,6 +1672,36 @@ fn query_description(
         progress: poll_info.progress,
         expires_at,
     })
+}
+
+fn sql_job_id_from_metadata(metadata: &tonic::metadata::MetadataMap) -> Option<String> {
+    metadata
+        .get(SQL_JOB_ID_METADATA_KEY)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn sql_job_id_from_schema(schema: &Schema) -> Option<String> {
+    schema
+        .metadata()
+        .get(SQL_JOB_ID_METADATA_KEY)
+        .filter(|value| !value.is_empty())
+        .cloned()
+}
+
+pub(super) fn attach_sql_job_id(
+    stream: SendableRecordBatchStream,
+    job_id: &str,
+) -> SendableRecordBatchStream {
+    let mut metadata = stream.schema().metadata().clone();
+    metadata.insert(SQL_JOB_ID_METADATA_KEY.to_string(), job_id.to_string());
+    let schema = Arc::new(stream.schema().as_ref().clone().with_metadata(metadata));
+    let batch_schema = schema.clone();
+    let stream = stream.map(move |batch| {
+        batch.and_then(|batch| batch.with_schema(batch_schema.clone()).map_err(Error::from))
+    });
+    Box::pin(SimpleRecordBatchStream::new(stream, schema))
 }
 
 fn query_expiration(poll_info: &PollInfo) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
@@ -1438,7 +1860,18 @@ async fn connect_channel(
     tokio::time::timeout(connect_timeout, endpoint.connect())
         .await
         .map_err(|_| sql_error(request_id, "SQL connection timed out"))?
-        .map_err(|err| sql_error(request_id, err))
+        .map_err(|err| {
+            // tonic's Display only says "transport error"; preserve the source chain
+            // so callers can distinguish DNS, refused connections, and TLS failures.
+            let mut message = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(error) = source {
+                message.push_str(": ");
+                message.push_str(&error.to_string());
+                source = error.source();
+            }
+            sql_error(request_id, message)
+        })
 }
 
 fn tls_config(config: Option<&TlsConfig>) -> Result<ClientTlsConfig> {
@@ -1587,6 +2020,62 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
     Error::Runtime {
         message: format!("SQL error (request_id={request_id}): {error}"),
     }
+}
+
+pub(super) fn sql_flight_error(request_id: &str, error: &FlightError) -> Error {
+    match error {
+        FlightError::Tonic(status) => sql_status_error(request_id, status),
+        _ => sql_error(request_id, error),
+    }
+}
+
+pub(super) fn sql_status_error(request_id: &str, status: &tonic::Status) -> Error {
+    let header = |name| {
+        status
+            .metadata()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let metadata = crate::error::RemoteErrorMetadata {
+        server: status
+            .metadata()
+            .get_bin("x-lancedb-server-build-bin")
+            .and_then(|value| value.to_bytes().ok())
+            .and_then(|value| serde_json::from_slice(&value).ok()),
+        error_code: header("x-lancedb-error-code"),
+        job_id: header(SQL_JOB_ID_METADATA_KEY),
+        job_request_id: header("x-job-request-id"),
+        resource: header("x-lancedb-resource")
+            .as_deref()
+            .and_then(crate::error::parse_flight_resource_identity),
+    };
+    let sql_job_id = metadata.job_id.clone();
+    let mut message = status.message().to_owned();
+    if let Some(server) = &metadata.server {
+        message.push_str(&format!(" [server: {server}]"));
+    }
+    let error = Error::Sql {
+        message: message.clone(),
+        request_id: request_id.into(),
+        grpc_code: status.code() as i32,
+        metadata: Box::new(metadata),
+    };
+    if let Some(sql_job_id) = sql_job_id {
+        return Error::JobFailed {
+            job_id: Some(sql_job_id.clone()),
+            failure: Box::new(JobFailure {
+                phase: None,
+                message: Some(message),
+                traceback: None,
+                retryable: None,
+                sql_job_id: Some(sql_job_id),
+                source: Some(Arc::new(error)),
+            }),
+        };
+    }
+    error
 }
 
 #[cfg(test)]

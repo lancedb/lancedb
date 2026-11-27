@@ -1,107 +1,369 @@
 ---
-title: "Lance Catalog"
-sidebarTitle: "Lance Catalog"
-description: "The naming layer: what objects exist, how they nest, and who may reach them."
+title: "LanceDB Lakehouse"
+sidebarTitle: "LanceDB Lakehouse"
+description: "LanceDB Lakehouse objects are organized into a catalog of databases, namespaces and tables -- connect to a database to work with them."
 icon: sitemap
-keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view", "function"]
+keywords: ["catalog", "namespace", "namespace path", "hierarchy", "governance", "database", "table", "view", "connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
 ---
 
-A catalog answers one question: **what exists, and what is it called.** It holds
-names, the hierarchy they sit in, and the rules about who may reach them. It
-does not store rows, run queries, or build indexes -- that is the
-[lakehouse](/basics/lakehouse) on top of it.
+import {
+    PyConnect,
+    PyConnectAsync,
+    PyConnectEnterprisePlaceholders,
+    PyConnectObjectStorage,
+    PyConnectObjectStorageAsync,
+    RsConnect,
+    TsConnect,
+    TsConnectEnterprisePlaceholders,
+    TsConnectObjectStorage,
+} from '/snippets/connection.mdx';
+import {
+    PyStorageS3Minio,
+    PyStorageS3Express,
+    PyStorageS3SseKms,
+    TsStorageS3Minio,
+    TsStorageS3Express,
+    TsStorageS3SseKms,
+} from '/snippets/storage.mdx';
 
-Keeping the two apart is what lets a Lance table be reached by something that is
-not LanceDB. The catalog is a specification -- the
-[Lance Namespace](/basics/lance#standard) -- so any engine that implements it
-resolves the same names to the same tables.
+## Catalog Hierarchy {#hierarchy}
 
-## The objects {#objects}
+A catalog keeps track of named data objects, such as tables and views, so
+applications can discover and access them. In LanceDB Enterprise, the
+catalog is the top-level entry point: it organizes databases, which in turn
+organize namespaces and tables -- similar to a catalog in Postgres,
+Snowflake, or other database systems. The catalog itself has no name of its
+own -- it's just the root -- and an Enterprise deployment's catalog is
+identified by its endpoint, not a name like the objects beneath it.
 
-| Object | What it is |
+LanceDB Embedded has no catalog at all. Connect directly to a
+[database](#connecting-to-database) instead of going through a catalog.
+
+A database contains namespaces that group related tables and views.
+Namespaces can also contain other namespaces, letting teams organize data by
+project, environment or purpose.
+
+For example, a search application can keep production and staging data in
+separate namespaces within the same database, with `prod` further split into
+a nested `search` namespace:
+
+<div className="hidden dark:block">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#171513", "primaryColor": "#1e1b19", "primaryTextColor": "#f4ebe8",
+  "primaryBorderColor": "#4c443f", "lineColor": "#847770", "textColor": "#f4ebe8",
+  "edgeLabelBackground": "#171513", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TD
+    catalog["root catalog"] --> database["ai_data · database"]
+    database --> prod["prod · namespace"]
+    database --> staging["staging · namespace"]
+    prod --> search["search · namespace"]
+    search --> search_docs["documents · table"]
+    search --> search_view["recent_documents · view"]
+    search --> search_fn["embed · function"]
+    staging --> staging_docs["documents · table"]
+    classDef default fill:#1e1b19,stroke:#4c443f,stroke-width:1px,color:#f4ebe8
+```
+
+</div>
+
+<div className="block dark:hidden">
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "background": "#ffffff", "primaryColor": "#ffffff", "primaryTextColor": "#221d19",
+  "primaryBorderColor": "#ad9e95", "lineColor": "#6b625c", "textColor": "#221d19",
+  "edgeLabelBackground": "#ffffff", "fontFamily": "Inter, sans-serif", "fontSize": "18px"
+}}}%%
+flowchart TD
+    catalog["root catalog"] --> database["ai_data · database"]
+    database --> prod["prod · namespace"]
+    database --> staging["staging · namespace"]
+    prod --> search["search · namespace"]
+    search --> search_docs["documents · table"]
+    search --> search_view["recent_documents · view"]
+    search --> search_fn["embed · function"]
+    staging --> staging_docs["documents · table"]
+    classDef default fill:#ffffff,stroke:#ad9e95,stroke-width:1px,color:#221d19
+```
+
+</div>
+
+| Object | What it represents |
 | --- | --- |
-| [Database](/management/database) | The root. A connection opens exactly one. |
-| [Namespace](/management/namespace) | A named grouping inside a database. Can nest. |
-| [Table](/management/table) | Rows and columns, versioned. What most operations act on. |
-| [Materialized view](/management/materialized-view) | A table whose contents come from a query, computed and stored. |
-| [View](/management/view) | A saved query. Computed when read, not stored. |
-| [Function](/management/function) | Registered code, applied to produce column values. |
+| [Catalog](/management/catalog) | The unnamed root of an Enterprise deployment, identified by its endpoint; lists, creates and drops databases. Not present in Embedded. |
+| [Database](/management/database) | A container for namespaces and their data objects. |
+| [Namespace](/management/namespace) | A named group of catalog objects -- tables, views, secrets, functions, storage integrations, or nested namespaces -- addressed by its namespace path. |
+| [Table](/management/table) | Data stored as rows and columns. |
+| [View](/management/view) | A saved query, evaluated when read. Available in Enterprise. |
+| [Materialized view](/management/materialized-view) | The stored results of a query, updated by a refresh. Available in Enterprise. |
+| [Secret](/management/secret) | A named credential that a Function binds by reference. Available in Enterprise. |
+| [Storage integration](/management/storage-integration) | A named credential for reading or importing from storage outside the deployment's own tables, such as an S3 prefix or a HuggingFace repository. Available in Enterprise. |
+| [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
 
+<span id="namespace-paths"></span>
+
+### Namespace name and path {#namespace-path}
+
+A namespace's **name** is just its own component, such as `search`. Its
+**path** is the full sequence of names from the database down to it: in the
+diagram above, `search` sits inside `prod`, so its path is the sequence
+`prod`, `search`. A namespace path is never written by joining those names
+with `.` -- a dot is a valid character inside a name, so a dot-joined path
+couldn't always be split back into its components unambiguously. The two
+forms below are how SQL actually writes one.
+
+### Schema {#schema}
+
+SQL addresses a namespace path as a **schema**, the ANSI standard's term for
+the same concept: a nested path collapses into one identifier, its
+components joined by `$` instead of `.`. The path's length changes what the
+schema looks like:
+
+| Path | Schema |
+| --- | --- |
+| `[]` (the database root) | `public` -- the reserved name for the empty path |
+| `["prod"]` | `prod` -- one component needs no joining |
+| `["prod", "search"]` | `` `prod$search` `` -- joined, and backtick-quoted because `$` isn't a bare-identifier character |
+
+`$` can't appear in an ordinary name, so a schema can always be split back
+into its exact path, unlike a dot-joined one. (This "schema" is the
+namespace path as a SQL identifier -- distinct from a table's Arrow schema,
+its column names and types.)
+
+### Object identifier {#identifier}
+
+An object -- a table, view, function, secret, or storage integration -- is
+addressed in SQL by the ANSI three-part identifier `database.schema.name`,
+where `schema` is exactly the `$`-joined path above. The `documents` table
+in `search`, nested inside `prod`, in database `ai_data`, is
+`` ai_data.`prod$search`.documents ``. One directly under the database root
+uses `public`: `ai_data.public.documents`.
+
+See [Namespace](/sql/ddl/namespace) for the full `CREATE`/`ALTER`/`DROP`
+syntax.
+
+## Connecting {#connecting}
+
+You always run table and query operations within a **database**; cross-database
+operations go through SQL instead. The same Python, TypeScript and Rust SDKs
+reach a database and the catalog separately.
+
+### Connecting to Catalog {#connecting-to-catalog}
+
+`connect_catalog(endpoint)` connects to Enterprise's root catalog, which can
+list, create and drop databases across the whole deployment. Its
+`connect_database(name)` and `create_database(name)` then return the same
+kind of database connection `lancedb.connect()` does.
+
+In Python, `connect_catalog` and `connect_catalog_async` accept the same
+connection settings as their database counterparts. Use `host_override` to
+share settings that include a `db://` URI; the catalog connection targets
+the root of that deployment and ignores the database name. An explicitly
+supplied `region` is ignored with a warning, since the HTTP(S) endpoint
+selects the deployment. Embedded-only session and namespace settings are
+unsupported.
+
+```python
+settings = {
+    "uri": "db://analytics",
+    "api_key": "secret",
+    "host_override": "https://my-server.example",
+}
+db = lancedb.connect(**settings)
+catalog = lancedb.connect_catalog(**settings)
 ```
-database
-└── namespace
-    ├── table
-    ├── materialized view      (a table, defined by a query)
-    ├── view                   (a query, not stored)
-    └── function
-```
 
-A namespace can contain further namespaces, so the hierarchy goes as deep as
-your organisation needs. A table is reached by its path through it:
-`prod.events.clicks`.
+This connection is for database administration, not table or query work:
+list, create and drop databases through it, then switch to a **database**
+connection for everything else -- tables, queries, and SQL all run within a
+database, never directly against the catalog. Local filesystem and
+object-store deployments have no catalog to connect to -- each is already
+scoped to one database.
 
-This page is about what the objects *are*. For the operations on them, see
-[Management](/management).
+### Connecting to Database {#connecting-to-database}
 
-## Resolution {#resolution}
+`lancedb.connect(uri)` opens one database in a single call -- a local
+directory, an object-storage path, or (with a `db://` URI) a specific
+Enterprise database. The table below shows which URI reaches which kind of
+database directly.
 
-A name is resolved by walking the path, and the walk is the point: reaching a
-table means traversing the namespaces above it. That is what makes the hierarchy
-more than decoration -- it is the unit of both organisation and access.
+| URI | Mode | Where queries run |
+| --- | --- | --- |
+| A local path, such as `./data` | <Badge color="green">Embedded</Badge> | In your process |
+| `s3://`, `gs://` or `az://` | <Badge color="green">Embedded</Badge> | In your process, reading object storage |
+| `db://` | <Badge color="red">Enterprise</Badge> | On your cluster |
 
-A flat set of tables needs none of this. Namespaces start earning their keep when
-several teams, environments or domains share one catalog and you want
-`prod.search.documents` and `staging.search.documents` to be unambiguous.
+#### A local directory {#local}
 
-## Governance {#governance}
+Embedded in your application, LanceDB reads and writes the tables in a
+directory on disk.
 
-<Badge color="red">Enterprise</Badge>
+<CodeGroup>
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnect}
+    </CodeBlock>
 
-Because the catalog knows the hierarchy, it is the layer that can enforce
-access. A grant names **one privilege** on **one object** for **one subject**,
-and it inherits down the path: reaching a table requires `USAGE` on the
-namespace containing it and on the database containing that.
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectAsync}
+    </CodeBlock>
 
-That is the practical reason to put a boundary in the hierarchy -- a namespace
-per team gives you something to grant on. See
-[Authorization](/governance/authorization).
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnect}
+    </CodeBlock>
 
-Embedded LanceDB has no such layer. Access is whatever the object store enforces
-on the bucket, which has no concept of a table.
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n" }
+    { "\n" }
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
 
-## Views and materialized views are different objects {#views}
+#### Object storage {#object-storage}
 
-The names are close enough to mislead. Both are catalog objects defined by a
-query over other tables; the difference is when that query runs.
+With an object storage URI the library is still embedded: your process runs
+every query and reads and writes the bucket directly, with credentials from
+its environment or its connection's `storage_options`.
 
-- A **materialized view** stores its rows, and a refresh brings them up to
-  date. Reads are reads of stored data -- fast, and as current as the last
-  refresh.
-- A **view** stores only the query. Every read runs it, so a view is never stale
-  and never faster than the query it wraps.
+<CodeGroup>
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnectObjectStorage}
+    </CodeBlock>
 
-Reach for a materialized view when the query is expensive and the data changes
-less often than it is read. Reach for a view when correctness matters more than
-latency, or when the query is cheap.
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectObjectStorageAsync}
+    </CodeBlock>
 
-## What the catalog does not hold {#elsewhere}
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectObjectStorage}
+    </CodeBlock>
+</CodeGroup>
 
-**Indexes** belong to a table rather than standing alone. Creating one is a
-performance decision, not a structural one -- see [Indexing](/indexing).
+In Rust, pass the same URI to `connect`.
 
-**Jobs** are not stored data at all; they are handles to work in progress. See
-[Jobs](/basics/jobs).
+LanceDB supports these object storage backends:
 
-**Rows** are in the [Lance](/basics/lance) files the catalog points at. The
-catalog knows a table exists and where it lives; it does not know what is in it.
+| Backend | URI scheme | Credentials |
+| --- | --- | --- |
+| AWS S3, and S3-compatible stores (MinIO, Tigris, ...) | `s3://` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, or `storage_options`. Compatible stores also need `endpoint` and `region`. |
+| Google Cloud Storage | `gs://` | `GOOGLE_SERVICE_ACCOUNT` (path to a service account JSON), or `storage_options` |
+| Azure Blob Storage | `az://` | `AZURE_STORAGE_ACCOUNT_NAME` + `AZURE_STORAGE_ACCOUNT_KEY` (or a SAS token), or `storage_options` |
+| Tencent COS | `cos://` | `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`, or `storage_options` |
+| GooseFS (a cache layer over COS or S3) | `goosefs://` | Reads from the GooseFS client environment |
 
-## Next {#next}
+Pass credentials as environment variables (uppercase), or as a
+`storage_options` dict at connection or table level (lowercase keys); a
+table's `storage_options` inherit the connection's and override on a
+per-key basis.
 
-<CardGroup cols={2}>
-  <Card title="Lance Lakehouse" icon="layer-group" href="/basics/lakehouse">
-    What operates on these objects: search, compute, maintenance.
-  </Card>
-  <Card title="Management" icon="folder-tree" href="/management">
-    Creating, listing and dropping each one.
-  </Card>
-</CardGroup>
+Choosing among these is a tradeoff between latency, scalability, cost and
+operational complexity, before you even pick a cloud-specific backend:
+object storage (S3, GCS, Azure Blob) has the highest latency but is the
+cheapest and scales storage effectively without limit; networked file
+storage (EFS, Filestore, Azure Files) and third-party stores (MinIO,
+WekaFS) sit in between; block storage (EBS, Persistent Disk, Managed Disk)
+and local NVMe are the fastest but tie data to one instance, so scaling
+means sharding or copying it yourself.
+
+##### S3-compatible stores {#s3-compatible-stores}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageS3Minio}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsStorageS3Minio}
+    </CodeBlock>
+</CodeGroup>
+
+If the endpoint is `http://` (common in local development), also set
+`ALLOW_HTTP=true` or pass `allow_http=True` in `storage_options`.
+
+##### S3 Express {#s3-express}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageS3Express}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsStorageS3Express}
+    </CodeBlock>
+</CodeGroup>
+
+Consult AWS's networking requirements for S3 Express before enabling it.
+
+##### Server-side encryption with KMS {#server-side-encryption-with-kms}
+
+Set `aws_server_side_encryption` to `aws:kms` and `aws_sse_kms_key_id` to
+the key ID or ARN to encrypt at rest with an AWS KMS key. The same options
+apply at connection or table level, and combine with bucket-level default
+encryption.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageS3SseKms}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsStorageS3SseKms}
+    </CodeBlock>
+</CodeGroup>
+
+The IAM principal needs `kms:Encrypt`, `kms:Decrypt` and
+`kms:GenerateDataKey` on the configured KMS key.
+
+<Note>
+**Tencent COS and GooseFS build availability.** Both are bundled by
+default in the Python wheel. In the Node binding, GooseFS is bundled by
+default but COS is not -- build with the `cos` Cargo feature enabled to
+use it there. In Rust, neither is in the default feature set; build with
+the `cos` or `goosefs` Cargo feature enabled to use either one.
+</Note>
+
+#### LanceDB Enterprise {#enterprise}
+
+A `db://` URI connects directly to one database in LanceDB Enterprise, where
+your cluster runs queries and background work. Get the database URI, API key,
+region and endpoint from your administrator, then replace the placeholders
+below. Use your cluster's region in place of `us-east-1`. In application code,
+load credentials from environment variables or a secrets manager.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterprisePlaceholders}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterprisePlaceholders}
+    </CodeBlock>
+</CodeGroup>
+
+In Rust, enable the crate's `remote` feature; the connection builder then takes
+the same settings through `api_key`, `region` and `host_override`. To use OAuth
+instead of an API key, see
+[Authentication](/enterprise/authentication); for every connection option, see
+[Database](/management/database#deployment).
+
+## Organization and access control {#governance}
+
+- **Separate projects and environments.** Keep production and staging tables
+  in distinct namespaces, even when they use the same table names.
+- **Find shared datasets.** Give teams a consistent place to discover and
+  access the data they work with.
+- **Control access in Enterprise.** Use permissions on databases, namespaces
+  and tables to manage who can access shared data and what they can do with it.
+
+## Learn more {#next}
+
+- [Catalog](/management/catalog): initial access to a new deployment, and the superuser bootstrap.
+- [Databases](/management/database): connect to and manage a database.
+- [Namespaces](/management/namespace): create groups and address tables within them.
+- [Tables](/management/table): create, inspect and manage your data.
+- [Views](/management/view) and [materialized views](/management/materialized-view): work with query-defined data.
+- [Secrets](/management/secret): store a credential that a Function can bind by reference.
+- [Storage integrations](/management/storage-integration): read or import from storage outside your own tables.
+- [Authorization](/governance/authorization): configure Enterprise access permissions.

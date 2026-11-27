@@ -1,56 +1,121 @@
 ---
 title: "Table"
 sidebarTitle: "Table"
-description: "CREATE, DESCRIBE, ALTER, CLONE and DROP TABLE."
+description: "CREATE, DESCRIBE, ALTER, OPTIMIZE, CLONE and DROP TABLE."
 icon: table
-keywords: ["create table", "alter table", "drop table", "describe", "clone", "ddl"]
+keywords: ["create table", "alter table", "drop table", "describe", "clone", "optimize", "ddl"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
 
 ## CREATE TABLE {#create}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE documents (id BIGINT, title VARCHAR, created_at TIMESTAMP)
-CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
+CREATE TABLE recent AS
+SELECT * FROM documents
+WHERE created_at > now() - INTERVAL '7 days'
 ```
+</CodeGroup>
 
-Column types are Arrow types under SQL names -- see [Data types](/sql/data-types).
-A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
-`prod.events.clicks`.
+Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
+
+A table inside a [namespace](/sql/ddl/namespace) is written with its
+[schema](/basics/catalog#schema) before the name: `` `prod$events`.clicks ``.
 
 ## DESCRIBE {#describe}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DESCRIBE documents
 ```
+</CodeGroup>
 
-The table's columns and types, without a plan -- the SQL counterpart of
+The table's columns and types, without a plan. The SQL counterpart of
 `table.schema`.
 
 ## ALTER TABLE {#alter}
 
-`ALTER TABLE ... ADD COLUMN` covers three different things, distinguished by
-what follows the column name.
+What `ALTER TABLE ... ADD COLUMN` does depends on what follows the column
+name.
 
 ### A plain column {#plain-column}
 
-```sql
-ALTER TABLE t ADD COLUMN c INT
-```
-
-Added empty and nullable. Nothing is computed.
+SQL `ADD COLUMN` requires an `AS` binding, so a plain column such as
+`ALTER TABLE t ADD COLUMN c INT` is rejected. Add an empty, nullable column
+with the SDK instead. See
+[Add nullable columns](/management/table#schema-add-nullable-columns).
 
 ### A computed column {#computed-column}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ALTER TABLE t ADD COLUMN doubled AS value * 2
 ```
+</CodeGroup>
 
 `AS <expression>` declares a [computed column](/feature-engineering/add-computed-column).
-The column is committed empty and the expression is stored, not evaluated --
+The column is committed empty and the expression is stored, not evaluated:
 declaring one on a billion-row table costs what declaring one on an empty table
-costs. [`REFRESH COLUMN`](/sql/dml/refresh) fills it.
+costs. [`REFRESH COLUMN`](/sql/dml/refresh-column) fills it.
+
+{/*
+Draft for automatic computed-column refresh. Enable this section when the
+server feature is released.
+
+### Automatic refresh options {#automatic-refresh-options}
+
+```sql
+ALTER TABLE t ADD COLUMN doubled AS value * 2
+WITH (auto_refresh_enabled = true, auto_refresh_interval_seconds = 300);
+
+ALTER TABLE t ALTER COLUMN doubled SET auto_refresh_enabled = false;
+ALTER TABLE t ALTER COLUMN doubled SET auto_refresh_interval_seconds = 600;
+ALTER TABLE t ALTER COLUMN doubled SET auto_refresh_enabled = true;
+```
+
+Automatic refresh is enabled by default. An explicitly configured interval is
+stored in each computed output's field metadata; when omitted, the server
+determines when to refresh. The interval must be a positive integer
+and is minimum pacing after a successful refresh of that output; unchanged
+inputs do not force work. A new column is immediately eligible for its first
+refresh. The server's separate automatic-refresh switch must also be enabled.
+
+These options also work beside a Function binding's `version` and `branch`,
+continuing the [`caption` Function](/curation/create-function#chain) from Create a Function:
+
+```sql
+ALTER TABLE frames ADD COLUMN caption AS caption(extract_frame(video, ts))
+WITH (
+    version = 'fv_1',
+    auto_refresh_enabled = true,
+    auto_refresh_interval_seconds = 300
+);
+ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = false;
+```
+
+Declaration settings initialize every output in the group; later SET commands
+change one output. SET takes effect immediately and does not itself read or
+write any row:
+
+- **Disabling** prevents new automatic submissions. Inflight jobs may still
+  finish, explicit `REFRESH COLUMN` keeps working, and rows written while
+  disabled commit with no computed value -- they do not queue anywhere
+  separate.
+- **Re-enabling catches up the entire backlog in one pass.** The next
+  scheduler tick processes every row left unfilled since the column was
+  disabled, immediately, with no further write required to trigger it: a
+  column disabled for an hour and re-enabled fills everything that
+  accumulated during that hour, not just rows written after the moment it
+  is re-enabled.
+
+Column SUSPEND/RESUME syntax is not supported; `SET auto_refresh_enabled` is
+the only toggle. The current setting is in the column's own field metadata,
+`computed_column.auto_refresh_enabled`, readable from `DESCRIBE` or the
+SDK's `table.schema` without submitting a job to ask.
+*/}
 
 ### A function column {#function-column}
 
@@ -79,68 +144,92 @@ ALTER TABLE t ADD COLUMN (label, score) AS classify(text) WITH (version = 'fv_1'
 
 ```sql
 ALTER TABLE t ADD COLUMN c AS f(x) FILTER (WHERE keep) WITH (version = 'fv_1')
-ALTER TABLE t ADD COLUMN c AS f(x) WITH (num_workers = '2')
+REFRESH COLUMN c ON t WITH (num_workers = 2)
 ```
 
 <Note>
-`WITH` on a plain computed column accepts only `version`. Resource options such
-as `num_workers` apply to function columns, where there are workers to size.
+Declaration `WITH` accepts `auto_refresh_enabled` and
+`auto_refresh_interval_seconds`. Function bindings also accept `version` and
+`branch`. Worker resource options such as `num_workers` belong on
+`REFRESH COLUMN ... WITH (...)`.
 </Note>
 
 ### Table properties {#properties}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 ALTER TABLE t SET UNENFORCED PRIMARY KEY (id)
 ```
+</CodeGroup>
 
 Records which column identifies a row. **Unenforced** is not a hedge in the
 naming: uniqueness is not checked on write, and declaring it does not make
-duplicates impossible. It tells the planner what to assume.
+duplicates impossible. It tells the planner what to assume. The column must be
+declared `NOT NULL`.
 
-```sql
-ALTER TABLE t SET WAL
-ALTER TABLE t SET WAL WITH (sharding = 'bucket', buckets = 4)
-ALTER TABLE t SET WAL WITH (maintained_indexes = '')
-ALTER TABLE t UNSET WAL
+<CodeGroup>
+```sql SQL icon="database"
+ALTER TABLE t SET RTE
+ALTER TABLE t SET RTE WITH (sharding = 'bucket', column = 'id', buckets = 4)
+ALTER TABLE t SET RTE WITH (maintained_indexes = '')
+ALTER TABLE t UNSET RTE
 ```
+</CodeGroup>
 
-A write-ahead log makes small frequent writes cheap by batching them out of the
+The [Realtime Engine](/tables/realtime-engine) puts a write-ahead log in front
+of the table, making small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
-not contend on one place; `maintained_indexes` chooses which indexes are kept
-current against WAL rows. See
-[Background jobs](/maintenance/background-jobs#wal) for how the log gets
-folded back into the table.
+not contend on one place; `bucket` sharding names its `column`, which must be
+the table's unenforced primary key, and inserts into the table then need a
+scalar index on that key. `maintained_indexes` chooses which indexes are kept
+current against WAL rows; omitted, every supported index is kept current,
+including ones created later. A table with a computed column cannot take a
+write-ahead log. See
+[RTE Compaction](/enterprise/realtime-engine-compaction) for how
+the log gets folded back into the table.
 
 <Warning>
 [`TABLESAMPLE`](/sql/dql/sampling) is refused on a WAL-backed table, because
 rows a sample would draw from are not all in the fragments yet.
 </Warning>
 
-**Errors and limits**
+### Errors and limits {#errors-and-limits}
 
 | | |
 | --- | --- |
 | `ALTER TABLE ... DROP COLUMN` | not supported |
 
-Dropping, renaming, or retyping a column is an SDK operation --
-[`drop_columns`](/management/table#schema) and
-[`alter_columns`](/management/table#schema) -- not a SQL statement.
+Dropping, renaming, or retyping a column is an SDK operation
+([`drop_columns`](/management/table#schema) and
+[`alter_columns`](/management/table#schema)), not a SQL statement.
 
 ## CLONE {#clone}
 
-```sql
+{/* Draft for the table-clone exist_ok release.
+
+Use `CREATE TABLE IF NOT EXISTS target CLONE source` to preserve an existing
+target unchanged. The Python equivalent is
+`db.clone_table("target", source_uri, exist_ok=True)`. Omitting the option reports
+an error for an existing target. A skipped clone does not copy rows or change
+the target's version history.
+
+*/}
+
+<CodeGroup>
+```sql SQL icon="database"
 CREATE TABLE docs_snapshot CLONE documents
 CREATE TABLE docs_at_v42 CLONE documents AT 42
 CREATE TABLE docs_at_release CLONE documents AT TAG 'release-1'
 CREATE TABLE docs_yesterday CLONE documents AT TIMESTAMP '2026-09-01T00:00:00Z'
 ```
+</CodeGroup>
 
 A **shallow clone**: the new table shares the source's data files rather than
 copying them, so it costs one metadata commit regardless of the source's size.
 
 `AT` pins the point in the source's history to clone. A bare integer is a
 version and a bare quoted string is a timestamp; `VERSION`, `TAG` and
-`TIMESTAMP` say so explicitly, and a tag always needs its keyword -- a bare
+`TIMESTAMP` say so explicitly, and a tag always needs its keyword: a bare
 quoted string cannot be both a tag name and a timestamp.
 
 <Warning>
@@ -153,18 +242,71 @@ when the copy has to outlive the source's history.
 
 ## DROP TABLE {#drop}
 
-```sql
+<CodeGroup>
+```sql SQL icon="database"
 DROP TABLE documents
 ```
+</CodeGroup>
 
 <Warning>
 Removes the table and every version of it. There is no undrop.
 </Warning>
 
 <Note>
-**Enterprise job type:** `drop_table`. See
-[Background jobs](/maintenance/background-jobs#teardown).
+**Enterprise job type:** `drop_table` or `drop_object`, depending on how the
+deployment stores its catalog. See
+[Object teardown](/basics/jobs#teardown).
 </Note>
+
+## OPTIMIZE REWRITE DATA {#optimize}
+
+Submit a durable manual compaction job on a compatible Enterprise deployment:
+
+```sql
+OPTIMIZE events REWRITE DATA WITH (
+  target_rows_per_fragment = 100000,
+  max_source_rows = 1000000,
+  io_buffer_size = 67108864,
+  batch_size = 1024
+);
+```
+
+Write the table name immediately after `OPTIMIZE`, without a `TABLE` keyword.
+All four settings are optional. Add `branch = 'exp'` in the same `WITH (...)`
+clause to select a branch; an omitted branch targets main. Row targets,
+source-row budgets, and scanner batch sizes must be positive integers. The I/O
+budget is in bytes and accepts zero to disable byte-based I/O backpressure.
+Unknown or duplicate options and invalid numbers are rejected before submission.
+
+Each field uses its invocation value, then that branch's table tuning, then
+deployment/built-in defaults. The automatic-compaction `enabled` flags do not
+block an explicit manual job. Tuning is captured in the durable specification;
+later table changes affect future jobs.
+
+The statement returns a `job_id` after submission, before worker completion.
+It runs atomic compaction on one worker with inline index remapping, without
+pruning versions or optimizing indexes. The source-row budget admits whole
+tasks; if the first useful task exceeds it, worker planning fails with the
+required live rows and source fragment count. The table and branch are validated
+through the service catalog before creating a job.
+
+See [manual compaction](/maintenance/compaction#enterprise-manual-compaction)
+for the option meanings, supported deployment and version requirements,
+authorization, job inspection, table defaults, and equivalent CLI/SDK examples.
+
+
+### Preview manual compaction
+
+```sql
+EXPLAIN OPTIMIZE events REWRITE DATA WITH (max_source_rows = 1000000);
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
+
+The preview reports the selected source version, effective options, planned
+work and continuation using the worker's planner without submitting a job.
+`EXPLAIN ANALYZE` is unsupported. The JSON diagnostic includes reported progress
+and a successful job's committed result. See [Compaction](/maintenance/compaction#compaction-jobs)
+for durable SDK handles and CLI waiting.
 
 ## What to read next {#next}
 
@@ -176,3 +318,23 @@ Removes the table and every version of it. There is no undrop.
     Renaming, retyping and dropping columns from the SDK.
   </Card>
 </CardGroup>
+
+## SHOW TABLES {#show}
+
+```sql
+SHOW TABLES IN analytics.`team$ml` LIMIT 100;
+SHOW TABLES IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
+```
+
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).

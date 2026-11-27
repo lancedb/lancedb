@@ -11,8 +11,15 @@ on:
       - rust-toolchain.toml
       - deny.toml
       - rust/**
+      - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - python/src/**
+      - python/python/lancedb/exceptions.py
+      - python/python/lancedb/remote/errors.py
+      - ci/build_no_lock.py
+      - ci/tests/test_build_no_lock.py
+      - .github/actions/setup-protoc/**
       - .github/workflows/rust.yml
 
 permissions:
@@ -29,6 +36,63 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  dependency-overrides:
+    name: Downstream Lance override
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      - name: Read the pinned Lance tag
+        id: lance
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag={tag}\n")
+          PYTHON
+      - uses: actions/checkout@v6
+        with:
+          repository: lance-format/lance
+          ref: ${{ steps.lance.outputs.tag }}
+          path: local-lance
+      - name: Resolve a downstream workspace with a local Lance override
+        run: |
+          mkdir -p downstream/src
+          touch downstream/src/lib.rs
+          cat > downstream/Cargo.toml <<'TOML'
+          [package]
+          name = "lancedb-local-lance-consumer"
+          version = "0.1.0"
+          edition = "2024"
+
+          [workspace]
+
+          [dependencies]
+          lancedb = { path = "../rust/lancedb", default-features = false }
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+
+          [patch."https://github.com/lance-format/lance.git"]
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+          TOML
+          cargo metadata --manifest-path downstream/Cargo.toml --format-version 1 > downstream/graph.json
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          graph = json.loads(Path("downstream/graph.json").read_text())
+          packages = [p for p in graph["packages"] if p["name"] == "lance-arrow"]
+          assert len(packages) == 1, [p["id"] for p in packages]
+          assert Path(packages[0]["manifest_path"]).resolve() == Path(
+              "local-lance/rust/lance-arrow/Cargo.toml"
+          ).resolve()
+          PYTHON
+
   lint:
     timeout-minutes: 30
     runs-on: ubuntu-24.04
@@ -44,10 +108,10 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -71,12 +135,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
 
   build-no-lock:
-    runs-on: ubuntu-24.04
+    # Keep the existing Linux runner; its available disk varies by image.
+    runs-on: ubuntu-2404-4x-x64
     timeout-minutes: 30
     env:
       # Need up-to-date compilers for kernels
@@ -86,14 +151,16 @@ jobs:
       - uses: actions/checkout@v6
       # Building without a lock file often requires the latest Rust version since downstream
       # dependencies may have updated their minimum Rust version.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: "stable"
+          # The explicit cache below runs after lock removal and only saves on main.
+          cache: false
       # Remove cargo.lock to force a fresh build
       - name: Remove Cargo.lock
         run: rm -f Cargo.lock
-      - uses: rui314/setup-mold@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -103,9 +170,22 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+      - name: Test build output cleanup
+        run: python3 -m unittest discover -s ci/tests -p test_build_no_lock.py -v
       - name: Build all
         run: |
-          cargo build --profile ci --benches --all-features --tests
+          df -h .
+          # Every target is linked, but this job never executes the test binaries.
+          python3 ci/build_no_lock.py
+      - name: Report build disk usage
+        if: always()
+        run: |
+          df -h .
+          for build_path in target "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$build_path" ]; then
+              du -h -d 2 "$build_path"
+            fi
+          done
 
   linux:
     timeout-minutes: 60
@@ -121,12 +201,14 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
+      # Preserve the repository CPU flags and use setup-mold's system linker.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -136,7 +218,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
-      - uses: rui314/setup-mold@v1
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
       - name: Make Swap
         run: |
           swapfile=/swapfile
@@ -160,11 +242,20 @@ jobs:
           sudo mkswap "$swapfile"
           sudo swapon "$swapfile"
       - name: Build
-        run: cargo build --profile ci --all-features --tests --locked --examples
+        run: cargo build --profile ci -p lancedb --all-features --tests --locked --examples
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --profile ci --all-features --example simple --locked
+        run: cargo run --profile ci -p lancedb --all-features --example simple --locked
+      - name: Run blob v2 docs example
+        # Python and TypeScript blob docs tests install preview packages.
+        # Those builds are not guaranteed to remain available for more than
+        # 6 months, so they stay a manual run. This example uses the workspace crate.
+        run: |
+          # The completed all-features checks leave large lancedb artifacts in target.
+          # Reclaim that package before building the example with a different feature set.
+          cargo clean --profile ci -p lancedb
+          cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
@@ -180,6 +271,8 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
+      # Rust's default rust-lld bypasses setup-mold's /usr/bin/ld replacement.
+      RUSTFLAGS: "-C target-cpu=haswell -C target-feature=+avx2,+fma,+f16c -C linker-features=-lld"
       GH_TOKEN: ${{ github.token }}
       SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
@@ -187,7 +280,7 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Remote tests use a different feature graph from the main Linux
           # job. Cache downloads, but build into a fresh target directory.
@@ -197,15 +290,17 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
-      - uses: rui314/setup-mold@v1
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
       - name: Run remote tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
+    name: ${{ matrix.phase == 'tests' && format('macos ({0})', matrix.mac-runner) || format('macos-doc ({0})', matrix.mac-runner) }}
     timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-14", "macos-15"]
+        mac-runner: ["macos-15", "macos-26"]
+        phase: [tests, doc]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -216,10 +311,16 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: actions/setup-python@v6
+        id: python
+        with:
+          python-version: "3.13"
       - name: CPU features
         run: sysctl -a | grep cpu
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # PyO3 caches the interpreter library path; runner images can differ.
+          key: ${{ matrix.mac-runner }}-python-${{ steps.python.outputs.python-version }}
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
@@ -227,16 +328,18 @@ jobs:
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
+        env:
+          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+          CARGO_TEST_TARGETS: ${{ matrix.phase == 'doc' && '--doc' || '--lib --tests' }}
         run: |
           # Don't run the s3 integration tests since docker isn't available
           # on this image.
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          # Run doctests before test binaries fill the runner disk. Examples are
-          # already built by the Linux job, so avoid retaining them here.
-          cargo test --profile ci --features $ALL_FEATURES --locked --doc
-          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
+          # Separate jobs give each phase its own time and disk budget. Examples
+          # are already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked $CARGO_TEST_TARGETS
 
   windows:
     strategy:
@@ -245,28 +348,24 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
-          # windows-11-arm is a standard runner, so it is free on public repos.
-          # Running natively lets the aarch64 tests actually execute -- this
-          # job used to cross-compile them and then skip the test step, paying
-          # full codegen and link cost for a compile check.
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Protoc v21.12
-        run: choco install --no-progress protoc
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
@@ -279,13 +378,52 @@ jobs:
           # dependency graph a second time.
           cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
 
+  # Run the aarch64 Windows tests only on main so PRs wait for a single
+  # Windows platform. windows-11-arm is a standard runner, so it is free on
+  # public repos. Running natively lets the aarch64 tests actually execute --
+  # this job used to cross-compile them and then skip the test step, paying
+  # full codegen and link cost for a compile check.
+  windows-arm:
+    # Keep the historical name so the check shows up as before on main.
+    name: windows (aarch64-pc-windows-msvc, windows-11-arm)
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        working-directory: rust/lancedb
+    steps:
+      - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
+      - name: Set target
+        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
+      - name: Build
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cargo build --profile ci --features aws,remote --tests --locked --target aarch64-pc-windows-msvc
+      - name: Run tests
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          # `--target` has to match the build step above. Without it cargo uses
+          # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
+          # dependency graph a second time.
+          cargo test --profile ci --features aws,remote --locked --target aarch64-pc-windows-msvc
+
   msrv:
     # Check the minimum supported Rust version
     name: MSRV Check - Rust v${{ matrix.msrv }}
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.94.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.98.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18
@@ -299,19 +437,27 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
       - name: Install ${{ matrix.msrv }}
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ matrix.msrv }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Downgrade dependencies
-        # aws-smithy-types 1.6.1+ requires rustc 1.94.1
-        run: cargo update -p aws-smithy-types --precise 1.5.0
+      - name: Resolve MSRV-compatible dependencies
+        # Resolve the AWS SDK and Smithy crates together: newer SDK releases
+        # require newer Smithy versions, so downgrading only Smithy can fail.
+        run: cargo +${{ matrix.msrv }} update --config 'resolver.incompatible-rust-versions="fallback"'
+      - name: Keep Xet dependencies compatible with the MSRV
+        # Xet 1.7 does not declare its MSRV, but requires sysinfo 0.39 (Rust 1.95).
+        # Downgrade parents before their dependencies to satisfy their constraints.
+        run: |
+          for crate in hf-xet xet-data xet-client xet-core-structures xet-runtime; do
+            cargo +${{ matrix.msrv }} update -p "$crate" --precise 1.6.0
+          done
       - name: cargo +${{ matrix.msrv }} check
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.msrv }}
-        run: cargo check --profile ci --workspace --tests --benches --all-features
+        run: cargo check --locked --profile ci --workspace --tests --benches --all-features

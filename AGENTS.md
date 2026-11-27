@@ -1,6 +1,12 @@
 LanceDB is a database designed for retrieval, including vector, full-text, and hybrid search.
-It is a wrapper around Lance. There are two backends: local (in-process like SQLite) and
-remote (against LanceDB Cloud).
+It is a wrapper around Lance. There are two editions: LanceDB Embedded (in-process, like
+SQLite) and LanceDB Enterprise (a server cluster reached over HTTP).
+
+In user-facing text (docs, docstrings, error messages, examples), always say "Embedded"
+and "Enterprise". Don't say "local" or "remote" tables. ("LanceDB Cloud" means only the
+legacy hosted service, not Enterprise.) The code implements Enterprise in the `remote`
+module, the `remote` cargo feature, and `Remote*` types. Those names are internal and
+shouldn't leak into user-facing text.
 
 The core of LanceDB is written in Rust. There are bindings in Python, Typescript, and Java.
 
@@ -72,9 +78,10 @@ back and fix it immediately if it is not conventional.
 ## Example plan: adding a new method on Table
 
 Adding a new method involves first adding it to the Rust core, then exposing it
-in the Python and TypeScript bindings. There are both local and remote tables.
-Remote tables are implemented via a HTTP API and require the `remote` cargo
-feature flag to be enabled. Python has both sync and async methods.
+in the Python and TypeScript bindings. Every method needs an Embedded and an
+Enterprise implementation. Enterprise tables are implemented via a HTTP API in the
+`remote` module and require the `remote` cargo feature flag to be enabled. Python
+has both sync and async methods.
 
 Rust core changes:
 
@@ -102,9 +109,9 @@ TypeScript bindings changes:
 
 1. Add napi-rs method binding on `Table` in `nodejs/src/table.rs`.
 2. Run `pnpm build` to generate TypeScript definitions.
-3. Add typescript method on abstract class `Table` in `nodejs/src/table.ts`.
-4. Add concrete method on `LocalTable` class in `nodejs/src/native_table.ts`.
-    * Note: despite the name, this class is also used for remote tables.
+3. Add typescript method on abstract class `Table` in `nodejs/lancedb/table.ts`.
+4. Add concrete method on `LocalTable` class in `nodejs/lancedb/table.ts`.
+    * Note: despite the name, this class is also used for Enterprise tables.
 5. Add test in `nodejs/__test__/table.test.ts`.
 6. Run `pnpm run docs` to generate TypeScript documentation.
 
@@ -155,3 +162,17 @@ Please consider the following when reviewing code contributions.
 ### Documentation
 * New features must include updates to the rust documentation comments. Link to
   relevant structs and methods to increase the value of documentation.
+* User guides (`docs/web`) are evergreen: document only the current API. Don't add
+  migration tables or deprecation notices there. Mark deprecated APIs in their
+  docstrings, which feed the API reference.
+
+### Breaking changes and deprecation
+* Prefer deprecating over removing a released public API. When the new name differs
+  from the old one, keep the old one as a deprecated alias (`#[deprecated]` in Rust,
+  `DeprecationWarning` in Python, `@deprecated` in TypeScript), with a test that it
+  still works.
+* Don't reuse a released public name for something with a different meaning. Callers
+  get a confusing error instead of a deprecation warning.
+* For a breaking change, add `!` to the PR title and start the PR body with a
+  `BREAKING CHANGE:` paragraph covering the new behavior, the old behavior, and how to
+  migrate. Release notes are generated from it.

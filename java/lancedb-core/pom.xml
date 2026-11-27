@@ -8,7 +8,7 @@
     <parent>
       <groupId>com.lancedb</groupId>
       <artifactId>lancedb-parent</artifactId>
-      <version>0.41.0-beta.3</version>
+      <version>0.42.0-beta.37</version>
       <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -16,6 +16,10 @@
     <name>${project.artifactId}</name>
     <description>Utilities to work with LanceDB Cloud and Enterprise via Lance REST Namespace</description>
     <packaging>jar</packaging>
+
+    <properties>
+        <log4j.version>2.25.5</log4j.version>
+    </properties>
 
     <dependencies>
         <dependency>
@@ -33,18 +37,41 @@
             <artifactId>arrow-memory-netty</artifactId>
         </dependency>
 
-        <!-- Transport for the LanceDB routes outside the Lance Namespace spec.
-             Versions match what lance-namespace-apache-client resolves to. -->
+        <!-- Direct transport dependency for LanceDbRestClient. Maven also selects this
+             version for the transitive lance-namespace-apache-client transport. -->
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
-            <version>5.2.1</version>
+            <version>5.6.5</version>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.17.1</version>
+        </dependency>
+
+        <!-- Declared directly so downstream consumers resolve the patched versions:
+             the parent's jackson-bom only manages our own build, and otherwise Maven's
+             nearest-wins mediation picks older versions via arrow-vector and
+             lance-namespace-apache-client. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.jaxrs</groupId>
+            <artifactId>jackson-jaxrs-json-provider</artifactId>
         </dependency>
 
         <dependency>
@@ -70,21 +97,21 @@
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-slf4j2-impl</artifactId>
-            <version>2.25.3</version>
+            <version>${log4j.version}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
-            <version>2.25.3</version>
+            <version>${log4j.version}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
-            <version>2.25.3</version>
+            <version>${log4j.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -75,8 +75,8 @@ test("multimodal snippets (async)", async () => {
     // --8<-- [end:process_results]
     expect(results).toHaveLength(1);
 
-    // --8<-- [start:blob_api_schema]
-    const blobSchema = new arrow.Schema([
+    // --8<-- [start:legacy_blob_api_schema]
+    const legacyBlobSchema = new arrow.Schema([
       new arrow.Field("id", new arrow.Int64()),
       new arrow.Field(
         "video",
@@ -85,20 +85,24 @@ test("multimodal snippets (async)", async () => {
         new Map([["lance-encoding:blob", "true"]]),
       ),
     ]);
-    // --8<-- [end:blob_api_schema]
+    // --8<-- [end:legacy_blob_api_schema]
 
-    // --8<-- [start:blob_api_ingest]
-    const blobData = lancedb.makeArrowTable(
+    // --8<-- [start:legacy_blob_api_ingest]
+    const legacyBlobData = lancedb.makeArrowTable(
       [
         { id: 1, video: Buffer.from("fake_video_bytes_1") },
         { id: 2, video: Buffer.from("fake_video_bytes_2") },
       ],
-      { schema: blobSchema },
+      { schema: legacyBlobSchema },
     );
-    const blobTable = await db.createTable("videos", blobData, {
-      mode: "overwrite",
-    });
-    // --8<-- [end:blob_api_ingest]
-    expect(await blobTable.countRows()).toBe(2);
+    const legacyBlobTable = await db.createTable(
+      "legacy_videos",
+      legacyBlobData,
+      {
+        mode: "overwrite",
+      },
+    );
+    // --8<-- [end:legacy_blob_api_ingest]
+    expect(await legacyBlobTable.countRows()).toBe(2);
   });
 });

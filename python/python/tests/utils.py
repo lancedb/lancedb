@@ -36,6 +36,15 @@ def is_row_id_take(body) -> bool:
     return "_rowid" in (body.get("filter") or "")
 
 
+def is_row_offset_take(body) -> bool:
+    """True when a query body fetches specific rows by ``_rowoffset``.
+
+    This is the request shape ``Table.take_offsets`` sends on the remote
+    backend, distinct from ``is_row_id_take``'s ``_rowid IN (...)``.
+    """
+    return "_rowoffset" in (body.get("filter") or "")
+
+
 def arrow_file_bytes(table: pa.Table) -> bytes:
     """Serialize to the Arrow IPC *file* framing the /query/ route answers with."""
     sink = pa.BufferOutputStream()
@@ -51,21 +60,42 @@ class MockPermutationServer:
     the server, which is the part that has to stay compatible.
     """
 
-    def __init__(self, name="remote_data", num_rows=8, vary_scan_order=False):
+    def __init__(
+        self, name="remote_data", num_rows=8, vary_scan_order=False, latest_version=1
+    ):
         self.name = name
         self.num_rows = num_rows
+        self.latest_version = latest_version
+        self.version_rows = {1: list(range(num_rows))}
+        self.describe_bodies = []
         self.query_bodies = []
         # Stand in for a distributed scan that answers in no fixed order.
         self.vary_scan_order = vary_scan_order
         self.scan_calls = 0
 
+    def publish_version(self, version, row_ids):
+        """Advance the mock's latest version without changing its schema."""
+        self.latest_version = version
+        self.version_rows[version] = list(row_ids)
+
+    def _rows_for_version(self, requested_version):
+        version = (
+            self.latest_version if requested_version is None else requested_version
+        )
+        return self.version_rows.get(version, self.version_rows[1])
+
     def __call__(self, request):
         path = request.path
         if path == f"/v1/table/{self.name}/describe/":
+            body = self._read_body(request)
+            self.describe_bodies.append(body)
+            version = (
+                self.latest_version if body.get("version") is None else body["version"]
+            )
             return self._json(
                 request,
                 {
-                    "version": 1,
+                    "version": version,
                     "schema": {
                         "fields": [
                             {"name": "id", "type": {"type": "int64"}, "nullable": False}
@@ -73,13 +103,13 @@ class MockPermutationServer:
                     },
                 },
             )
-        if path == f"/v1/table/{self.name}/get_lsm_write_spec/":
+        if path == f"/v1/table/{self.name}/get_rte_spec/":
             self._read_body(request)
-            # Null spec: this table has no LSM write path.
-            return self._json(request, {"lsm_write_spec": None})
+            # Null spec: this table has no RTE write path.
+            return self._json(request, {"rte_spec": None})
         if path == f"/v1/table/{self.name}/count_rows/":
-            self._read_body(request)
-            return self._json(request, self.num_rows)
+            body = self._read_body(request)
+            return self._json(request, len(self._rows_for_version(body.get("version"))))
         if path == f"/v1/table/{self.name}/query/":
             return self._query(request, self._read_body(request))
 
@@ -124,10 +154,15 @@ class MockPermutationServer:
 
     def _query(self, request, body):
         self.query_bodies.append(body)
+        version_rows = self._rows_for_version(body.get("version"))
 
         if is_row_id_take(body):
             # A row-id take. Answer ascending, so tests prove the client reorders.
-            row_ids = sorted(parse_in_list(body["filter"]))
+            row_ids = sorted(
+                row_id
+                for row_id in parse_in_list(body["filter"])
+                if row_id in version_rows
+            )
             return self._arrow(
                 request,
                 pa.table(
@@ -140,7 +175,7 @@ class MockPermutationServer:
 
         if body.get("columns") == ["_rowid"]:
             # The permutation build scan: row ids and nothing else.
-            row_ids = list(range(self.num_rows))
+            row_ids = list(version_rows)
             if self.vary_scan_order and self.scan_calls % 2:
                 row_ids.reverse()
             self.scan_calls += 1
@@ -149,8 +184,48 @@ class MockPermutationServer:
                 pa.table({"_rowid": pa.array(row_ids, pa.uint64())}),
             )
 
+        if is_row_offset_take(body):
+            # A _rowoffset take (2-phase's filtered block reads): this
+            # table's rows are never deleted/reordered, so id == _rowoffset
+            # for every row, same invariant as id == _rowid above.
+            row_offsets = sorted(parse_in_list(body["filter"]))
+            columns = body.get("columns") or ["id", "_rowoffset"]
+            values = {"id": row_offsets, "_rowoffset": row_offsets}
+            return self._arrow(
+                request,
+                pa.table(
+                    {
+                        col: pa.array(
+                            values[col],
+                            pa.uint64() if col == "_rowoffset" else pa.int64(),
+                        )
+                        for col in columns
+                    }
+                ),
+            )
+
+        if body.get("columns") == ["_rowoffset"] and "IN" in (body.get("filter") or ""):
+            # 2-phase's live-offset precompute scan: a user filter over
+            # "_rowoffset" alone.  This mock only understands `<col> IN
+            # (...)` filters (not arbitrary SQL), and since id == _rowoffset
+            # for every row here, reuses parse_in_list regardless of which
+            # column the filter actually names.
+            row_offsets = sorted(parse_in_list(body["filter"]))
+            return self._arrow(
+                request, pa.table({"_rowoffset": pa.array(row_offsets, pa.uint64())})
+            )
+
         # The schema probe: filtered to nothing, so it carries schema and no rows.
         return self._arrow(request, pa.table({"id": pa.array([], pa.int64())}))
+
+
+def start_server_thread(server, daemon=False) -> threading.Thread:
+    """Serve on a thread; a short poll interval lets ``shutdown()`` return promptly."""
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=daemon
+    )
+    thread.start()
+    return thread
 
 
 def _make_handler(serve):
@@ -175,15 +250,14 @@ def mock_remote_table(server):
     serialize, hiding the prefetch overlap under test.
     """
     with http.server.ThreadingHTTPServer(
-        ("localhost", 0), _make_handler(server)
+        ("127.0.0.1", 0), _make_handler(server)
     ) as srv:
-        thread = threading.Thread(target=srv.serve_forever)
-        thread.start()
+        thread = start_server_thread(srv)
         try:
             db = lancedb.connect(
                 "db://dev",
                 api_key="fake",
-                host_override=f"http://localhost:{srv.server_address[1]}",
+                host_override=f"http://127.0.0.1:{srv.server_address[1]}",
                 client_config={"timeout_config": {"connect_timeout": 5}},
             )
             yield db.open_table(server.name)

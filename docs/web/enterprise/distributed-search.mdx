@@ -1,0 +1,31 @@
+---
+title: "Distributed Search"
+sidebarTitle: "Distributed Search"
+description: "How LanceDB Enterprise distributes index execution and table-data reads."
+icon: "network-wired"
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Distributed search spreads index execution, table-data reads, and caching across
+multiple serving machines in LanceDB Enterprise. Query nodes plan queries and
+combine results. Plan executors cache index structures and table data and execute
+the remote work -- see [Data Page Cache](/enterprise/data-page-cache) and
+[Tiered Index Cache](/enterprise/tiered-index-cache) for how each cache works.
+See [Architecture](/index#architecture).
+
+<span id="sql-interfaces"></span>
+<span id="performance"></span>
+<span id="performance-vector"></span>
+<span id="performance-fts"></span>
+## Search interfaces {#search-interfaces}
+
+The shared search guides describe the query APIs and index settings:
+
+- [Vector search](/search/vector-search) and [vector indexes](/indexing/vector-index).
+- [Full-text search](/search/full-text-search) and [FTS indexes](/indexing/fts-index).
+- [Filtering](/search/filtering) and [scalar indexes](/indexing/scalar-index).
+- [Query plans](/basics/sql#query-plans) for inspecting execution and runtime measurements.
+- Expected latency at scale: [vector search](/search/vector-search#expected-performance)
+  and [full-text search](/search/full-text-search#expected-performance).

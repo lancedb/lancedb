@@ -1,196 +1,855 @@
 ---
-title: "Jobs"
-sidebarTitle: "Job"
-description: "Work that outlives the call that started it: submitting, waiting, inspecting, cancelling."
+title: "Job Framework"
+sidebarTitle: "Job Framework"
+description: "Track background work from submission to completion."
 icon: hourglass-half
-keywords: ["job", "async", "background", "events", "cancel", "refresh"]
+keywords: ["job", "background", "progress", "events", "cancel"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
 
-Some operations take longer than a request should. Building an index over a
-large table, refreshing a computed column, registering a function -- these run
-on the server after the call that started them has returned.
+## Job handles {#convention}
 
-Each is submitted the same way and returns the same handle.
+A job handle lets you track an operation, such as an index build or a computed
+column refresh. Use it to check progress, wait for completion and inspect
+failures.
 
-<Note>
-A [query](/basics/query) also has an `_async` form, but its handle streams rows
-rather than waiting for an outcome. Both answer the same four questions --
-which one is this, how is it going, give me the result, stop it -- and differ
-only in the third.
-</Note>
-
-## The `_async` convention {#convention}
-
-An operation that can run in the background has two forms. The plain name blocks
-until the work is done. The `_async` / `Async` name submits the work and returns
-a **job** immediately.
-
-| Blocking | Returns a job | SQL |
-| --- | --- | --- |
-| `create_index` | `create_index_async` | `CREATE INDEX` |
-| `refresh_column` | `refresh_column_async` | `REFRESH COLUMN` |
-| `create_function` | `create_function_async` | `CREATE FUNCTION` |
-| `drop_table` | `drop_table_async` | `DROP TABLE` |
-
-<Note>
-The blocking form is not a different operation -- it submits the same job and
-waits. Reach for the `_async` form when you want to do something else meanwhile,
-run several at once, or survive the client going away.
-</Note>
-
-## Submitting and waiting {#waiting}
+Methods such as Python's `create_index_async` and TypeScript's
+`createIndexAsync` return job handles. In LanceDB Embedded, the work runs in your application
+process; in Enterprise, it runs on server workers or through the SQL query
+backend. A returned handle can represent an operation that has already finished,
+so check its status before
+waiting or requesting cancellation. See the operation's API reference for when
+the method returns.
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb.index import IvfPq
+job = tbl.create_index_async("vector", replace=True)
+job.checkout_latest()
 
-job = table.create_index_async("vector", config=IvfPq())
-
-print(job.id)          # the server's id for this operation
-print(job.status())    # "running" | "finished" | "failed" | "cancelled"
-
-job.wait()             # blocks until terminal; raises if it failed
-```
-
-```typescript TypeScript icon="square-js"
-const job = await table.createIndexAsync("vector");
-
-console.log(job.id);              // the server's id for this operation
-console.log(await job.status());  // "running" | "finished" | "failed" | "cancelled"
-
-await job.wait();                 // resolves when terminal; rejects if it failed
+print(job.id())
+print(job.job_type())
+print(job.state())
 ```
 </CodeGroup>
 
-`wait` is the one call that raises on failure. `status` is a point snapshot and
-returns the failed state rather than raising, which is what you want in a
-polling loop.
+## Cached reads and live calls {#snapshots}
 
-In Python `wait` takes an optional timeout and returns the operation's typed
-result -- a `RefreshColumnJobResult`, a `FunctionVersion`, or `None` for an
-operation that has no result:
+Python job handles expose data through methods. The cached read methods return
+the last observation without contacting the server. Submission need not fetch
+the full registry record, so some read methods can initially return `None`.
+
+Call `job.checkout_latest()` to update the handle's cached lifecycle state and
+complete registry record together. This updates the values returned by
+`state()`, `job_type()`, `creation_ms()`, `spec()`, `result()`, and `failure()`
+from one server observation.
+It updates the existing handle in place, returns `None`, and does not wait for
+the job to finish or restart it. For SQL-backed or in-process jobs, it updates
+the lifecycle state without registry details.
+
+| Surface | Contract |
+| --- | --- |
+| `id()` | Opaque operation ID, when available. |
+| `state()` | Last observed lifecycle state. It does not update on its own. |
+| `job_type()`, `creation_ms()` | Cached job kind and creation time in epoch milliseconds. |
+| `spec()` | Complete, job-specific submitted specification. Read this separately from the bounded `repr(job)` display. |
+| `result()` | Cached, job-specific reported data; it is not necessarily the typed object returned by `wait()`. |
+| `failure()` | Cached `JobFailureInfo`, when the server reports a terminal failure. |
+| `checkout_latest()` | Fetch and cache the latest lifecycle state and complete registry record together. Failed and cancelled states are cached without raising a job-failure exception; request errors can still raise. |
+| `status()` | Live lifecycle request. For registry jobs it also caches the full record. A failed state is returned without raising a job-failure exception; request errors can still raise. |
+| `refresh()` | Existing method with the same cache-update behavior as `checkout_latest()`. |
+| `events(...)` | Separate live request returning a `pyarrow.Table` of recorded events; it does not refresh the cached record. |
+| `wait(...)` | Poll until completion and return the operation's typed result, or raise on failure/cancellation. Refresh afterward when you need the complete final registry record. |
+
+`status()`, `refresh()`, and `events(...)` remain available. Read `job.state()`
+after `checkout_latest()` to poll using the same snapshot as `result()` and
+`failure()`. Event history is a separate live request through `events(...)`
+and does not refresh the cached record.
+
+<Note>
+These examples require a Python SDK release with `checkout_latest()` and the
+method-based read accessors. Cached reads such as `job.state()` and
+`job.result()` are synchronous on both `Job` and `AsyncJob`. Async handles use
+`await job.checkout_latest()` or `await job.refresh()` for the live update.
+</Note>
+
+For example, poll a registry handle and then retrieve its final details:
+
+<CodeGroup>
+```python Synchronous icon="python"
+import time
+
+job.checkout_latest()
+while job.state() == "running":
+    print(job.state(), job.failure())
+    time.sleep(2)
+    job.checkout_latest()
+
+result = job.wait()
+job.checkout_latest()
+print(result)
+print(job.spec())
+```
+```python Asynchronous icon="python"
+import asyncio
+
+await job.checkout_latest()
+while job.state() == "running":
+    print(job.state(), job.failure())
+    await asyncio.sleep(2)
+    await job.checkout_latest()
+
+result = await job.wait()
+await job.checkout_latest()
+print(result, job.spec())
+```
+</CodeGroup>
+
+`job.state()` reports the last observed lifecycle state, usually `running`,
+`finished`, `failed`, or `cancelled`. Newer server states may pass through an
+older client. For execution progress and queue details, use `job.progress()`
+with a supporting SDK and server. See [refresh admission](/feature-engineering/refresh-column#admission).
+
+## Submit and wait for a job {#waiting}
+
+1. **Submit the operation.** Keep the returned job handle. For an Enterprise
+    registry job, also keep its ID if another process needs to look it up later.
+2. **Check progress.** Read the current status while the operation runs.
+3. **Wait for completion.** Check that the job succeeded before using its
+    result. If it failed or was cancelled, inspect the failure details and any
+    results it committed before stopping.
+
+In Python, `job.status()` reports the current status.
+
+| Status | Meaning |
+| --- | --- |
+| `running` | The operation is in progress. |
+| `waiting_for_capacity` | An Enterprise Function refresh is waiting for execution workers. This status is nonterminal. It returns to `running` when execution resumes. |
+| `finished` | The operation completed successfully. |
+| `failed` | The operation failed. |
+| `cancelled` | The operation was cancelled. |
+
+`job.status()` checks the current state without waiting for completion.
+It returns `failed` or `cancelled` for unsuccessful jobs.
+
+Use `job.wait()` to wait for completion and raise if the job fails or is
+cancelled. Python's `Job.wait()` and `AsyncJob.wait()` retry transient connection
+and read errors with capped
+exponential backoff within the caller's timeout. Without a timeout, retries
+continue indefinitely.
+
+If the timeout expires while disconnected, the wait raises `ConnectionError`
+with the job ID and instructions to resume waiting. A timeout while connected
+raises `TimeoutError`. The job may still be running; timing out does not cancel it.
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+from lancedb.exceptions import JobFailedError, JobCancelledError
+
+job = tbl.create_index_async("vector", replace=True)
+job_id = job.id()  # Save the ID to reopen an Enterprise registry job later.
+
+try:
+    result = job.wait(timeout=timedelta(minutes=10))
+except JobFailedError:
+    print(f"job failed: {job.failure()}")
+except JobCancelledError:
+    print("job was cancelled")
+except ConnectionError as exc:
+    print(exc)  # The job may still be running on the server.
+except TimeoutError:
+    print(f"still running: {job.status()}")
+```
+```typescript TypeScript
+const result = await job.wait({
+  timeoutMs: 600_000,
+  onProgress: progress => console.log(progress),
+});
+```
+```rust Rust
+use std::time::Duration;
+use lancedb::job::JobWaitOptions;
+
+let result = job.wait_with_options(
+    JobWaitOptions::new()
+        .timeout(Duration::from_secs(600))
+        .progress(|description| println!("{}", description.progress_snapshot())),
+).await?;
+```
+</CodeGroup>
+
+TypeScript's `timeoutMs` and Rust's `JobWaitOptions::timeout` bound the existing
+wait poller, including pending status requests and retry/polling delays.
+Expiry rejects the TypeScript promise or returns Rust's `Error::Timeout`;
+the operation is not cancelled. Calling `wait()` without options still waits
+indefinitely. TypeScript's existing `wait(callback)` and Rust's
+`wait_with_progress(callback)` remain available. A zero timeout only permits
+an immediately ready result. TypeScript timeouts use nonnegative safe-integer
+milliseconds; Rust uses `std::time::Duration`.
+
+After connectivity returns, reopen an Enterprise registry job by its saved ID
+and continue waiting on the existing operation:
 
 ```python
-from datetime import timedelta
-
-result = table.refresh_column_async("embedding").wait(timeout=timedelta(minutes=30))
+job = db.open_job(job_id)
+result = job.wait(timeout=timedelta(minutes=10))
 ```
 
-`TimeoutError` means the timeout elapsed, not that the job stopped. The job is
-still running; the handle just gave up watching.
+For SQL-backed jobs, call `wait()` again on the original handle. These jobs
+cannot be reopened with `db.open_job()`; see [SQL-backed job handles](#sql-backed-job-handles).
+
+<span id="inspecting" />
+<span id="events" />
+
+## Inspect and cancel jobs {#managing}
+
+| Task | What to do |
+| --- | --- |
+| Inspect progress | Check status and refresh the handle to retrieve details. Enterprise job events can help explain ongoing work or failures. |
+| Reattach from another process | Open an existing server job with its ID, such as Python's `db.open_job(job_id)`. The server must still retain the job record. |
+| Diagnose a failure | Inspect failure details and relevant events. Enterprise SQL also provides `SHOW ERRORS`. |
+| Request cancellation | Call the job's cancellation method. Cancellation may take time, and work already committed is not rolled back. |
+
+Reopening a job retrieves the existing operation; it does not restart failed
+work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
+
+<CodeGroup>
+```python Python icon="python"
+job = db.open_job(job_id)  # raises JobNotFoundError if unknown
+job.checkout_latest()
+print(job.state(), job.result(), job.failure())
+
+events = job.events(limit=100)
+print(events.to_pylist())
+
+job.cancel()
+```
+</CodeGroup>
+
+List jobs on a connection, paging through the results:
+
+<CodeGroup>
+```python Python icon="python"
+for info in db.list_jobs(page_limit=50):
+    print(info.job_id, info.job_type, info.state)
+```
+</CodeGroup>
+
+`list_jobs` yields `JobInfo` summaries, newest creation time first, rather than
+live `Job` handles. Open an ID to inspect its full record. `page_limit` bounds
+each server request, not the total yielded items, and `page_token` resumes a
+listing. It is a lazy iterator: iteration performs requests and can raise
+request errors. Use `list(db.list_jobs(...))` to collect all remaining results;
+there is no `.to_list()` method.
+
+{/* Draft for the SDK and Enterprise releases that provide job listing metadata.
+
+With a server and SDK that provide listing metadata, `JobInfo` also exposes
+`columns`, `function_name`, `function_version`, `completed_at_millis`,
+`duration_millis`, and `failure`. Function names include their namespace, joined
+by `$`, and the version is pinned to the computed column refresh. Duration is
+creation-to-completion wall time, including queueing and pauses; running jobs
+have no completed duration. Unknown scalar values and failure summaries stay
+absent (`None` in Python/Rust, `undefined` in TypeScript), and unavailable or
+non-column-scoped `columns` are empty. A zero duration is a measured value.
+Failure summaries include phase, message, and retryability; open the job for
+full diagnostics.
+
+<CodeGroup>
+```python Python icon="python"
+latest = next(
+    (
+        info
+        for info in db.list_jobs(table="events", job_type="function_refresh")
+        if "embedding" in info.columns
+    ),
+    None,
+)
+if latest is not None:
+    print(latest.function_name, latest.function_version, latest.duration_millis)
+    if latest.failure is not None:
+        print(latest.failure.message)
+```
+
+```rust Rust icon="rust"
+use futures::TryStreamExt;
+use lancedb::{database::JobListFilter, listing::ListingOptions, Connection, Result};
+
+async fn print_latest_refresh(db: &Connection) -> Result<()> {
+    let mut filter = JobListFilter::default();
+    filter.table = Some("events".into());
+    filter.job_types = vec!["function_refresh".into()];
+    let mut jobs = db.list_jobs_filtered(filter, ListingOptions::default());
+    while let Some(info) = jobs.try_next().await? {
+        if info.columns.iter().any(|column| column == "embedding") {
+            println!(
+                "{:?} {:?} {:?}",
+                info.function_name, info.function_version, info.duration_millis
+            );
+            if let Some(failure) = info.failure {
+                println!("{:?}", failure.message);
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+```
+
+```typescript TypeScript icon="js"
+for await (const info of db.listJobs({ pageLimit: 50 })) {
+  if (
+    info.jobType === "function_refresh" &&
+    info.table === "events" &&
+    info.columns.includes("embedding")
+  ) {
+    console.log(info.functionName, info.functionVersion, info.durationMillis);
+    if (info.failure !== undefined) {
+      console.log(info.failure.message);
+    }
+    break;
+  }
+}
+```
+</CodeGroup>
+
+Python and Rust support server-side table filtering. TypeScript `listJobs`
+currently accepts only pagination options, so its example filters rows on the
+client and may read more pages. The displayed table name has no namespace;
+use a table name unique within the listed database for this TypeScript example.
+Use Python, Rust, or SQL for an exact namespaced table listing.
+
+SQL `SHOW JOBS EXTENDED` and `SHOW JOBS EXTENDED FOR TABLE events` expose the
+same metadata. Plain `SHOW JOBS` keeps its existing result columns.
+The extended result returns `columns` as a list and `failure` as nullable JSON
+text.
+
+*/}
 
 <Note>
-The TypeScript `wait()` resolves to `void`. Read the outcome from `result` after
-it resolves.
+Job filters and synchronous `Listing` indexing, slicing, and `len()` require
+a Python SDK release that includes these APIs. Older SDKs expose only
+`page_token` and `page_limit`; collect results with `list(...)` before indexing
+or counting them. Filtering also requires a matching Enterprise server that
+supports the requested filters.
 </Note>
 
-## Inspecting a job {#inspecting}
+Filter jobs on the server before pagination with `table`, `state`, `job_type`
+or `job_types`, and creation-time bounds. `table` names a table in
+`namespace_path` (the root by default) and includes all its branches. Requests
+stay scoped to the connected database. Creation times are Unix milliseconds:
+`created_at_gte_millis` is inclusive and `created_at_lt_millis` is exclusive.
+Choose either `job_type` or `job_types`.
 
-Submitting an operation returns only an id, so the detail fields are empty until
-the handle fetches the record. `refresh()` does that; `status()` does it as a
-side effect.
+The `state` filter uses registry states: `in_progress`, `succeeded`, `failed`,
+`canceled`, and `timed_out`. These differ from the SDK lifecycle labels such
+as `running` and `finished` returned in `JobInfo.state`.
+
+```python
+jobs = db.list_jobs(table="events", state="in_progress", page_limit=5)
+first_five = jobs[:5]
+for info in first_five:
+    print(info.job_id, info.state)
+```
+
+Synchronous indexing and slicing refer to the remaining results without
+consuming them. A bounded forward slice such as `jobs[:5]` fetches only enough
+pages to reach its stop. `len(jobs)` returns the remaining count by fetching
+and caching every remaining result. Negative indexes and open-ended or reverse
+slices also fetch and cache all remaining results. These operations can raise
+request errors; later iteration drains their cache. `AsyncListing` remains an
+async iterator: use `async for` to read it.
+
+`Listing.num_page_results()` reports cached items available without another
+request, including items retained by indexing, slicing, or counting.
+`Listing.page_token()` reports the next request's token. Drain all cached
+items before saving that token, or resuming can skip them. Resume with the same
+filters, for example `db.list_jobs(table="events", state="in_progress",
+page_token=saved_token, page_limit=5)`. A `None` token after the final page can
+coexist with unread cached items. A resumed listing is not a transactionally
+frozen view of jobs submitted in the meantime.
+
+`events.schema` describes the Arrow response. Use `events.to_pylist()` for
+Python row dictionaries. Common event columns are `event_seq` (int64), `state`
+(string), `updated_at_millis` (int64), `updated_by` (string), and nullable
+`emitted_from`, `emitted_by` and `claim_entity` strings. Optional uint64 work
+counters such as `rows_processed` and diagnostic details depend on job type
+and server version. If a `payload` column is returned, its value is a nullable
+JSON string, not an already decoded Python dictionary.
+Empty results retain their schema. Events are newest first and belong to the
+requested job; child events are separate. An event count is not a completed-row
+count, and a running job can have no terminal `result` while producing events.
+
+For a Function refresh, `wait()` returns a `RefreshColumnResult` such as
+`rows_assigned`, `rows_failed`, `rows_remaining`, `source_version` and optional
+`published_version`. Other job types have different results. Do not parse the
+printed representation to recover a spec, result or progress measurement.
+For object-shaped registry data, `job.spec()` and `job.result()` are decoded Python
+dictionaries: access fields with keys, such as `job.result().get("summary")`
+after refreshing a successful Function job. The separate typed object from
+`wait()` uses attributes, such as `result.rows_assigned`.
+
+Event responses have [row limits](/basics/limits#jobs). An explicit limit can
+request more than the default, but it does not guarantee a complete event
+history.
+
+{/*
+Draft for the Functions release. Add this section before "Embedded and
+Enterprise execution":
+
+### Typed states and attempt identity
+
+The existing identity and string status APIs keep their behavior. For a detailed
+state, use Python's `status_typed()`, TypeScript's `statusTyped()`, or Rust's
+`status_typed()`. Known states are `created`, `queued`, `in_progress`,
+`succeeded`, `failed`, `canceled`, and `timed_out`. Unknown future states retain
+their original value and never establish success.
+
+The detail getters report the last observation. Call `status()` or `refresh()`
+to populate registry metadata. A handle that follows recovery can select a
+different attempt during either call while the existing handle ID stays
+unchanged. Save Python's `job_id()` (`jobId` in TypeScript) after refreshing
+and use that saved value throughout an exact-attempt diagnostic read;
+refreshing again may select a later attempt.
+
+| Python method | Meaning |
+| --- | --- |
+| `job_id()` | Identity of one attempt. Embedded identities last for the handle's lifetime and cannot be reopened. |
+| `operation_id()` | Root of the explicit retry lineage, when reported. |
+| `attempt()` | One-based attempt ordinal. Worker replacement does not increment it. |
+| `retry_of()` | Immediate predecessor attempt, when reported. |
+| `lifecycle_state()` | Detailed cached lifecycle state, including unknown future values. |
+| `source_table_version()` | Source snapshot pinned for the attempt, when reported. |
+| `execution_epoch()` | Execution fencing token, when reported. |
+
+Python data access uses synchronous methods on both handle types.
+TypeScript exposes the same values as camel-case properties. Older servers
+may omit lineage and pin metadata; a missing value is unknown.
+
+### Retry an exact attempt
+
+`retry()` requires a backend that supports exact-attempt retry. It selects a
+successor for an unsuccessful attempt, preserving resolved Function inputs,
+result decoding, and the submitting table's read freshness. Repeated requests
+for the same predecessor select the same successor. Retry the successor's ID
+to request another attempt. These guarantees require the supporting server
+protocol; Embedded handles without a replayable operation specification refuse
+durable retry.
 
 <CodeGroup>
-```python Python icon="python"
+```python Python
+from lancedb import JobState
+
+job = db.open_job(job_id)
+if job.status_typed() in (JobState.FAILED, JobState.TIMED_OUT):
+    successor = job.retry()
+    result = successor.wait()
+```
+
+```typescript TypeScript
+const state = await job.statusTyped();
+if (state === "failed" || state === "timed_out") {
+  const successor = await job.retry();
+  await successor.wait();
+}
+```
+
+```rust Rust
+use lancedb::JobState;
+
+if matches!(
+    job.status_typed().await?,
+    JobState::Failed | JobState::TimedOut
+) {
+    let successor = job.retry().await?;
+    let result = successor.wait().await?;
+}
+```
+</CodeGroup>
+
+A wait timeout stops waiting without cancelling execution. Keep the handle
+and wait again; a timeout alone is not a reason to retry the operation.
+TypeScript and Rust also support wait deadlines:
+
+<CodeGroup>
+```python Python
+from datetime import timedelta
+
+result = job.wait(timeout=timedelta(minutes=10))
+```
+
+```typescript TypeScript
+await job.wait({ timeoutMs: 10 * 60 * 1000, onProgress: console.log });
+```
+
+```rust Rust
+use std::time::Duration;
+
+job.wait_with_options(
+    lancedb::job::JobWaitOptions::new().timeout(Duration::from_secs(10 * 60)),
+).await?;
+```
+</CodeGroup>
+
+### Retained history and row-error pages
+
+`events()` returns one retained event page. Pass its opaque continuation to
+the next call (`page_token` in Python/Rust, `pageToken` in TypeScript).
+`history()` follows those continuations, including empty pages. Python and
+TypeScript yield pages; Rust collects the retained batches. Event history
+requires a registry-backed handle and a supporting server.
+
+<CodeGroup>
+```python Python
+for page in job.history(limit=1000):
+    print(page.to_pylist())
+```
+
+```typescript TypeScript
+for await (const page of job.history({ limit: 1000 })) {
+  console.log(page.toArray());
+}
+```
+
+```rust Rust
+use lancedb::job::JobEventsRequest;
+
+for batch in job.history(JobEventsRequest::default().limit(1000)).await? {
+    println!("{batch:?}");
+}
+```
+</CodeGroup>
+
+For retained row diagnostics, including repaired rows, opt into paging with an exact `job_id` and an empty
+`page_token`. Continue until the response omits its token, keeping the table,
+branch, job, and column filters unchanged. Records and capped-fragment
+summaries share the page budget. An empty page can still have a continuation.
+Explicit paging requires a supporting server; a server that truncates without
+returning a cursor is rejected rather than treated as complete.
+
+<CodeGroup>
+```python Python
 job.refresh()
-
-job.state        # last observed state, without another round trip
-job.job_type     # what kind of job, as the server names it
-job.creation_ms  # when it was created, epoch milliseconds
-job.spec         # what it was submitted with
-job.result       # its terminal result, once it succeeds
-job.failure      # why it failed, when it did
+attempt_job_id = job.job_id()
+token = ""
+while token is not None:
+    errors = tbl.function_errors(job_id=attempt_job_id, limit=1000, page_token=token)
+    print(errors.records, errors.fragments)
+    token = errors.page_token
 ```
 
-```typescript TypeScript icon="square-js"
+```typescript TypeScript
 await job.refresh();
+const jobId = job.jobId;
+if (jobId === null) throw new Error("A registry attempt ID is required");
+let pageToken: string | undefined = "";
+while (pageToken !== undefined) {
+  const page = await tbl.functionErrors({ jobId, limit: 1000, pageToken });
+  console.log(page.records, page.fragments);
+  pageToken = page.pageToken ?? undefined;
+}
+```
 
-job.state;       // last observed state, without another round trip
-job.jobType;     // what kind of job, as the server names it
-job.creationMs;  // when it was created, epoch milliseconds
-job.spec;        // what it was submitted with
-job.result;      // its terminal result, once it succeeds
-job.failure;     // why it failed, when it did
+```rust Rust
+use lancedb::function::FunctionErrorsRequest;
+
+job.refresh().await?;
+let job_id = job.job_id().expect("a registry-backed job");
+let mut token = Some(String::new());
+while let Some(current) = token {
+    let page = table
+        .function_errors(
+            FunctionErrorsRequest::new()
+                .job_id(job_id.clone())
+                .limit(1000)
+                .page_token(current),
+        )
+        .await?;
+    println!("{:?} {:?}", page.records, page.fragments);
+    token = page.page_token;
+}
 ```
 </CodeGroup>
 
-Printing the handle renders every field it knows, which is usually faster than
-reading them one at a time.
+Pages from an executing attempt are partial observations. Page a terminal
+attempt for its complete retained diagnostics; retained diagnostics are not a
+ledger of every attempted row.
 
-## Progress, from events {#events}
+### Progress snapshots and observers
 
-`result` only tells you anything once the job has finished. Events are written
-as it runs, and they outlive the workers that produced them -- so a job that is
-still going, or one that never finished, can still account for what it did.
+Enterprise registry handles expose a structured progress snapshot. This
+includes index and refresh handles returned directly by their async submission
+methods, as well as handles reopened with `open_job()`. Call `progress()` for a
+point-in-time snapshot, or pass a callback to `wait()` to observe the same
+server polls that drive completion. The callback receives running and terminal
+observations; it does not start another polling loop. It is a synchronous
+observer and is not awaited. If it throws, `wait()` logs the error and continues
+waiting; callback exceptions do not reject `wait()`.
 
 <CodeGroup>
-```python Python icon="python"
-events = job.events(limit=5000, filter="state = 'claim_complete'")
+```python Python
+def show_progress(progress):
+    print(
+        progress.get("state"),
+        progress.get("phase"),
+        progress.get("rows_computed"),
+        progress.get("rows_planned"),
+    )
+
+job = tbl.refresh_column_async("embedding")
+snapshot = job.progress()
+if snapshot is not None:
+    show_progress(snapshot)
+
+result = job.wait(progress=show_progress)
 ```
 
-```typescript TypeScript icon="square-js"
-const events = await job.events({ limit: 5000, filter: "state = 'claim_complete'" });
+```typescript TypeScript
+const showProgress = (progress: lancedb.JobProgress) => {
+  console.log(
+    progress.state,
+    progress.phase,
+    progress.rows_computed,
+    progress.rows_planned,
+  );
+};
+
+const job = await tbl.refreshColumnAsync("embedding");
+const snapshot = await job.progress();
+if (snapshot !== null) {
+  showProgress(snapshot);
+}
+
+await job.wait(showProgress);
 ```
 
-```sql SQL
-SHOW ERRORS ON my_table FOR JOB 'job-id' LIMIT 100
+```rust Rust
+let job = table.refresh_column_async("embedding").await?;
+if let Some(progress) = job.progress().await? {
+    println!(
+        "state={:?} rows={:?}/{:?}",
+        progress.get("state"),
+        progress.get("rows_computed"),
+        progress.get("rows_planned"),
+    );
+}
+
+let result = job
+    .wait_with_progress(|description| {
+        let progress = description.progress_snapshot();
+        println!(
+            "state={:?} rows={:?}/{:?}",
+            progress.get("state"),
+            progress.get("rows_computed"),
+            progress.get("rows_planned"),
+        );
+    })
+    .await?;
 ```
 </CodeGroup>
 
-A distributed job records a `claim` / `claim_complete` pair per unit of work,
-each carrying `rows_processed`. Summing `rows_processed` over the completed
-claims is how you get progress on a job that has no percentage.
+Job-type-specific counters are optional. A missing `rows_computed`,
+`rows_planned`, or `rows_remaining` field means the server did not report that
+counter; it does not mean zero, complete, or failed. Embedded handles and
+SQL-backed query handles do not have registry progress records. Use their
+`status()` and `wait()` APIs, and use registry progress only on handles backed
+by the jobs API.
 
-`filter` is a SQL-like expression over `state`, `updated_by`, `emitted_from`,
-`emitted_by`, and `claim_entity`.
+`estimated_remaining_time_millis` is a best-effort client-side estimate. It is
+omitted while a job is initializing, queued, or paused, and when there is no
+positive progress rate from two compatible samples.
 
-<Warning>
-The server returns 1000 event rows by default and 10,000 at most, and
-**truncates without telling you**. A job that emits an event per fragment will
-silently lose its tail unless you pass `limit`.
-</Warning>
+### Inspect a slow Function worker
 
-Events are recorded server-side, so this raises for an operation that ran
-in-process.
+On a supported Enterprise server, Python's `Job.stack(worker_id)` and
+`await AsyncJob.stack(worker_id)` capture Python thread stacks from a running
+Function refresh worker. Rust provides `job.stack(worker_id).await?`.
+TypeScript does not yet expose this method. Stack inspection requires the
+system operate privilege.
 
-## Finding and cancelling jobs {#managing}
+Select a worker ID from the job's progress warnings or recorded events. For
+example, inspect a worker named in the current no-progress or slow-split warnings:
 
-The connection lists and reopens jobs, so a handle lost to a restarted process
-is recoverable from its id.
+```python
+job = db.open_job(job_id)
+snapshot = job.progress() or {}
+warnings = snapshot.get("warnings", [])
+if warnings:
+    evidence = job.stack(warnings[0]["worker_id"])
+    print(evidence["status"], evidence["omitted_sessions"])
+    for session in evidence["stacks"]:
+        print(session["status"], session["captured_at_millis"])
+        print(session["stack"], session["truncated"])
+```
+
+`unavailable` and `unsupported` are explicit capture statuses; missing frames
+do not establish that a worker is healthy or finished. Captures are bounded and
+may reuse a recent sample. They contain Python frames without source text,
+locals or native frames. Local operations and SQL-backed query handles do not
+support stack inspection. For a worker that already timed out, inspect the
+recorded failure events for retained traceback evidence.
+*/}
+
+## Profile a Function worker {#profiling}
+
+On a supporting Enterprise server, request a CPU profile, retained Python
+allocation profile, or PyTorch CUDA activity trace through the existing Job
+handle. A capture is a diagnostic operation on that refresh job. It records
+one selected worker's Python execution session and pins its execution epoch.
+Choose a worker ID from the job's recorded events or the Console.
 
 <CodeGroup>
-```python Python icon="python"
-db.list_jobs()             # every job the server knows about
-job = db.open_job(job_id)  # reattach to one
-db.cancel_job(job_id)      # ask it to stop
+```python Synchronous Python icon="python"
+from datetime import timedelta
+
+job = db.open_job(refresh_job_id)
+profile = job.capture_profile(
+    worker_id,
+    kind="cpu",
+    duration=timedelta(seconds=10),
+    session_slot=0,
+)
+print(profile.profile_id, profile.status)
+job.wait_for_profile(
+    profile.profile_id,
+    timeout=timedelta(seconds=60),
+    poll_interval=timedelta(seconds=5),
+)
+job.export_profile(profile.profile_id, "cpu.speedscope.json")
 ```
 
-```typescript TypeScript icon="square-js"
-await db.listJobs();
-const job = await db.openJob(jobId);
-await db.cancelJob(jobId);
+```python Asynchronous Python icon="python"
+from datetime import timedelta
+
+job = await async_db.open_job(refresh_job_id)
+profile = await job.capture_profile(
+    worker_id, kind="gpu", duration=timedelta(seconds=2)
+)
+await job.wait_for_profile(profile.profile_id, timeout=timedelta(seconds=60))
+await job.export_profile(profile.profile_id, "gpu.trace.json")
 ```
 
-```sql SQL
-SHOW JOBS
+```typescript TypeScript icon="js"
+const job = await db.openJob(refreshJobId);
+const profile = await job.captureProfile(workerId, {
+  kind: "gpu",
+  durationSeconds: 2,
+  sessionSlot: 0,
+});
+console.log(profile.profileId, profile.status);
+await job.waitForProfile(profile.profileId, {
+  timeoutMs: 60_000,
+  pollIntervalMs: 5_000,
+});
+await job.exportProfile(profile.profileId, "gpu.trace.json");
+```
+
+```rust Rust icon="rust"
+use std::time::Duration;
+use lancedb::job::{
+    FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions,
+};
+
+let job = db.open_job(refresh_job_id).await?;
+let profile = job.capture_profile(
+    worker_id,
+    FunctionProfileOptions::new(FunctionProfileKind::Cpu)
+        .duration(Duration::from_secs(10)),
+).await?;
+job.wait_for_profile(
+    &profile.profile_id,
+    FunctionProfileWaitOptions::new()
+        .timeout(Duration::from_secs(60))
+        .poll_interval(Duration::from_secs(5)),
+).await?;
+let artifact = job.profile_artifact(&profile.profile_id).await?;
+std::fs::write("cpu.speedscope.json", serde_json::to_vec(&artifact)?)?;
 ```
 </CodeGroup>
 
-Cancellation is a request, not a guarantee, and cancelling a job that already
-finished does nothing. `JobNotFoundError` means the id does not name a job the
-server still has.
+| Kind | Evidence and export | Recording window |
+| --- | --- | --- |
+| `cpu` | Python stack samples weighted by thread CPU time; speedscope JSON | 1–30 seconds, default 10 |
+| `memory` | Python allocations made during capture and retained at its end; tracemalloc JSON | 1–30 seconds, default 10 |
+| `gpu` | PyTorch CUDA kernels, copies, memset and available CUDA host APIs; Chrome Trace Event JSON | 1–5 seconds, default 5 |
 
-<Warning>
-A job id is opaque. It correlates with server logs and the calls above, but
-parsing it or storing it to resume the job later is not supported.
-</Warning>
+Captures require System Operate permission and a running Function refresh with
+an available worker session. Slot zero selects the first Python session.
+Only one capture per job can be active. The capture window excludes supervisor
+dispatch delay. CPU sampling needs readable per-thread procfs and is unavailable
+in dedicated sandboxes. GPU tracing needs already initialized PyTorch CUDA with
+CUPTI support. Captures add workload-dependent time and memory overhead.
 
-## In-process jobs {#in-process}
+`wait_for_profile` / `waitForProfile` defaults to a 60-second timeout and two
+seconds between status requests. Both are configurable. A timeout stops only
+that client's wait; the capture and parent refresh keep running. Keep the
+profile ID to wait again. A failed capture raises an error with the server's
+reason. Use `profile_status` / `profileStatus` to inspect its typed status and
+failure details independently of the refresh job's status.
 
-A local database has no server to run anything, so its operations run in your
-process. They still return a handle, so the same code works against both -- but
-one with nothing behind it: `id` is `None`, `status()` reports `"finished"`,
-`wait()` returns immediately, `cancel()` does nothing, and `events()` raises.
+Retrieve a completed capture with `profile_artifact` / `profileArtifact` to get
+the actual JSON in memory, or export it to a file as above. Files are overwritten
+only after retrieval succeeds. Retained lookup works after refresh completion:
+reopen the parent job, then use the saved profile ID. Retention is at most one
+hour and eight captures per job, until earlier scratch reclamation or archival.
+Permission, unsupported-session, expired-artifact and unsupported-server errors
+are surfaced by the normal client error handling.
 
-This is the difference to expect when moving between embedded and deployed --
-see [SDKs](/basics/sdk).
+Open CPU exports in speedscope and GPU exports in Perfetto. Truncation flags
+remain in the downloaded JSON. CUDA durations can overlap across streams, so
+their sum is not elapsed time or GPU utilization. Python operator attribution,
+GPU allocation stacks, native CPU frames and native allocations are outside
+these capture formats. Concurrent CUDA profilers in the same Python session
+are unsupported.
+
+## Embedded and Enterprise execution {#in-process}
+
+The following table describes LanceDB Embedded operations and registry jobs on
+LanceDB Enterprise. SQL-backed job handles follow the query lifecycle
+described below.
+
+| | Embedded | Enterprise registry job |
+| --- | --- | --- |
+| Execution | In your application process | On server workers |
+| Job identity | No server ID | A server ID for looking up the job |
+| Event history | No server event history | Available through the jobs API |
+| Reattaching after a client restart | No server job to reopen | Reopen by ID while the record is retained |
+
+### SQL-backed job handles
+
+On Enterprise, several catalog operations return a job handle backed by the
+SQL query engine rather than the job registry:
+
+| Operation | SDK methods | Behavior |
+| --- | --- | --- |
+| Materialized views | `create_materialized_view_async()`, `refresh_async()`, `drop_materialized_view_async()` | Synchronous variants wait on the same SQL execution. Drop removes the catalog binding immediately; physical cleanup continues in the background. |
+| Functions | Registration, `drop_function_async()` | Registration waits for catalog publication before returning the immutable FunctionVersion. Drop confirms catalog removal while cleanup continues separately. |
+| Secrets | Create, alter, list, describe, drop | Credential values are bound as SQL parameters, never embedded in SQL text or returned in results. `DESCRIBE SECRET` additionally exposes rotation history. |
+| Views | Create, describe, list, drop | Create returns the stored definition and schema. Drop confirms catalog removal while cleanup continues separately. |
+
+All of these report `job.job_type()` as `"query"`, with `job.id()` holding the
+connection-scoped SQL query UUID -- use `describe_query(job.id())` to inspect
+one. Unlike registry handles, they don't expose event history, can't be
+reopened through `open_job()` or reattached after a client restart, and
+cancellation depends on the SQL server's support for it.
+
+### Object teardown {#teardown}
+
+The "physical cleanup continues in the background" behavior above, for a
+dropped table, view, materialized view, Secret or Function, is a job type of
+its own: `drop_object` deletes the dropped object's content, then clears it
+from the database's cleanup backlog. You trigger it indirectly, by dropping
+one of those objects or a [namespace](/management/namespace) -- it runs as
+this job rather than inline with the call. Whether a dropped table runs as
+`drop_object` or as [`drop_table`](/management/table#drop), which fences the
+table's directory with its own marker instead, depends on how the deployment
+stores its catalog.
+
+## Learn more {#next}
+
+- [Incremental Indexing](/indexing/incremental-indexing): submit index work.
+- [Refresh a computed column](/feature-engineering/refresh-column): populate derived values.
+- [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
+- [SDKs](/basics/sdk): find the job API for your client.

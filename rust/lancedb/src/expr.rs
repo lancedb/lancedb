@@ -296,6 +296,49 @@ mod tests {
     }
 
     #[test]
+    fn test_string_placeholder_does_not_rewrite_user_string() {
+        let marker = "__lancedb_string_placeholder_0__";
+        let expr = col("value")
+            .eq(lit(marker))
+            .and(col("other").eq(lit("ordinary")));
+        assert_eq!(
+            expr_to_sql_string(&expr).unwrap(),
+            "((`value` = '__lancedb_string_placeholder_0__') AND (`other` = 'ordinary'))"
+        );
+    }
+
+    #[test]
+    fn test_string_literals_use_standard_quote_escaping() {
+        use datafusion_sql::sqlparser::{
+            dialect::GenericDialect, tokenizer::Token, tokenizer::Tokenizer,
+        };
+
+        for value in [
+            r"\",
+            "'",
+            r"\') OR true --",
+            "tenant -- 'not a comment",
+            "tenant /* 'not a comment */",
+        ] {
+            let expr = col("tenant").eq(lit(value));
+            let sql = expr_to_sql_string(&expr).unwrap();
+            assert_eq!(canonicalize_sql_predicate(&sql).unwrap(), sql);
+
+            let string_literals = Tokenizer::new(&GenericDialect {}, &sql)
+                .with_unescape(false)
+                .tokenize()
+                .unwrap()
+                .into_iter()
+                .filter_map(|token| match token {
+                    Token::SingleQuotedString(value) => Some(value),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(string_literals, vec![value.replace('\'', "''")]);
+        }
+    }
+
+    #[test]
     fn test_binary_binding_skips_quoted_identifiers() {
         use datafusion_common::ScalarValue;
 

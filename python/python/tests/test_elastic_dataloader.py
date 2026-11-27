@@ -31,11 +31,15 @@ Parameters used throughout:
 """
 
 import dataclasses
+import functools
 import logging
+import multiprocessing as mp
+import pickle
 import threading
 from unittest.mock import patch
 
 import lancedb
+import numpy as np
 import pyarrow as pa
 import pytest
 from utils import (
@@ -1028,6 +1032,105 @@ def test_multi_worker_elastic_det_across_worker_counts(lance_table):
         )
 
 
+# ── Worker start method defaults ─────────────────────────────────────────────
+
+
+def _loader_start_method(loader: StreamingDataLoader) -> str:
+    context = loader.multiprocessing_context
+    if isinstance(context, str):
+        return context
+    assert context is not None
+    return context.get_start_method()
+
+
+def _platform_worker_start_method() -> str:
+    return "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
+
+
+def test_default_worker_start_method_prefers_forkserver():
+    with patch.object(
+        streaming,
+        "get_all_start_methods",
+        return_value=["fork", "spawn", "forkserver"],
+    ):
+        assert streaming._default_worker_start_method() == "forkserver"
+
+
+def test_streaming_dataloader_falls_back_to_spawn_without_forkserver(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    with patch.object(streaming, "get_all_start_methods", return_value=["spawn"]):
+        loader = StreamingDataLoader(dataset, batch_size=2, num_workers=1)
+
+    assert _loader_start_method(loader) == "spawn"
+
+
+def test_streaming_dataloader_omitted_context_uses_platform_method(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=1)
+
+    assert _loader_start_method(loader) == _platform_worker_start_method()
+
+
+def test_streaming_dataloader_treats_none_context_as_omitted(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context=None,
+    )
+
+    assert _loader_start_method(loader) == _platform_worker_start_method()
+
+
+def test_streaming_dataloader_preserves_explicit_start_method(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context="spawn",
+    )
+
+    assert _loader_start_method(loader) == "spawn"
+
+
+def test_streaming_dataloader_preserves_explicit_context_object(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    context = mp.get_context("spawn")
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context=context,
+    )
+
+    assert loader.multiprocessing_context is context
+
+
+def test_streaming_dataloader_zero_workers_leave_context_unset(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=12, num_workers=0)
+
+    assert loader.multiprocessing_context is None
+    ids = [row_id for batch in loader for row_id in batch["id"].tolist()]
+    assert sorted(ids) == list(range(NUM_ROWS))
+
+
+def test_streaming_dataloader_default_context_runs_real_worker(lance_table):
+    dataset = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=12, num_workers=1)
+    assert _loader_start_method(loader) == _platform_worker_start_method()
+
+    iterator = iter(loader)
+    try:
+        ids = [row_id for batch in iterator for row_id in batch["id"].tolist()]
+    finally:
+        iterator._shutdown_workers()
+
+    assert sorted(ids) == list(range(NUM_ROWS))
+
+
 # ── Resumability with num_workers ─────────────────────────────────────────────
 
 
@@ -1077,6 +1180,74 @@ def test_streaming_dataloader_commits_only_consumed_worker_batches(tmp_path):
     finally:
         resumed_iterator._shutdown_workers()
     assert remaining == uninterrupted == [[3, 4], [30, 40]]
+
+
+def test_block_size_dataloader_workers_reconnect(tmp_path):
+    """Block-mode datasets pickle with no permutation table and reopen per worker."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("block_workers", pa.table({"id": list(range(8))}))
+    dataset = StreamingDataset(
+        table,
+        num_splits=2,
+        shuffle=False,
+        block_size=2,
+    )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        batches = [batch["id"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    assert sorted(row for batch in batches for row in batch) == list(range(8))
+
+
+@pytest.mark.parametrize("filter", [None, "id % 2 = 0"])
+@pytest.mark.parametrize("reshuffle_blocks_per_epoch", [True, False])
+def test_block_size_pickle_does_not_grow_with_block_count(
+    tmp_path, reshuffle_blocks_per_epoch, filter
+):
+    """Spawned workers start serially once the pickle outgrows a pipe buffer."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("block_pickle", pa.table({"id": list(range(1 << 16))}))
+
+    def make(block_size):
+        return StreamingDataset(
+            table,
+            num_splits=2,
+            shuffle_seed=7,
+            epoch=3,
+            block_size=block_size,
+            reshuffle_blocks_per_epoch=reshuffle_blocks_per_epoch,
+            filter=filter,
+        )
+
+    def pickled_state(dataset):
+        # The fixed-size shared-memory counters only pickle while spawning a
+        # child, and their size does not depend on the block count.
+        state = dataset.__getstate__()
+        for key in ("_worker_stats", "_untracked_worker_iteration", "_filled_count"):
+            del state[key]
+        return pickle.dumps(state)
+
+    few_blocks, many_blocks = make(1 << 12), make(4)
+    few_size = len(pickled_state(few_blocks))
+    many_size = len(pickled_state(many_blocks))
+    assert many_size - few_size < 1024, (few_size, many_size)
+    # A filter's per-live-row offsets must not ride along either.
+    assert many_size < 64 * 1024, many_size
+
+    restored = StreamingDataset.__new__(StreamingDataset)
+    restored.__setstate__(pickle.loads(pickled_state(many_blocks)))
+    assert restored._block_perm == many_blocks._block_perm
+    assert restored._block_perm != sorted(restored._block_perm)
+    if filter is not None:
+        np.testing.assert_array_equal(restored._live_offsets, many_blocks._live_offsets)
 
 
 def test_distributed_checkpoint_uses_rank_local_worker_boundary(tmp_path):
@@ -2036,6 +2207,92 @@ def test_transform_queue_depth_bounds_cooked_rows(lance_table):
     )
 
 
+def test_raw_queue_depth_bounded_when_transform_is_the_bottleneck(tmp_path):
+    """io_queue_depth bounds raw_batches even when transform is the bottleneck.
+
+    Regression test for a bug where Stage 1 (I/O) applied no backpressure at
+    all: _fill_io only capped io_pending (in-flight fetches) at
+    io_queue_depth, but every completed fetch was drained into raw_batches
+    unconditionally (_drain_io) and immediately replaced by a new fetch
+    (_fill_io again), so I/O kept racing arbitrarily far ahead of a slow
+    transform stage -- raw_batches had no cap of its own.
+    transform_queue_depth did not help either: its admission check in
+    _try_submit_tx only counts cooked rows and in-flight transform futures
+    (`len(cooked[i]) + len(tx_pending[i]) * batch_size`); it never looks at
+    len(raw_batches[i]), so it cannot throttle Stage 1.
+
+    The fix makes _fill_io count both io_pending and raw_batches against the
+    io_queue_depth budget, so raw_queue_depth should never exceed
+    io_queue_depth * read_batch_size per split, regardless of how slow the
+    transform stage is.
+
+    I/O is forced to run synchronously (same technique as
+    test_transform_queue_depth_does_not_admit_at_capacity_minus_one) so the
+    assertion is deterministic regardless of machine load, rather than
+    relying on a real-time race between I/O and transform threads.  Only the
+    transform runs on a real background thread (with a short sleep) so the
+    consumer genuinely blocks waiting for it, letting Stage 1 attempt to run
+    ahead between blocking waits.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import pyarrow as pa
+    import time
+
+    n_rows = 200
+    read_batch_size = 10
+    io_queue_depth = 2
+    transform_queue_depth = 2
+    max_allowed = io_queue_depth * read_batch_size
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(n_rows))}))
+
+    def slow_transform(batch: pa.RecordBatch) -> list:
+        time.sleep(0.005)
+        return batch.column("id").to_pylist()
+
+    original_submit = ThreadPoolExecutor.submit
+
+    def synchronous_io_submit(self, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_io_call":
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", synchronous_io_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            read_batch_size=read_batch_size,
+            io_queue_depth=io_queue_depth,
+            transform_queue_depth=transform_queue_depth,
+            transform_parallelism=1,
+            transform=slow_transform,
+        )
+
+        peak_raw = 0
+        ids = []
+        for item in ds:
+            ids.append(item)  # slow_transform yields bare ids, not dicts
+            if ds.raw_queue_depth > peak_raw:
+                peak_raw = ds.raw_queue_depth
+
+    assert peak_raw <= max_allowed, (
+        f"raw_queue_depth peaked at {peak_raw}, expected <= {max_allowed} "
+        "(io_queue_depth * read_batch_size)"
+    )
+    # The backpressure fix must not come at the cost of dropping or
+    # duplicating rows.
+    assert sorted(ids) == list(range(n_rows))
+
+
 def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
     """Admission requires a full read_batch_size of free space, not just one slot.
 
@@ -2251,6 +2508,13 @@ def _failing_transform(bad_ids: set):
     return transform
 
 
+def _fill_workers_transform(batch: pa.RecordBatch) -> list[dict]:
+    ids = batch.column("id").to_pylist()
+    if 0 in ids or 60 in ids:
+        raise BadRowError("bad row")
+    return [{"id": row_id} for row_id in ids]
+
+
 def _sequential_split_members(table) -> list[list[int]]:
     """Return each split's ids in yield order for shuffle=False.
 
@@ -2279,6 +2543,115 @@ def test_on_transform_error_default_raises(lance_table):
 def test_on_transform_error_invalid_value(lance_table):
     with pytest.raises(ValueError, match="on_transform_error"):
         StreamingDataset(lance_table, num_splits=NUM_SPLITS, on_transform_error="bogus")
+
+
+def test_on_transform_error_fill_requires_one_replacement(lance_table):
+    kwargs = dict(num_splits=NUM_SPLITS, on_transform_error="fill")
+    with pytest.raises(ValueError, match="exactly one"):
+        StreamingDataset(lance_table, **kwargs)
+    with pytest.raises(ValueError, match="exactly one"):
+        StreamingDataset(
+            lance_table, **kwargs, fill_value={"id": -1}, repair=lambda exc, row: row
+        )
+    with pytest.raises(ValueError, match="require on_transform_error='fill'"):
+        StreamingDataset(lance_table, num_splits=NUM_SPLITS, fill_value=None)
+    StreamingDataset(lance_table, **kwargs, fill_value=None)
+
+
+def test_on_transform_error_fill_preserves_rows_and_positions(lance_table):
+    """Uneven failures are replaced in place, including an entirely bad split."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0]) | {members[5][7]}
+    clean = [
+        row["id"]
+        for row in StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ]
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="fill",
+        fill_value={"id": -1, "vector": [0.0, 0.0]},
+    )
+    assert ds.rows_filled == 0
+    rows = list(ds)
+    assert [row["id"] for row in rows] == [
+        -1 if row_id in bad_ids else row_id for row_id in clean
+    ]
+    assert len(rows) == NUM_ROWS
+    assert ds.rows_filled == len(bad_ids)
+    assert ds.rows_skipped == 0
+
+    placeholders = [row for row in rows if row["id"] == -1]
+    placeholders[0]["vector"][0] = 1.0
+    assert all(row["vector"] == [0.0, 0.0] for row in placeholders[1:])
+
+
+def test_on_transform_error_fill_repair_receives_failed_row(lance_table):
+    bad_ids = {5, 17, 46}
+    repaired = []
+
+    def repair(exc: Exception, row_batch: pa.RecordBatch) -> dict:
+        assert isinstance(exc, BadRowError)
+        assert row_batch.num_rows == 1
+        row_id = row_batch.column("id")[0].as_py()
+        repaired.append(row_id)
+        return {"id": row_id, "repaired": True}
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="fill",
+        repair=repair,
+    )
+    rows = list(ds)
+    assert sorted(row["id"] for row in rows) == list(range(NUM_ROWS))
+    assert set(repaired) == bad_ids
+    assert {row["id"] for row in rows if row.get("repaired")} == bad_ids
+    assert ds.rows_filled == len(bad_ids)
+
+
+def test_on_transform_error_fill_repair_error_propagates(lance_table):
+    def broken_repair(exc: Exception, row_batch: pa.RecordBatch):
+        raise RuntimeError("repair failed")
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        transform=_failing_transform({5}),
+        on_transform_error="fill",
+        repair=broken_repair,
+    )
+    with pytest.raises(RuntimeError, match="repair failed"):
+        list(ds)
+
+
+def test_on_transform_error_fill_counts_across_workers(lance_table):
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_fill_workers_transform,
+        on_transform_error="fill",
+        fill_value={"id": -1},
+    )
+    loader = StreamingDataLoader(
+        ds,
+        batch_size=6,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        ids = [row_id for batch in iterator for row_id in batch["id"].tolist()]
+    finally:
+        iterator._shutdown_workers()
+    assert len(ids) == NUM_ROWS
+    assert ids.count(-1) == 2
+    assert ds.rows_filled == 2
 
 
 def test_on_transform_error_skip_drops_bad_rows(lance_table):
@@ -2385,9 +2758,10 @@ def test_on_transform_error_callable_selective(lance_table):
         list(ds2)
 
 
-def test_transform_wrong_row_count_raises(lance_table):
+@pytest.mark.parametrize("on_error", ["skip", "fill"])
+def test_transform_wrong_row_count_raises(lance_table, on_error):
     """A transform that returns the wrong number of rows is an error even with
-    on_transform_error='skip' — silent shrinkage would corrupt accounting."""
+    error recovery enabled — silent shrinkage would corrupt accounting."""
 
     def drops_rows(batch: pa.RecordBatch) -> list:
         return batch.column("id").to_pylist()[:-1]
@@ -2397,7 +2771,8 @@ def test_transform_wrong_row_count_raises(lance_table):
         num_splits=NUM_SPLITS,
         shuffle_seed=SHUFFLE_SEED,
         transform=drops_rows,
-        on_transform_error="skip",
+        on_transform_error=on_error,
+        **({"fill_value": {"id": -1}} if on_error == "fill" else {}),
     )
     with pytest.raises(ValueError, match="one output row per input row"):
         list(ds)
@@ -2473,6 +2848,61 @@ def test_skip_elastic_det_across_world_sizes(lance_table):
     assert len(reference) == NUM_ROWS // NUM_SPLITS - 1
     for ws in (2, 3, 4):
         assert collect(ws) == reference, f"world_size={ws} diverged"
+
+
+def test_fill_elastic_determinism_and_checkpoint(lance_table):
+    """Uneven fills keep every global step and resume across world sizes."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[0][0], members[0][2], members[6][1]}
+    kwargs = dict(
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="fill",
+        fill_value={"id": -1},
+    )
+    reference = [row["id"] for row in StreamingDataset(lance_table, **kwargs)]
+    ref_steps = [
+        sorted(reference[start : start + GLOBAL_BATCH_SIZE])
+        for start in range(0, len(reference), GLOBAL_BATCH_SIZE)
+    ]
+    assert len(ref_steps) == STEPS_PER_EPOCH
+
+    for world_size in (1, 2, 3, 4):
+        micro = GLOBAL_BATCH_SIZE // world_size
+        datasets = [
+            StreamingDataset(lance_table, rank=rank, world_size=world_size, **kwargs)
+            for rank in range(world_size)
+        ]
+        iters = [iter(ds) for ds in datasets]
+        steps = [
+            sorted(next(it)["id"] for it in iters for _ in range(micro))
+            for _ in range(STEPS_PER_EPOCH)
+        ]
+        assert steps == ref_steps
+        assert all(next(it, None) is None for it in iters)
+
+    world_size = 2
+    micro = GLOBAL_BATCH_SIZE // world_size
+    datasets = [
+        StreamingDataset(lance_table, rank=rank, world_size=world_size, **kwargs)
+        for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+    for _ in range(3):
+        for it in iters:
+            for _ in range(micro):
+                next(it)
+    states = [ds.state_dict() for ds in datasets]
+    for it in iters:
+        it.close()
+    merged = StreamingDataset.merge_state_dicts(states)
+    assert merged["positions_consumed_per_split"] == [3] * NUM_SPLITS
+    assert merged["samples_consumed_per_split"] == [3] * NUM_SPLITS
+
+    resumed = StreamingDataset(lance_table, **kwargs)
+    resumed.load_state_dict(merged)
+    assert [row["id"] for row in resumed] == reference[3 * NUM_SPLITS :]
 
 
 def test_resumability_with_skips_same_topology(lance_table):
@@ -2732,6 +3162,36 @@ def _packed_dataset(table, pack_sequences, *, blocks_per_epoch, pad_id=0, **kwar
         blocks_per_epoch=blocks_per_epoch,
         **kwargs,
     )
+
+
+def test_pack_sequences_checkpoint_with_block_size(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    kwargs = dict(
+        pack_sequences=5,
+        blocks_per_epoch=4,
+        num_splits=2,
+        block_size=2,
+    )
+    reference = [
+        block["input_ids"].tolist() for block in _packed_dataset(table, **kwargs)
+    ]
+
+    dataset = _packed_dataset(table, **kwargs)
+    iterator = iter(dataset)
+    first_cycle = [next(iterator), next(iterator)]
+    checkpoint = dataset.state_dict()
+    iterator.close()
+
+    resumed = _packed_dataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    remaining = [block["input_ids"].tolist() for block in resumed]
+
+    assert [block["input_ids"].tolist() for block in first_cycle] == reference[:2]
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
+    assert remaining == reference[2:]
 
 
 def test_pack_sequences_emits_blocks_and_pads_final_tail(tmp_path):
@@ -3173,6 +3633,22 @@ def test_doc_example_checkpoint(lance_table):
     )
 
 
+def test_streaming_dataset_over_table_with_schema_metadata(tmp_path):
+    """StreamingDataset builds its permutation at construction; base table schema
+    metadata (e.g. Hugging Face's `source-column-name-map`) must not break it."""
+    schema = pa.schema(
+        [pa.field("id", pa.int64())],
+        metadata={b"source-column-name-map": b"{}", b"huggingface": b"{}"},
+    )
+    table = lancedb.connect(tmp_path).create_table(
+        "data", pa.table({"id": list(range(NUM_ROWS))}, schema=schema)
+    )
+
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
 # ---------------------------------------------------------------------------
 # Remote tables (LanceDB Cloud / Enterprise)
 # ---------------------------------------------------------------------------
@@ -3195,3 +3671,957 @@ def test_streaming_dataset_over_remote_table():
     assert len(server.scans) == 1, "the permutation is built with one row-id scan"
     assert server.takes, "rows must be fetched with row-id takes"
     assert_server_safe_row_id_requests(server)
+
+
+class _ReorderingOffsetScanServer(MockPermutationServer):
+    """Answers offset/limit pages as if the table's two fragments complete in a
+    different order on each request, which remote scans are allowed to do."""
+
+    def _query(self, request, body):
+        if "offset" in body and not body.get("filter"):
+            rows = list(range(self.num_rows))
+            half = self.num_rows // 2
+            if body["offset"] >= half:
+                rows = rows[half:] + rows[:half]
+            start = body["offset"]
+            return self._arrow(
+                request, pa.table({"id": rows[start : start + body["k"]]})
+            )
+        return super()._query(request, body)
+
+
+def test_two_phase_over_remote_table():
+    """Unfiltered 2-phase reads of a remote table name each block's rows by
+    _rowoffset: offset/limit pages have no cross-request order guarantee."""
+    server = _ReorderingOffsetScanServer(num_rows=16)
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(table, num_splits=2, block_size=4, shuffle=False)
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == list(range(server.num_rows)), (
+        "Every row of the remote table must be yielded exactly once"
+    )
+
+
+def test_two_phase_over_remote_table_filtered_and_shuffled():
+    """2-phase's filtered live-offset precompute and take_offsets-based
+    block reads both work against a remote table, including restoring
+    take_offsets' unspecified order via the _rowoffset it also selects."""
+    server = MockPermutationServer(num_rows=20)
+    live_ids = list(range(16))  # 16 live rows -> 4 blocks, divides num_splits=2
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(
+            table,
+            num_splits=2,
+            block_size=4,
+            shuffle=True,
+            shuffle_seed=SHUFFLE_SEED,
+            filter="id IN (" + ",".join(str(i) for i in live_ids) + ")",
+            columns=["id"],
+        )
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == live_ids, "only live rows, each exactly once"
+
+
+def test_two_phase_over_remote_table_does_not_pin_callers_handle():
+    """_open_pinned_table() must not mutate the caller's own RemoteTable.
+
+    Without a connection_factory, the reopen helpers used for local/memory
+    tables return the *same* RemoteTable object for the remote case (correct
+    for their original cross-process pickling purpose, wrong for same-process
+    reuse here).  Checking that object out to the block-mode pin would
+    therefore pin -- and, since checkout_version != None marks a handle
+    version-pinned -- effectively make read-only the caller's own live table,
+    not an unrelated copy.
+    """
+    server = MockPermutationServer(num_rows=8)
+
+    with mock_remote_table(server) as table:
+        assert table._checkout_version is None, "caller's table starts unpinned"
+        ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+        list(ds)  # drive at least one _open_pinned_table() call
+        assert table._checkout_version is None, (
+            "iterating a 2-phase dataset must not pin the caller's own "
+            "table handle to a fixed version"
+        )
+
+
+@functools.lru_cache
+def _cached_open_table(uri, name):
+    return lancedb.connect(uri).open_table(name)
+
+
+@functools.lru_cache
+def _cached_open_table_with_session(uri, name):
+    return lancedb.connect(uri, session=lancedb.Session()).open_table(name)
+
+
+class _ReturnsTable:
+    def __init__(self, table):
+        self.table = table
+
+    def __call__(self, name):
+        return self.table
+
+
+@pytest.mark.parametrize("connection", ["local", "session", "memory"])
+def test_two_phase_does_not_pin_cached_factory_handle(tmp_path, connection):
+    """A connection_factory may return a cached, caller-owned handle: pinning
+    the dataset's snapshot must leave that handle writable, must not need a
+    picklable connection, and must keep reading the construction snapshot
+    after the handle's table changes."""
+    if connection == "memory":
+        table = lancedb.connect("memory://").create_table(
+            "t", pa.table({"id": list(range(8))})
+        )
+        table.add(pa.table({"id": [100]}))
+        table.delete("id = 100")  # the snapshot is at a version above 1
+        factory = _ReturnsTable(table)
+    else:
+        lancedb.connect(tmp_path).create_table("t", pa.table({"id": list(range(8))}))
+        open_table = (
+            _cached_open_table_with_session
+            if connection == "session"
+            else _cached_open_table
+        )
+        factory = functools.partial(open_table, str(tmp_path))
+        table = factory("t")
+
+    ds = StreamingDataset(
+        table, block_size=4, shuffle=False, connection_factory=factory
+    )
+    table.delete("id = 0")
+    table.add(pa.table({"id": [8]}))
+
+    assert table.count_rows() == 8
+    assert [row["id"] for row in ds] == list(range(8))
+
+
+# ---------------------------------------------------------------------------
+# 2-phase shuffled reads (block_size)
+# ---------------------------------------------------------------------------
+# block_size switches StreamingDataset from 1-phase (per-row permutation) to
+# 2-phase (block-granularity shuffle + a row-level shuffle bounded by
+# max_shuffle_distance).  NUM_ROWS=120 with block_size=10 gives 12 blocks,
+# which divides NUM_SPLITS=12 evenly, so most tests below reuse lance_table
+# and those constants without the runt blocks and mid-block split boundaries
+# covered explicitly by their own tests.
+
+
+def test_two_phase_full_coverage_no_duplicates(lance_table):
+    """Every sample ID appears exactly once across a full 2-phase epoch."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=10,
+    )
+    ids = [s["id"] for s in ds]
+    assert len(ids) == NUM_ROWS
+    assert sorted(ids) == list(range(NUM_ROWS)), "every row must appear exactly once"
+
+
+def test_two_phase_reads_runt_block(lance_table):
+    """A trailing partial block (block_size doesn't evenly divide the row
+    count) is read like any other block."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=13,  # NUM_ROWS=120 -> 9 full blocks and a 3-row runt
+        shuffle=False,
+    )
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(NUM_ROWS))
+
+
+@pytest.mark.parametrize("reshuffle_blocks_per_epoch", [True, False])
+@pytest.mark.parametrize(
+    "block_size,num_splits,filter",
+    [
+        # 12 blocks over 5 splits: split boundaries fall mid-block.
+        pytest.param(10, 5, None, id="whole_blocks_uneven_splits"),
+        # 9 full blocks plus a 3-row runt over 7 splits: 120 // 7 = 17 rows
+        # per split, so exactly 1 row is dropped.
+        pytest.param(13, 7, None, id="runt_and_uneven_splits"),
+        # 60 live rows in 9 blocks of 7 (the last a 4-row runt) over 4 splits.
+        pytest.param(7, 4, "id % 2 = 0", id="filtered"),
+    ],
+)
+def test_two_phase_drops_fewer_rows_than_splits(
+    lance_table, block_size, num_splits, filter, reshuffle_blocks_per_epoch
+):
+    """Splits are cut by rows, not whole blocks, so each epoch drops fewer than
+    num_splits rows (as 1-phase does) and every split serves the same count."""
+    live_ids = set(range(NUM_ROWS)) if filter is None else set(range(0, NUM_ROWS, 2))
+    rows_per_split = len(live_ids) // num_splits
+    for epoch in range(2):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=num_splits,
+            shuffle_seed=SHUFFLE_SEED,
+            epoch=epoch,
+            block_size=block_size,
+            filter=filter,
+            reshuffle_blocks_per_epoch=reshuffle_blocks_per_epoch,
+        )
+        for split in range(num_splits):
+            assert sum(b.stop - b.start for b in ds._split_blocks(split)) == (
+                rows_per_split
+            )
+        ids = [s["id"] for s in ds]
+        assert len(ids) == len(set(ids)) == rows_per_split * num_splits
+        assert set(ids) <= live_ids
+        assert len(live_ids) - len(ids) < num_splits
+
+
+def test_two_phase_no_shuffle_preserves_order(lance_table):
+    """shuffle=False yields rows in exact original storage order."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=10,
+        shuffle=False,
+    )
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(NUM_ROWS)), (
+        "shuffle=False must preserve original row order block-by-block"
+    )
+
+
+def test_two_phase_respects_max_shuffle_distance(lance_table):
+    """No row moves farther than max_shuffle_distance from its natural
+    (block, then row) position within its split's own block assignment.
+
+    White-box: reconstructs the expected natural-rank order directly from
+    ds._block_perm (the shuffled block order), since that's the reference
+    frame the displacement bound is defined against, not raw table order.
+    """
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks
+    max_shuffle_distance = 25
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+        max_shuffle_distance=max_shuffle_distance,
+    )
+    ids = [s["id"] for s in ds]
+
+    natural_order = [
+        row_id
+        for bp in ds._block_perm
+        for row_id in range(bp * block_size, (bp + 1) * block_size)
+    ]
+    assert sorted(ids) == list(range(NUM_ROWS))
+    assert sorted(natural_order) == list(range(NUM_ROWS))
+
+    natural_rank = {row_id: rank for rank, row_id in enumerate(natural_order)}
+    for output_pos, row_id in enumerate(ids):
+        displacement = abs(output_pos - natural_rank[row_id])
+        assert displacement < max_shuffle_distance, (
+            f"row {row_id} displaced {displacement} positions from its natural "
+            f"rank, exceeding max_shuffle_distance={max_shuffle_distance}"
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected_window,expected_distance",
+    [
+        pytest.param({}, 8, 80, id="defaults"),
+        pytest.param({"window_blocks": 2}, 2, 20, id="window_override"),
+        pytest.param({"max_shuffle_distance": 15}, 8, 15, id="distance_override"),
+    ],
+)
+def test_two_phase_window_defaults(
+    lance_table, kwargs, expected_window, expected_distance
+):
+    ds = StreamingDataset(
+        lance_table, num_splits=1, shuffle_seed=SHUFFLE_SEED, block_size=10, **kwargs
+    )
+    assert ds._window_blocks == expected_window
+    assert ds._max_shuffle_distance == expected_distance
+
+
+def test_two_phase_filter_counts_live_rows(tmp_path):
+    """block_size counts only rows passing filter; dead rows never appear."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "id": list(range(NUM_ROWS)),
+                "category": ["train"] * 60 + ["val"] * 60,
+            }
+        ),
+    )
+    ds = StreamingDataset(
+        table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=10,  # 60 live (train) rows -> 6 blocks exactly, no runt
+        filter="category = 'train'",
+    )
+    ids = [s["id"] for s in ds]
+    assert all(i < 60 for i in ids), "only live (train) rows should appear"
+    assert sorted(ids) == list(range(60))
+
+
+def test_two_phase_resume_checkpoint_round_trip(lance_table):
+    """state_dict/load_state_dict resumes a 2-phase dataset without gaps or
+    repeats, the same guarantee test_doc_example_checkpoint verifies for
+    1-phase."""
+    steps_before_checkpoint = 5
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks, divides NUM_SPLITS=12 evenly
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+    )
+    it = iter(ds)
+    consumed = [next(it)["id"] for _ in range(steps_before_checkpoint * NUM_SPLITS)]
+    checkpoint = ds.state_dict()
+    remaining_original = [s["id"] for s in it]
+
+    ds_resumed = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+    )
+    ds_resumed.load_state_dict(checkpoint)
+    remaining_resumed = [s["id"] for s in ds_resumed]
+
+    assert remaining_original == remaining_resumed, (
+        "Resumed 2-phase dataset must continue from exactly the same position"
+    )
+    assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
+        "Consumed + remaining must cover every row exactly once"
+    )
+
+
+@pytest.mark.parametrize(
+    "saved,resumed,mismatched_key",
+    [
+        pytest.param(
+            {"block_size": 10}, {"block_size": 5}, "block_size", id="block_size"
+        ),
+        pytest.param(
+            {"block_size": 10}, {}, "block_size", id="two_phase_into_one_phase"
+        ),
+        pytest.param(
+            {}, {"block_size": 10}, "block_size", id="one_phase_into_two_phase"
+        ),
+        pytest.param(
+            {"block_size": 10},
+            {"block_size": 10, "max_shuffle_distance": 15},
+            "max_shuffle_distance",
+            id="max_shuffle_distance",
+        ),
+        pytest.param(
+            {"block_size": 10},
+            {"block_size": 10, "reshuffle_blocks_per_epoch": False},
+            "reshuffle_blocks_per_epoch",
+            id="reshuffle_blocks_per_epoch",
+        ),
+        pytest.param(
+            {"block_size": 10},
+            {"block_size": 10, "shuffle": False},
+            "shuffle",
+            id="shuffle",
+        ),
+    ],
+)
+def test_two_phase_checkpoint_rejects_different_read_order(
+    lance_table, saved, resumed, mismatched_key
+):
+    """Saved positions index one 2-phase read order; resuming them under
+    another would replay consumed rows and skip unread ones. The error names
+    the setting to change."""
+
+    def make(options):
+        return StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, **options
+        )
+
+    source = make(saved)
+    it = iter(source)
+    for _ in range(2 * NUM_SPLITS):
+        next(it)
+    checkpoint = source.state_dict()
+
+    with pytest.raises(ValueError, match=f"^{mismatched_key} mismatch: checkpoint"):
+        make(resumed).load_state_dict(checkpoint)
+    with pytest.raises(ValueError, match=f"^{mismatched_key} mismatch across"):
+        StreamingDataset.merge_state_dicts([checkpoint, make(resumed).state_dict()])
+
+
+def test_two_phase_failed_reader_build_closes_built_readers(lance_table, monkeypatch):
+    """A resume position past a split's end fails while building readers; the
+    readers built before it must still release their prefetch executors."""
+    ds = StreamingDataset(
+        lance_table, num_splits=2, shuffle_seed=SHUFFLE_SEED, block_size=10
+    )
+    checkpoint = ds.state_dict()
+    checkpoint["positions_consumed_per_split"] = [0, NUM_ROWS]
+    ds.load_state_dict(checkpoint)
+
+    closed = []
+    close = streaming._TwoPhaseSplitReader.close
+
+    def counting_close(reader):
+        closed.append(reader)
+        close(reader)
+
+    monkeypatch.setattr(streaming._TwoPhaseSplitReader, "close", counting_close)
+    with pytest.raises(ValueError, match="out of range"):
+        list(ds)
+    assert len(closed) == 1
+
+
+def test_two_phase_pinned_version_survives_concurrent_write(tmp_path):
+    """The block plan is pinned to the table version at construction; a
+    write between construction and iteration must not change what an
+    in-progress epoch reads."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(8))}))
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    table.delete("id = 0")  # mutate after construction, before iteration
+
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(8)), (
+        "must read the version pinned at construction, not the live, since-mutated one"
+    )
+
+
+def test_two_phase_pinned_memory_table_survives_concurrent_write():
+    """Same guarantee as the on-disk test above, but for a memory:// table.
+
+    A memory table's "pickle state" is its row data (to_arrow()), not just
+    reopen coordinates, so it must be captured once at construction -- not
+    recomputed from the live table on every _open_pinned_table() call --
+    or a write made after construction would leak into every later read.
+    """
+    db = lancedb.connect("memory://")
+    table = db.create_table("t", pa.table({"id": list(range(8))}))
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    table.delete("id = 0")
+    table.add(pa.table({"id": [8]}))
+
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(8)), (
+        "must read the snapshot captured at construction, not the live, "
+        "since-mutated one"
+    )
+
+
+def test_two_phase_memory_table_already_at_a_later_version():
+    """Constructing over a memory table already past version 1 must not
+    fail: the pin is the snapshot's data, not a version number to replay
+    against a freshly rebuilt (always version-1) in-memory table."""
+    db = lancedb.connect("memory://")
+    table = db.create_table("t", pa.table({"id": list(range(4))}))
+    table.add(pa.table({"id": [4, 5, 6, 7]}))  # now at version 2, 8 live rows
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    ids = [s["id"] for s in ds]
+    assert sorted(ids) == list(range(8))
+
+
+def test_two_phase_reader_plan_arrays_are_int32(lance_table):
+    """_plan_block_pos/_plan_local_offset are retained for the reader's
+    whole lifetime, one entry per row in the entire split (the open
+    whole-split-memory review thread) -- so their dtype is a real, constant
+    memory-footprint decision, not an implementation detail. Pinned here at
+    int32 (half of int64) so a future change can't silently regress it."""
+    ds = StreamingDataset(
+        lance_table, num_splits=1, shuffle_seed=SHUFFLE_SEED, block_size=10
+    )
+    reader = ds._make_two_phase_reader(0, ds._open_pinned_table(), None)
+    assert reader._plan_block_pos.dtype == np.int32
+    assert reader._plan_local_offset.dtype == np.int32
+    # Values must still be correct, not just narrower -- e.g. a block index
+    # silently wrapping around int32 would be a far worse regression than
+    # the memory this dtype choice saves.
+    assert reader._plan_block_pos.max() < len(ds._split_blocks(0))
+    assert reader._plan_local_offset.max() < 10  # block_size
+
+
+class _LookupCountingDict(dict):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.lookups = 0
+
+    def __getitem__(self, key):
+        self.lookups += 1
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.lookups += 1
+        return super().get(key, default)
+
+
+@pytest.mark.parametrize(
+    "skip,swap_calls",
+    [
+        pytest.param(0, False, id="fresh"),
+        pytest.param(1500, False, id="resumed"),
+        # io_queue_depth lets calls take the reader's lock out of order.
+        pytest.param(0, True, id="out_of_order"),
+    ],
+)
+def test_two_phase_reader_sequential_read_is_linear_in_blocks(skip, swap_calls):
+    """A sequential read must fetch each block once and keep per-call
+    bookkeeping bounded by the resident window, not by how many blocks the
+    split has already passed -- otherwise prefetch cost grows quadratically
+    with split size."""
+    num_blocks, block_size, batch = 400, 8, 8
+    block_ids = list(range(1000, 1000 + num_blocks))
+    reads = []
+
+    def read_block(block_id):
+        reads.append(block_id)
+        # Two record batches per block, as a multi-batch scan returns.
+        half = block_size // 2
+        return pa.concat_tables(
+            pa.table({"block": [block_id] * half, "row": range(lo, lo + half)})
+            for lo in (0, half)
+        )
+
+    reader = streaming._TwoPhaseSplitReader(
+        block_ids=block_ids,
+        block_live_counts=[block_size] * num_blocks,
+        shuffle=True,
+        max_shuffle_distance=4 * block_size,
+        seed=SHUFFLE_SEED,
+        read_block_fn=read_block,
+        columns=None,
+        skip=skip,
+        prefetch_depth=2,
+    )
+    try:
+        # Later positions overwrite earlier ones, leaving each block's last.
+        expected_last_pos = {
+            bp: pos for pos, bp in enumerate(reader._plan_block_pos.tolist())
+        }
+        assert reader._block_last_pos == expected_last_pos
+
+        reader._block_last_pos = _LookupCountingDict(reader._block_last_pos)
+        starts = list(range(0, reader.num_rows, batch))
+        if swap_calls:
+            starts[0::2], starts[1::2] = starts[1::2], starts[0::2]
+        outputs = {}
+        for start in starts:
+            out = reader.__getitems__(range(start, min(start + batch, reader.num_rows)))
+            outputs[start] = list(
+                zip(out.column("block").to_pylist(), out.column("row").to_pylist())
+            )
+            assert all(
+                t.column("block").num_chunks == 1 for t in reader._loaded.values()
+            )
+        rows = [row for start in sorted(outputs) for row in outputs[start]]
+        num_calls = len(starts)
+    finally:
+        reader.close()
+
+    expected_rows = [
+        (block_ids[bp], off)
+        for bp, off in zip(
+            reader._plan_block_pos.tolist(), reader._plan_local_offset.tolist()
+        )
+    ]
+    assert rows == expected_rows
+    if skip == 0:
+        assert sorted(rows) == [
+            (bid, off) for bid in block_ids for off in range(block_size)
+        ]
+    needed_blocks = {block_ids[bp] for bp in expected_last_pos}
+    assert sorted(reads) == sorted(needed_blocks)
+    # Rescanning every already-passed block on each prefetch top-up grows
+    # quadratically (~29k lookups fresh here); a bounded walk stays linear
+    # (~2k).
+    assert reader._block_last_pos.lookups < 10 * (num_calls + num_blocks)
+
+
+def test_two_phase_auto_blocks_per_epoch_reads_only_sampled_blocks(
+    tmp_path, monkeypatch
+):
+    """blocks_per_epoch='auto' must sample whole blocks: a scattered row
+    sample touches nearly every block and so reads the whole token column."""
+    table = _create_token_table(tmp_path, [[1, 2, 3]] * 1000)
+    reads = []
+    read_block = StreamingDataset._read_block
+
+    def counting_read_block(self, pinned_table, block, columns):
+        reads.append(block)
+        return read_block(self, pinned_table, block, columns)
+
+    monkeypatch.setattr(StreamingDataset, "_read_block", counting_read_block)
+    with pytest.warns(UserWarning, match="approximate token-count sample"):
+        dataset = _packed_dataset(
+            table, 4, blocks_per_epoch="auto", num_splits=2, block_size=10
+        )
+
+    # 1% of each 500-row split rounds up to a single 10-row block per split.
+    assert len(reads) == 2
+    assert reads[0] in dataset._split_blocks(0)
+    assert reads[1] in dataset._split_blocks(1)
+    # Every document is 3 tokens plus EOS, so the sample is exact: 4000 / 4.
+    assert dataset.state_dict()["blocks_per_epoch"] == 1000
+
+
+def test_two_phase_rejects_rte_write_spec_table(tmp_path):
+    """An RTE write spec means some acknowledged writes live only in the
+    MemWAL, invisible to a version-pinned read; block_size must refuse the
+    table at construction rather than silently reading stale base-table
+    values (mirroring the row-id rejection 1-phase already applies)."""
+    from lancedb import RTEWriteSpec
+
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("value", pa.int64(), nullable=False),
+        ]
+    )
+    table = db.create_table(
+        "t",
+        pa.Table.from_pydict({"id": list(range(8)), "value": [0] * 8}, schema=schema),
+    )
+    table.set_unenforced_primary_key("id")
+    table.enable_rte(RTEWriteSpec.bucket("id", 1))
+    table.merge_insert(
+        "id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        pa.Table.from_pydict({"id": list(range(8)), "value": [99] * 8}, schema=schema)
+    )
+
+    with pytest.raises(ValueError, match="RTE write spec"):
+        StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+
+
+def test_two_phase_rejects_fingerprinted_checkpoint(lance_table):
+    """A checkpoint tied to a split_strategy permutation cannot resume block mode."""
+    source = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    checkpoint = source.state_dict()
+    assert "perm_fingerprint" in checkpoint
+
+    target = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=checkpoint["shuffle_seed"],
+        block_size=10,
+    )
+    with pytest.raises(ValueError, match="no permutation table"):
+        target.load_state_dict(checkpoint)
+
+
+def test_two_phase_reshuffle_blocks_per_epoch_toggle(lance_table):
+    """reshuffle_blocks_per_epoch=False keeps each split's blocks fixed
+    across epochs; the default (True) reassigns them every epoch."""
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks
+
+    def block_perm_for(epoch, reshuffle):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            block_size=block_size,
+            epoch=epoch,
+            reshuffle_blocks_per_epoch=reshuffle,
+        )
+        return list(ds._block_perm)
+
+    assert block_perm_for(0, False) == block_perm_for(1, False), (
+        "blocks must stay pinned to the same split across epochs when disabled"
+    )
+    assert block_perm_for(0, True) != block_perm_for(1, True), (
+        "blocks should be reassigned across epochs by default"
+    )
+
+
+def test_two_phase_too_few_blocks_for_num_splits_raises(tmp_path):
+    """Fewer blocks than num_splits would leave some splits with no data."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(20))}))  # 2 blocks
+    with pytest.raises(ValueError):
+        StreamingDataset(table, num_splits=4, shuffle_seed=SHUFFLE_SEED, block_size=10)
+
+
+@pytest.mark.parametrize(
+    "extra_kwargs",
+    [
+        pytest.param(
+            {"block_size": 10, "shuffle_clump_size": 5},
+            id="shuffle_clump_size_with_block_size",
+        ),
+        pytest.param(
+            {
+                "block_size": 10,
+                "split_strategy": lambda b: b.split_sequential(fixed=NUM_SPLITS),
+            },
+            id="split_strategy_with_block_size",
+        ),
+        pytest.param({"block_size": 1}, id="block_size_too_small"),
+        pytest.param({"window_blocks": 2}, id="window_blocks_without_block_size"),
+        pytest.param(
+            {"max_shuffle_distance": 5}, id="max_shuffle_distance_without_block_size"
+        ),
+        pytest.param(
+            {"reshuffle_blocks_per_epoch": True},
+            id="reshuffle_blocks_per_epoch_without_block_size",
+        ),
+    ],
+)
+def test_two_phase_constructor_validation_raises(lance_table, extra_kwargs):
+    """Invalid 2-phase parameter combinations raise ValueError at construction."""
+    with pytest.raises(ValueError):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            **extra_kwargs,
+        )
+
+
+# ---------------------------------------------------------------------------
+# split_strategy escape hatch
+# ---------------------------------------------------------------------------
+
+
+def test_split_strategy_bootstrap_sample(lance_table):
+    """split_strategy lets StreamingDataset use bootstrap_sample directly, producing
+    more rows than the base table has (sampling with replacement)."""
+    num_samples = 4 * NUM_ROWS
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            num_samples, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    ids = [row["id"] for row in ds]
+
+    assert len(ids) == num_samples
+    # 4x oversampling a small table must produce at least one repeat.
+    assert len(set(ids)) < len(ids)
+    assert set(ids).issubset(set(range(NUM_ROWS)))
+
+
+def test_split_strategy_matches_direct_permutation_builder_use(lance_table):
+    """StreamingDataset(split_strategy=...), read single-process (no DataLoader
+    workers, so this one process owns every split and round-robins across all of
+    them), must yield exactly what calling the same strategy directly on a
+    PermutationBuilder would read, interleaved one row per split per cycle.
+
+    Reads each split via __getitems__ (explicit indices), not plain iteration:
+    Permutation's sequential __iter__ returns empty for a permutation with repeated
+    row_ids (confirmed directly -- len() is correct, __getitems__ returns the right
+    rows, but `for row in perm` yields nothing). That's a pre-existing limitation of
+    Permutation's iterator, unrelated to Bootstrap sampling's correctness: it doesn't
+    affect StreamingDataset or this benchmark, since both only ever read via
+    explicit-index batched fetches (take_offsets/__getitems__), never the plain
+    iterator -- flagged separately, not fixed here (out of scope for this change).
+    """
+    from lancedb.permutation import Permutation, permutation_builder
+
+    def strategy(builder):
+        return builder.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=1)
+
+    direct_perm_tbl = strategy(permutation_builder(lance_table)).execute()
+    expected_by_split = []
+    for split in range(NUM_SPLITS):
+        perm = Permutation.from_tables(lance_table, direct_perm_tbl, split=split)
+        rows = perm.__getitems__(list(range(len(perm))))
+        expected_by_split.append([row["id"] for row in rows])
+    samples_per_split = len(expected_by_split[0])
+    expected = [
+        expected_by_split[split][cycle]
+        for cycle in range(samples_per_split)
+        for split in range(NUM_SPLITS)
+    ]
+
+    ds = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    actual = [row["id"] for row in ds]
+    assert actual == expected
+
+
+def test_split_strategy_is_reproducible_across_instances(lance_table):
+    def strategy(builder):
+        return builder.bootstrap_sample(3 * NUM_ROWS, fixed=NUM_SPLITS, seed=99)
+
+    ds1 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    ds2 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+
+    assert [row["id"] for row in ds1] == [row["id"] for row in ds2]
+
+
+def test_split_strategy_num_splits_mismatch_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose split
+    count doesn't match num_splits. `_rank_splits` assumes split ids are exactly
+    0..num_splits-1 with no gaps; a mismatch would otherwise silently drop rows
+    (split ids >= num_splits) or leave some ranks reading an empty split (missing
+    ids < num_splits)."""
+    with pytest.raises(ValueError, match="num_splits"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+            ),
+            num_splits=NUM_SPLITS + 1,  # the strategy above always builds NUM_SPLITS
+        )
+
+
+def test_split_strategy_unequal_split_sizes_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose splits
+    all exist (ids 0..num_splits-1) but aren't the same size. The round-robin
+    iteration (see _iter_owned) assumes every owned split has the same row count
+    and stops as soon as any one is exhausted -- `ratios`/`counts` (unlike
+    `fixed`) can produce unequal split sizes, which would otherwise silently
+    drop rows from the larger splits."""
+    with pytest.raises(ValueError, match="unequal split sizes"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                100, ratios=[0.7, 0.3], seed=SHUFFLE_SEED
+            ),
+            num_splits=2,
+        )
+
+
+def test_split_strategy_permutation_mismatch_on_resume_raises(lance_table):
+    """load_state_dict must reject resuming against a different permutation than
+    the one that produced the checkpoint. num_splits/shuffle_seed alone can't catch
+    this for split_strategy, since that path ignores shuffle_seed entirely: a
+    bootstrap_sample reseeded differently resamples completely differently while
+    shuffle_seed keeps whatever value the caller passed either way, so the
+    pre-existing checks would pass despite the mismatch."""
+
+    def strategy(seed):
+        return lambda b: b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=seed)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(1),
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):  # one full cycle: every split advances uniformly
+        next(it)
+    checkpoint = ds1.state_dict()
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(2),  # different seed -> a different permutation
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,  # unchanged -- irrelevant on this path
+    )
+    with pytest.raises(ValueError, match="permutation mismatch"):
+        ds2.load_state_dict(checkpoint)
+
+
+def test_split_strategy_resume_with_matching_permutation_succeeds(lance_table):
+    """The common case: resuming against the same split_strategy (same seed) must
+    work exactly like the non-split_strategy checkpoint/resume path, continuing
+    from exactly the same position with no gaps or repeats."""
+
+    def strategy(b):
+        return b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=7)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds1.state_dict()
+    remaining_original = [row["id"] for row in it]
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    ds2.load_state_dict(checkpoint)  # must not raise
+    remaining_resumed = [row["id"] for row in ds2]
+
+    assert remaining_original == remaining_resumed
+
+
+def test_default_checkpoint_omits_perm_fingerprint(lance_table):
+    """split_random/split_sequential checkpoints must not carry a
+    perm_fingerprint -- see test_default_checkpoint_resumes_after_compaction for
+    why checking one on this path would be wrong, not just unnecessary."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert "perm_fingerprint" not in ds.state_dict()
+
+
+def test_split_strategy_checkpoint_includes_perm_fingerprint(lance_table):
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    assert "perm_fingerprint" in ds.state_dict()
+
+
+def test_default_checkpoint_resumes_after_compaction(lance_table):
+    """split_random/split_sequential checkpoints must resume normally even after
+    the table is compacted between save and load. Lance row ids are not stable
+    across compaction by default (confirmed empirically: a 2-fragment table's
+    row ids differ before and after `optimize()`), so fingerprinting raw row ids
+    on this path -- instead of relying on shuffle_seed/num_splits alone, as it
+    does -- would reject this resume even though the seeded permutation itself
+    is unchanged."""
+    pytest.importorskip("lance")
+    lance_table.add(pa.table({"id": [NUM_ROWS]}))  # a second fragment to compact
+
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds.state_dict()
+    assert "perm_fingerprint" not in checkpoint
+
+    before_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    lance_table.optimize()
+    after_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    assert before_compaction != after_compaction, (
+        "test setup didn't actually renumber row ids -- fix the fixture, not "
+        "the assertion below"
+    )
+
+    ds_resumed = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_resumed.load_state_dict(checkpoint)  # must not raise

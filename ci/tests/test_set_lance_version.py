@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -83,6 +84,13 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
             with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
                 workdir = Path(tmp)
                 (workdir / "Cargo.toml").write_text(CARGO_TOML)
+                core_manifest = workdir / "rust/lancedb/Cargo.toml"
+                core_manifest.parent.mkdir(parents=True)
+                core_manifest.write_text(
+                    "[dependencies]\nlance-arrow = { "
+                    'version = "=1.0.0", git = "https://github.com/lance-format/lance.git", '
+                    'tag = "v1.0.0" }\narrow.workspace = true\n'
+                )
                 command_log = workdir / "commands.log"
                 fake_bin = workdir / "bin"
                 fake_bin.mkdir()
@@ -111,12 +119,51 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                     + updated_dependencies
                     + UNTOUCHED_DEPENDENCIES,
                 )
+                core = tomllib.loads(core_manifest.read_text())["dependencies"]
+                dependency = core["lance-arrow"]
+                if isinstance(dependency, str):
+                    dependency = {"version": dependency}
+                if version == "local":
+                    self.assertEqual(
+                        dependency["path"], "../../../lance/rust/lance-arrow"
+                    )
+                else:
+                    expected_version = {
+                        "stable": "9.9.9",
+                        "preview": "10.0.0-beta.3",
+                    }.get(version, version.removeprefix("v"))
+                    self.assertEqual(dependency["version"], f"={expected_version}")
+                    if "beta" in expected_version:
+                        self.assertEqual(dependency["git"], LANCE_GIT_URL)
+                        self.assertEqual(dependency["tag"], f"v{expected_version}")
+                    else:
+                        self.assertNotIn("git", dependency)
+                self.assertEqual(core["arrow"], {"workspace": True})
                 commands = command_log.read_text().splitlines()
                 for command in expected_commands:
                     self.assertTrue(
                         any(line.startswith(command) for line in commands),
                         f"{command!r} not found in {commands!r}",
                     )
+
+                with (workdir / "Cargo.toml").open("a") as manifest:
+                    manifest.write('lance-arrow = "1.0.0"\n')
+                for inherited in (
+                    "lance-arrow = { workspace = true }",
+                    "lance-arrow.workspace = true",
+                ):
+                    inherited_manifest = f"[dependencies]\n{inherited}\n"
+                    core_manifest.write_text(inherited_manifest)
+                    result = subprocess.run(
+                        [sys.executable, str(SCRIPT), version],
+                        cwd=workdir,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(core_manifest.read_text(), inherited_manifest)
 
     def _write_fake_executables(self, fake_bin: Path) -> None:
         cargo = fake_bin / "cargo"

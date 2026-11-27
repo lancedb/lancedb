@@ -60,6 +60,8 @@ class LanceSchema(LanceModel):
 
 def test_vector_search():
     # --8<-- [start:exhaustive_search]
+    import lancedb
+
     uri = "data/sample-lancedb"
     db = lancedb.connect(uri)
     data = [
@@ -112,6 +114,8 @@ def test_vector_search():
 @pytest.mark.asyncio
 async def test_vector_search_async():
     # --8<-- [start:exhaustive_search_async]
+    import lancedb
+
     uri = "data/sample-lancedb"
     async_db = await lancedb.connect_async(uri)
     data = [
@@ -240,6 +244,8 @@ def test_fts_boost_query():
 
 def test_fts_native():
     # --8<-- [start:basic_fts]
+    import lancedb
+
     uri = "data/sample-lancedb"
     db = lancedb.connect(uri)
 
@@ -287,6 +293,8 @@ def test_fts_native():
 @pytest.mark.asyncio
 async def test_fts_native_async():
     # --8<-- [start:basic_fts_async]
+    import lancedb
+
     uri = "data/sample-lancedb"
     async_db = await lancedb.connect_async(uri)
 
@@ -651,6 +659,8 @@ def test_hybrid_search():
 
     # --8<-- [end:class-Documents]
     # --8<-- [start:basic_hybrid_search]
+    import lancedb
+
     data = [
         {"text": "rebel spaceships striking from a hidden base"},
         {"text": "have won their first victory against the evil Galactic Empire"},
@@ -700,6 +710,8 @@ async def test_hybrid_search_async():
 
     # --8<-- [end:class-Documents]
     # --8<-- [start:basic_hybrid_search_async]
+    import lancedb
+
     uri = "data/sample-lancedb"
     async_db = await lancedb.connect_async(uri)
     data = [

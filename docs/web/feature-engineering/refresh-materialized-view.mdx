@@ -1,0 +1,154 @@
+---
+title: "Refresh a materialized view"
+sidebarTitle: "Refresh Materialized View"
+description: "Bring a materialized view up to date after its source data changes."
+icon: arrows-rotate
+keywords: ["materialized view", "refresh", "auto_refresh_enabled", "auto_refresh_interval_seconds"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Refresh a [materialized view](/feature-engineering/materialized-views) to
+bring its stored rows up to date after the source table changes.
+
+<Note>
+In SQL this is [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view).
+</Note>
+
+## Refresh a view {#refresh}
+
+<CodeGroup>
+```python Python icon="python"
+view.refresh()
+```
+</CodeGroup>
+
+In LanceDB Embedded, every refresh rebuilds the view completely from its
+source query -- there is no incremental refresh there. Calling it again
+with no source changes still rebuilds and commits a new table version. In
+LanceDB Enterprise, the server chooses the refresh mode instead; pass
+`full=True` to force a full rebuild there too.
+
+In LanceDB Embedded, the result reports what the refresh did:
+
+<CodeGroup>
+```python Python icon="python"
+result = view.refresh()
+result.rows_written  # rows in the rebuilt view
+result.source_version  # the source table version the view now reflects
+result.version  # the view's own new table version
+```
+</CodeGroup>
+
+LanceDB Enterprise refreshes run through its SQL job adapter, which doesn't
+expose these metrics: `mode`, `rows_written` and `source_version` are all
+`None` on an Enterprise result, even though the refresh itself ran.
+
+Pass `source_version=N` to refresh against a particular source version
+instead of the latest. This is a LanceDB Embedded capability only --
+LanceDB Enterprise's SQL refresh does not support pinning a source version:
+
+<CodeGroup>
+```python Python icon="python"
+view.refresh(source_version=12)  # LanceDB Embedded only
+```
+</CodeGroup>
+
+Use `view.table.count_rows()` for the view's row count at any time; on
+LanceDB Embedded it always matches `rows_written` from the most recent
+refresh.
+
+{/*
+Draft: publish this section after the resource-control SDK support is released.
+
+## Resource budgets {#resources}
+
+Bound the resources used to recompute a view:
+
+<CodeGroup>
+```python Python icon="python"
+job = view.refresh_async(
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=4,
+    gpu_class="h100",
+    gpu_count=2,
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::materialized_view::MaterializedView;
+
+async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
+    let job = view
+        .refresh()
+        .total_cpu_millis(8000)
+        .total_memory_bytes(16_u64 << 30)
+        .total_gpu_count(4)
+        .gpu_class("h100")
+        .gpu_count(2)
+        .execute_async()
+        .await?;
+    job.wait().await?;
+    Ok(())
+}
+```
+
+```typescript TypeScript icon="js"
+await view.refresh({
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  totalGpuCount: 4,
+  gpuClass: "h100",
+  gpuCount: 2,
+});
+```
+</CodeGroup>
+
+CPU is in millicores (8000 means eight cores), memory is in bytes, and
+`total_gpu_count` is the aggregate concurrent GPU cap. `gpu_count` allocates
+that many devices together to each worker; the total cap must fit at least
+one worker. Use `total_gpu_count=0` for a CPU-only view.
+
+Each omitted setting inherits the view's creation setting, then the Function
+setting. Total budgets across distinct pinned Function versions are summed;
+the per-worker count uses their largest default. Remaining total budgets use
+deployment defaults. An unresolved GPU class is equivalent to `"any"`, and
+an explicit `gpu_class="any"` overrides a concrete creation or Function class.
+Discover configured classes with `db.list_gpu_classes()`.
+
+These controls require LanceDB Enterprise with an isolated backend that can
+enforce them; Embedded and unsupported execution backends reject them. See the
+[SQL resource options](/sql/dml/refresh-materialized-view#resources).
+
+*/}
+
+## Automatic refresh {#auto-refresh}
+
+A materialized view can refresh itself on a schedule instead of waiting
+for an explicit `refresh()` call. See [Auto Refresh](/enterprise/auto-refresh)
+for enabling it at creation, the SQL and SDK forms for changing the
+setting afterward, and how it differs from a computed column's
+per-output granularity.
+
+## When a refresh fails {#failures}
+
+A refresh replaces the view's stored rows in one commit, so a failure leaves
+the view as it was after its last successful refresh. Fix the cause and
+refresh again.
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="Create a materialized view" icon="table" href="/feature-engineering/materialized-views">
+    Define the query a view stores.
+  </Card>
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    The same idea, for a single derived column.
+  </Card>
+  <Card title="Auto Refresh" icon="clock-rotate-left" href="/enterprise/auto-refresh">
+    Refresh on a schedule instead of calling this yourself.
+  </Card>
+</CardGroup>

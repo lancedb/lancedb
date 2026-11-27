@@ -62,7 +62,7 @@ class CohereReranker(Reranker):
                 "COHERE_API_KEY not set. Either set it in your environment or \
                 pass it as `api_key` argument to the CohereReranker."
             )
-        return cohere.Client(os.environ.get("COHERE_API_KEY") or self.api_key)
+        return cohere.Client(self.api_key or os.environ.get("COHERE_API_KEY"))
 
     def _rerank(self, result_set: pa.Table, query: str):
         result_set = self._handle_empty_results(result_set)

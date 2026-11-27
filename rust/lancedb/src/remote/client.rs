@@ -8,13 +8,18 @@ use reqwest::{
     header::{HeaderMap, HeaderValue},
 };
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, HttpErrorSource, RemoteErrorMetadata, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
+/// M1 prototype routing threshold for direct Blob reads. It stays internal
+/// until the acceptance benchmark establishes the right default.
+const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 
 pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
     const SENSITIVE_HEADERS: [&str; 5] = [
@@ -67,25 +72,28 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
     async fn get_headers(&self) -> Result<HashMap<String, String>>;
 }
 
-/// Default maximum bytes per insert request (8 GiB).
-///
-/// Sized so a multipart part can hold at least one full Lance data file (the
-/// default is 1M rows / 90 GB per file), which keeps fragments from being split
-/// into undersized files across parts. The time-based cut
-/// ([`DEFAULT_MAX_REQUEST_DURATION_DIVISOR`]) bounds request duration on slow
-/// uploads, so a large byte budget does not risk the read timeout.
-const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
+/// Default target size for replayable multipart IPC payloads (64 MiB).
+/// A single oversized row (including its schema) may exceed the target.
+const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 64 * 1024 * 1024;
 
 /// The default max request duration is the read timeout divided by this, leaving
 /// headroom for the server to finalize and acknowledge a part before the read
 /// timeout (which also covers the request-body upload) fires.
 const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
 
-/// Configuration for the LanceDB Cloud HTTP client.
+/// Configuration for the HTTP client used to connect to LanceDB Enterprise or
+/// LanceDB Cloud (legacy).
 #[derive(Clone)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
+    /// Maximum concurrent blob HTTP requests for this connection, shared by all
+    /// tables and blob handles. Defaults to 8. The environment variable
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` can also set this limit.
+    /// The value must be between 1 and [`Semaphore::MAX_PERMITS`], inclusive.
+    /// Values outside that range are rejected with [`Error::InvalidInput`] when
+    /// the connection is created.
+    pub blob_request_concurrency: Option<usize>,
     /// User agent to use for requests. The default provides the library
     /// name and version.
     pub user_agent: String,
@@ -101,33 +109,27 @@ pub struct ClientConfig {
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
     /// User identifier for tracking purposes.
     ///
-    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Enterprise.
     /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
     pub user_id: Option<String>,
-    /// Maximum number of bytes to send in a single insert HTTP request.
+    /// Target compressed IPC bytes per multipart request. Defaults to 64 MiB.
     ///
-    /// During a multipart write, each partition's data is split into one or more
-    /// parts of at most this many (Arrow IPC, compressed) bytes, each uploaded as
-    /// a separate request under the shared upload id. This bounds how long any
-    /// one request stays open, so large bulk ingests do not exceed the client
-    /// read timeout while the server streams the part to object storage.
-    ///
-    /// The request body is still streamed (not buffered), so this does not
-    /// increase peak memory. Set to `Some(0)` to disable splitting (one request
-    /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
-    /// environment variable. Defaults to 8 GiB.
+    /// Parts are buffered for retries with the same upload and part IDs. Input
+    /// batches are sliced before encoding. A single row and its schema are
+    /// indivisible and may exceed the target. Peak additional memory is bounded
+    /// by the number of active writers times the part size (plus encoding buffers).
+    /// Set to `Some(0)` to disable byte-based cuts, or configure
+    /// `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`. Disabling cuts can require buffering
+    /// an entire partition for replay.
     pub max_bytes_per_request: Option<u64>,
-    /// Maximum wall-clock time to spend uploading a single insert HTTP request.
+    /// Maximum time spent filling a replayable multipart payload.
     ///
-    /// Complements [`Self::max_bytes_per_request`]: during a multipart write a
-    /// part is cut when it reaches either the byte budget or this duration,
-    /// whichever comes first. The client read timeout also covers the
-    /// request-body upload, so a slow or throttled upload of a large part can
-    /// hit that timeout before the byte budget is reached; cutting by time keeps
-    /// each request short enough that it completes (and the server acknowledges
-    /// the part) within the read timeout.
+    /// A part is cut after encoding a batch slice when either its byte budget
+    /// or this duration is reached. This does not impose a network deadline;
+    /// `timeout_config` controls HTTP timeouts. Timed-out parts are retried using
+    /// their original payload and transaction ID.
     ///
     /// Set to `Some(Duration::ZERO)` to disable the time-based cut. You can also
     /// set the `LANCE_CLIENT_MAX_REQUEST_DURATION` environment variable (integer
@@ -140,6 +142,7 @@ impl std::fmt::Debug for ClientConfig {
         f.debug_struct("ClientConfig")
             .field("timeout_config", &self.timeout_config)
             .field("retry_config", &self.retry_config)
+            .field("blob_request_concurrency", &self.blob_request_concurrency)
             .field("user_agent", &self.user_agent)
             .field("extra_headers", &self.extra_headers)
             .field("id_delimiter", &self.id_delimiter)
@@ -160,6 +163,7 @@ impl Default for ClientConfig {
         Self {
             timeout_config: TimeoutConfig::default(),
             retry_config: RetryConfig::default(),
+            blob_request_concurrency: None,
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
             extra_headers: HashMap::new(),
             id_delimiter: None,
@@ -223,6 +227,10 @@ pub struct TimeoutConfig {
     /// The default is 120 seconds (2 minutes).
     pub connect_timeout: Option<Duration>,
     /// The timeout for reading a response from the server.
+    ///
+    /// This also applies while waiting for response headers during an upload.
+    /// A large or slowly produced request body (for example, when creating a
+    /// table) may need a longer timeout even if data is still being uploaded.
     ///
     /// You can also set the `LANCE_CLIENT_READ_TIMEOUT` environment variable
     /// to set this value. Use an integer value in seconds.
@@ -292,8 +300,9 @@ pub struct RetryConfig {
     /// You can also set the `LANCE_CLIENT_RETRY_STATUSES` environment variable
     /// to set this value. Use a comma-separated list of integer values.
     ///
-    /// Note that write operations will never be retried on 5xx errors as this may
-    /// result in duplicated writes.
+    /// Non-idempotent writes do not replay ambiguous 5xx responses. Multipart
+    /// parts can retry configured statuses because each replay replaces the same
+    /// staged transaction. Completion is never replayed.
     ///
     /// The default is 409, 429, 500, 502, 503, 504.
     pub statuses: Option<Vec<u16>>,
@@ -306,8 +315,16 @@ pub struct RetryConfig {
 #[derive(Clone)]
 pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
+    /// A separate client for presigned object-store traffic. It deliberately
+    /// carries none of the Enterprise default headers, so service credentials
+    /// never reach object storage.
+    object_store_client: reqwest::Client,
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
+    pub(crate) blob_request_semaphore: Arc<Semaphore>,
+    /// Logical blob/range size at which a handle prefers a presigned direct
+    /// read over the existing proxy byte-range route.
+    pub(crate) blob_presign_threshold_bytes: u64,
     pub(crate) sender: S,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
     /// Connection-level read consistency interval. Drives the
@@ -368,23 +385,30 @@ pub struct ParsedDbUrl {
 
 /// Parse a database URL and extract the database name and optional prefix.
 ///
-/// Expected format: `db://db_name` or `db://db_name/prefix`
+/// Expected format: `db://db_name`, `db://db_name/prefix`, or `db://` when
+/// connecting to the storage root through a host override.
 pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
     let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
         message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
     })?;
     debug_assert_eq!(parsed_url.scheme(), "db");
-    if !parsed_url.has_host() {
-        return Err(Error::InvalidInput {
-            message: format!("Invalid database URL (missing host) '{}'", db_url),
-        });
-    }
-    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
-        .map_err(|err| Error::InvalidInput {
-            message: format!("Invalid encoded database name: {err}"),
-        })?
-        .into_owned();
-    validate_database_name(&db_name)?;
+    let db_name = match parsed_url.host_str() {
+        Some(db_name) => {
+            let db_name = urlencoding::decode(db_name)
+                .map_err(|err| Error::InvalidInput {
+                    message: format!("Invalid encoded database name: {err}"),
+                })?
+                .into_owned();
+            validate_database_name(&db_name)?;
+            db_name
+        }
+        None if matches!(parsed_url.path(), "" | "/") => String::new(),
+        None => {
+            return Err(Error::InvalidInput {
+                message: format!("Invalid database URL (missing host) '{}'", db_url),
+            });
+        }
+    };
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
@@ -469,6 +493,11 @@ impl ClientConfig {
     /// mistake is reported where it was made rather than as a confusing
     /// response later. Public so a caller can ask without connecting.
     pub fn validate(&self) -> Result<()> {
+        if self.blob_request_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "blob_request_concurrency must be greater than zero".into(),
+            });
+        }
         if let Some(delimiter) = &self.id_delimiter {
             validate_id_delimiter(delimiter)?;
         }
@@ -504,6 +533,8 @@ impl RestfulLanceDbClient<Sender> {
         // Before anything is built from it, so the error names the caller's
         // configuration rather than a request.
         client_config.validate()?;
+        let blob_request_concurrency =
+            Self::resolve_blob_request_concurrency(client_config.blob_request_concurrency)?;
 
         // Get the timeouts
         let timeout =
@@ -578,7 +609,7 @@ impl RestfulLanceDbClient<Sender> {
 
         let client = client_builder
             .default_headers(default_headers)
-            .user_agent(client_config.user_agent)
+            .user_agent(client_config.user_agent.clone())
             .build()
             .map_err(|err| Error::Other {
                 message: "Failed to build HTTP client".into(),
@@ -599,16 +630,63 @@ impl RestfulLanceDbClient<Sender> {
             Self::resolve_max_bytes_per_request(client_config.max_bytes_per_request)?;
         let max_request_duration =
             Self::resolve_max_request_duration(client_config.max_request_duration, read_timeout)?;
+
+        let mut object_store_builder = reqwest::Client::builder()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .pool_idle_timeout(pool_idle_timeout);
+        if let Some(timeout) = timeout {
+            object_store_builder = object_store_builder.timeout(timeout);
+        }
+        let object_store_client = object_store_builder
+            .user_agent(client_config.user_agent)
+            .build()
+            .map_err(|err| Error::Other {
+                message: "Failed to build object-store HTTP client".into(),
+                source: Some(Box::new(err)),
+            })?;
+
         Ok(Self {
             client,
+            object_store_client,
             host,
             retry_config,
+            blob_request_semaphore: Arc::new(Semaphore::new(blob_request_concurrency)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
             max_request_duration,
         })
+    }
+
+    fn resolve_blob_request_concurrency(passed: Option<usize>) -> Result<usize> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY") {
+            env.parse::<usize>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY must be a positive integer, got '{env}'"
+                ),
+            })?
+        } else {
+            DEFAULT_BLOB_REQUEST_CONCURRENCY
+        };
+        if value == 0 {
+            return Err(Error::InvalidInput {
+                message: "blob request concurrency must be greater than zero".into(),
+            });
+        }
+        if value > Semaphore::MAX_PERMITS {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "blob request concurrency must be at most {}, got {value}",
+                    Semaphore::MAX_PERMITS
+                ),
+            });
+        }
+        Ok(value)
     }
 
     /// Resolve the max bytes per insert request from config, environment, or the
@@ -764,9 +842,47 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.get(full_uri)
     }
 
+    pub fn head(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.head(full_uri)
+    }
+
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.post(full_uri)
+    }
+
+    /// Start a presigned object-store request. This client has no Enterprise
+    /// default headers and no dynamic header provider.
+    pub(crate) fn object_store_get(&self, url: &str) -> RequestBuilder {
+        self.object_store_client.get(url)
+    }
+
+    /// Send presigned object-store traffic without request logging, request
+    /// ids, service headers, or signed URLs in returned errors.
+    pub(crate) async fn send_object_store(
+        &self,
+        req: RequestBuilder,
+    ) -> Result<(String, Response)> {
+        let request_id = "blob-direct".to_string();
+        let (client, request) = req.build_split();
+        let request = request.map_err(|err| Error::Http {
+            source: Box::new(err.without_url()),
+            request_id: request_id.clone(),
+            status_code: None,
+        })?;
+        let response = self
+            .sender
+            .send(&client, request)
+            .await
+            .map_err(|err| err.without_url())
+            .err_to_http(request_id.clone())?;
+        Ok((request_id, response))
+    }
+
+    pub fn put(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.put(full_uri)
     }
 
     /// Apply dynamic headers from the header provider if configured
@@ -826,6 +942,16 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             request_id, response
         );
         Ok((request_id, response))
+    }
+
+    pub(crate) fn with_retries(&self, retries: Option<u8>) -> Self {
+        let mut client = self.clone();
+        if let Some(retries) = retries {
+            client.retry_config.retries = retries;
+            client.retry_config.connect_retries = retries;
+            client.retry_config.read_retries = retries;
+        }
+        client
     }
 
     /// Send the request using retries configured in the RetryConfig.
@@ -897,7 +1023,19 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                         .check_response(&retry_counter.request_id, response)
                         .await
                         .unwrap_err();
+                    // A structured resource error is a domain result, not a
+                    // transient failure. Retrying it would hide the typed error.
+                    if source.http_error_details().is_some() {
+                        return Err(source);
+                    }
                     retry_counter.increment_request_failures(source)?;
+                    if status.is_server_error() {
+                        log::warn!(
+                            "Retrying request {} after gateway status {}",
+                            request_id,
+                            status
+                        );
+                    }
                 }
                 Err(err) if err.is_connect() => {
                     retry_counter.increment_connect_failures(err)?;
@@ -972,14 +1110,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         if status.is_success() {
             Ok(response)
         } else {
+            let metadata = RemoteErrorMetadata::from_headers(response.headers());
             let response_text = response.text().await.ok();
-            let message = if let Some(response_text) = response_text {
-                format!("{}: {}", status, response_text)
-            } else {
-                status.to_string()
+            let source = match response_text {
+                Some(response_text) => HttpErrorSource::new(
+                    format!("{}: {}", status, response_text),
+                    Some(&response_text),
+                    metadata,
+                ),
+                None => HttpErrorSource::new(status.to_string(), None, metadata),
             };
             Err(Error::Http {
-                source: message.into(),
+                source: Box::new(source),
                 request_id: request_id.into(),
                 status_code: Some(status),
             })
@@ -1104,8 +1246,11 @@ pub mod test_utils {
 
         RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
@@ -1130,8 +1275,15 @@ pub mod test_utils {
 
         RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: config.retry_config.try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(
+                config
+                    .blob_request_concurrency
+                    .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
+            )),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
@@ -1149,6 +1301,231 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn check_response_extracts_structured_resource_error() {
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let client =
+            client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
+        let cases = [
+            (404, "not_found", "secret", "openai"),
+            (404, "not_found", "function", "embed"),
+            (404, "not_found", "namespace", "child"),
+            (409, "already_exists", "namespace", "analytics"),
+        ];
+
+        for (status, error_code, resource_kind, resource_name) in cases {
+            let body = serde_json::json!({
+                "code": if error_code == "not_found" { 5 } else { 6 },
+                "error": format!("{resource_kind} {resource_name} error"),
+                "error_code": error_code,
+                "resource": {
+                    "kind": resource_kind,
+                    "name": resource_name,
+                    "namespace_path": ["analytics"],
+                },
+            })
+            .to_string();
+            let response = http::Response::builder()
+                .status(status)
+                .body(body.clone())
+                .unwrap()
+                .into();
+
+            let error = client
+                .check_response("request-1", response)
+                .await
+                .unwrap_err();
+            let details = error
+                .http_error_details()
+                .expect("structured HTTP error details");
+            assert_eq!(details.error_code, error_code);
+            assert_eq!(details.resource_kind, resource_kind);
+            assert_eq!(details.resource_name, resource_name);
+            assert_eq!(details.namespace_path, ["analytics"]);
+            assert!(error.to_string().contains(&body));
+        }
+    }
+
+    #[tokio::test]
+    async fn check_response_keeps_legacy_body_as_generic_http_error() {
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let client =
+            client_with_handler(|_| http::Response::builder().status(404).body("").unwrap());
+        let body = serde_json::json!({
+            "code": 4,
+            "error": "Not found: Secret \"openai\" does not exist",
+        })
+        .to_string();
+        let response = http::Response::builder()
+            .status(404)
+            .body(body.clone())
+            .unwrap()
+            .into();
+
+        let error = client
+            .check_response("request-1", response)
+            .await
+            .unwrap_err();
+        assert!(error.http_error_details().is_none());
+        assert!(error.to_string().contains(&body));
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_structured_resource_error() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::remote::client::test_utils::client_with_handler;
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler_attempts = Arc::clone(&attempts);
+        let client = client_with_handler(move |_| {
+            handler_attempts.fetch_add(1, Ordering::Relaxed);
+            http::Response::builder()
+                .status(409)
+                .body(
+                    serde_json::json!({
+                        "code": 6,
+                        "error": "already exists",
+                        "error_code": "already_exists",
+                        "resource": {
+                            "kind": "namespace",
+                            "name": "analytics",
+                            "namespace_path": [],
+                        },
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let request = client.client.post("http://localhost/");
+        let error = client
+            .send_with_retry(request, None, true)
+            .await
+            .unwrap_err();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let details = error
+            .http_error_details()
+            .expect("structured HTTP error details");
+        assert_eq!(details.error_code, "already_exists");
+        assert_eq!(details.resource_kind, "namespace");
+    }
+
+    #[tokio::test]
+    async fn test_http_timeout_error_is_actionable() {
+        use super::*;
+        use futures::StreamExt;
+
+        // Keep consuming the upload without sending response headers (HTTP) or
+        // completing the TLS handshake (HTTPS). The HTTP body never reaches EOF,
+        // so its read timeout fires while it is still uploading.
+        for (scheme, retry) in [
+            ("http", false),
+            ("http", true),
+            ("https", false),
+            ("https", true),
+        ] {
+            let connect_timeout = scheme == "https";
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let _ = tokio::io::copy(&mut socket, &mut tokio::io::sink()).await;
+            });
+            let client = RestfulLanceDbClient::try_new(
+                &parse_db_url("db://test").unwrap(),
+                "us-east-1",
+                Some(format!("{scheme}://{address}")),
+                HeaderMap::new(),
+                ClientConfig {
+                    timeout_config: TimeoutConfig {
+                        connect_timeout: Some(Duration::from_millis(200)),
+                        read_timeout: Some(Duration::from_secs(2)),
+                        ..Default::default()
+                    },
+                    retry_config: RetryConfig {
+                        connect_retries: Some(1),
+                        read_retries: Some(1),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+            let make_body = || {
+                Ok(Body::wrap_stream(
+                    futures::stream::once(async {
+                        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"upload"))
+                    })
+                    .chain(futures::stream::pending()),
+                ))
+            };
+            let request = client
+                .post("/v1/table/test/create/")
+                .header(REQUEST_ID_HEADER, "upload-timeout");
+            let error = if retry {
+                client
+                    .send_with_retry(request, Some(Box::new(make_body)), true)
+                    .await
+            } else {
+                client.send(request.body(make_body().unwrap())).await
+            }
+            .unwrap_err();
+            server.abort();
+
+            let message = error.to_string();
+            assert!(message.contains("timed out"), "{message}");
+            let (config, env_var) = if connect_timeout {
+                (
+                    "client_config.timeout_config.connect_timeout",
+                    "LANCE_CLIENT_CONNECT_TIMEOUT",
+                )
+            } else {
+                (
+                    "client_config.timeout_config.read_timeout",
+                    "LANCE_CLIENT_READ_TIMEOUT",
+                )
+            };
+            assert!(message.contains(config), "{message}");
+            assert!(
+                message.contains("client_config.timeout_config.timeout"),
+                "{message}"
+            );
+            assert!(message.contains(env_var), "{message}");
+            let (request_id, status_code, source) = match &error {
+                Error::Http {
+                    request_id,
+                    status_code,
+                    source,
+                } if !retry => (request_id, status_code, source),
+                Error::Retry {
+                    request_id,
+                    status_code,
+                    source,
+                    read_failures,
+                    connect_failures,
+                    ..
+                } if retry => {
+                    assert_eq!(*read_failures, u8::from(!connect_timeout));
+                    assert_eq!(*connect_failures, u8::from(connect_timeout));
+                    (request_id, status_code, source)
+                }
+                other => panic!("unexpected error: {other:?}"),
+            };
+            assert_eq!(request_id, "upload-timeout");
+            assert_eq!(*status_code, None);
+            // Retain the typed source for retry classification and Python causes.
+            let source = source.downcast_ref::<reqwest::Error>().unwrap();
+            assert!(source.is_timeout());
+            assert_eq!(source.is_connect(), connect_timeout);
+        }
+    }
+
     /// A configuration naming any other delimiter is refused where it was
     /// written, rather than producing identifiers no service splits the way the
     /// caller meant.
@@ -1181,6 +1558,44 @@ mod tests {
         }
         .validate()
         .expect_err("a configured delimiter other than the supported one must be refused");
+    }
+
+    #[test]
+    fn test_blob_request_concurrency_must_be_positive() {
+        let error = super::ClientConfig {
+            blob_request_concurrency: Some(0),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(error.to_string().contains("blob_request_concurrency"));
+        assert_eq!(
+            RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(3)).unwrap(),
+            3
+        );
+    }
+
+    /// A semaphore cannot hold more than `MAX_PERMITS`, so a larger configured
+    /// value is refused where it was set instead of panicking when the
+    /// connection is created.
+    #[test]
+    fn test_blob_request_concurrency_must_fit_a_semaphore() {
+        let error = RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(
+            super::Semaphore::MAX_PERMITS + 1,
+        ))
+        .expect_err("a concurrency above the semaphore limit must be refused");
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(
+            error.to_string().contains("blob request concurrency"),
+            "{error}"
+        );
+        assert_eq!(
+            RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(
+                super::Semaphore::MAX_PERMITS
+            ))
+            .unwrap(),
+            super::Semaphore::MAX_PERMITS
+        );
     }
 
     use super::*;
@@ -1513,8 +1928,11 @@ mod tests {
         // Create client with header provider
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
@@ -1551,8 +1969,11 @@ mod tests {
         // Create client with header provider
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
@@ -1615,8 +2036,11 @@ mod tests {
 
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
+            object_store_client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,

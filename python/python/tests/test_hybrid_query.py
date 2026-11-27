@@ -81,6 +81,31 @@ async def test_async_hybrid_query_with_row_ids(table: AsyncTable):
     assert result["_rowid"].to_pylist() == [0, 3]
 
 
+def test_hybrid_fragment_constraints_fail_loud(sync_table: Table):
+    query = (
+        sync_table.search("dog", query_type="hybrid")
+        .vector([0.5, -0.5])
+        .fragment_ids([0])
+    )
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        query.to_arrow()
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        query.explain_plan()
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_fragment_constraints_fail_loud(table: AsyncTable):
+    query = (
+        table.query().nearest_to([0.5, -0.5]).nearest_to_text("dog").fragment_ids([0])
+    )
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await query.to_arrow()
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await query.analyze_plan()
+
+
 @pytest.mark.asyncio
 async def test_async_hybrid_query_filters(table: AsyncTable):
     # test that query params are passed down from the regular builder to
@@ -103,6 +128,7 @@ async def test_async_hybrid_query_filters(table: AsyncTable):
 async def test_hybrid_query_with_stale_fixed_size_binary_prefilter(
     tmpdir_factory,
 ):
+    pytest.importorskip("lance")
     tmp_path = str(tmpdir_factory.mktemp("stale_scalar_prefilter"))
     db = await lancedb.connect_async(tmp_path)
 
@@ -315,13 +341,53 @@ def test_hybrid_query_offset(sync_table: Table):
     assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
 
 
+@pytest.mark.parametrize(
+    "query_vector",
+    [
+        pytest.param((0.0, 0.4), id="tuple"),
+        pytest.param(pa.array([0.0, 0.4], type=pa.float32()), id="pa-array"),
+        pytest.param(
+            pa.chunked_array([[0.0], [0.4]], type=pa.float32()), id="pa-chunked-array"
+        ),
+    ],
+)
+def test_hybrid_query_accepts_every_vector_container(sync_table: Table, query_vector):
+    # Vector search and the async hybrid API both accept tuples and pyarrow
+    # arrays for the query vector (``VEC`` in ``lancedb/common.py``), so the
+    # sync hybrid builder must accept them too.
+    expected = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector(query_vector)
+        .text("dog")
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+
+    assert result["_rowid"].to_pylist() == expected["_rowid"].to_pylist()
+
+
 def test_hybrid_query_default_limit(sync_table: Table):
     # The vector and FTS legs match disjoint rows, so fusing their results
     # yields more rows than the default limit.
     new_rows = []
+    # Distinct distances and document lengths avoid ties in either leg,
+    # so comparing offset windows does not depend on tie ordering.
     for i in range(20):
-        new_rows.append({"text": "close_vec", "vector": [0.1, 0.1]})
-        new_rows.append({"text": "dog", "vector": [50.0 + i, 50.0 + i]})
+        coordinate = 0.11 + i * 0.001
+        new_rows.append({"text": "close_vec", "vector": [coordinate, coordinate]})
+        new_rows.append(
+            {"text": "dog " + "padding " * (i + 1), "vector": [50.0 + i, 50.0 + i]}
+        )
     sync_table.add(new_rows)
 
     def query():
@@ -536,3 +602,46 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+@pytest.mark.parametrize("normalize", ["score", "rank"])
+def test_hybrid_single_fts_match_keeps_fts_weight(tmp_path, normalize):
+    from lancedb.rerankers import LinearCombinationReranker
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        [
+            {"text": "apple banana", "vector": [0.0, 0.0]},
+            {"text": "zebra unicorn", "vector": [0.1, 0.0]},
+            {"text": "cherry grape", "vector": [5.0, 5.0]},
+        ],
+    )
+    table.create_fts_index("text")
+
+    results = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("zebra")
+        .rerank(LinearCombinationReranker(weight=0.3), normalize=normalize)
+        .limit(3)
+        .to_arrow()
+    )
+
+    assert results["text"].to_pylist() == [
+        "zebra unicorn",
+        "apple banana",
+        "cherry grape",
+    ]
+
+
+def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
+    # Pins the full message: the space between "hybrid search." and "But" is
+    # load-bearing (see the _validate_query literal concatenation).
+    with pytest.raises(ValueError) as excinfo:
+        sync_table.search("dog", query_type="hybrid").vector([0.5, -0.5]).to_arrow()
+    assert str(excinfo.value) == (
+        "You can either provide a string query in search() method "
+        "or set `vector()` and `text()` explicitly for hybrid search. "
+        "But not both."
+    )

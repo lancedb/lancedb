@@ -51,8 +51,582 @@ use serde::{Deserialize, Serialize};
 use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
 use super::freshness::{self, SignatureMap, StalenessPlan};
 use super::{BaseTable, NativeTable};
+use crate::function::validate_gpu_class_name;
 use crate::job::Job;
 use crate::{Error, Result};
+
+/// Aggregate worker resources for one Enterprise Function refresh.
+///
+/// CPU is in millicores (1000 = one core) and memory is in bytes. These
+/// values cap the Function workers together; they are not per-worker
+/// allocations. The default GPU budget is zero, which describes a CPU-only
+/// Function. This option is rejected by LanceDB Embedded refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionWorkerResourceBudget {
+    pub total_cpu_millis: u64,
+    pub total_memory_bytes: u64,
+    /// Aggregate GPU budget across the refresh. Zero is CPU-only.
+    #[serde(default)]
+    pub total_gpu_count: u32,
+}
+
+impl FunctionWorkerResourceBudget {
+    /// Create a CPU-only aggregate budget.
+    pub fn new(total_cpu_millis: u64, total_memory_bytes: u64) -> Self {
+        Self {
+            total_cpu_millis,
+            total_memory_bytes,
+            total_gpu_count: 0,
+        }
+    }
+
+    /// Set the aggregate GPU budget.
+    pub fn with_total_gpu_count(mut self, total_gpu_count: u32) -> Self {
+        self.total_gpu_count = total_gpu_count;
+        self
+    }
+
+    /// Require every per-tier resource limit to request at least one unit.
+    pub fn validate(&self) -> Result<()> {
+        if self.total_cpu_millis == 0 {
+            return Err(Error::InvalidInput {
+                message: "total_cpu_millis must be greater than zero".into(),
+            });
+        }
+        if self.total_memory_bytes == 0 {
+            return Err(Error::InvalidInput {
+                message: "total_memory_bytes must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// CPU, memory, and ephemeral-storage limits for one Function refresh
+/// control-plane pod.
+///
+/// This sizes the supervisor or planning worker pod for a registered
+/// Function refresh. LanceDB Embedded rejects it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPodResources {
+    /// CPU limit in millicores; 1000 is one CPU.
+    pub cpu_millis: u64,
+    /// Memory limit in bytes.
+    pub memory_bytes: u64,
+    /// Ephemeral storage limit in bytes.
+    pub ephemeral_storage_bytes: u64,
+}
+
+impl FunctionRefreshPodResources {
+    /// Create positive CPU, memory, and ephemeral-storage limits.
+    pub fn new(cpu_millis: u64, memory_bytes: u64, ephemeral_storage_bytes: u64) -> Self {
+        Self {
+            cpu_millis,
+            memory_bytes,
+            ephemeral_storage_bytes,
+        }
+    }
+
+    fn validate(&self, prefix: &str) -> Result<()> {
+        for (name, value) in [
+            ("cpu_millis", self.cpu_millis),
+            ("memory_bytes", self.memory_bytes),
+            ("ephemeral_storage_bytes", self.ephemeral_storage_bytes),
+        ] {
+            if value == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!("{prefix}.{name} must be greater than zero"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resources and sizing policy for the CPU-only planning fleet of one
+/// registered Function refresh.
+///
+/// `resources` describes one planning worker pod. The remaining fields bound
+/// how many workers may run and how much work each worker receives. LanceDB
+/// Embedded rejects this option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FunctionRefreshPlanningConfig {
+    /// CPU, memory, and ephemeral-storage limits for one planning worker.
+    pub resources: FunctionRefreshPodResources,
+    /// Maximum number of planning workers.
+    pub max_workers: usize,
+    /// Maximum rows assigned to one planning worker.
+    pub rows_per_worker: u64,
+    /// Maximum fragments assigned to one planning worker.
+    pub fragments_per_worker: u64,
+}
+
+impl FunctionRefreshPlanningConfig {
+    /// Create a planning configuration; every value must be positive.
+    pub fn new(
+        resources: FunctionRefreshPodResources,
+        max_workers: usize,
+        rows_per_worker: u64,
+        fragments_per_worker: u64,
+    ) -> Self {
+        Self {
+            resources,
+            max_workers,
+            rows_per_worker,
+            fragments_per_worker,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.resources.validate("planning_workers.resources")?;
+        if self.max_workers == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.max_workers must be greater than zero".into(),
+            });
+        }
+        if self.rows_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.rows_per_worker must be greater than zero".into(),
+            });
+        }
+        if self.fragments_per_worker == 0 {
+            return Err(Error::InvalidInput {
+                message: "planning_workers.fragments_per_worker must be greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Options for refreshing a computed column.
+///
+/// Serializes to the Enterprise backfill request body, one key per set
+/// option; the SQL `REFRESH COLUMN ... WHERE ... WITH (...)` form takes the
+/// same names.
+#[derive(Debug, Clone, Default, Serialize)]
+#[non_exhaustive]
+pub struct RefreshColumnOptions {
+    /// Select exactly the current failed rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_errors: Option<bool>,
+    /// Restrict retry selection to this job. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_job_id: Option<String>,
+    /// Restrict retry selection to this exception class. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_error_type: Option<String>,
+    /// Explicitly release and retry quarantined rows. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_quarantined: Option<bool>,
+    /// Upgrade the bound Function to this exact version. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_version: Option<String>,
+    /// Rows recomputed by a Function upgrade. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recompute: Option<crate::function::FunctionRecompute>,
+    /// Only refresh the rows matching this SQL filter. Enterprise only.
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub where_clause: Option<String>,
+    /// Total Function refresh attempts, including the initial job. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_job_attempts: Option<u32>,
+    /// Override the Function's default user-code retry policy. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<crate::function::FunctionRetryPolicy>,
+    /// Action after user-code failure or retry exhaustion. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_policy: Option<crate::function::FunctionErrorPolicy>,
+    /// Under a skip policy, fail the job once more than this share of rows
+    /// has failed, 0 to 1. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_fraction: Option<f64>,
+    /// Under a skip policy, fail the job once more than this many rows have
+    /// failed. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_rows: Option<u64>,
+    /// Deadline for one Function call, in seconds. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_timeout_seconds: Option<f64>,
+    /// Deadline for Function initialization, in seconds. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_timeout_seconds: Option<f64>,
+    /// Worker count for an expression column in LanceDB Enterprise;
+    /// registered Function columns reject it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_workers: Option<usize>,
+    /// At most this many executor processes per Function worker. Enterprise
+    /// only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_executor_processes_per_worker: Option<u32>,
+    /// Maximum rows per Function call in LanceDB Enterprise.
+    ///
+    /// Must be greater than zero. `None` uses the server default. This has no
+    /// effect on expression-backed columns in LanceDB Embedded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<usize>,
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution. Must be greater than zero. `None` uses the
+    /// registration default, or disabled when the Function declares none.
+    /// This is not an account quota and does not change total resource limits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<u32>,
+    /// Opt-in row-count threshold for publishing completed Function outputs.
+    ///
+    /// Must be greater than zero. `None` keeps whole-fragment publication.
+    /// Actual publication boundaries can be larger than this threshold because
+    /// they also depend on completed work and Function batching. LanceDB Embedded
+    /// rejects this option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_interval_rows: Option<u64>,
+    /// Total CPU budget for this execution, in millicores.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cpu_millis: Option<u64>,
+    /// Total memory budget for this execution, in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_memory_bytes: Option<u64>,
+    /// CPU, memory, and ephemeral-storage limits for the Function refresh
+    /// supervisor pod. Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor_resources: Option<FunctionRefreshPodResources>,
+    /// Resources and sizing limits for the Function refresh planning fleet.
+    /// Enterprise only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planning_workers: Option<FunctionRefreshPlanningConfig>,
+    /// GPU class for Function workers in LanceDB Enterprise.
+    ///
+    /// `None` keeps the Function's registered class, or the deployment default
+    /// when the Function does not declare one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_class: Option<String>,
+    /// Positive number of GPUs allocated to each Function worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_count: Option<u32>,
+    /// Nonnegative total GPU budget for Function workers in LanceDB Enterprise.
+    /// Omitted values inherit column defaults, then Function defaults, then
+    /// deployment defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_gpu_count: Option<u32>,
+}
+
+impl RefreshColumnOptions {
+    /// Retry only current failures, using the server's row identities.
+    pub fn retry_errors(mut self, enabled: bool) -> Self {
+        self.retry_errors = Some(enabled);
+        self
+    }
+
+    /// Restrict a failed-row retry to one recorded job.
+    pub fn retry_job_id(mut self, job_id: impl Into<String>) -> Self {
+        self.retry_job_id = Some(job_id.into());
+        self
+    }
+
+    /// Restrict a failed-row retry to one exception class.
+    pub fn retry_error_type(mut self, error_type: impl Into<String>) -> Self {
+        self.retry_error_type = Some(error_type.into());
+        self
+    }
+
+    /// Release quarantine when explicitly retrying failures.
+    pub fn include_quarantined(mut self, include: bool) -> Self {
+        self.include_quarantined = Some(include);
+        self
+    }
+
+    /// Change the Function version and select the upgrade's recomputation policy.
+    pub fn upgrade(
+        mut self,
+        version: impl Into<String>,
+        recompute: crate::function::FunctionRecompute,
+    ) -> Self {
+        self.function_version = Some(version.into());
+        self.recompute = Some(recompute);
+        self
+    }
+    /// Only refresh the rows matching `filter`.
+    pub fn where_clause(mut self, filter: impl Into<String>) -> Self {
+        self.where_clause = Some(filter.into());
+        self
+    }
+
+    /// Fail the job once more than `fraction` of its rows has failed.
+    pub fn max_failed_fraction(mut self, fraction: f64) -> Self {
+        self.max_failed_fraction = Some(fraction);
+        self
+    }
+
+    /// Fail the job once more than `rows` rows have failed.
+    pub fn max_failed_rows(mut self, rows: u64) -> Self {
+        self.max_failed_rows = Some(rows);
+        self
+    }
+
+    /// Give each Function call at most `seconds` to return.
+    pub fn row_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.row_timeout_seconds = Some(seconds);
+        self
+    }
+
+    /// Give Function initialization at most `seconds` to complete.
+    pub fn init_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.init_timeout_seconds = Some(seconds);
+        self
+    }
+
+    /// Request `num_workers` workers for an expression column refresh.
+    pub fn num_workers(mut self, num_workers: usize) -> Self {
+        self.num_workers = Some(num_workers);
+        self
+    }
+
+    /// Set the total job attempt limit for automatic Function refresh recovery.
+    pub fn max_job_attempts(mut self, attempts: u32) -> Self {
+        self.max_job_attempts = Some(attempts);
+        self
+    }
+
+    /// Cap executor processes per Function worker at `processes`.
+    pub fn max_executor_processes_per_worker(mut self, processes: u32) -> Self {
+        self.max_executor_processes_per_worker = Some(processes);
+        self
+    }
+
+    /// Override retries of failed Function calls for this refresh.
+    pub fn retry_policy(mut self, policy: crate::function::FunctionRetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
+    /// Select fail or skip after the retry policy is exhausted.
+    pub fn error_policy(mut self, policy: crate::function::FunctionErrorPolicy) -> Self {
+        self.error_policy = Some(policy);
+        self
+    }
+    /// Limit each Function call to at most `batch_size` rows.
+    pub fn batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Override the registered Function's maximum concurrent user-code calls
+    /// for this logical execution.
+    pub fn max_concurrency(mut self, max_concurrency: u32) -> Self {
+        self.max_concurrency = Some(max_concurrency);
+        self
+    }
+
+    /// Use `rows` as the opt-in publication threshold for completed Function
+    /// outputs. The actual publication boundary can be larger than this value.
+    pub fn publication_interval_rows(mut self, rows: u64) -> Self {
+        self.publication_interval_rows = Some(rows);
+        self
+    }
+
+    /// Override the total CPU budget for this refresh.
+    pub fn total_cpu_millis(mut self, value: u64) -> Self {
+        self.total_cpu_millis = Some(value);
+        self
+    }
+
+    /// Override the total memory budget for this refresh.
+    pub fn total_memory_bytes(mut self, value: u64) -> Self {
+        self.total_memory_bytes = Some(value);
+        self
+    }
+
+    /// Set the Function refresh supervisor pod resources.
+    pub fn supervisor_resources(mut self, resources: FunctionRefreshPodResources) -> Self {
+        self.supervisor_resources = Some(resources);
+        self
+    }
+
+    /// Set the Function refresh planning fleet resources and sizing.
+    pub fn planning_workers(mut self, planning: FunctionRefreshPlanningConfig) -> Self {
+        self.planning_workers = Some(planning);
+        self
+    }
+
+    /// Request Function workers from `gpu_class`.
+    pub fn gpu_class(mut self, gpu_class: impl Into<String>) -> Self {
+        self.gpu_class = Some(gpu_class.into());
+        self
+    }
+
+    /// Set the number of GPUs allocated to each Function worker.
+    pub fn gpu_count(mut self, gpu_count: u32) -> Self {
+        self.gpu_count = Some(gpu_count);
+        self
+    }
+
+    /// Request an aggregate GPU budget of `total_gpu_count`.
+    pub fn total_gpu_count(mut self, total_gpu_count: u32) -> Self {
+        self.total_gpu_count = Some(total_gpu_count);
+        self
+    }
+
+    /// The first set option a LanceDB Embedded refresh cannot honor, if any.
+    pub fn enterprise_only_option(&self) -> Option<&'static str> {
+        [
+            ("retry_errors", self.retry_errors.is_some()),
+            ("retry_job_id", self.retry_job_id.is_some()),
+            ("retry_error_type", self.retry_error_type.is_some()),
+            ("include_quarantined", self.include_quarantined.is_some()),
+            ("function_version", self.function_version.is_some()),
+            ("recompute", self.recompute.is_some()),
+            ("where", self.where_clause.is_some()),
+            ("retry_policy", self.retry_policy.is_some()),
+            ("error_policy", self.error_policy.is_some()),
+            ("max_failed_fraction", self.max_failed_fraction.is_some()),
+            ("max_failed_rows", self.max_failed_rows.is_some()),
+            ("row_timeout_seconds", self.row_timeout_seconds.is_some()),
+            ("init_timeout_seconds", self.init_timeout_seconds.is_some()),
+            ("num_workers", self.num_workers.is_some()),
+            ("max_job_attempts", self.max_job_attempts.is_some()),
+            (
+                "max_executor_processes_per_worker",
+                self.max_executor_processes_per_worker.is_some(),
+            ),
+            ("max_concurrency", self.max_concurrency.is_some()),
+            (
+                "publication_interval_rows",
+                self.publication_interval_rows.is_some(),
+            ),
+            ("gpu_count", self.gpu_count.is_some()),
+            ("total_cpu_millis", self.total_cpu_millis.is_some()),
+            ("total_memory_bytes", self.total_memory_bytes.is_some()),
+            ("supervisor_resources", self.supervisor_resources.is_some()),
+            ("planning_workers", self.planning_workers.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(name, set)| set.then_some(name))
+    }
+
+    /// Validate client-side constraints before any request is sent.
+    pub fn validate(&self) -> Result<()> {
+        let retry = self.retry_errors == Some(true);
+        if (retry || self.function_version.is_some()) && self.where_clause.is_some() {
+            return Err(Error::InvalidInput {
+                message: "retry_errors and Function upgrades cannot be combined with where".into(),
+            });
+        }
+        if !retry
+            && (self.retry_job_id.is_some()
+                || self.retry_error_type.is_some()
+                || self.include_quarantined == Some(true))
+        {
+            return Err(Error::InvalidInput {
+                message: "retry filters require retry_errors=true".into(),
+            });
+        }
+        if self
+            .function_version
+            .as_ref()
+            .is_some_and(|version| version.is_empty())
+            || (self.recompute.is_some() && self.function_version.is_none())
+        {
+            return Err(Error::InvalidInput {
+                message: "recompute requires a nonempty function_version".into(),
+            });
+        }
+        if self
+            .where_clause
+            .as_deref()
+            .is_some_and(|f| f.trim().is_empty())
+        {
+            return Err(Error::InvalidInput {
+                message: "where must not be empty".into(),
+            });
+        }
+        if let Some(policy) = &self.retry_policy {
+            policy.validate()?;
+        }
+        if self
+            .max_failed_fraction
+            .is_some_and(|f| !f.is_finite() || !(0.0..=1.0).contains(&f))
+        {
+            return Err(Error::InvalidInput {
+                message: "max_failed_fraction must be a finite number between 0 and 1".into(),
+            });
+        }
+        for (name, seconds) in [
+            ("row_timeout_seconds", self.row_timeout_seconds),
+            ("init_timeout_seconds", self.init_timeout_seconds),
+        ] {
+            if seconds.is_some_and(|s| !s.is_finite() || s <= 0.0) {
+                return Err(Error::InvalidInput {
+                    message: format!("{name} must be a positive finite number"),
+                });
+            }
+        }
+        if self.num_workers == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "num_workers must be greater than zero".into(),
+            });
+        }
+        if self.max_job_attempts == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_job_attempts must be greater than zero".into(),
+            });
+        }
+        if self.max_executor_processes_per_worker == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_executor_processes_per_worker must be greater than zero".into(),
+            });
+        }
+        if self.batch_size == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "batch_size must be greater than zero".into(),
+            });
+        }
+        if self.max_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "max_concurrency must be greater than zero".into(),
+            });
+        }
+        if self.publication_interval_rows == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "publication_interval_rows must be greater than zero".into(),
+            });
+        }
+        if self.total_cpu_millis == Some(0) || self.total_memory_bytes == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "total_cpu_millis and total_memory_bytes must be positive integers".into(),
+            });
+        }
+
+        if let Some(resources) = &self.supervisor_resources {
+            resources.validate("supervisor_resources")?;
+        }
+        if let Some(planning) = &self.planning_workers {
+            planning.validate()?;
+        }
+        if let Some(gpu_class) = &self.gpu_class {
+            validate_gpu_class_name(gpu_class)?;
+        }
+        if self.gpu_count == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "gpu_count must be positive".into(),
+            });
+        }
+        if self
+            .gpu_count
+            .zip(self.total_gpu_count)
+            .is_some_and(|(per_worker, total)| per_worker > total)
+        {
+            return Err(Error::InvalidInput {
+                message: "total_gpu_count cannot fit one Function worker".into(),
+            });
+        }
+
+        Ok(())
+    }
+}
 
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -77,6 +651,7 @@ pub(crate) async fn execute_refresh_column(
     table: &NativeTable,
     column: &str,
 ) -> Result<RefreshColumnResult> {
+    crate::require_experimental_functions()?;
     Ok(execute_refresh_column_with_source(table, column)
         .await?
         .result)
@@ -87,7 +662,7 @@ async fn execute_refresh_column_with_source(
     column: &str,
 ) -> Result<RefreshExecution> {
     table.dataset.ensure_mutable()?;
-    ensure_no_lsm_write_spec(table).await?;
+    ensure_no_rte_spec(table).await?;
     let dataset = table.dataset.get().await?;
 
     let expression = declared_expression(&dataset, column)?;
@@ -96,6 +671,7 @@ async fn execute_refresh_column_with_source(
         schema.clone(),
         column,
         &expression,
+        dataset.session().datafusion_session(),
     )?);
     ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
@@ -131,7 +707,9 @@ async fn execute_refresh_column_with_source(
         // A recompute rewrites every live row, so it is staged without the
         // probe and counted as it fills; a null fill probes first, since a
         // fragment with nothing to gain is not worth a write.
-        let recompute = staleness.is_dirty(fragment_id);
+        // Expression refreshes replace a whole column file, so any row-level
+        // dirty state makes this fragment a whole-fragment recompute here.
+        let recompute = staleness.needs_recompute(fragment_id);
         let whole = recompute || {
             let (gained, unfilled) =
                 count_fragment_gains(&dataset, &fragment, &bound, column).await?;
@@ -196,7 +774,10 @@ async fn execute_refresh_column_with_source(
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
-        Operation::DataReplacement { replacements },
+        Operation::DataReplacement {
+            replacements,
+            data_change: true,
+        },
         Some(source_version),
         None,
         None,
@@ -276,7 +857,12 @@ async fn ensure_inputs_filled(
                 ),
             });
         };
-        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let input_bound = super::computed_columns::bind(
+            schema.clone(),
+            input,
+            expression,
+            dataset.session().datafusion_session(),
+        )?;
         let mut unfilled = 0u64;
         for fragment in dataset.get_fragments() {
             unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input)
@@ -300,10 +886,11 @@ pub(crate) async fn execute_refresh_column_async(
     table: &NativeTable,
     column: &str,
 ) -> Result<Job<crate::function::RefreshColumnResult>> {
+    crate::require_experimental_functions()?;
     // Validate before spawning so bad input is reported by this call rather
     // than only by the job.
     table.dataset.ensure_mutable()?;
-    ensure_no_lsm_write_spec(table).await?;
+    ensure_no_rte_spec(table).await?;
     let dataset = table.dataset.get().await?;
     declared_expression(&dataset, column)?;
     drop(dataset);
@@ -314,21 +901,24 @@ pub(crate) async fn execute_refresh_column_async(
         let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
         Ok(crate::function::RefreshColumnResult {
+            error_groups: Vec::new(),
+            error_groups_truncated: false,
             rows_assigned: execution.result.rows_filled,
             rows_failed: 0,
             rows_remaining: 0,
             source_version: execution.source_version,
             published_version: execution.published_version,
+            plan: None,
         })
     })))
 }
 
-/// Refuse to refresh under an LSM write spec.
+/// Refuse to refresh under an RTE write spec.
 ///
 /// Refresh enumerates base fragments, and a write spec keeps visible rows in
-/// un-compacted MemWAL tiers it cannot reach -- success would silently omit
+/// un-compacted RTE tiers it cannot reach -- success would silently omit
 /// readable rows.
-async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
+async fn ensure_no_rte_spec(table: &NativeTable) -> Result<()> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
     // Unset drops the MemWAL index, so the spec alone stops describing a table
@@ -341,7 +931,7 @@ async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
         .list_mem_wal_latest_shard_ids()
         .await?
         .is_empty();
-    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
+    if retained_sstables || table.get_rte_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "refresh_column is not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -366,7 +956,8 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
         ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
-            message: "registered Function columns are refreshed only by a remote server Job".into(),
+            message: "registered Function columns are refreshed only by a LanceDB Enterprise job"
+                .into(),
         }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
             message: format!(
@@ -731,6 +1322,10 @@ mod tests {
     /// must not bake zeros from `a`'s placeholder null. It is refused, and
     /// names the input, until `a` is filled -- after every append too.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dependent_refresh_refuses_an_unfilled_input() {
         let table = table_with("dependent_refresh_order", vec![1, 2, 3]).await;
         table
@@ -766,6 +1361,10 @@ mod tests {
     /// declaration metadata and the dependency check: the recorded inputs
     /// are matched by name, never re-parsed as SQL.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dependent_refresh_handles_awkward_column_names() {
         use arrow_array::{Int32Array, StructArray};
         use arrow_schema::{DataType, Field, Fields};
@@ -820,6 +1419,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_fills_a_declared_column() {
         let table = table_with("refresh_fills", vec![1, 2, 3]).await;
         let declared = declare_doubled(&table).await.unwrap();
@@ -848,6 +1451,10 @@ mod tests {
 
     /// Values written after the last refresh must be reachable by another one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_fills_rows_appended_since_the_last_refresh() {
         let table = table_with("refresh_appended", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -868,6 +1475,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_with_nothing_to_fill() {
         let table = table_with("refresh_noop", vec![1, 2, 3]).await;
         declare_doubled(&table).await.unwrap();
@@ -884,6 +1495,10 @@ mod tests {
     /// A branch inherits the freshness main recorded: its first refresh
     /// fills nothing, and only its own appends after that.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_branch_inherits_freshness() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -919,6 +1534,10 @@ mod tests {
 
     /// A shallow clone inherits the freshness its source recorded.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_shallow_clone_inherits_freshness() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -953,6 +1572,10 @@ mod tests {
     /// settles at once instead of re-selecting the same rows forever: the
     /// second refresh finds the fragment signed and moves nothing.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_converges_on_a_null_result() {
         let table = table_with("refresh_null_result", vec![1, 2, 3]).await;
         let declared = table
@@ -976,6 +1599,10 @@ mod tests {
     /// A filled row whose input moved is recomputed: the update rewrites
     /// the row into a fragment the stamp never signed, and only that one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_recomputes_a_row_whose_input_moved() {
         let table = table_with("refresh_mutation", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1009,6 +1636,10 @@ mod tests {
     /// Each stamp is a sidecar under `_computed/`; pruning old versions
     /// removes the sidecars only they referenced, and keeps the current one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_pruning_drops_the_sidecars_of_pruned_versions() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -1050,6 +1681,10 @@ mod tests {
     /// Absolute timestamp pruning applies the same computed-column sidecar
     /// cleanup as duration-based pruning.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_absolute_pruning_drops_the_sidecars_of_pruned_versions() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -1087,6 +1722,10 @@ mod tests {
     /// A deleted row is never computed and the rows that stay keep their
     /// values: a delete recomputes nothing and stamps nothing.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_delete_recomputes_nothing() {
         let table = table_with("refresh_delete", vec![1, 2, 3]).await;
         declare_doubled(&table).await.unwrap();
@@ -1106,6 +1745,10 @@ mod tests {
     /// signed ones is fresh: the refresh recomputes nothing and only records
     /// the new fragment.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_compaction_of_signed_fragments_recomputes_nothing() {
         let table = table_with("refresh_compact_signed", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1136,6 +1779,10 @@ mod tests {
     /// refresh keeps the null-fill contract and enrolls what it read from;
     /// from then on a moved input is recomputed like any other.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_an_unsigned_column_is_enrolled_by_its_first_refresh() {
         let table = table_with("refresh_legacy", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1188,6 +1835,10 @@ mod tests {
     /// column as null behind a covering data file. Those rows are still
     /// unfilled and a later refresh has to reach them.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_update_before_the_first_refresh() {
         let table = table_with("refresh_update_first", vec![1]).await;
         declare_doubled(&table).await.unwrap();
@@ -1203,6 +1854,10 @@ mod tests {
     /// for any of its rows: every live row is recomputed, the moved one
     /// included.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_compaction_of_an_unsigned_fragment_recomputes_it() {
         let table = table_with("refresh_mixed", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1236,6 +1891,10 @@ mod tests {
     /// computed column. Compaction cannot certify it, so the product is
     /// recomputed and the supplied value replaced.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_raw_append_values_are_not_trusted_after_compaction() {
         use arrow_array::RecordBatchIterator;
         use lance::Dataset;
@@ -1288,6 +1947,10 @@ mod tests {
     /// An appended fragment holds no values, so compacting it into a signed
     /// one leaves the product fresh: only the appended rows are filled.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_compaction_with_an_appended_fragment_fills_only_its_rows() {
         let table = table_with("refresh_preserves", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1311,6 +1974,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_leaves_deleted_rows_alone() {
         let table = table_with("refresh_deleted", vec![1, 2, 3, 4]).await;
         declare_doubled(&table).await.unwrap();
@@ -1325,6 +1992,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_a_constant_expression() {
         let table = table_with("refresh_constant", vec![1, 2, 3]).await;
         table
@@ -1341,6 +2012,10 @@ mod tests {
     /// A name needing quotes reaches the evaluator intact: it is carried as a
     /// projection alias, never spliced into SQL text.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_a_column_whose_name_needs_quoting() {
         let table = table_with("refresh_quoted", vec![1, 2, 3]).await;
         table
@@ -1362,6 +2037,10 @@ mod tests {
     /// the probe buffers only until the first gained value and the rest flows
     /// through write_columns a batch at a time.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_streams_a_multi_batch_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
         let table = table_with("refresh_multi_batch", values.clone()).await;
@@ -1381,6 +2060,10 @@ mod tests {
     /// The gate's reproducer: the commit must reuse the configured session,
     /// or registrations and caches vanish from the handle after a refresh.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_preserves_the_configured_session() {
         let session = Arc::new(lance::session::Session::default());
         let conn = crate::connect("memory://")
@@ -1404,6 +2087,10 @@ mod tests {
     /// The async form's job settles with the fill visible, like
     /// create_index's execute_async.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_async_job_waits_for_the_fill() {
         let table = table_with("refresh_async", vec![1, 2, 3]).await;
         declare_doubled(&table).await.unwrap();
@@ -1426,6 +2113,10 @@ mod tests {
 
     /// Bad input is reported by the call, not by the job.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_async_rejects_bad_input_before_spawning() {
         let table = table_with("refresh_async_bad", vec![1, 2, 3]).await;
 
@@ -1437,6 +2128,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_async_job_reports_success_to_every_waiter() {
         let table = table_with("refresh_async_waiters", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1449,6 +2144,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_rejects_a_plain_column() {
         let table = table_with("refresh_plain", vec![1, 2, 3]).await;
         let err = table.refresh_column("x").await.unwrap_err();
@@ -1456,6 +2155,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_rejects_an_unknown_column() {
         let table = table_with("refresh_missing", vec![1, 2, 3]).await;
         let err = table.refresh_column("nope").await.unwrap_err();
@@ -1465,6 +2168,10 @@ mod tests {
     /// The gate's reproducer: a poison value in a deleted row must not
     /// abort filling the live rows, since nobody can read it.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_deleted_rows_value_is_never_evaluated() {
         let table = table_with("refresh_deleted_poison", vec![1, 0]).await;
         table
@@ -1484,6 +2191,10 @@ mod tests {
     /// input did not move is not: the untouched fragment is never read, so
     /// its poison input is never reached.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_only_a_moved_rows_value_is_re_evaluated() {
         let table = table_with("refresh_filled_poison", vec![1, 0]).await;
         table
@@ -1515,6 +2226,10 @@ mod tests {
     /// The gate's reproducer: the old internal projection alias is an
     /// ordinary column name; a computed column may use it.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_a_column_named_like_the_old_alias() {
         let table = table_with("refresh_alias_name", vec![1, 2]).await;
         table
@@ -1537,6 +2252,10 @@ mod tests {
     /// this pins behaviorally; the memory bound is structural -- the fill
     /// stream retains no batches at all.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_fills_a_late_gain_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
         let table = table_with("refresh_late_gain", values).await;
@@ -1562,6 +2281,10 @@ mod tests {
     /// The gate's reproducer: a nested input declares, refreshes, and guards
     /// its root against invalidating schema changes.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_nested_input_declares_and_refreshes() {
         use arrow_array::{Int32Array, StructArray};
         use arrow_schema::{DataType, Field, Fields};
@@ -1636,8 +2359,12 @@ mod tests {
     /// schema_evolution tests); refresh's own check covers a dataset another
     /// writer left in that state.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_refuses_a_foreign_lsm_state() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -1654,10 +2381,7 @@ mod tests {
                 .unwrap();
         let table = conn.create_table("lsm", batch).execute().await.unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();
@@ -1669,11 +2393,15 @@ mod tests {
         assert!(matches!(err, Error::NotSupported { .. }));
     }
 
-    /// After catch-up activation and unset, no spec remains but the catch-up
-    /// flag still marks retained SSTable rows; refresh refuses on the flag.
+    /// Rows written through the RTE keep the spec installed, since
+    /// `disable_rte` refuses while they are unmerged, so refresh refuses.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_refuses_retained_catchup_state() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -1696,15 +2424,12 @@ mod tests {
             .await
             .unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         let mut merge = table.merge_insert(&["x"]);
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_lsm(true);
+            .use_rte(true);
         merge
             .execute(Box::new(arrow_array::RecordBatchIterator::new(
                 vec![Ok(batch)],
@@ -1712,7 +2437,8 @@ mod tests {
             )))
             .await
             .unwrap();
-        table.unset_lsm_write_spec().await.unwrap();
+        // The RTE holds the written rows, so unsetting it is refused.
+        table.disable_rte().await.unwrap_err();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();
@@ -1725,6 +2451,10 @@ mod tests {
     /// A declaration of a kind this version cannot evaluate is refused by
     /// name, rather than mistaken for a plain column or fed to the SQL path.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_rejects_a_kind_it_cannot_evaluate() {
         let table = table_with("refresh_foreign", vec![1, 2, 3]).await;
         super::super::computed_columns::add_foreign_kind(&table, "embedding", "udf").await;
@@ -1747,7 +2477,7 @@ mod tests {
         RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new("id", arrow_schema::DataType::Int32, false),
-                crate::blob("image", true),
+                lance::blob::blob_field("image", true),
             ])),
             vec![Arc::new(Int32Array::from(ids)), builder.finish().unwrap()],
         )
@@ -1760,6 +2490,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_inherits_and_publishes_blob_output() {
         use arrow_array::UInt64Array;
         use lance_arrow::{
@@ -1847,8 +2581,8 @@ mod tests {
         assert_eq!(
             layouts,
             vec![
-                (1, Some(BlobKind::Managed)),
-                (2, Some(BlobKind::Managed)),
+                (1, Some(BlobKind::Dedicated)),
+                (2, Some(BlobKind::Packed)),
                 (3, Some(BlobKind::Inline)),
                 (4, None),
             ]
@@ -1893,6 +2627,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_inherits_nested_struct_blob_input() {
         use arrow_array::{Int32Array, StructArray, UInt64Array};
         use arrow_schema::{DataType, Field, Fields, Schema};
@@ -1901,7 +2639,7 @@ mod tests {
         let mut blob_builder = lance::blob::BlobArrayBuilder::new(2);
         blob_builder.push_bytes(b"nested").unwrap();
         blob_builder.push_null().unwrap();
-        let blob_field = crate::blob("image", true);
+        let blob_field = lance::blob::blob_field("image", true);
         let metadata_fields = Fields::from(vec![blob_field.clone()]);
         let metadata = StructArray::new(
             metadata_fields.clone(),
@@ -1958,6 +2696,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_preserves_list_shape_when_materializing_blob_input() {
         use arrow_array::{Int32Array, ListArray};
         use arrow_buffer::{OffsetBuffer, ScalarBuffer};
@@ -1968,7 +2710,7 @@ mod tests {
         blob_builder.push_bytes(b"a").unwrap();
         blob_builder.push_bytes(b"bb").unwrap();
         blob_builder.push_null().unwrap();
-        let item = Arc::new(crate::blob("item", true));
+        let item = Arc::new(lance::blob::blob_field("item", true));
         let images = ListArray::new(
             item.clone(),
             OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
@@ -2019,6 +2761,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_inherits_external_blob_input() {
         use arrow_array::{Int32Array, StringArray, UInt64Array};
         use arrow_schema::{DataType, Field, Schema};
@@ -2093,5 +2839,49 @@ mod tests {
             .values();
         let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
         assert_eq!(payloads.value(0), payload);
+    }
+}
+
+#[cfg(test)]
+mod resource_validation_tests {
+    use super::{FunctionRefreshPlanningConfig, FunctionRefreshPodResources, RefreshColumnOptions};
+
+    #[test]
+    fn independent_totals_preserve_placement_and_pod_validation() {
+        assert!(
+            RefreshColumnOptions::default()
+                .total_cpu_millis(1000)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .total_gpu_count(0)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .gpu_class("H100:2")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .supervisor_resources(FunctionRefreshPodResources::new(0, 1024, 1024))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RefreshColumnOptions::default()
+                .planning_workers(FunctionRefreshPlanningConfig::new(
+                    FunctionRefreshPodResources::new(1000, 1024, 1024),
+                    0,
+                    1,
+                    1
+                ))
+                .validate()
+                .is_err()
+        );
     }
 }

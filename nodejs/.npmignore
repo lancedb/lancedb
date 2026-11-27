@@ -15,6 +15,7 @@ renovate.json
 src
 lancedb
 examples
+scripts
 nodejs-artifacts
 Cargo.toml
 biome.json

@@ -16,8 +16,7 @@ use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, connect_namespace};
 
 use lance_namespace::models::{
-    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
-    ListTablesRequest,
+    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest,
 };
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -29,18 +28,6 @@ pub struct Connection {
 #[napi(object)]
 pub struct DescribeNamespaceResponse {
     pub properties: Option<HashMap<String, String>>,
-}
-
-#[napi(object)]
-pub struct ListNamespacesResponse {
-    pub namespaces: Vec<String>,
-    pub page_token: Option<String>,
-}
-
-#[napi(object)]
-pub struct ListTablesResponse {
-    pub tables: Vec<String>,
-    pub page_token: Option<String>,
 }
 
 #[napi(object)]
@@ -239,31 +226,20 @@ impl Connection {
         op.execute().await.default_error()
     }
 
-    /// List a page of tables in the database.
+    /// Lazily list tables in the database.
     #[napi(catch_unwind)]
-    pub async fn list_tables(
+    pub fn list_tables(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListTablesResponse> {
-        let request = ListTablesRequest {
-            // The root namespace is an empty path, not an absent one: a namespace-backed
-            // database rejects a request that names no namespace.
-            id: Some(namespace_path.unwrap_or_default()),
-            page_token,
-            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
-            ..Default::default()
-        };
-        let response = self
-            .get_inner()?
-            .list_tables(request)
-            .await
-            .default_error()?;
-        Ok(ListTablesResponse {
-            tables: response.tables,
-            page_token: response.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
@@ -327,6 +303,7 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_materialized_view(
         &self,
         name: String,
@@ -335,6 +312,11 @@ impl Connection {
         filter: Option<String>,
         limit: Option<i64>,
         with_no_data: bool,
+        total_cpu_millis: Option<f64>,
+        total_memory_bytes: Option<f64>,
+        total_gpu_count: Option<f64>,
+        gpu_class: Option<String>,
+        gpu_count: Option<f64>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.create_materialized_view(name, source);
         if let Some(projections) = projections {
@@ -354,6 +336,45 @@ impl Connection {
             let limit = u64::try_from(limit)
                 .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))?;
             builder = builder.limit(limit);
+        }
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        for (name, value, maximum, minimum) in [
+            ("total_cpu_millis", total_cpu_millis, MAX_SAFE_INTEGER, 1.0),
+            (
+                "total_memory_bytes",
+                total_memory_bytes,
+                MAX_SAFE_INTEGER,
+                1.0,
+            ),
+            ("total_gpu_count", total_gpu_count, u32::MAX as f64, 0.0),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value.fract() != 0.0 || value < minimum || value > maximum
+                {
+                    return Err(napi::Error::from_reason(format!(
+                        "{name} must be an integer between {minimum} and {maximum}"
+                    )));
+                }
+                builder = match name {
+                    "total_cpu_millis" => builder.total_cpu_millis(value as u64),
+                    "total_memory_bytes" => builder.total_memory_bytes(value as u64),
+                    _ => builder.total_gpu_count(value as u32),
+                };
+            }
+        }
+        if let Some(class) = gpu_class {
+            builder = builder.gpu_class(class);
+        }
+        if let Some(count) = gpu_count {
+            if !count.is_finite()
+                || count.fract() != 0.0
+                || !(1.0..=u32::MAX as f64).contains(&count)
+            {
+                return Err(napi::Error::from_reason(
+                    "gpuCount must be an integer between 1 and 4294967295",
+                ));
+            }
+            builder = builder.gpu_count(count as u32);
         }
         builder = builder.with_no_data(with_no_data);
         let view = builder.execute().await.default_error()?;
@@ -591,7 +612,24 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn open_job(&self, job_id: String) -> napi::Result<crate::job::Job> {
         let job = self.get_inner()?.open_job(&job_id).await.default_error()?;
-        Ok(crate::job::Job::new(job))
+        if job.job_type().as_deref() == Some("prewarm_page_cache") {
+            Ok(crate::job::Job::new_typed(
+                job.into_typed::<lancedb::table::PrewarmDataResult>()
+                    .default_error()?,
+            ))
+        } else if job.job_type().as_deref() == Some("cleanup") {
+            Ok(crate::job::Job::new_typed(
+                job.into_typed::<lancedb::table::CleanupResult>()
+                    .default_error()?,
+            ))
+        } else if job.job_type().as_deref() == Some("compact") {
+            Ok(crate::job::Job::new_typed(
+                job.into_typed::<lancedb::table::CompactionResult>()
+                    .default_error()?,
+            ))
+        } else {
+            Ok(crate::job::Job::new(job))
+        }
     }
 
     /// List server-side jobs across the database's tables.
@@ -663,28 +701,19 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    /// List child namespaces under the given namespace path
-    pub async fn list_namespaces(
+    /// Lazily list child namespaces under the given namespace path
+    pub fn list_namespaces(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListNamespacesResponse> {
-        let req = ListNamespacesRequest {
-            id: namespace_path,
-            page_token,
-            limit: limit.map(|l| l as i32),
-            ..Default::default()
-        };
-        let resp = self
-            .get_inner()?
-            .list_namespaces(req)
-            .await
-            .default_error()?;
-        Ok(ListNamespacesResponse {
-            namespaces: resp.namespaces,
-            page_token: resp.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[napi(catch_unwind)]

@@ -6,7 +6,7 @@ sidebarTitle: Jina
 import {
   PyEmbeddingJinaText,
   PyEmbeddingJinaMultimodal,
-} from '/snippets/integrations.mdx';
+} from '/snippets/provider_examples.mdx';
 
 ## Text Embedding Models {#text-embedding-models}
 
@@ -22,6 +22,8 @@ Supported parameters (to be passed in `create` method) are:
 | `name` | `str` | `"jina-clip-v1"` | The model ID of the jina model to use |
 
 Usage Example:
+
+Replace `your-api-key` with your Jina API key. This provider reads it from `JINA_API_KEY`; the example sets it explicitly. In application code, supply it through your environment or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

@@ -1,43 +1,55 @@
 ---
 title: "Functions"
+tag: "Early access"
 sidebarTitle: "Function"
 description: "Register a Python function once and apply it as a column, for work SQL cannot express."
 icon: code
 keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
 
 import {
     PyFunctionDefine as FunctionDefine,
     PyFunctionLocalCall as FunctionLocalCall,
-    PyFunctionConnect as FunctionConnect,
     PyFunctionCreateTable as FunctionCreateTable,
     PyFunctionRegister as FunctionRegister,
     PyFunctionApply as FunctionApply,
     PyFunctionRefresh as FunctionRefresh,
     PyFunctionInspect as FunctionInspect,
+    PyFunctionClassDefine as FunctionClassDefine,
+    PyFunctionClassRegister as FunctionClassRegister,
+    PyFunctionClassApply as FunctionClassApply,
 } from '/snippets/function.mdx';
+import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
 
-<Badge color="red">Enterprise</Badge>
+<Badge color="purple">Early access</Badge>
 
 Some columns cannot be written as a SQL expression: an embedding, a model call,
 an image decode. A function is a Python callable registered with the database,
-versioned, and then applied as a column — the code runs where the data is
+versioned, and then applied as a column. The code runs where the data is
 rather than pulling rows to your process.
 
-Registering and running a function needs a LanceDB Enterprise connection. On a
-local connection `create_function` raises `NotImplementedError`; to derive a
-column locally, declare a
+Registering and running a function needs a LanceDB Enterprise deployment with
+Functions enabled, which they are not by default. On a
+LanceDB Embedded connection `create_function` raises `NotImplementedError`; to
+derive a column there, declare a
 [SQL computed column](/feature-engineering/add-computed-column) instead.
 
 <Note>
 In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
 </Note>
 
+Functions are the way to fill columns with Python in LanceDB Enterprise. If you
+already use [Geneva](/geneva), it remains available; see the Geneva docs for
+how its concepts map onto these.
+
 The steps below take a column of numbers to a filled column of their doubles.
 
 ## Define a function {#define}
 
-`@udf` packages a scalar Python callable. Input and output types are inferred
+`@function` packages a scalar Python callable. Input and output types are inferred
 from annotations, so `double` takes one non-nullable `float64` parameter,
 `value`, and returns a non-nullable `float64`:
 
@@ -53,18 +65,125 @@ your process, without the database, so unit tests stay ordinary tests:
 </CodeBlock>
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
-and `output_schema` together — one without the other is rejected. A scalar
-output must be non-nullable, because a physical NULL is what marks a
-computed-column row as unfilled. A named-struct output may declare nullable
-fields: whether a row has a result at all is the struct's own validity, which
-Enterprise keeps in a separate internal column when it expands the result into
-sibling columns, so a null field is a value rather than a missing row.
+and `output_schema` together: one without the other is rejected. A scalar
+output is non-nullable by default. Annotate the return as `Optional[T]` or
+`T | None`, or pass a nullable output field, to declare a nullable scalar:
+
+```python
+import pyarrow as pa
+
+from lancedb import function
+
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+    output_schema=pa.field("result", pa.int64(), nullable=True),
+)
+def maybe_double(value: int) -> int | None:
+    return None if value == 0 else value * 2
+```
+
+The signature sent in the registration request then carries the nullable
+scalar:
+
+```json
+{
+  "inputs": [{"name": "value", "arrow_type": "int64", "nullable": false}],
+  "output": {"kind": "scalar", "arrow_type": "int64", "nullable": true}
+}
+```
+
+<Note>
+Nullable scalar outputs require an Enterprise server that supports them;
+older servers reject the registration. On a supporting server, a computed
+`NULL` counts as a filled result, independently of its stored value.
+</Note>
+
+A named-struct output may declare nullable fields: whether a row has a result
+at all is the struct's own validity, which Enterprise keeps in a separate
+internal column when it expands the result into sibling columns, so a null
+field is a value rather than a missing row.
+
+### Timestamps and durations {#timestamps-durations}
+
+Bare `datetime` keeps its existing `timestamp[us]` default without a timezone.
+For any other unit or a timezone, declare the Arrow type explicitly:
+
+```python
+from datetime import datetime
+from typing import Annotated
+
+import pyarrow as pa
+
+
+@function
+def normalize(
+    ts: Annotated[datetime, pa.timestamp("ns", tz="UTC")],
+) -> Annotated[datetime, pa.timestamp("ns", tz="UTC")]:
+    ...
+```
+
+`pa.timestamp` accepts `s`, `ms`, `us`, and `ns`, and a timezone such as
+`UTC`, `America/New_York`, or `+08:00`. The canonical signature uses
+`{"type":"timestamp:<unit>:<timezone>"}`, with `-` for no timezone; the
+microsecond/no-timezone case keeps the legacy `{"type":"timestamp"}` shape.
+A timezone string of `-` is reserved for "no timezone" and is rejected.
+
+`pa.duration` accepts the same four units and uses
+`{"type":"duration:<unit>"}`; the microsecond case keeps the legacy
+`{"type":"duration"}` shape. A bare `timedelta` has no unit and is rejected;
+use `Annotated[timedelta, pa.duration("s")]` or an explicit schema.
+
+Other units are never downgraded to microseconds. A reader that predates the
+compound temporal representation cannot read those signatures. A deployment
+must include the corresponding Lance Namespace and Sophon support; this
+client-side declaration does not add server support.
+
+### Maps and decimals {#maps-decimals}
+
+A `dict[str, T]` annotation declares an Arrow map with a non-nullable `utf8`
+key. A plain `T` value is non-nullable; annotate `dict[str, Optional[T]]` for
+nullable values. An explicit `pa.map_(...)` schema preserves the value field's
+own `nullable` flag:
+
+```python
+@function
+def word_counts(text: str) -> dict[str, int]:
+    ...
+```
+
+Map keys must be non-nullable `utf8`; `keys_sorted=True` is not supported, and
+Blob v2 values inside a map are not supported.
+
+`Decimal` carries no precision or scale by itself, so a bare `Decimal`
+annotation is rejected. Declare both explicitly with `Annotated`, or use an
+explicit Arrow schema:
+
+```python
+from decimal import Decimal
+from typing import Annotated
+
+import pyarrow as pa
+
+
+@function
+def add_tax(
+    amount: Annotated[Decimal, pa.decimal128(12, 2)],
+) -> Annotated[Decimal, pa.decimal128(12, 2)]:
+    ...
+```
+
+`decimal128` and `decimal256` keep the declared precision and scale in the
+canonical signature; no default is chosen. Map and decimal signatures are sent
+as canonical Arrow JSON. A deployment must support those types; an older
+Enterprise server may reject the registration, and this client-side
+declaration does not add server support.
 
 ## Connect and create a table {#table}
 
-The remaining steps run against your Enterprise deployment. This connection
-reads its settings from environment variables, so no credential appears in the
-code:
+The remaining steps run against your Enterprise deployment. Replace the database
+URI, API key, region and endpoint below with your deployment details. In application
+code, load credentials from environment variables or a secrets manager:
 
 <CodeBlock filename="Python" language="Python" icon="python">
 {FunctionConnect}
@@ -75,7 +194,7 @@ A nullable column requires a nullable parameter, such as `Optional[float]`;
 a non-nullable column can bind to either. This example uses `value: float`,
 so the table declares `value` non-nullable.
 
-Computed-column inputs depend on the deployment version. Where supported,
+Computed-column inputs depend on the Enterprise server version. Where supported,
 they bind to non-nullable parameters even though the physical column is
 nullable: refresh skips rows whose computed input is still null. Check your
 deployment's support before using another computed column as an input.
@@ -86,18 +205,225 @@ deployment's support before using another computed column as an input.
 
 ## Register it {#register}
 
-Registration returns a job; the immutable version exists once the job succeeds.
+Registration returns a query-backed job; the immutable version exists once the
+SQL command finishes and the job succeeds. Its `job_type` is `query`, and its
+single `id` is the SQL query UUID. Repeated waits reuse the completed result.
 
 <CodeBlock filename="Python" language="Python" icon="python">
 {FunctionRegister}
 </CodeBlock>
 
 `create_function` is the blocking equivalent. A registered version is fetched
-with `db.get_function(name, version=...)`.
+with `db.get_function(name, version=...)`. The version may be an integer or
+its string form. Omit `version` to resolve and return the latest currently
+visible revision.
+
+Re-registering unchanged code reuses the published version and its resolved
+environment lock. Pass `refresh_lock=True` to `create_function` or
+`create_function_async` to request a fresh lock for this registration. It is a
+registration action, not part of the Function's source or runtime identity.
+A deployment must support the field; an older server rejects the unknown
+field rather than silently reusing the old lock.
+
+{/* Draft for the function exist_ok release.
+
+Use `exist_ok=True` on `create_function` or `create_function_async` to return
+the existing named version without changing its code, credentials or settings.
+This requires a deployment that supports the option. The default retains the
+current behavior of registering a new version.
+
+```python
+version = db.create_function(embed, exist_ok=True)
+```
+
+*/}
 
 <Note>
-**Enterprise job type:** `create_function`. Registration returns a job because
-the function is baked into an image before the version becomes usable.
+The SQL command submits an internal `create_function` image-build job and
+waits for publication. The SDK returns the SQL query handle. Query handles
+have no registry history and cannot be reopened with `open_job()`.
+</Note>
+
+## List and describe {#list-describe}
+
+`list_functions` pages through every published version in a namespace,
+ordered by name then version. `get_function` accepts an integer or string
+version, or resolves the latest visible revision when `version` is omitted.
+Both take `namespace_path`, defaulting to the root namespace, the same as
+`create_function`.
+
+<CodeGroup>
+```python Python icon="python"
+for version in db.list_functions():
+    print(version.name, version.version, version.created_at_millis)
+
+version = db.get_function("double", version="1")
+latest = db.get_function("double")
+```
+
+```rust
+use futures::TryStreamExt;
+
+# async fn list_and_get(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let mut versions = connection.list_functions(&[], Default::default());
+while let Some(version) = versions.try_next().await? {
+    println!("{} {} {}", version.name(), version.version(), version.created_at_millis());
+}
+
+let version = connection.get_function("double", "1", &[]).await?;
+let latest = connection.get_function_latest("double", &[]).await?;
+# Ok(())
+# }
+```
+</CodeGroup>
+
+<CodeGroup>
+```sql SQL icon="database"
+SHOW FUNCTIONS
+SHOW FUNCTIONS IN "analytics" LIMIT 100
+SHOW FUNCTIONS HISTORY IN "analytics" LIMIT 100
+SHOW FUNCTIONS HISTORY IN "analytics" LIMIT 100 FROM '<page-token>'
+
+DESCRIBE FUNCTION double WITH (version = '1')
+DESCRIBE FUNCTION double
+```
+</CodeGroup>
+
+`list_functions` returns a lazy iterator: `page_limit` bounds each request,
+not the total, and `page_token` resumes from a saved token. Child namespaces
+are not included; list each namespace separately. A version's
+`created_at_millis`, `metadata`, `disabled` flag, and `secret_bindings` are
+all readable this way without applying or calling the function.
+
+### Inspect the resolved environment {#resolved-environment}
+
+The version keeps the requested runtime separate from what the server actually
+installed. The typed catalog API is available in Python and Rust; TypeScript
+does not yet expose this readback API. `version.runtime` is the specification
+sent at registration. `version.resolved_environment` is measured data from the
+built image:
+
+<CodeGroup>
+```python
+version = db.get_function("double")
+print(version.runtime)                    # requested runtime, or None for legacy
+print(version.environment.resolved)       # measured environment, or None for legacy
+print(version.environment_report)         # platform -> measured environment map
+
+if version.environment.resolved is not None:
+    for package in version.environment.resolved.packages:
+        print(package.name, package.version)  # versions keep labels such as +cu130
+```
+
+{/* Draft for the typed Rust environment inspection release.
+```rust
+# async fn inspect_environment(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let version = connection.get_function_latest("double", &[]).await?;
+println!("Requested runtime: {:?}", version.runtime());
+
+if let Some(environment) = version.resolved_environment() {
+    for package in &environment.packages {
+        println!("{} {}", package.name, package.version);
+    }
+}
+
+for (platform, environment) in version.resolved_environments() {
+    println!("{platform}: {} measured packages", environment.packages.len());
+    for package in &environment.packages {
+        println!("{} {}", package.name, package.version);
+    }
+}
+# Ok(())
+# }
+```
+*/}
+</CodeGroup>
+
+`version.environment.requested` and `version.environment.resolved` are
+convenience members over the same canonical fields; they do not add another
+wire shape. The canonical JSON exposes top-level `runtime` and
+`resolved_environment`. A missing `resolved_environment` means the version or
+environment cache predates measurement; it is unknown, not an empty installed
+package list. A package's `source` is present only when the submitted lock
+retained it, and provenance fields are reported without client-side guessing.
+
+For a multiarchitecture image, the scalar field is absent and
+`version.resolved_environments` (also available as
+`version.environment_report`) maps OCI `os/architecture` keys to the measured
+environment for that platform. A missing platform key means its measurement is
+unknown; an empty `packages` list inside a key is a measured empty environment
+and is retained. The SDK never merges platforms or fabricates an aggregate
+package list.
+
+The corresponding canonical payload has this shape:
+
+```json
+{
+  "runtime": {
+    "kind": "python",
+    "python_version": "3.12",
+    "environment": {"kind": "pip", "packages": ["vllm==0.11.0"]}
+  },
+  "resolved_environment": {
+    "packages": [
+      {
+        "name": "torch",
+        "version": "2.9.0+cu130",
+        "source": "https://packages.example/simple"
+      }
+    ],
+    "provenance": {
+      "configured_index_urls": ["https://packages.example/simple"],
+      "resolved_indexes": ["https://packages.example/simple"],
+      "cuda_toolkit": "12.8",
+      "torch_version": "torch==2.9.0+cu130"
+    },
+    "warnings": [
+      "torch resolved to torch==2.9.0+cu130 but is not pinned exactly; add torch==2.9.0+cu130 to pin it."
+    ]
+  }
+}
+```
+
+The multiarchitecture form has the same package shape per platform:
+
+```json
+{
+  "resolved_environments": {
+    "linux/amd64": {
+      "packages": [{"name": "torch", "version": "2.9.0+cu130"}]
+    },
+    "linux/arm64": {
+      "packages": []
+    }
+  }
+}
+```
+
+Environment warnings are part of the registration result. Waiting on
+`create_function_async(...)` (or calling `create_function`) emits each server
+warning from the scalar or per-platform measurements as a Python `UserWarning`;
+`get_function` and `list_functions` read the same version but do not
+replay those registration warnings.
+
+## Try it in SQL {#try-sql}
+
+A registered function is callable in SQL by its name, the same as any other
+scalar function. Before applying it as a column, call it directly over the
+table to check the registration succeeded, without committing a schema
+change:
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("SELECT value, double(value) AS doubled FROM function_demo")
+print(reader.read_all().to_pylist())
+# [{'value': 1.0, 'doubled': 2.0}, {'value': 2.0, 'doubled': 4.0}, {'value': 3.0, 'doubled': 6.0}]
+```
+</CodeGroup>
+
+<Note>
+Equivalent SQL: `SELECT value, double(value) AS doubled FROM function_demo`.
+See [Querying with SQL](/basics/sql) for `execute_query` and other languages.
 </Note>
 
 ## Apply it as a column {#apply}
@@ -109,10 +435,147 @@ Calling the registered version binds each parameter, by name, to a column with
 {FunctionApply}
 </CodeBlock>
 
-The column is declared empty; the function has not run yet. A mapping with one
-function application keeps its scalar or named-struct result in the named
-column. A bare named-struct application expands its result fields as one atomic
-binding, with aliases from `rename(columns=...)`.
+Batch declaration requires support in both the SDK and the Enterprise deployment.
+In Python, pass several applications to `add_columns` in one mapping to add
+all their columns in one schema commit.
+Each key names the column that holds that application's scalar or whole struct
+result. An application can read another output in the same declaration. For
+example, using the registered `double` Function on the `value` column:
+
+<CodeGroup>
+```python
+table.add_columns({
+    "twice": version(value=col("value")),
+    "four_times": version(value=col("twice")),
+})
+```
+
+{/* Draft for the Rust SDK release with AddColumnsBuilder::function_bindings.
+```rust
+use lancedb::{function::FunctionApplication, Table};
+
+async fn declare_doubles(
+    table: &Table,
+    double_value: FunctionApplication, // double applied to the `value` column
+    double_twice: FunctionApplication, // double applied to the new `twice` column
+) -> lancedb::Result<()> {
+    table.add_columns()
+        .function_bindings([
+            (double_value, Some("twice".into())),
+            (double_twice, Some("four_times".into())),
+        ])
+        .execute()
+        .await?;
+    Ok(())
+}
+```
+*/}
+</CodeGroup>
+
+Declaration creates empty columns. Refresh fills their values. A bare
+named-struct application expands its result fields as one binding, with
+aliases from `rename(columns=...)`.
+
+{/* Draft for the Function literal binding release.
+
+### Bind a constant input {#literal-inputs}
+
+<Note>
+Literal inputs require an SDK that supports binding metadata version 2 and an
+Enterprise deployment with matching literal declaration and execution support.
+Upgrading the SDK alone does not enable this server capability. Older clients
+reject version 2 bindings; column-only bindings continue to use version 1.
+</Note>
+
+Use `lit(...)` to pass the same value for every row while another parameter
+reads a column. For example, using the table above:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import col, function, lit
+
+
+@function
+def multiply(value: float, factor: int) -> float:
+    return value * factor
+
+
+multiplier = db.create_function_async(multiply).wait()
+table.add_columns(
+    {"scaled": multiplier(value=col("value"), factor=lit(16))},
+    auto_refresh_enabled=False,
+)
+```
+</CodeGroup>
+
+Supported scalar constants are booleans, strings, integers from `-(2**63)`
+through `2**64 - 1`, and `None` for a nullable parameter. Each value must match
+the parameter's declared type. Floating-point, binary, date, datetime and
+decimal constants are not supported in Function input bindings, even though
+`lit(...)` accepts them in other SQL expressions. Bind a direct literal;
+expressions such as `lit(16) + lit(8)` are not supported here.
+
+The constant belongs to the column binding, so the Function version and its
+image stay the same. Only column inputs contribute table dependencies. Refresh
+`scaled` to fill it. To change the constant to `lit(8)`, drop and redeclare the
+column using the same `multiplier` version; the new binding needs a refresh.
+
+*/}
+
+### Bind more than one input, or fill more than one column {#multi}
+
+Parameters bind by name, so a function that takes several arguments binds
+several columns in one call. `ratio` divides two existing columns, so give
+the table a second one first:
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns({"count": "value + 1"})
+
+@function
+def ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator
+
+version = db.create_function_async(ratio).wait()
+table.add_columns({"ratio": version(numerator=col("value"), denominator=col("count"))})
+```
+</CodeGroup>
+
+A named-struct output fills more than one column from a single application.
+Declare the fields with `output_schema`, then alias each field to the column
+it fills with `rename(columns=...)` and pass the application itself, not a
+mapping, so both columns come from one atomic binding:
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.float64(), nullable=False)]),
+    output_schema=pa.schema([
+        pa.field("half", pa.float64(), nullable=False),
+        pa.field("double", pa.float64(), nullable=False),
+    ]),
+)
+def scale(value: float):
+    return {"half": value / 2, "double": value * 2}
+
+version = db.create_function_async(scale).wait()
+application = version(value=col("value")).rename(
+    columns={"half": "value_half", "double": "value_double"}
+)
+table.add_columns(application)
+```
+</CodeGroup>
+
+<Note>
+`input_schema` and `output_schema` must be given together on v0.41.0. A
+version after it accepts either alone, inferring the other from the
+annotations.
+</Note>
+
+A single refresh fills `value_half` and `value_double` together: there is no
+state where one is filled and the other is still empty.
 
 ## Fill the column {#refresh}
 
@@ -135,17 +598,104 @@ rows added since the last one and recomputes rows whose inputs changed, and
 leaves filled rows with unchanged inputs alone. See
 [Refresh a column](/feature-engineering/refresh-column).
 
+## Keep state in a class {#classes}
+
+A function that loads a model or opens a client should not do it for every
+row. Decorate a class instead: its `__init__` does the expensive setup once,
+and `__call__` handles each row or batch.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassDefine}
+</CodeBlock>
+
+Registering the class does not construct it. `@function` reads the signature of
+`__init__` and packages the source, so the client never loads the model. On
+the cluster, each instance of the function calls `__init__` once. It then calls
+`__call__` for every row or batch it processes, and `close()`, if defined, once
+when it retires. Import heavy packages inside `__init__`, as above, so only the
+worker needs them installed, and declare them in `pip`.
+
+State belongs to one instance. An instance reuses it across every batch it
+serves, but instances do not share it, so each one holds its own copy of the
+model. Plan memory, or a GPU, for one copy per instance.
+
+Register it the same way as a plain function:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassRegister}
+</CodeBlock>
+
+The annotated parameters of `__init__` are the function's initialization
+fields. Their values come from each binding rather than from the function, so
+one registered version can run with different settings on different columns:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassApply}
+</CodeBlock>
+
+Pass the application to `add_columns` as [above](#apply). Initialization values
+are fixed for every row of a binding and take booleans, integers, floats,
+strings, and lists or structs of them. A parameter with a default may be
+omitted. Initialization values are stored with the binding, so keep
+credentials out of them: pass `secrets=[EnvVarSecret(...)]` to
+`create_function` and read the variable in `__init__`.
+
+Calling the decorated class in your own process constructs it, the same as an
+undecorated class, so local tests can create an instance and call it directly.
+
+## Blob v2 columns {#blobs}
+
+A Function can bind a [Blob v2 column](/management/table#managed-blobs) as
+input and return another. In row mode, a top-level blob parameter arrives as
+Python `bytes`, or `None` for a nullable input, after the worker has read
+the payload. Annotate it `BlobReader` for seekable, incremental reads.
+For a Function that returns `bytes`, declare
+`output_schema=lancedb.blob(...)` to store a Blob v2 result. A bare `bytes`
+return annotation infers ordinary Arrow `binary`.
+
+{/*
+Draft for the streaming Blob output release.
+
+A scalar `BlobWriter` return annotation infers a non-nullable Blob v2
+output. A vectorized Function with an explicit `input_schema` can infer one
+Blob v2 per row with `list[BlobWriter]` or `tuple[BlobWriter, ...]`. Use
+`BlobWriter.field(...)` to declare writer-capable fields in named or nested
+outputs.
+
+Use `BlobWriter` for computed column refresh. Register writer-based Functions
+after the LanceDB Enterprise server and Function worker images support
+streaming Blob output, using a Python SDK that provides `BlobWriter`. Use
+byte-returning Functions on earlier deployments and for plain SQL `SELECT`,
+where results follow the query's Arrow output limits.
+*/}
+
+See [Read and produce blobs](/curation/create-function#blobs) for a full
+example: extracting a frame from a stored video, chaining a second Function
+onto its output, persisting both as columns or a materialized view, and
+reading a blob input incrementally.
+
 ## Declare the environment {#environment}
 
-The function runs remotely, so its dependencies are part of its definition:
+The function runs on the Enterprise service, not in your application, so its
+dependencies are part of its definition:
 
 | | |
 | --- | --- |
-| `pip` | requirements for the remote environment |
+| `pip` | requirements for the function's execution environment |
 | `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
 | `env` | environment variables |
-| `python_version` | remote Python major/minor, defaulting to yours |
-| `gpu` | whether every execution requires a GPU |
+| `python_version` | Python major/minor for the execution environment, defaulting to yours |
+| `gpu` | Enable GPU execution with `True` (Python) or `true` (SQL); defaults to CPU execution |
+| `gpu_class` | Operator-configured GPU class, such as `h100`; requires GPU execution |
+| `gpu_count` | GPUs allocated together per Function worker; positive integer, defaults to one; requires GPU execution |
+
+<CodeGroup>
+```python Python icon="python"
+@function(gpu=True)
+def extract_frame(video: BlobReader, ts: float) -> bytes:
+    ...  # runs only on a GPU-capable worker
+```
+</CodeGroup>
 
 These are part of the **immutable function version**. Changing a dependency
 produces a new version rather than altering the one already registered, so a
@@ -173,48 +723,247 @@ pydantic**.
 <Note>
 The client version defaults `python_version`, so a function registered from a
 3.11 environment runs on 3.11 unless you say otherwise. That default is usually
-right and occasionally surprising -- pin it when the function is sensitive to it.
+right and occasionally surprising. Pin it when the function is sensitive to it.
 </Note>
+
+## Remote calls and credentials {#secrets}
+
+A function that calls an external API needs a credential without putting it
+in the function's source or its `env` map in plain text. A Secret is a
+database-scoped named credential; `db.create_secret` stores the value once,
+and an `EnvVarSecret` binds it to the environment variable the function
+reads. Binding is a registration-time decision, passed to
+`create_function_async`, not to `@function`. No API returns a Secret's value,
+and it never appears in the function's registration: the function reads the
+environment variable the way it always did, and the binding is what puts a
+value there. A mistyped Secret name is caught at registration; a mistyped
+environment variable name surfaces only on the first rows, since nothing
+records which variables a function reads.
+
+See [Vend a Secret to a Function](/curation/vend-secret#specify) for the
+full worked example.
 
 ## Failure handling {#failures}
 
-A function that raises fails the job. There is no per-row retry or skip policy
-in the function definition: `@udf` takes no error-handling parameter, so a
-function that calls a flaky external service should handle that itself, inside
-the function body.
+For the full skip, inspect, grouped-error, stable-row-ID retry and quarantine
+workflow, see [Handle Function failures](/management/function-failures).
 
-Letting the job fail is the other option: fix the cause and refresh again. The
-next refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
+By default, a refresh skips rows where the Function raises, up to a 5%
+failed-row ceiling. Choose how the refresh handles row errors with its error
+policy:
+
+<CodeGroup>
+```sql SQL icon="database"
+REFRESH COLUMN embedding ON documents WITH (error_policy = 'fail')
+```
+</CodeGroup>
+
+`skip` retains a failing row's existing output, leaves an unassigned output
+unassigned and records the error. Inspect
+them with `SHOW ERRORS` or `table.function_errors()`. Failure limits still
+apply, and initialization or infrastructure failures can still fail the job.
+See the [SQL refresh options](/sql/dml/refresh-column#options). A Function
+that calls a transiently failing external service can handle bounded retries
+inside its body.
+
+`fail` is the opt-in alternative: fix the cause and refresh again. The
+next unfiltered refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
 but how much of the failed job's work was kept is not guaranteed, so do not
-count on the retry costing only the rows that did not complete.
+count on the retry costing only the rows that did not complete. A refresh with
+`WHERE` recomputes every matching live row, including already-filled outputs.
+
+{/*
+Draft for the Function retry policy release.
+
+### Retry transient errors
+
+Native retries require an SDK that exposes `FunctionRetryPolicy` and a
+LanceDB Enterprise server that supports Function retry policies. Upgrading
+the SDK alone does not enable retries on an older server. If a refresh
+override reports that the Function image does not support retry policies,
+re-register the Function on a supporting server.
+
+Import `FunctionRetryPolicy` from `lancedb.functions` and pass a policy to
+`@function` through `retry_policy`. For example,
+`FunctionRetryPolicy(transient=True, max_attempts=3)` allows up to three
+calls for matching transient failures. `max_attempts` includes the first
+call; setting it to `1` disables user-error retries. A
+[refresh override](/feature-engineering/refresh-column#resources) replaces
+the registered policy for that refresh.
+
+Enable retries only when repeating a failed call's partial work is safe.
+An external request may have succeeded before the Function raised, so this
+policy does not guarantee exactly-once external effects. Functions declared
+with external side effects reject retry policies. Calls that return
+successfully are not repeated by this policy; infrastructure recovery and
+later refreshes have separate replay behavior.
+
+Each failed callable invocation has one attempt budget. After exhaustion,
+the refresh's `error_policy` applies. With an explicit retry policy, `skip`
+on a batch Function writes nulls for every row in the failed call and records
+their errors. It does not split that call into smaller retries with new
+budgets. A row Function handles each row separately. Error records expose
+`attempts` when the server records it; older records may omit the count.
+
+Worker recovery uses a separate retry budget. Framework deadlines and
+cancellation stop execution without consuming further user-error retries.
+*/}
 
 ## What gets packaged {#packaging}
 
 <Warning>
 The artifact is a **snapshot**: the function source, plus exactly the
-module-level names it references — modules as imports, importable classes and
-functions as imports, literals inlined.
+module-level names it references (modules as imports, importable classes and
+functions as imports, literals inlined).
 
 Code that reaches the module namespace another way is rejected where it can be
 seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
 `builtins`. Closures and a non-standard `__builtins__` are rejected outright.
 </Warning>
 
+Three statically recognizable diagnostic operations are supported: `sys.stderr`,
+`sys.version_info`, and `importlib.metadata.version`. Direct imports, `from`
+imports, and aliases work the same way. Any other use of `sys`, `builtins`,
+`importlib`, `inspect`, `gc`, `ctypes`, or `types` is rejected; move it into an
+importable helper module.
+
+```python
+import importlib.metadata
+import sys
+
+from lancedb import function
+
+
+@function(pip=["numpy"])
+def report(value: int) -> str:
+    print("diagnostic", file=sys.stderr)
+    return f"numpy {importlib.metadata.version('numpy')} on {sys.version_info}"
+```
+
 In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.
 
+### Supported global captures {#captures}
+
+The Python SDK's source packager captures only these literal values:
+
+| Module-level value | Packaging behavior |
+| --- | --- |
+| `None`, exact `bool`, `int`, `str`, `bytes`, finite `float` | Inlined as a snapshot at registration. |
+| Tuples containing only those values, including nested tuples | Recursively inlined. |
+| Imported modules, importable functions/classes | Reconstructed as imports; declare their packages in `pip` or `conda`, or ship local source with `code`. |
+| Arrow types/schemas, lists, dictionaries, sets, NumPy arrays, non-finite floats, other objects | Not captured as literals. Construct them inside the Function or class. |
+
+For example, a module-level `OUT_TYPE = pa.list_(pa.float32(), 3)` referenced
+from the Function body is unsupported. Construct the type where it is used:
+
+```python
+import pyarrow as pa
+from lancedb import function
+
+@function(
+    input_schema=pa.schema([pa.field("value", pa.float32(), nullable=False)]),
+    output_schema=pa.list_(pa.float32(), 3),
+)
+def make_vector(value: pa.Array) -> pa.Array:
+    out_type = pa.list_(pa.float32(), 3)
+    return pa.array([[v, v, v] for v in value.to_pylist()], type=out_type)
+```
+
+Decorator schema arguments are serialized as the signature; this restriction
+concerns values referenced by the packaged body. For an expensive constant or
+model, build it in a class Function's `__init__` and keep it on `self`.
+
+Later mutations of a client global do not update a registered version. Register
+a new version to change captured literals or source. The diagnostic fix in
+[SDK #4938](https://github.com/lancedb/lancedb/pull/4938) names the unsupported
+global and its type; it does not add Arrow/container capture support. There is
+no supported arbitrary-object serialization or documented container-size limit
+to rely on for those rejected types.
+
+See the [Function type matrix](/curation/create-function#signature-types) for
+what can travel as row inputs and outputs rather than captured globals.
+
+Pass `code=[module, ...]` to ship additional helper modules into the same
+image, for logic the function imports but that does not belong inlined into
+it -- a model-loading helper shared by several Functions, for example.
+Continuing the [`caption` Function](/curation/create-function#chain), with
+its model-loading code factored into a sibling module instead of inlined:
+
+<CodeGroup>
+```python Python icon="python"
+import caption_worker  # a sibling module with the model-loading logic
+
+@function(gpu=True, code=[caption_worker])
+def caption(jpeg: bytes) -> str:
+    return caption_worker.run(jpeg)
+```
+</CodeGroup>
+
+Each module in `code` is captured and shipped the same way the function
+itself is: as source, snapshotted at registration. Packages also include regular
+data files such as JSON, YAML, prompts, and tokenizer files, including resources
+inside vendored subpackages. Resource paths and bytes are preserved for
+`importlib.resources` and package integrity checks. Changing a resource changes
+the Function artifact's identity. Caches, hidden paths, symlinks, and unsafe
+paths are excluded.
+
+Package resources require matching SDK and server support. Upgrade query nodes
+and Function image-building workers before registering resource bundles; older
+servers reject them. Older SDKs ship only Python source and warn when excluding
+package data. On deployments without resource-bundle support, install the
+package with `pip=` or `conda=` and omit it from `code` so the copied package does
+not shadow the installed distribution. Use environment dependencies for
+platform-specific packages and `models=` for large model snapshots.
+
 ## Drop it {#drop}
 
-`db.drop_function(name, version=...)` drops the function's name and the object
-it is bound to; `version` must be a version that exists. It returns `False` if
-the name was already gone. Deleting the object's content can finish after the
-call returns, as a [background job](/maintenance/background-jobs).
-`drop_function_async` returns that job with the result, so you can wait for it.
+<CodeGroup>
+```python Python icon="python"
+db.drop_function("double", version="1")
+```
+
+```rust
+# async fn drop_it(connection: &lancedb::Connection) -> Result<(), Box<dyn std::error::Error>> {
+let dropped = connection.drop_function("double", "1", &[]).await?;
+# Ok(())
+# }
+```
+
+```sql SQL icon="database"
+DROP FUNCTION double WITH (version = '1')
+```
+</CodeGroup>
+
+`db.drop_function(name, version=...)` removes only that published revision from
+lookup and listing, preserving other revisions and their grants. It returns
+`False` for a repeated drop or a name that is already gone. A revision never
+published under an existing name is an error. The last visible revision's drop
+releases the name and schedules object cleanup, which can finish after the call
+returns as a [background job](/basics/jobs#teardown).
+`drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
+handle. Waiting confirms the revision's catalog removal; physical cleanup can
+continue afterward.
+
+When a deployment reports dependency warnings for a boolean drop,
+`db.drop_function` emits each warning as a `UserWarning`. This also applies to
+`await db.drop_function(...)` on an async connection. The warnings are emitted
+after catalog removal, and standard Python warnings filters apply. If warnings
+are configured as errors, the call can raise after the revision has been
+removed; the drop is not rolled back. Servers whose DROP response omits the
+warning field remain silent.
+
+A deployment refuses the drop unless it also allows changes to a function's
+lifecycle, which is a separate setting, off by default even where Functions are
+enabled.
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Create a Function" icon="code" href="/curation/create-function">
+    Scalar, batch, stateful, GPU and remote-service examples for common curation tasks.
+  </Card>
   <Card title="Computed columns" icon="table-columns" href="/feature-engineering/refresh-column">
     Refresh semantics, and the SQL alternative.
   </Card>

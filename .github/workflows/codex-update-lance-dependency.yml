@@ -16,14 +16,14 @@ on:
         default: ""
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
-  actions: read
+permissions: {}
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    permissions:
+      # Pushes the branch with the checkout token. PR creation uses ROBOT_TOKEN.
+      contents: write
     steps:
       - name: Show inputs
         run: |
@@ -44,7 +44,7 @@ jobs:
         run: npm install -g @openai/codex
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           components: clippy, rustfmt

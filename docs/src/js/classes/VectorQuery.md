@@ -101,6 +101,38 @@ AnalyzeExec verbose=true, metrics=[]
 
 ***
 
+### approxMode()
+
+```ts
+approxMode(approxMode): VectorQuery
+```
+
+Set the speed / accuracy tradeoff to use for approximate search
+
+This currently affects RQ-quantized indexes, such as IVF_RQ, and
+prefiltered search on HNSW indexes, where "fast" enables the ACORN
+traversal. Other index types ignore this setting.
+
+"fast" favors lower latency and may reduce recall, "normal" (the default)
+uses the index's default balance, and "accurate" favors higher recall and
+may increase latency.
+
+#### Parameters
+
+* **approxMode**: `"fast"` \| `"normal"` \| `"accurate"`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).approxMode("fast").limit(10);
+```
+
+***
+
 ### bypassVectorIndex()
 
 ```ts
@@ -646,6 +678,43 @@ rerank(reranker): VectorQuery
 
 ***
 
+### searchEffort()
+
+```ts
+searchEffort(searchEffort): VectorQuery
+```
+
+Set the initial IVF search effort to a finite value in [0, 1].
+
+Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+80% and 90% for L2, cosine and dot through k=100000. The probe budget
+adapts to the metric and k. Hamming and larger k remain uncalibrated;
+100000 is not an API limit. Remote queries also require server support.
+
+The default, null, uses Auto (internally 0.5). Zero starts at the caller
+minimum; one searches all partitions within the caller maximum. Later
+probing may continue when too few candidates are found.
+Any explicit effort, including 0.5, overrides nprobes in either call order.
+Explicit minimum and maximum bounds still apply. This is not a recall
+guarantee and does not change refinement or HNSW ef. The RTE LSM
+scanner does not yet support this option.
+
+#### Parameters
+
+* **searchEffort**: `null` \| `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+```
+
+***
+
 ### select()
 
 ```ts
@@ -749,31 +818,31 @@ Empty results retain the query's output schema.
 
 ***
 
-### useLsm()
+### useRTE()
 
 ```ts
-useLsm(enable): this
+useRTE(enable): this
 ```
 
-Control MemWAL read routing for this query.
+Control RTE read routing for this query.
 
-By default (unset), when the table carries a MemWAL write spec (see
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
+By default (unset), when the table carries an RTE write spec (see
+[Table#enableRTE](Table.md#enablerte)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
-the flushed generations), deduplicated by primary key; a table without a spec
+the SSTables), deduplicated by primary key; a table without a spec
 reads the base table.
 
 #### Parameters
 
 * **enable**: `boolean`
     `true` forces the LSM scanner and errors if the table has no
-    MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+    RTE write spec. `false` bypasses the RTE and reads the base table only,
     even when a spec is present.
     Note: the LSM scanner does not support every query shape (e.g. reranking,
-    hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-    `useLsm(false)` is set, because a base-only read would silently exclude
-    un-compacted MemWAL data.
+    hybrid search, `orderBy`). On an RTE table those shapes error unless
+    `useRTE(false)` is set, because a base-only read would silently exclude
+    un-compacted RTE data.
 
 #### Returns
 
@@ -781,7 +850,7 @@ reads the base table.
 
 #### Inherited from
 
-`StandardQueryBase.useLsm`
+`StandardQueryBase.useRTE`
 
 ***
 
@@ -793,29 +862,34 @@ where(predicate): this
 
 A filter statement to be applied to this query.
 
-The filter should be supplied as an SQL query string.  For example:
+The filter may be an SQL query string or an expression built with `col`,
+which preserves case-sensitive column names. For example:
 
 #### Parameters
 
-* **predicate**: `string`
+* **predicate**: `string` \| [`Expr`](Expr.md)
 
 #### Returns
 
 `this`
 
-#### Example
+#### Examples
 
 ```ts
 x > 10
 y > 0 AND y < 100
 x > 5 OR y = 'test'
+```
+
+```ts
+table.query().where(col("firstName").eq("Alice"));
+```
 
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
 
 Calling this multiple times combines the filters with a logical AND rather
 than replacing the previous filter.
-```
 
 #### Inherited from
 

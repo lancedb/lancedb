@@ -7,6 +7,36 @@ import pyarrow as pa
 import pytest
 
 
+def test_compaction_tuning(mem_db):
+    payload = b"x" * 1016
+    table = mem_db.create_table(
+        "compaction_tuning", [{"id": i, "payload": payload} for i in range(32)]
+    )
+    table.add([{"id": i, "payload": payload} for i in range(32, 64)])
+    assert table.stats()["fragment_stats"]["num_fragments"] == 2
+
+    # --8<-- [start:storage_compaction_tuning]
+    from lancedb import CompactionOptions
+
+    desired_fragment_bytes = 64 * 1024
+    average_row_bytes = 1024  # Estimate from representative rows.
+    options: CompactionOptions = {
+        "target_rows_per_fragment": max(1, desired_fragment_bytes // average_row_bytes),
+        "batch_size": 16,
+        "num_threads": 1,
+    }
+    table.optimize(compaction_options=options)
+    # --8<-- [end:storage_compaction_tuning]
+
+    assert table.stats()["fragment_stats"]["num_fragments"] == 1
+    assert table.count_rows() == 64
+
+    table.add([{"id": 64, "payload": payload}])
+    table.optimize(compaction_options=options)
+    assert table.stats()["fragment_stats"]["num_fragments"] == 2
+    assert sorted(table.to_arrow()["id"].to_pylist()) == list(range(65))
+
+
 def test_rebuild_vector_index(tmp_db):
     rng = np.random.default_rng(7)
     table = tmp_db.create_table(

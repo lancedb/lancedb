@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +22,13 @@ pub struct Catalog {
 
 #[pymethods]
 impl Catalog {
+    #[getter]
+    fn authz(&self) -> PyResult<crate::authz::AuthorizationClient> {
+        Ok(crate::authz::AuthorizationClient {
+            inner: self.inner.authz().infer_error()?,
+        })
+    }
+
     #[getter]
     fn uri(&self) -> &str {
         self.inner.uri()
@@ -53,16 +61,21 @@ impl Catalog {
         })
     }
 
-    #[pyo3(signature = (name, *, ignore_missing=false))]
+    #[pyo3(signature = (name, *, ignore_missing=false, cascade=false))]
     fn drop_database<'py>(
         self_: PyRef<'py, Self>,
         name: String,
         ignore_missing: bool,
+        cascade: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner
-                .drop_database(DropDatabaseRequest::new(name).ignore_missing(ignore_missing))
+                .drop_database(
+                    DropDatabaseRequest::new(name)
+                        .ignore_missing(ignore_missing)
+                        .cascade(cascade),
+                )
                 .await
                 .infer_error()
         })
@@ -115,7 +128,8 @@ impl DatabaseNames {
 }
 
 #[pyfunction]
-#[pyo3(signature = (endpoint, *, api_key=None, client_config=None, sql_host_override=None, read_consistency_interval=None, oauth_config=None))]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (endpoint, *, api_key=None, client_config=None, sql_host_override=None, read_consistency_interval=None, oauth_config=None, storage_options=None))]
 pub fn connect_catalog(
     py: Python<'_>,
     endpoint: String,
@@ -124,6 +138,7 @@ pub fn connect_catalog(
     sql_host_override: Option<String>,
     read_consistency_interval: Option<f64>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<Bound<'_, PyAny>> {
     let interval = read_consistency_interval
         .map(Duration::try_from_secs_f64)
@@ -138,6 +153,9 @@ pub fn connect_catalog(
         }
         if let Some(config) = client_config {
             builder = builder.client_config(config.into());
+        }
+        if let Some(options) = storage_options {
+            builder = builder.storage_options(options);
         }
         if let Some(endpoint) = sql_host_override {
             builder = builder.sql_host_override(endpoint);

@@ -19,7 +19,7 @@ use serde_json::Value;
 ///
 /// Returned by [`crate::connection::Connection::describe_secret`]. There is no
 /// field for the credential and no method that could produce one.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretInfo {
     /// The Secret's database-scoped name.
     pub name: String,
@@ -82,7 +82,7 @@ impl SecretReference {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum SecretBinding {
-    /// Delivered as an environment variable, which the UDF's library already
+    /// Delivered as an environment variable, which the function's library already
     /// reads. The variable is the delivery target; the Secret is what fills it.
     Env {
         variable: String,

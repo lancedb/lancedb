@@ -3,48 +3,69 @@
 
 use std::path::PathBuf;
 
-use lancedb::connect;
+use lancedb::{Connection, connect};
 
-// --8<-- [start:connect]
-async fn connect_example(uri: &str) {
-    let db = connect(uri).execute().await.unwrap();
-    let _ = db;
+async fn connect_local() -> lancedb::Result<Connection> {
+    // --8<-- [start:connect]
+    let db = connect("ex_lancedb").execute().await?;
+    // --8<-- [end:connect]
+    Ok(db)
 }
-// --8<-- [end:connect]
 
 #[tokio::main]
-async fn main() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let uri = temp_dir.path().join("ex_lancedb");
-    connect_example(uri.to_str().unwrap()).await;
-
-    // Keep the enterprise snippet in this file, but don't run it in CI.
-    let _ = connect_enterprise_quickstart_config();
-    let _ = connect_object_storage_config();
-}
-
-fn connect_enterprise_quickstart_config() -> (String, String, String, String) {
-    // --8<-- [start:connect_enterprise_quickstart]
-    let uri = "db://your-database-uri";
-    let api_key = "your-api-key";
-    let region = "us-east-1";
-    let host_override = "https://your-enterprise-endpoint.com";
-    // --8<-- [end:connect_enterprise_quickstart]
-    (
-        uri.to_string(),
-        api_key.to_string(),
-        region.to_string(),
-        host_override.to_string(),
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    std::env::set_current_dir(temp_dir.path())?;
+    let db = connect_local().await?;
+    db.create_empty_table(
+        "probe",
+        std::sync::Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "id",
+            arrow_schema::DataType::Int64,
+            false,
+        )])),
     )
+    .execute()
+    .await?;
+    let reopened = connect(temp_dir.path().join("ex_lancedb").to_str().unwrap())
+        .execute()
+        .await?;
+    assert_eq!(reopened.table_names().execute().await?, vec!["probe"]);
+
+    // Connects to a deployment only when asked, and only lists its tables.
+    if std::env::var("LANCEDB_DOCS_TEST_DEPLOYMENT").as_deref() == Ok("1") {
+        let db = connect_enterprise_quickstart().await?;
+        println!("{:?}", db.table_names().execute().await?);
+    }
+    Ok(())
 }
 
-fn connect_object_storage_config() -> &'static str {
+async fn connect_enterprise_quickstart() -> Result<Connection, Box<dyn std::error::Error>> {
+    // --8<-- [start:connect_enterprise_quickstart]
+    let uri = std::env::var("LANCEDB_URI")?; // db://your-database
+    let api_key = std::env::var("LANCEDB_API_KEY")?;
+    let region = std::env::var("LANCEDB_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let host_override = std::env::var("LANCEDB_HOST_OVERRIDE")?; // https://your-endpoint
+
+    let db = connect(&uri)
+        .api_key(&api_key)
+        .region(&region)
+        .host_override(&host_override)
+        .execute()
+        .await?;
+    // --8<-- [end:connect_enterprise_quickstart]
+    Ok(db)
+}
+
+// Compiled as documentation, never called by the example runner.
+#[allow(dead_code)]
+async fn connect_object_storage() -> lancedb::Result<Connection> {
     // --8<-- [start:connect_object_storage]
     let uri = "s3://your-bucket/path";
     // You can also use "gs://your-bucket/path" or "az://your-container/path".
+    let db = connect(uri).execute().await?;
     // --8<-- [end:connect_object_storage]
-
-    uri
+    Ok(db)
 }
 
 async fn namespace_table_ops_example(uri: &str) -> lancedb::Result<()> {
@@ -131,4 +152,18 @@ async fn namespace_admin_ops_example() -> lancedb::Result<()> {
 #[allow(dead_code)]
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+// Compiled as documentation, never called by the example runner.
+#[allow(dead_code)]
+async fn connect_enterprise_placeholders() -> Result<Connection, Box<dyn std::error::Error>> {
+    // --8<-- [start:connect_enterprise_placeholders]
+    let db = connect("db://your-database")
+        .api_key("your-api-key")
+        .region("us-east-1")
+        .host_override("https://your-endpoint")
+        .execute()
+        .await?;
+    // --8<-- [end:connect_enterprise_placeholders]
+    Ok(db)
 }

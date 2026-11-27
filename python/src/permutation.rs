@@ -9,7 +9,10 @@ use crate::{
 use arrow::pyarrow::{PyArrowType, ToPyArrow};
 use lancedb::{
     dataloader::permutation::{
-        builder::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
+        builder::{
+            PermutationBuilder as LancePermutationBuilder, PermutationPersistMode,
+            PermutationPersistOptions, ShuffleStrategy,
+        },
         reader::PermutationReader,
         split::{SplitSizes, SplitStrategy},
     },
@@ -17,7 +20,7 @@ use lancedb::{
 };
 use pyo3::{
     Bound, PyAny, PyRef, PyRefMut, PyResult, Python,
-    exceptions::PyRuntimeError,
+    exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods, PyType},
 };
@@ -123,14 +126,15 @@ impl PyAsyncPermutationBuilder {
         })
     }
 
-    #[pyo3(signature = (columns, split_weights, *, discard_weight=0, split_names=None))]
+    #[pyo3(signature = (columns, split_weights, *, discard_weight=None, split_names=None))]
     pub fn split_hash(
         slf: PyRefMut<'_, Self>,
         columns: Vec<String>,
         split_weights: Vec<u64>,
-        discard_weight: u64,
+        discard_weight: Option<u64>,
         split_names: Option<Vec<String>>,
     ) -> PyResult<Self> {
+        let discard_weight = discard_weight.unwrap_or(0);
         slf.modify(|builder| {
             builder.with_split_strategy(
                 SplitStrategy::Hash {
@@ -178,6 +182,50 @@ impl PyAsyncPermutationBuilder {
         })
     }
 
+    #[pyo3(signature = (num_samples, *, ratios=None, counts=None, fixed=None, seed=None, split_names=None))]
+    pub fn bootstrap_sample(
+        slf: PyRefMut<'_, Self>,
+        num_samples: u64,
+        ratios: Option<Vec<f64>>,
+        counts: Option<Vec<u64>>,
+        fixed: Option<u64>,
+        seed: Option<u64>,
+        split_names: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        // Check that exactly one split type is provided
+        let split_args_count = [ratios.is_some(), counts.is_some(), fixed.is_some()]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+
+        if split_args_count != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Exactly one of 'ratios', 'counts', or 'fixed' must be provided",
+            ));
+        }
+
+        let sizes = if let Some(ratios) = ratios {
+            SplitSizes::Percentages(ratios)
+        } else if let Some(counts) = counts {
+            SplitSizes::Counts(counts)
+        } else if let Some(fixed) = fixed {
+            SplitSizes::Fixed(fixed)
+        } else {
+            unreachable!("One of the split arguments must be provided");
+        };
+
+        slf.modify(|builder| {
+            builder.with_split_strategy(
+                SplitStrategy::Bootstrap {
+                    num_samples,
+                    sizes,
+                    seed,
+                },
+                split_names,
+            )
+        })
+    }
+
     pub fn split_calculated(
         slf: PyRefMut<'_, Self>,
         calculation: String,
@@ -200,6 +248,37 @@ impl PyAsyncPermutationBuilder {
 
     pub fn filter(slf: PyRefMut<'_, Self>, filter: String) -> PyResult<Self> {
         slf.modify(|builder| builder.with_filter(filter))
+    }
+
+    /// Store the permutation table in a database.
+    ///
+    /// This is only supported for embedded databases. The destination table is
+    /// created in the selected namespace, and an existing table is replaced only
+    /// when ``mode="overwrite"`` is explicit.
+    #[pyo3(signature = (db, table_name, *, namespace_path=None, mode="create"))]
+    pub fn persist(
+        slf: PyRefMut<'_, Self>,
+        db: PyRef<'_, crate::connection::Connection>,
+        table_name: String,
+        namespace_path: Option<Vec<String>>,
+        mode: &str,
+    ) -> PyResult<Self> {
+        let mode = match mode {
+            "create" => PermutationPersistMode::Create,
+            "overwrite" => PermutationPersistMode::Overwrite,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid mode {other}; expected 'create' or 'overwrite'"
+                )));
+            }
+        };
+        let database = db.database()?;
+        let options = PermutationPersistOptions {
+            namespace_path: namespace_path.unwrap_or_default(),
+            mode,
+        };
+
+        slf.modify(|builder| builder.persist_with_options(database, table_name, options))
     }
 
     pub fn execute(slf: PyRefMut<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

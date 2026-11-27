@@ -7,8 +7,11 @@ use lancedb::index::vector::{
     IvfPqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
 };
 use lancedb::index::{
-    Index as LanceDbIndex,
-    scalar::{BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder},
+    Index as LanceDbIndex, IndexType,
+    scalar::{
+        BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder, NGramIndexBuilder,
+        PluginIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
+    },
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
@@ -33,6 +36,80 @@ pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     }
 }
 
+/// Code-analyzer options shared by `FTS` and `tokenize`.
+#[derive(Default)]
+pub struct CodeAnalyzerOptions {
+    pub analyzer: Option<String>,
+    pub split_identifiers: Option<bool>,
+    pub split_on_numerics: Option<bool>,
+    pub preserve_original: Option<bool>,
+    pub index_operators: Option<bool>,
+}
+
+impl CodeAnalyzerOptions {
+    /// Check the options against the requested base tokenizer and return the
+    /// base tokenizer to use. `analyzer="code"` selects the code tokenizer when
+    /// `base_tokenizer` is left at its default of `"simple"`.
+    pub fn resolve_base_tokenizer(&self, base_tokenizer: String) -> PyResult<String> {
+        let uses_code = match self.analyzer.as_deref() {
+            None | Some("text") => base_tokenizer == "code",
+            Some("code") => true,
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "analyzer must be 'text' or 'code', got '{other}'"
+                )));
+            }
+        };
+        match self.analyzer.as_deref() {
+            Some("text") if base_tokenizer == "code" => {
+                return Err(PyValueError::new_err(
+                    "base_tokenizer='code' requires analyzer='code'",
+                ));
+            }
+            Some("code") if base_tokenizer != "code" && base_tokenizer != "simple" => {
+                return Err(PyValueError::new_err(format!(
+                    "analyzer='code' requires base_tokenizer='code', got '{base_tokenizer}'"
+                )));
+            }
+            _ => {}
+        }
+        let flags = [
+            self.split_identifiers,
+            self.split_on_numerics,
+            self.preserve_original,
+            self.index_operators,
+        ];
+        if !uses_code && flags.into_iter().flatten().any(|value| value) {
+            return Err(PyValueError::new_err(
+                "split_identifiers, split_on_numerics, preserve_original and \
+                 index_operators require analyzer='code'",
+            ));
+        }
+        Ok(if uses_code {
+            "code".to_string()
+        } else {
+            base_tokenizer
+        })
+    }
+
+    /// Apply the explicit flags on top of the tokenizer defaults.
+    pub fn apply(&self, mut params: FtsIndexBuilder) -> FtsIndexBuilder {
+        if let Some(value) = self.split_identifiers {
+            params = params.split_identifiers(value);
+        }
+        if let Some(value) = self.split_on_numerics {
+            params = params.split_on_numerics(value);
+        }
+        if let Some(value) = self.preserve_original {
+            params = params.preserve_original(value);
+        }
+        if let Some(value) = self.index_operators {
+            params = params.index_operators(value);
+        }
+        params
+    }
+}
+
 pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<LanceDbIndex> {
     if let Some(source) = source {
         match class_name(source)?.as_str() {
@@ -40,10 +117,39 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
+            "NGram" => Ok(LanceDbIndex::NGram(NGramIndexBuilder::default())),
+            "ZoneMap" => Ok(LanceDbIndex::ZoneMap(ZoneMapIndexBuilder::default())),
+            "RTree" => {
+                let params = source.extract::<RTreeParams>()?;
+                let mut builder = RTreeIndexBuilder::default();
+                if let Some(page_size) = params.page_size {
+                    builder = builder
+                        .page_size(page_size)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                }
+                Ok(LanceDbIndex::RTree(builder))
+            }
+            "ScalarPlugin" => {
+                let params = source.extract::<ScalarPluginParams>()?;
+                let invalid = |err: lancedb::Error| PyValueError::new_err(err.to_string());
+                let mut builder = PluginIndexBuilder::new(params.index_type).map_err(invalid)?;
+                if let Some(json) = params.params_json {
+                    builder = builder.params_json(json).map_err(invalid)?;
+                }
+                Ok(LanceDbIndex::Plugin(builder))
+            }
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
+                let code_options = CodeAnalyzerOptions {
+                    analyzer: params.analyzer,
+                    split_identifiers: params.split_identifiers,
+                    split_on_numerics: params.split_on_numerics,
+                    preserve_original: params.preserve_original,
+                    index_operators: params.index_operators,
+                };
+                let base_tokenizer = code_options.resolve_base_tokenizer(params.base_tokenizer)?;
                 let mut inner_opts = FtsIndexBuilder::default()
-                    .base_tokenizer(params.base_tokenizer)
+                    .base_tokenizer(base_tokenizer)
                     .language(&params.language)
                     .map_err(|_| {
                         PyValueError::new_err(format!(
@@ -75,6 +181,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_workers) = params.num_workers {
                     inner_opts = inner_opts.num_workers(num_workers);
                 }
+                let inner_opts = code_options.apply(inner_opts);
                 let inner_opts = inner_opts
                     .block_size(params.block_size)
                     .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -136,8 +243,10 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 let mut ivf_rq_builder = IvfRqIndexBuilder::default()
                     .distance_type(distance_type)
                     .max_iterations(params.max_iterations)
-                    .sample_rate(params.sample_rate)
-                    .num_bits(params.num_bits);
+                    .sample_rate(params.sample_rate);
+                if let Some(num_bits) = params.num_bits {
+                    ivf_rq_builder = ivf_rq_builder.num_bits(num_bits);
+                }
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
                 }
@@ -203,13 +312,20 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
             }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, ScalarPlugin, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
     } else {
         Ok(LanceDbIndex::Auto)
     }
+}
+
+#[derive(FromPyObject)]
+struct ScalarPluginParams {
+    index_type: String,
+    #[pyo3(attribute("_params_json"))]
+    params_json: Option<String>,
 }
 
 #[derive(FromPyObject)]
@@ -230,6 +346,16 @@ struct FtsParams {
     memory_limit: Option<u64>,
     num_workers: Option<usize>,
     document_granularity: String,
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
+}
+
+#[derive(FromPyObject)]
+struct RTreeParams {
+    page_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -265,7 +391,7 @@ struct IvfSqParams {
 struct IvfRqParams {
     distance_type: String,
     num_partitions: Option<u32>,
-    num_bits: u32,
+    num_bits: Option<u32>,
     max_iterations: u32,
     sample_rate: u32,
     target_partition_size: Option<u32>,
@@ -444,7 +570,12 @@ fn parse_index_details(py: Python<'_>, s: String) -> Py<PyAny> {
 
 impl IndexConfig {
     pub fn from_lancedb(py: Python<'_>, value: lancedb::index::IndexConfig) -> Self {
-        let index_type = format!("{:?}", value.index_type);
+        // A registered plugin's type is its display name, such as "MinHashLsh",
+        // which `Debug` would render as `Custom("MinHashLsh")`.
+        let index_type = match value.index_type {
+            IndexType::Custom(name) => name,
+            index_type => format!("{index_type:?}"),
+        };
         Self {
             index_type,
             columns: value.columns,
@@ -491,6 +622,11 @@ mod tests {
     memory_limit = 2048
     num_workers = 7
     document_granularity = 'row'
+    analyzer = None
+    split_identifiers = None
+    split_on_numerics = None
+    preserve_original = None
+    index_operators = None
 
 config = FTS()",
                 None,

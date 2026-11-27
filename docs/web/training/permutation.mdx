@@ -1,0 +1,245 @@
+---
+title: "Permutation"
+sidebarTitle: "Permutation"
+description: "The low-level, customizable row ordering that StreamingDataset is built on."
+icon: shuffle
+availability:
+  embedded: available
+  enterprise: available
+---
+
+Most model training frameworks feed data into a model by sequencing through successive batches, a process
+often referred to as **data loading**. The simplest way to perform data loading is to read a LanceDB table in batches,
+in the order its rows are stored, through an identity `Permutation`. A table itself is not iterable.
+
+<CodeGroup>
+```py Python icon=Python
+from lancedb.permutation import Permutation
+
+db = lancedb.connect("file://some/db/path")
+table = db.open_table("some_table")
+
+for batch in Permutation.identity(table).with_format("arrow").iter(batch_size=1024):
+    print(batch.to_pydict())
+```
+</CodeGroup>
+
+In specific use cases, you may need the flexibility to shuffle, split, and select data without using the full
+[`StreamingDataset`](/training/data-loading) object. In these cases, use `Permutation`, the lower-level
+functionality `StreamingDataset` is built on. A `Permutation` defines a customizable row ordering, and supports
+map-style access through `__getitem__()` and batched access through `__getitems__()`.
+
+## Persisting a permutation {#persisting}
+
+By default a permutation table is stored in memory. Call `persist` before `execute` to write it to an embedded
+LanceDB connection backed by local files or object storage. The plan becomes an ordinary table, so another process
+with access to the same storage can open it and use `Permutation.from_tables` to read the same split.
+
+Only the plan destination must be embedded. The base table can be Embedded or Enterprise; an Enterprise base is
+pinned through the plan's recorded base branch and version.
+
+<CodeGroup>
+```py Python icon=Python
+from lancedb.permutation import Permutation, permutation_builder
+
+db = lancedb.connect("file://some/db/path")
+table = db.open_table("some_table")
+plan = (
+    permutation_builder(table)
+    .split_random(ratios=[0.8, 0.2], seed=42, split_names=["train", "validation"])
+    .persist(db, "splits_v1")
+    .execute()
+)
+train = Permutation.from_tables(table, db.open_table("splits_v1"), split="train")
+print(train.base_version, train.base_branch)
+```
+</CodeGroup>
+
+The table returned by `execute` keeps the destination connection and namespace context, so it can be pickled and
+reopened directly in a worker process.
+
+`mode="create"` is the default and fails when the destination table already exists. Pass `mode="overwrite"` to
+replace it explicitly. Overwriting writes a new table version; readers that already opened the previous version keep
+reading that snapshot. Use `namespace_path` to create the plan in a namespace. Persisting the plan itself to a
+LanceDB Enterprise connection is not supported yet, because reproducible Enterprise plan ordering requires
+deterministic remote row ordering.
+
+The plan records the base table version and branch in its schema metadata. `Permutation.base_version` and
+`Permutation.base_branch` read those values without querying the base table; both are `None` for older plans that did
+not record them.
+
+## Version Pinning {#version-pinning}
+
+A `Permutation` is pinned to the version of its base table at the time it was constructed, and every read (including future reads
+from a `StreamingDataset` that wraps it, and every DataLoader worker after it starts) resolves against that pinned
+version. This makes iteration deterministic across compactions and worker restarts: the permutation only addresses rows
+that existed when it was built, and rows appended to the base table afterwards are not visible through the existing
+permutation.
+
+To include newly appended rows, build a new `Permutation` (and any `StreamingDataset` that depends on it)
+against the updated table. Permutations written before this behavior shipped continue to
+read as they did before.
+
+## Output formats {#output-formats}
+
+By default, a `Table` data loader emits Arrow data. `collate_fn` is PyTorch's batching hook: PyTorch calls it to
+turn the fetched items into one batch. PyTorch's default collate function only knows how to combine tensors, NumPy
+arrays, numbers, dicts, and lists, so it does not accept Arrow data directly. When using a `Table` directly, pass
+LanceDB's `lancedb.util.tbl_to_tensor` helper as PyTorch's `collate_fn`; it converts numeric Arrow columns into a
+column-major `torch.Tensor` with shape `(columns, rows)`.
+
+`Permutation` works differently: its default output is a list of Python dicts, which PyTorch's default collate function
+can batch into a dict of tensors. However, converting every value to a Python object has a significant performance
+penalty. To convert the Arrow data in different ways, call `with_format()` with one of the formats below. Here `B` is
+the batch size, `C` is the number of columns, and `*S` is the shape of one sample.
+
+| Format | Output of `iter(batch_size=B)` | DataLoader collate |
+|---|---|---|
+| `"arrow"` | `pyarrow.RecordBatch` | Not accepted directly |
+| `"torch_dict"` | `dict[str, Tensor]`, one `(B, *S)` tensor per column | Identity function |
+| `"torch"` | `list[dict[str, Tensor]]`, one `(*S)` tensor per column per row | Default collate produces `dict[str, Tensor]` with `(B, *S)` |
+| `"torch_col"` | One `(C, B, *S)` tensor | Identity function |
+| `"torch_row"` | `list[Tensor]`, one `(C, *S)` tensor per row | Default collate produces `(B, C, *S)` |
+| `"numpy"` | One NumPy ndarray | Not accepted directly |
+
+`torch_dict` is usually the best choice for training because it keeps column names, handles columns with different
+sample shapes, and shares Arrow storage where the layout allows. `torch_col` and `torch_row` require every column to
+have the same sample shape. `torch_row` combines numeric dtypes with `torch.promote_types`, and `torch_col` promotes
+supported mixed numeric dtypes through `torch.stack`. If they see mixed scalar and vector columns, they name the
+mismatched fields and shapes and point you to `torch_dict`.
+
+`torch_dict`, `torch`, and `torch_col` reject null values. `torch_row` preserves the previous NaN behavior for
+nullable scalar integer and floating columns, but rejects nulls in nested fixed-size-list and tensor columns. Use the
+`"python"` or `"arrow"` format for other nullable columns, or drop/fill the nulls first. `lance.bfloat16` values are
+supported when the leaf field is `fixed_size_binary[2]` with the `ARROW:extension:name` metadata set to
+`lance.bfloat16`; these become `torch.bfloat16` tensors. An unmarked binary column is rejected rather than guessed to
+be bfloat16.
+
+The `numpy` format returns one ndarray built with `batch.to_pandas().to_numpy()`. The pandas conversion may copy data
+and may promote mixed numeric columns to a common numeric dtype, for example int64 and float32 to float64. Nested,
+list, or incompatible columns produce an object ndarray rather than a numeric array.
+
+### Using torch_dict with a torch data loader {#using-torch-dict-with-a-torch-data-loader}
+
+`torch_dict` produces a dictionary of per-column tensors for each batch. Pass an identity function as `collate_fn` so
+PyTorch returns that dictionary unchanged. Scalar columns have shape `(B,)`, a `FixedSizeList<float, D>` column has
+shape `(B, D)`, and nested fixed-size lists contribute one dimension per level. Fixed-shape tensor columns use their
+logical shape, with the Arrow axis permutation applied as a view.
+
+<CodeGroup>
+```python Python icon="python"
+import torch
+from lancedb.permutation import Permutation
+
+permutation = Permutation.identity(table).with_format("torch_dict")
+dataloader = torch.utils.data.DataLoader(
+    permutation,
+    batch_size=1024,
+    shuffle=True,
+    collate_fn=lambda batch: batch,
+)
+
+for batch in dataloader:
+    print(batch["id"].shape)      # (1024,)
+    print(batch["vector"].shape)  # (1024, 128)
+```
+</CodeGroup>
+
+When `num_workers > 0`, replace the lambda with a picklable top-level function that returns its argument.
+
+### Using the torch column format with a torch data loader {#using-the-torch-column-format-with-a-torch-data-loader}
+
+The `torch_col` format converts the entire Arrow batch to one tensor with shape `(C, B, *S)`. For a table of scalar
+columns this is the familiar `(columns, rows)` tensor. For a single column it is an `unsqueeze(0)` view of the
+per-column tensor, so no data is copied; stacking multiple columns does copy.
+
+PyTorch's default collate does not accept a single multi-dimensional tensor. Pass an identity function as `collate_fn`
+to receive the tensor directly from the data loader.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.permutation import Permutation
+
+permutation = Permutation.identity(table).with_format("torch_col")
+dataloader = torch.utils.data.DataLoader(permutation, collate_fn=lambda x: x)
+```
+</CodeGroup>
+
+## Transforming rows with map {#transforming-rows-with-map}
+
+To change rows in Python as they are read, call `map()` with a function that takes a row as a dict and returns a dict.
+Calls can be chained, and the functions run in order. Pass `batched=True` to receive the whole batch as a dict of
+column lists instead; the function must then return one value per input row for every column.
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+import pyarrow as pa
+from lancedb.permutation import Permutation
+
+db = lancedb.connect("memory://")
+reviews = db.create_table(
+    "reviews",
+    pa.table({"text": ["Great", "Awful", "Fine"], "stars": [5, 1, 3]}),
+)
+
+
+def lowercase(row):
+    return {"text": row["text"].lower(), "stars": row["stars"]}
+
+
+def add_label(batch):
+    return {**batch, "label": [int(stars >= 3) for stars in batch["stars"]]}
+
+
+permutation = Permutation.identity(reviews).map(lowercase).map(add_label, batched=True)
+
+print(permutation.take_offsets([0, 1]))
+# [{'text': 'great', 'stars': 5, 'label': 1}, {'text': 'awful', 'stars': 1, 'label': 0}]
+```
+</CodeGroup>
+
+The dict a function returns replaces the row. A column the function does not return is dropped, so return every
+column you want to keep. A mapped `Permutation` always produces a list of dicts, like the default format, whether or
+not `batched` is set, so PyTorch's default collate function can batch it. `select_columns()` and `schema` still
+describe the columns read from the table, which are the input of the first function.
+
+`map()` cannot be combined with `with_format()` or `with_transform()`. Calling one after the other, in either order,
+raises a `ValueError`. To build tensors from mapped rows, convert them in the DataLoader's `collate_fn`. When
+`num_workers > 0`, pass picklable top-level functions to `map()`, not lambdas.
+
+## Selecting columns {#selecting-columns}
+
+By default, the `Table` class will return all columns in the table when used as input to PyTorch. If you only need
+a subset of columns, you can significantly reduce your I/O requirements by selecting only the columns you need. The
+`Permutation` class provides a `select_columns` method that provides this functionality.
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+import torch
+from lancedb.permutation import Permutation
+
+db = lancedb.connect("memory://")
+prompts = db.create_table(
+    "prompts",
+    pa.table(
+        {
+            "id": range(4),
+            "prompt": ["north", "south", "east", "west"],
+            "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]],
+        }
+    ),
+)
+
+permutation = Permutation.identity(prompts).select_columns(["id", "prompt"])
+dataloader = torch.utils.data.DataLoader(
+    permutation, batch_size=1024, shuffle=True
+)
+
+for batch in dataloader:
+    print(sorted(batch))  # ['id', 'prompt']: the embedding is never read
+```
+</CodeGroup>
+
+Each batch is a dict of the selected columns, the default `Permutation` format described above.

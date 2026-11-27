@@ -20,12 +20,12 @@ import com.fasterxml.jackson.databind.JsonNode;
  *
  * <p>Every reader fails closed: a missing, null, or wrong-typed field throws rather than
  * defaulting. That mirrors the serde decoding the Rust client applies to the same payloads in
- * {@code rust/lancedb/src/table/lsm_stats.rs}, where a required field has no default and a
+ * {@code rust/lancedb/src/table/rte_stats.rs}, where a required field has no default and a
  * malformed response is an error rather than a zero.
  *
  * <p>The alternative — Jackson's {@code path()}, which yields a missing node that reads as an empty
- * array or a zero — is unsafe here because {@link LanceDbTableLsm#checkpointLsm()} decides
- * convergence from these numbers. A defaulted {@code generations} array is indistinguishable from a
+ * array or a zero — is unsafe here because {@link LanceDbTableRTE#checkpointRTE()} decides
+ * convergence from these numbers. A defaulted {@code sstables} array is indistinguishable from a
  * drained one, so a malformed response would report a checkpoint that never happened.
  */
 final class JsonFields {

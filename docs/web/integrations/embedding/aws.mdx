@@ -3,40 +3,83 @@ title: AWS Bedrock
 sidebarTitle: AWS
 ---
 
-import { PyEmbeddingAwsUsage } from '/snippets/integrations.mdx';
+import { PyEmbeddingAwsUsage, PyEmbeddingAwsImageUsage } from '/snippets/integrations.mdx';
 
-AWS Bedrock supports multiple base models for generating text embeddings. You need to setup the AWS credentials to use this embedding function.
-You can do so by using `awscli` and also add your session_token:
-```shell
+Use `bedrock-text` to embed text or `bedrock-image` to search images by text or image.
+
+## Prerequisites {#prerequisites}
+
+Install `boto3` for either embedding function. Install `pillow` as well for image embeddings.
+
+```bash
+pip install boto3 pillow
+```
+
+Configure AWS credentials with permission to invoke your model in the AWS Region where it is available. Use the AWS CLI to configure credentials and set the session token if you use temporary credentials.
+<CodeGroup>
+```bash Bash icon="terminal"
 aws configure
 aws configure set aws_session_token "<your_session_token>"
 ```
-to ensure that the credentials are set up correctly, you can run the following command:
-```shell
+</CodeGroup>
+Verify the active credentials with the AWS CLI.
+<CodeGroup>
+```bash Bash icon="terminal"
 aws sts get-caller-identity
 ```
+</CodeGroup>
 
-Supported Embedding modelIDs are:
-* `amazon.titan-embed-text-v1`
-* `cohere.embed-english-v3`
-* `cohere.embed-multilingual-v3`
+## Text embeddings {#text-embeddings}
 
-Supported parameters (to be passed in `create` method) are:
+The `bedrock-text` registry entry supports these model IDs.
 
-| Parameter | Type | Default Value | Description |
-|---|---|---|---|
-| **name** | str | "amazon.titan-embed-text-v1" | The model ID of the bedrock model to use. Supported base models for Text Embeddings: amazon.titan-embed-text-v1, cohere.embed-english-v3, cohere.embed-multilingual-v3 |
-| **region** | str | "us-east-1" | Optional name of the AWS Region in which the service should be called (e.g., "us-east-1"). |
-| **profile_name** | str | None | Optional name of the AWS profile to use for calling the Bedrock service. If not specified, the default profile will be used. |
-| **assumed_role** | str | None | Optional ARN of an AWS IAM role to assume for calling the Bedrock service. If not specified, the current active credentials will be used. |
-| **role_session_name** | str | "lancedb-embeddings" | Optional name of the AWS IAM role session to use for calling the Bedrock service. If not specified, a "lancedb-embeddings" name will be used. |
-| **runtime** | bool | True | Optional choice of getting different client to perform operations with the Amazon Bedrock service. |
-| **max_retries** | int | 7 | Optional number of retries to perform when a request fails. |
+| Model ID | Dimensions |
+| --- | --- |
+| `amazon.titan-embed-text-v1` (default) | 1536 |
+| `amazon.titan-embed-text-v2:0` | 1024 |
+| `cohere.embed-english-v3` | 1024 |
+| `cohere.embed-multilingual-v3` | 1024 |
 
-Usage Example:
+For Cohere text models, set `source_input_type` or `query_input_type` in `create()` to override `search_document` or `search_query`. You can also pass `profile_name`, `assumed_role`, and `role_session_name` to `bedrock-text`.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">
     {PyEmbeddingAwsUsage}
   </CodeBlock>
 </CodeGroup>
+
+## Image embeddings {#image-embeddings}
+
+LanceDB embeds images when you add them to a table. You can search the table with text or a Pillow image. `bedrock-image` uses boto3's default credential chain. Select a profile with `AWS_PROFILE` in the application's environment or run the application with an IAM role.
+
+| Model ID | Dimensions | Source image formats |
+| --- | --- | --- |
+| `amazon.titan-embed-image-v1` (default) | 1024 | PNG, JPEG |
+| `cohere.embed-v4:0` | 1536 | PNG, JPEG, WebP, GIF |
+
+Choose a binary source column (`bytes`) for encoded image bytes or a string source column (`str`) for file paths readable by the process that adds rows. Pillow detects the source format from the file contents. If your table has nullable images and vectors, pass `on_bad_vectors="null"` to keep rows without an image. To use Cohere Embed v4, pass `name="cohere.embed-v4:0"` to `create()`.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingAwsImageUsage}
+  </CodeBlock>
+</CodeGroup>
+
+A query string is embedded as text. To search asynchronously with a Pillow image, pass `query_type="vector"`. Run the following code in an async context with the `db_path` and `query_image` from the example.
+
+```python
+async_db = await lancedb.connect_async(db_path)
+async_table = await async_db.open_table("photos")
+query = await async_table.search(query_image, query_type="vector")
+results = await query.limit(1).to_list()
+```
+
+## AWS settings {#aws-settings}
+
+Pass these options to `create()` with either registry entry.
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `name` | Varies by registry entry | Model ID to invoke. |
+| `region` | `"us-east-1"` | AWS Region where the model is available. |
+| `max_retries` | `7` | Maximum retries. Image embeddings retry individual Bedrock requests. Set to `0` to disable retries. |

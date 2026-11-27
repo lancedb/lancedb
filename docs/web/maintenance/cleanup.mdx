@@ -1,44 +1,217 @@
 ---
-title: "Cleanup"
-sidebarTitle: "Cleanup"
+title: "Garbage Collection"
+sidebarTitle: "Garbage Collection"
 description: "Pruning old versions and the files only they referenced."
 icon: broom
-keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
+keywords: ["cleanup", "garbage collection", "retention", "prune", "delete_unverified", "vacuum"]
+availability:
+  embedded: available
+  enterprise: available
 ---
 
 Every write keeps the version before it, which is what makes
 [time travel](/management/table#versioning) possible. Cleanup is what ends
-that -- pruning versions older than a retention window, and the files that only
+that: pruning versions older than a retention window, and the files that only
 those versions referenced.
 
 <Note>
-**Enterprise job type:** `cleanup`. Distinct from `compact` -- compaction
-merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
-Enterprise schedules them as separate jobs.
+**Enterprise job type:** `cleanup`. Distinct from `compact`: compaction
+merges files, cleanup removes them. `optimize()` in LanceDB Embedded runs both in one call;
+Enterprise schedules them as separate jobs. Automatic cleanup follows deployment
+and table policy; authorized manual cleanup can run while automatic cleanup is disabled.
 </Note>
 
 ## Retention {#retention}
 
-```python
+The Embedded examples below keep their existing behavior. For an explicit
+Enterprise job, use [manual cleanup](#enterprise-manual-cleanup).
+
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 
 table.optimize(cleanup_older_than=timedelta(days=30))
 ```
+</CodeGroup>
 
 `cleanup_older_than` defaults to **7 days**. Versions older than that are
-removed, along with the files only they referenced.
+removed, along with the files only they referenced. In LanceDB Enterprise, the
+retention period comes from its configuration instead.
 
-The latest version is never removed, whatever you pass -- `timedelta(0)` prunes
-everything except it.
+The latest version is never removed, whatever you pass. `timedelta(0)` makes
+every older version eligible for removal, but cleanup still keeps tagged
+versions{/* Draft until branching reaches early access: restore " and the files branches still read" */}, as the warning below describes.
 
 <Warning>
-Pruning is what makes [time travel](/management/table#versioning) finite. A
-version outside the retention window is gone, and a tag or branch pointing at
-it no longer resolves.
+Pruning is what makes [time travel](/management/table#versioning) finite: an
+eligible version outside the retention window is gone. Cleanup keeps a version,
+whatever its age, when it is:
 
-If you rely on reading old versions, set the window to cover the range you
+- the **latest** version;
+- a **tagged** version.
+
+{/*
+Draft until branching reaches early access.
+
+Cleanup also keeps the files a **branch** still reads, and the version the
+branch was forked from while the branch's remaining versions read the parent's
+files. That does not keep the fork for good: once the branch has replaced the
+data it inherited and its own older versions are pruned, cleanup prunes the
+fork version like any other.
+*/}
+
+To keep a version recoverable, tag it, subject to the policy below, or keep
+the window wide enough to cover it.
+
+Under the default policy, a tag can also stop cleanup. When a tagged version is
+older than the window and is not the latest, cleanup refuses to run: it raises
+an error naming the tag and prunes nothing. To let it proceed, move the tag to a
+version inside the window, delete the tag, or widen the window.
+
+A tag on the latest version does not stop cleanup. But `optimize()` compacts
+before it prunes, and compacting commits a new version whenever it merges
+files, so a tag on what was the latest version can become an older one by the
+time cleanup runs. `optimize()` then raises after compacting, and its index
+update does not run.
+
+Enterprise background cleanup keeps tagged snapshots while pruning unrelated
+expired versions. If you rely on reading untagged old versions, set the window
+to cover the range you
 need before running this, not after.
 </Warning>
+
+## Enterprise manual cleanup {#enterprise-manual-cleanup}
+
+Requires compatible SDK and Enterprise query-node, agent and worker releases
+with SQL `VACUUM` and cleanup result format version 1. Submission requires table
+Ownership and database/namespace Usage. SDK methods use the table handle's
+namespace and branch; historical-version handles and LanceDB Embedded are unsupported.
+
+<Warning>
+Before submission, disable automatic cleanup for the table and its branches,
+drain existing cleanup workers, and prevent other cleanup, tag creation/update,
+branch creation and restore until completion, including direct storage clients.
+The server does not enforce this coordination. Restore prior scheduling settings
+afterward. Disabling scheduling or cancelling a job does not prove outstanding
+storage requests stopped. Concurrent restore can make the current table unreadable.
+These restrictions apply to every retention value, including zero.
+</Warning>
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+job = table.cleanup_async(min_age_seconds=604800)
+print(job.id())  # Save this durable ID.
+result = job.wait(timeout=timedelta(minutes=10), progress=print)
+print(result.old_versions, result.bytes_removed)
+reopened = db.open_job(job.id())
+```
+
+```python Python async icon="python"
+job = await table.cleanup_async(min_age_seconds=604800)
+result = await job.wait()
+reopened = await db.open_job(job.id())
+```
+
+```typescript TypeScript icon="js"
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000, onProgress: console.log });
+console.log(result.oldVersions, result.bytesRemoved);
+const reopened = await db.openJob(job.id!);
+```
+
+```rust Rust icon="rust"
+use lancedb::table::{CleanupOptions, CleanupResult};
+
+let job = table.cleanup_async(CleanupOptions::new().min_age_seconds(604800)).await?;
+let result = job.wait().await?;
+println!("{:?} {:?}", result.old_versions, result.bytes_removed);
+let reopened = db.open_job(job.id().unwrap()).await?.into_typed::<CleanupResult>()?;
+```
+</CodeGroup>
+
+Submission returns after durable acceptance, before deletion finishes. Omit the
+retention option to inherit selected table/branch `job_types.cleanup.ttl_seconds`,
+then deployment retention. Zero is explicit; invalid/missing effective retention
+fails. The resolved age stays with the job and does not change table policy.
+The worker calculates its cutoff against latest state at execution; the observed
+submission version is not a reserved deletion snapshot.
+
+Status, progress, events, waiting, cancellation and reopening reuse the shared
+[Job APIs](/basics/jobs) and their existing REST permissions. Describe supports
+scoped database/namespace Usage; events require system Usage and cancellation
+requires system Operate. Waiting timeout leaves the job running. Failure or
+cancellation may follow partial deletion and cannot roll it back.
+
+`CleanupResult` reports effective retention, `statistics_complete` and optional
+`old_versions` / `bytes_removed` (`statisticsComplete`, `oldVersions` and
+`bytesRemoved` in TypeScript). Counts cover version deletion, not best-effort
+auxiliary sweeps. Unknown totals after retry/recovery remain None/null; measured
+zero stays zero. `failed_deletes` / `failedDeletes` reports nonfatal object deletion failures
+when measured; successful removals are retained. Missing or incompatible typed results raise an error rather
+than inventing counts. Completion does not guarantee every orphaned file was reclaimed.
+
+Preview deletion using the same options, without creating a job:
+
+<CodeGroup>
+```python Python icon="python"
+plan = table.explain_cleanup(min_age_seconds=604800)
+print(plan.source_version, plan.versions_to_remove, plan.bytes_to_remove)
+# AsyncTable: plan = await table.explain_cleanup(min_age_seconds=604800)
+```
+
+```typescript TypeScript icon="js"
+const plan = await table.explainCleanup({ minAgeSeconds: 604800 });
+console.log(plan.sourceVersion, plan.versionsToRemove, plan.bytesToRemove);
+```
+
+```rust Rust icon="rust"
+let plan = table.explain_cleanup(CleanupOptions::new().min_age_seconds(604800)).await?;
+println!("{} {}", plan.versions_to_remove, plan.bytes_to_remove);
+```
+</CodeGroup>
+
+`CleanupPlan` is a versioned SQL `EXPLAIN (FORMAT JSON) VACUUM` response. It
+reports observed source version, effective retention, cutoff milliseconds and
+version/byte deletion estimates. It can list metadata/storage objects but does
+not delete, submit or monitor a job, expose file paths, or reserve the preview
+snapshot. Auxiliary sweeps are excluded. Execution re-evaluates latest state;
+actual removals can differ. `EXPLAIN ANALYZE` is rejected. Read-only preview does
+not require draining automatic work; actual cleanup still requires coordination.
+
+The SDK does not fall back to execution/REST or silently drop unsupported
+options. If acceptance is ambiguous, inspect jobs before retrying; an independent
+submission can create another job.
+
+Python's existing Enterprise `cleanup_old_versions()` remains a warning-only
+no-op for compatibility. Use `cleanup_async()` explicitly to submit a job.
+Embedded cleanup and Enterprise `optimize()` retain their existing behavior.
+
+## Managed blob objects {#managed-blobs}
+
+[Managed blobs](/management/table#managed-blobs) store out-of-line payloads
+under the table's `_blobs/` directory. Cleanup follows the references from
+retained snapshots, including protected tags{/* Draft until branching reaches early access: restore " and branches" */}, before selecting
+objects for deletion. Replacing a blob or deleting a row makes its old payload
+eligible only after no retained snapshot references it.
+
+Cleanup removes whole objects. If a packed object contains several blobs, it
+remains while any of them is live. Compaction preserves Managed payload objects
+rather than copying their bytes, so compaction alone does not reclaim the
+unused portion of a packed object.
+
+Use table maintenance to remove Managed objects; deleting `_blobs/` files
+directly can corrupt current or historical snapshots. Upgrade all clients and
+maintenance workers to a version that understands Managed blobs before using
+them, and reopen handles created before that upgrade.
+
+For LanceDB Embedded tables, `optimize()` performs compaction and cleanup.
+Enterprise schedules them as separate background jobs. With compatible releases,
+remote `optimize()` also submits [manual compaction](/maintenance/compaction#enterprise-manual-compaction),
+but does not prune versions or remove their files. Automatic cleanup remains governed by
+the deployment's separate policy; explicit manual cleanup uses the retention rules above.
+See [Intelligent Auto-Maintenance](/enterprise/intelligent-auto-maintenance#cleanup) for the Enterprise path.
 
 ## Disk usage does not drop immediately {#disk}
 
@@ -46,12 +219,14 @@ Compaction writes new, merged files before the old ones are removed, so disk
 usage can rise before it falls. Space is reclaimed only when cleanup prunes the
 versions that referenced the superseded files.
 
-If you need to reclaim space aggressively, shorten the retention window rather
-than waiting for the default:
+If you need to reclaim space aggressively in the embedded library, shorten the
+retention window rather than waiting for the default:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.optimize(cleanup_older_than=timedelta(days=1))
 ```
+</CodeGroup>
 
 ## Files from failed transactions {#unverified}
 
@@ -59,13 +234,18 @@ A write that fails partway can leave files that look like an operation still
 in progress. Cleanup will not remove them until they are at least seven days
 old, because it cannot tell them apart from a live write.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.optimize(delete_unverified=True)
 ```
+</CodeGroup>
+
+This option belongs to `optimize()` in the embedded library. A deployment's
+cleanup jobs never set it.
 
 <Warning>
 `delete_unverified=True` removes them regardless of age. Only set it when you
-can guarantee **no other process is writing to the table** -- otherwise it can
+can guarantee **no other process is writing to the table**. Otherwise it can
 delete files belonging to a write that is genuinely in progress, and corrupt
 the table.
 </Warning>
@@ -74,9 +254,9 @@ the table.
 
 <CardGroup cols={2}>
   <Card title="Compaction" icon="broom" href="/maintenance/compaction">
-    Merging small files -- the other half of `optimize()`.
+    Merging small files, the other half of `optimize()`.
   </Card>
-  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
-    The Enterprise jobs that run without a call from you.
+  <Card title="Intelligent Auto-Maintenance" icon="brain" href="/enterprise/intelligent-auto-maintenance#cleanup">
+    How Enterprise decides to run cleanup without a call from you.
   </Card>
 </CardGroup>

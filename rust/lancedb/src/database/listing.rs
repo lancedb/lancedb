@@ -22,7 +22,7 @@ use crate::blob::ensure_blob_storage_version;
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
-use crate::error::{CreateDirSnafu, Error, Result};
+use crate::error::{BoxError, CreateDirSnafu, Error, Result, TableNotFoundHint};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
@@ -540,7 +540,7 @@ impl ListingDatabase {
                 // pairs survive (or none existed in the first place), so an empty
                 // string here must be treated the same as "no query" — otherwise
                 // every table URI ends up with a trailing `?`, which makes downstream
-                // sub-paths (e.g. MemWAL gen paths) re-parse as path=<base table> +
+                // sub-paths (e.g. RTE gen paths) re-parse as path=<base table> +
                 // query=<sub-path>, causing Lance to find the base table dataset
                 // when looking up the sub-path.
                 let query_string = url.query().filter(|q| !q.is_empty()).map(|s| s.to_string());
@@ -698,6 +698,22 @@ impl ListingDatabase {
         Ok(())
     }
 
+    /// Explain a miss caused by connecting to a Lance dataset as if it were a
+    /// database directory. The connection URI is enough to name the parent and
+    /// table stem, so this needs no storage probe.
+    fn lance_dataset_path_hint(&self) -> Option<String> {
+        let uri = self.uri.trim_end_matches(['/', '\\']);
+        let (parent, file_name) = uri.rsplit_once(['/', '\\'])?;
+        let stem = file_name.strip_suffix(".lance")?;
+        if stem.is_empty() {
+            return None;
+        }
+        let parent = if parent.is_empty() { "." } else { parent };
+        Some(format!(
+            ". The connection URI ends with '.lance', which points to a Lance dataset rather than a database directory. Connect to the parent directory '{parent}' and open table '{stem}' instead."
+        ))
+    }
+
     /// Get the URI of a table in the database.
     fn table_uri(&self, name: &str) -> Result<String> {
         validate_table_name(name)?;
@@ -750,26 +766,39 @@ impl ListingDatabase {
             uri.push_str(&format!("?{}", query_string));
         }
         let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
+        // One name that cannot be dropped must not strand the names after it: a caller
+        // dropping every table would otherwise be left with a partly dropped database that
+        // the same call cannot finish. Every name is attempted and the first failure is
+        // still what the call reports, so a caller matching on the error sees what it saw
+        // before.
+        let mut first_error = None;
         for name in names {
             let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
             let full_path = self.base_path.clone().join(dir_name.clone());
 
-            commit_handler.delete(&full_path).await?;
+            let dropped: Result<()> = async {
+                commit_handler.delete(&full_path).await?;
 
-            self.object_store
-                .remove_dir_all(full_path.clone())
-                .await
-                .map_err(|err| match err {
-                    // this error is not lance::Error::DatasetNotFound, as the method
-                    // `remove_dir_all` may be used to remove something not be a dataset
-                    lance::Error::NotFound { .. } => Error::TableNotFound {
-                        name: name.clone(),
-                        source: Box::new(err),
-                    },
-                    _ => Error::from(err),
-                })?;
+                self.object_store
+                    .remove_dir_all(full_path.clone())
+                    .await
+                    .map_err(|err| match err {
+                        // this error is not lance::Error::DatasetNotFound, as the method
+                        // `remove_dir_all` may be used to remove something not be a dataset
+                        lance::Error::NotFound { .. } => Error::TableNotFound {
+                            name: name.clone(),
+                            source: Box::new(err),
+                        },
+                        _ => Error::from(err),
+                    })
+            }
+            .await;
+
+            if let Err(err) = dropped {
+                first_error.get_or_insert(err);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Inherit storage options from the connection into the target map
@@ -930,20 +959,18 @@ impl Database for ListingDatabase {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().table_names(request).await;
         }
-        let mut f = self
+        // Only child directories can be tables, the same rule `list_tables` lists by: a
+        // loose object named like a table is not one, and a name handed back for it is a
+        // name the caller can neither open nor drop.
+        let dir_suffix = format!(".{LANCE_EXTENSION}");
+        let listing = self
             .object_store
-            .read_dir(self.base_path.clone())
-            .await?
+            .list_with_delimiter(Some(&self.base_path))
+            .await?;
+        let mut f = listing
+            .common_prefixes
             .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .filter_map(|location| table_name(location, &dir_suffix))
             .collect::<Vec<String>>();
         f.sort();
         if let Some(start_after) = request.start_after {
@@ -1108,39 +1135,46 @@ impl Database for ListingDatabase {
         };
 
         let target_uri = self.table_uri(&request.target_table_name)?;
-        match DatasetBuilder::from_uri(&target_uri)
+        let exists = match DatasetBuilder::from_uri(&target_uri)
             .with_read_params(read_params.clone())
             .load()
             .await
         {
-            Ok(_) => {
+            Ok(_) if !request.exist_ok => {
                 return Err(Error::TableAlreadyExists {
                     name: request.target_table_name,
                 });
             }
-            Err(lance::Error::DatasetNotFound { .. }) => {}
+            Ok(_) => true,
+            Err(lance::Error::DatasetNotFound { .. }) => false,
             Err(err) => return Err(err.into()),
+        };
+
+        if !exists {
+            let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
+                .with_read_params(read_params.clone())
+                .load()
+                .await
+                .map_err(|e| -> Error { e.into() })?;
+
+            let version_ref = match (request.source_version, request.source_tag) {
+                (Some(v), None) => Ok(Ref::Version(None, Some(v))),
+                (None, Some(tag)) => Ok(Ref::Tag(tag)),
+                (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
+                _ => Err(Error::InvalidInput {
+                    message: "Cannot specify both source_version and source_tag".to_string(),
+                }),
+            }?;
+
+            match source_dataset
+                .shallow_clone(&target_uri, version_ref, Some(storage_params))
+                .await
+            {
+                Ok(_) => {}
+                Err(lance::Error::DatasetAlreadyExists { .. }) if request.exist_ok => {}
+                Err(error) => return Err(error.into()),
+            }
         }
-
-        let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
-            .with_read_params(read_params.clone())
-            .load()
-            .await
-            .map_err(|e| -> Error { e.into() })?;
-
-        let version_ref = match (request.source_version, request.source_tag) {
-            (Some(v), None) => Ok(Ref::Version(None, Some(v))),
-            (None, Some(tag)) => Ok(Ref::Tag(tag)),
-            (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
-            _ => Err(Error::InvalidInput {
-                message: "Cannot specify both source_version and source_tag".to_string(),
-            }),
-        }?;
-
-        source_dataset
-            .shallow_clone(&target_uri, version_ref, Some(storage_params))
-            .await
-            .map_err(|e| -> Error { e.into() })?;
 
         let cloned_table = NativeTable::open_with_params(
             &target_uri,
@@ -1162,6 +1196,7 @@ impl Database for ListingDatabase {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().open_table(request).await;
         }
+        let derived_location = request.location.is_none();
         // Use provided location if available, otherwise derive from table name
         let table_uri = match request.location.clone() {
             Some(location) => location,
@@ -1215,20 +1250,29 @@ impl Database for ListingDatabase {
         });
         read_params.session(self.session.clone());
 
-        let native_table = Arc::new(
-            NativeTable::open_with_params(
-                &table_uri,
-                &request.name,
-                request.namespace_path,
-                self.store_wrapper.clone(),
-                Some(read_params),
-                self.read_consistency_interval,
-                request.namespace_client,
-                HashSet::new(), // listing database doesn't support server-side queries
-                request.managed_versioning, // Pass through managed_versioning from request
-            )
-            .await?,
-        );
+        let native_table = match NativeTable::open_with_params(
+            &table_uri,
+            &request.name,
+            request.namespace_path,
+            self.store_wrapper.clone(),
+            Some(read_params),
+            self.read_consistency_interval,
+            request.namespace_client,
+            HashSet::new(), // listing database doesn't support server-side queries
+            request.managed_versioning, // Pass through managed_versioning from request
+        )
+        .await
+        {
+            Ok(table) => Arc::new(table),
+            Err(Error::TableNotFound { name, source }) if derived_location => {
+                let source: BoxError = match self.lance_dataset_path_hint() {
+                    Some(hint) => Box::new(TableNotFoundHint::new(hint, source)),
+                    None => source,
+                };
+                return Err(Error::TableNotFound { name, source });
+            }
+            Err(error) => return Err(error),
+        };
         Ok(native_table)
     }
 
@@ -1250,7 +1294,7 @@ impl Database for ListingDatabase {
             });
         }
         Err(Error::NotSupported {
-            message: "rename_table is not supported in LanceDB OSS".into(),
+            message: "rename_table is not supported in LanceDB Embedded".into(),
         })
     }
 
@@ -1697,6 +1741,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.tables, vec!["real"]);
+
+        // The deprecated name listing answers the same question and so follows the same
+        // rule: a name it hands back has to be one a caller can open and drop.
+        #[allow(deprecated)]
+        let names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    /// Dropping the database drops its tables and leaves everything else alone. A loose
+    /// `*.lance` object under the database prefix is not a table, so it is neither dropped
+    /// nor allowed to strand the tables that are.
+    #[tokio::test]
+    async fn test_drop_all_tables_leaves_loose_lance_files() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+        // Sorts between the two tables, so a drop that stops at the first failure would
+        // leave `b` behind.
+        let loose = tempdir.path().join("aaa-loose.lance");
+        std::fs::write(&loose, b"not a table").unwrap();
+
+        db.drop_all_tables(&[]).await.unwrap();
+
+        #[allow(deprecated)]
+        let names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert!(names.is_empty(), "a table survived the drop: {names:?}");
+        assert!(!tempdir.path().join("a.lance").exists());
+        assert!(!tempdir.path().join("b.lance").exists());
+        assert!(
+            loose.exists(),
+            "a loose object was dropped as if it were a table"
+        );
+    }
+
+    /// A name that cannot be dropped does not strand the names after it: every name is
+    /// attempted, and the failure is still what the call reports.
+    #[tokio::test]
+    async fn test_drop_tables_attempts_every_name() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let result = db
+            .drop_tables(vec![
+                "a".to_string(),
+                "missing".to_string(),
+                "b".to_string(),
+            ])
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::TableNotFound { .. })),
+            "dropping a table that is not there did not report it: {result:?}"
+        );
+        assert!(!tempdir.path().join("a.lance").exists());
+        assert!(
+            !tempdir.path().join("b.lance").exists(),
+            "the table after the failing name was left behind"
+        );
     }
 
     #[tokio::test]
@@ -1768,10 +1869,100 @@ mod tests {
         }
     }
 
-    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+    /// A connection made to a dataset path cannot also be a database directory. The
+    /// miss names the parent and table stem so the caller can fix the connection.
+    #[tokio::test]
+    async fn test_open_table_dataset_path_hint() {
         let tempdir = tempdir().unwrap();
-        let uri = tempdir.path().to_str().unwrap();
+        let data_dir = tempdir.path().join("data");
+        let data_db = setup_database_at(data_dir.to_str().unwrap()).await;
+        create_tables(&data_db, &["embeddings"]).await;
 
+        let dataset_path = data_dir.join("embeddings.lance");
+        let dataset_db = setup_database_at(dataset_path.to_str().unwrap()).await;
+        let error = dataset_db
+            .open_table(OpenTableRequest {
+                name: "embeddings".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, Error::TableNotFound { name, .. } if name == "embeddings"),
+            "the dataset path miss changed classification: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("points to a Lance dataset rather than a database directory"),
+            "the hint did not explain the dataset path: {message}"
+        );
+        assert!(
+            message.contains(&format!("parent directory '{}'", data_dir.display())),
+            "the hint did not name the parent directory: {message}"
+        );
+        assert!(
+            message.contains("open table 'embeddings' instead"),
+            "the hint did not name the table stem: {message}"
+        );
+    }
+
+    /// The hint belongs only to a derived URI. An explicit location is the caller's
+    /// own choice, so a miss there keeps the original message.
+    #[tokio::test]
+    async fn test_open_table_explicit_location_skips_dataset_path_hint() {
+        let tempdir = tempdir().unwrap();
+        let data_dir = tempdir.path().join("data");
+        let data_db = setup_database_at(data_dir.to_str().unwrap()).await;
+        create_tables(&data_db, &["embeddings"]).await;
+        let dataset_path = data_dir.join("embeddings.lance");
+        let dataset_db = setup_database_at(dataset_path.to_str().unwrap()).await;
+
+        let table = dataset_db
+            .open_table(OpenTableRequest {
+                name: "alias".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: Some(dataset_path.to_str().unwrap().to_string()),
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
+
+        let missing_path = tempdir.path().join("missing.lance");
+        let error = dataset_db
+            .open_table(OpenTableRequest {
+                name: "missing".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: Some(missing_path.to_str().unwrap().to_string()),
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::TableNotFound { name, .. } if name == "missing"),
+            "the explicit location miss changed classification: {error:?}"
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("points to a Lance dataset rather than a database directory"),
+            "an explicit location still received the connection hint: {error}"
+        );
+    }
+
+    async fn setup_database_at(uri: &str) -> ListingDatabase {
         let request = ConnectRequest {
             uri: uri.to_string(),
             #[cfg(feature = "remote")]
@@ -1782,11 +1973,14 @@ mod tests {
             read_consistency_interval: None,
             session: None,
         };
-
-        let db = ListingDatabase::connect_with_options(&request)
+        ListingDatabase::connect_with_options(&request)
             .await
-            .unwrap();
+            .unwrap()
+    }
 
+    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+        let tempdir = tempdir().unwrap();
+        let db = setup_database_at(tempdir.path().to_str().unwrap()).await;
         (tempdir, db)
     }
 
@@ -2184,6 +2378,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_table".to_string(),
                 target_namespace_path: vec![],
                 source_uri: source_uri.clone(),
@@ -2245,6 +2440,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_with_data".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2307,6 +2503,7 @@ mod tests {
         // Clone should work with storage options
         let cloned = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2344,6 +2541,7 @@ mod tests {
         // Try deep clone (should fail)
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2385,6 +2583,7 @@ mod tests {
         // Try clone with namespace (should fail for listing database)
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec!["namespace".to_string()], // Non-empty namespace
                 source_uri,
@@ -2426,6 +2625,7 @@ mod tests {
         // Try clone with invalid target name
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "invalid/name".to_string(), // Invalid name with slash
                 target_namespace_path: vec![],
                 source_uri,
@@ -2446,6 +2646,7 @@ mod tests {
         // Try to clone from non-existent source
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri: "/nonexistent/table.lance".to_string(),
@@ -2483,6 +2684,7 @@ mod tests {
         // Try clone with both version and tag (should fail)
         let result = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2557,6 +2759,7 @@ mod tests {
         // Clone from the initial version (should have only 2 rows)
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_from_version".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2636,6 +2839,7 @@ mod tests {
         // Clone from the tag (should have only 2 rows)
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_from_tag".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2688,6 +2892,7 @@ mod tests {
         // Clone the table
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "independent_clone".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -2781,6 +2986,7 @@ mod tests {
         // Clone without specifying version or tag (should get latest)
         let cloned_table = db
             .clone_table(CloneTableRequest {
+                exist_ok: false,
                 target_table_name: "cloned_latest".to_string(),
                 target_namespace_path: vec![],
                 source_uri,
@@ -3104,7 +3310,7 @@ mod tests {
     ///
     /// Earlier, `query_pairs_mut().clear()` left the URL with
     /// `query=Some("")`, which then propagated as a trailing `?` on
-    /// every table URI. Sub-path lookups against that URI (e.g. MemWAL
+    /// every table URI. Sub-path lookups against that URI (e.g. RTE
     /// `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parsed as
     /// `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
@@ -3178,7 +3384,7 @@ mod tests {
     /// `url::Url::parse` and the `query_pairs_mut()` path) must not
     /// append a trailing `?` to per-table URIs when the input URI has
     /// no query string. Sub-path lookups against such a URI (e.g.
-    /// MemWAL `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
+    /// RTE `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
     /// as `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
     /// report `Dataset already exists`.

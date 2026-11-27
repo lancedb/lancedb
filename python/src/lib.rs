@@ -16,12 +16,14 @@ use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
-    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, LsmWriteSpec, MergeResult,
-    PyBlobFile, RefreshColumnResult, RefreshMaterializedViewResult, Table,
-    UpdateFieldMetadataResult, UpdateResult,
+    FunctionColumnAutoRefreshStatus, FunctionColumnLastRefreshJob, FunctionColumnStatus,
+    FunctionColumnVersionStatus, FunctionErrorFragment, FunctionErrorRecord, FunctionErrors,
+    MergeResult, PyBlobFile, RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult,
+    Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
+pub mod authz;
 pub mod catalog;
 pub mod connection;
 pub mod error;
@@ -38,6 +40,7 @@ pub mod query;
 pub mod runtime;
 pub mod session;
 pub mod sql;
+mod sync_stream;
 pub mod table;
 pub mod util;
 
@@ -57,22 +60,45 @@ fn shutdown_runtime(py: Python<'_>) {
     py.detach(|| runtime::shutdown(std::time::Duration::from_secs(5)));
 }
 
+#[pyfunction]
+fn _doc_url(campaign: &str) -> PyResult<String> {
+    let link = lancedb::docs::DocLink::from_campaign(campaign).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unknown doc link campaign: {campaign}"))
+    })?;
+    Ok(link.url())
+}
+
+#[pyfunction]
+fn _append_doc_url(message: &str, campaign: &str) -> PyResult<String> {
+    let link = lancedb::docs::DocLink::from_campaign(campaign).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unknown doc link campaign: {campaign}"))
+    })?;
+    Ok(link.append_to(message))
+}
+
 #[pymodule]
 pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    lancedb::docs::set_sdk_ident("python", env!("CARGO_PKG_VERSION"));
     let env = Env::new()
         .filter_or("LANCEDB_LOG", "warn")
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<connection::GpuClass>()?;
     m.add_class::<catalog::Catalog>()?;
     m.add_class::<catalog::DatabaseNames>()?;
     m.add_class::<listing::NameListing>()?;
     m.add_class::<listing::FunctionListing>()?;
     m.add_class::<listing::JobListing>()?;
 
+    m.add_class::<authz::AuthorizationClient>()?;
+    m.add_class::<authz::AuthzSubject>()?;
+    m.add_class::<authz::AuthzObject>()?;
+    m.add_class::<authz::AuthzPrivilege>()?;
     m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<table::TableDelta>()?;
     m.add_class::<crate::oauth::PyOAuthSession>()?;
     m.add_class::<crate::oauth::PySessionStatus>()?;
     m.add_class::<crate::oauth::PySessionLogout>()?;
@@ -89,17 +115,22 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<HybridQuery>()?;
     m.add_class::<VectorQuery>()?;
     m.add_class::<RecordBatchStream>()?;
+    m.add_class::<sync_stream::SyncRecordBatchStream>()?;
     m.add_class::<AddColumnsResult>()?;
     m.add_class::<RefreshColumnResult>()?;
     m.add_class::<FunctionErrors>()?;
     m.add_class::<FunctionErrorRecord>()?;
     m.add_class::<FunctionErrorFragment>()?;
+    m.add_class::<FunctionColumnStatus>()?;
+    m.add_class::<FunctionColumnVersionStatus>()?;
+    m.add_class::<FunctionColumnLastRefreshJob>()?;
+    m.add_class::<FunctionColumnAutoRefreshStatus>()?;
     m.add_class::<RefreshMaterializedViewResult>()?;
     m.add_class::<AlterColumnsResult>()?;
     m.add_class::<UpdateFieldMetadataResult>()?;
     m.add_class::<AddResult>()?;
     m.add_class::<MergeResult>()?;
-    m.add_class::<LsmWriteSpec>()?;
+    m.add_class::<RTEWriteSpec>()?;
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
@@ -122,11 +153,20 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
+    m.add_function(wrap_pyfunction!(util::validate_conda_requirement, m)?)?;
+    m.add_function(wrap_pyfunction!(util::validate_function_retry_policy, m)?)?;
+    m.add_function(wrap_pyfunction!(util::parse_field_path, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(expr_col, m)?)?;
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
+    m.add_function(wrap_pyfunction!(_doc_url, m)?)?;
+    m.add_function(wrap_pyfunction!(_append_doc_url, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add(
+        "_experimental_functions_enabled",
+        cfg!(feature = "experimental-functions"),
+    )?;
     // Give the shared runtime a coordinated, bounded shutdown at normal
     // process exit -- see `shutdown_runtime` and `runtime::shutdown` for why.
     py.import("atexit")?

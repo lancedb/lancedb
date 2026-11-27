@@ -14,7 +14,7 @@
 optional apiKey: string;
 ```
 
-(For LanceDB cloud only): the API key to use with LanceDB Cloud.
+(For LanceDB Enterprise or LanceDB Cloud only): the API key to use.
 
 Can also be set via the environment variable `LANCEDB_API_KEY`.
 
@@ -26,7 +26,7 @@ Can also be set via the environment variable `LANCEDB_API_KEY`.
 optional clientConfig: ClientConfig;
 ```
 
-(For LanceDB cloud only): configuration for the remote HTTP client.
+(For LanceDB Enterprise or LanceDB Cloud only): configuration for the HTTP client.
 
 ***
 
@@ -36,8 +36,8 @@ optional clientConfig: ClientConfig;
 optional hostOverride: string;
 ```
 
-(For LanceDB cloud only): the host to use for LanceDB cloud. Used
-for testing purposes.
+(For LanceDB Enterprise only): the host of the LanceDB Enterprise
+deployment to connect to.
 
 ***
 
@@ -47,7 +47,7 @@ for testing purposes.
 optional manifestEnabled: boolean;
 ```
 
-(For LanceDB OSS only): use directory namespace manifests as the source
+(For LanceDB Embedded only): use directory namespace manifests as the source
 of truth for table metadata. Existing directory-listed root tables are
 migrated into the manifest on access.
 
@@ -59,7 +59,7 @@ migrated into the manifest on access.
 optional namespaceClientProperties: Record<string, string>;
 ```
 
-(For LanceDB OSS only): extra properties for the backing namespace
+(For LanceDB Embedded only): extra properties for the backing namespace
 client used by manifest-enabled native connections.
 
 ***
@@ -70,7 +70,7 @@ client used by manifest-enabled native connections.
 optional oauthConfig: NativeOAuthConfig;
 ```
 
-(For LanceDB cloud only): OAuth configuration for IdP-based
+(For LanceDB Enterprise only): OAuth configuration for IdP-based
 authentication (e.g., Azure Entra ID). When set, token acquisition
 and refresh are handled entirely in Rust. TypeScript users should pass
 the public `OAuthConfig` type exported from `@lancedb/lancedb`.
@@ -105,7 +105,7 @@ storage, raising per-read latency and cost.
 optional region: string;
 ```
 
-(For LanceDB cloud only): the region to use for LanceDB cloud.
+(For LanceDB Cloud only): the region to use for LanceDB Cloud (legacy).
 Defaults to 'us-east-1'.
 
 ***
@@ -116,7 +116,7 @@ Defaults to 'us-east-1'.
 optional session: Session;
 ```
 
-(For LanceDB OSS only): the session to use for this connection. Holds
+(For LanceDB Embedded only): the session to use for this connection. Holds
 shared caches and other session-specific state.
 
 ***
@@ -127,6 +127,6 @@ shared caches and other session-specific state.
 optional storageOptions: Record<string, string>;
 ```
 
-(For LanceDB OSS only): configuration for object storage.
+(For LanceDB Embedded only): configuration for object storage.
 
 The available options are described at https://docs.lancedb.com/storage/

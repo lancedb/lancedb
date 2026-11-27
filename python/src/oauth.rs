@@ -67,7 +67,7 @@ impl TryFrom<PyOAuthConfig> for OAuthConfig {
                 }
                 OAuthFlow::AuthorizationCode(options)
             }
-            "device_code" => OAuthFlow::DeviceCode,
+            "device_code" => OAuthFlow::DeviceCode(Default::default()),
             "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
                 client_id: py.managed_identity_client_id,
             },
@@ -327,7 +327,7 @@ mod tests {
     fn test_device_code_conversion() {
         let config = base_config();
         let converted = OAuthConfig::try_from(config).unwrap();
-        assert!(matches!(converted.flow, OAuthFlow::DeviceCode));
+        assert!(matches!(converted.flow, OAuthFlow::DeviceCode(options) if !options.use_pkce));
     }
 
     #[test]

@@ -1,0 +1,115 @@
+---
+title: "DEDUPE"
+sidebarTitle: "DEDUPE"
+description: "The dedupe() table function: one representative row per near-duplicate group, scanned over the index."
+icon: layer-group
+keywords: ["dedupe", "vector_dedup", "sql", "deduplication", "near-duplicate", "table function"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+`dedupe` scans a vector column's [index](/indexing/vector-index) partitions
+for rows closer than a distance threshold, resolves the overlapping pairs it
+finds into duplicate groups, and returns one representative row per group --
+without a full pairwise scan or a shuffle. See
+[`duplicate_pairs`](/sql/dql/duplicate-pairs) to inspect the pairs themselves
+before committing to this resolution.
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM dedupe(
+    <table>,
+    <vector_column>,
+    distance_threshold => <float>
+    [, resolution => 'connected_components' | 'direct_representative']
+)
+```
+</CodeGroup>
+
+<CodeGroup>
+```sql SQL icon="database"
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
+```
+</CodeGroup>
+
+<Note>
+Earlier releases spelled this `vector_dedup`; that name is rejected on
+current deployments.
+</Note>
+
+## Input {#input}
+
+| Argument | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| table name | string literal | yes | the table to scan |
+| vector column | string literal | yes | the indexed vector column to compare |
+| `distance_threshold` | float | yes | maximum distance for a pair to count as close |
+| `resolution` | `'connected_components'` (default) \| `'direct_representative'` | no | how overlapping pairs group together -- see [Resolution](#resolution) |
+
+`dedupe` always scans every partition and returns original rows -- sampling
+a subset of partitions and `id_column` are pair-query-only options, accepted
+by [`duplicate_pairs`](/sql/dql/duplicate-pairs#input) but refused here.
+
+## Index and snapshot requirements {#requirements}
+
+Use one compatible, current vector index covering the source snapshot.
+Full scans reject unindexed fragments. Comparisons stay within physical IVF
+partitions and index segments; this does not enumerate cross-partition or
+cross-segment duplicates. Quantized-index distances use encoded vector
+representations. See [recall and scale limits](/curation/dedupe#limits) before
+treating the result as globally exact deduplication.
+
+## Output {#output}
+
+One row per duplicate group, **in the table's own schema** -- every column of
+`<table>`, including a BlobV2 column, comes through unchanged on the
+representative row Lance selected for that group. Unlike
+[`duplicate_pairs`](/sql/dql/duplicate-pairs#output), there is no fixed
+`dedupe`-specific schema to document: the output schema is the source
+table's schema.
+
+Because the result is already shaped like the table, it composes directly
+into a new table or a materialized view:
+
+<CodeGroup>
+```sql SQL icon="database"
+CREATE MATERIALIZED VIEW frames_deduped AS
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
+```
+</CodeGroup>
+
+## Resolution {#resolution}
+
+`resolution` chooses how overlapping pairs group together:
+
+| `resolution` value | How pairs group |
+| --- | --- |
+| `connected_components` (default) | groups transitively: if a~b and b~c are both close, all three resolve together |
+| `direct_representative` | only pairs within the threshold of each other resolve together |
+
+## Estimating on a sample first {#sampling}
+
+`dedupe` itself always scans every partition. To estimate a duplicate rate
+on a large table before committing to a full scan, sample partitions with
+[`duplicate_pairs`](/sql/dql/duplicate-pairs#sampling) instead, which
+accepts `selection`, `count` and `seed` for exactly this.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="DUPLICATE_PAIRS" icon="clone" href="/sql/dql/duplicate-pairs">
+    Inspect the close pairs themselves instead of the resolved groups.
+  </Card>
+  <Card title="Deduplicate near-duplicates" icon="copy" href="/curation/dedupe">
+    When to reach for this instead of exact-key deduplication.
+  </Card>
+</CardGroup>

@@ -1,0 +1,42 @@
+extends: substitution
+message: "Use '%s' instead of '%s'."
+link: https://github.com/lancedb/lancedb/blob/main/docs/STYLE.md#names
+level: warning
+ignorecase: false
+# Case-sensitive. A lowercase package, repository or domain name, such as
+# lancedb or github.com, is left alone; write identifiers in code font.
+swap:
+  '(?:Lancedb|LanceDb|lanceDB|LANCEDB|Lance DB)': LanceDB
+  'LanceDB (?:cloud|CLOUD)': LanceDB Cloud
+  'LanceDB (?:enterprise|ENTERPRISE)': LanceDB Enterprise
+  'LanceDB\s+Distributed': LanceDB Enterprise
+  '(?:Hugging Face|Hugging face|Huggingface)': HuggingFace
+  Langchain: LangChain
+  Typescript: TypeScript
+  VoyageAI: Voyage AI
+tests:
+  - name: corrects the product name
+    input: Install Lancedb and connect to LanceDB cloud or LanceDB enterprise.
+    want: |
+      1:9:LanceDB.ProductNames:Use 'LanceDB' instead of 'Lancedb'.
+      1:32:LanceDB.ProductNames:Use 'LanceDB Cloud' instead of 'LanceDB cloud'.
+      1:49:LanceDB.ProductNames:Use 'LanceDB Enterprise' instead of 'LanceDB enterprise'.
+  - name: corrects names seen misspelled in the current pages
+    input: Load a Hugging Face model, build a Langchain retriever in Typescript and call VoyageAI.
+    want: |
+      1:8:LanceDB.ProductNames:Use 'HuggingFace' instead of 'Hugging Face'.
+      1:37:LanceDB.ProductNames:Use 'LangChain' instead of 'Langchain'.
+      1:60:LanceDB.ProductNames:Use 'TypeScript' instead of 'Typescript'.
+      1:80:LanceDB.ProductNames:Use 'Voyage AI' instead of 'VoyageAI'.
+  - name: leaves package names, identifiers and code alone
+    input: |
+      The lancedb package exposes `HuggingFaceEmbeddings` and LanceDBConnection; see `Typescript` in code.
+    want: ''
+  - name: uses Enterprise for the product and its execution model
+    input: Connect to LanceDB Distributed.
+    want: |
+      1:12:LanceDB.ProductNames:Use 'LanceDB Enterprise' instead of 'LanceDB Distributed'.
+  - name: keeps technical descriptions and API identifiers
+    input: |
+      LanceDB Enterprise supports distributed search. Compare Embedded and Enterprise. Distributed training uses workers. `LanceDB Distributed` and `RemoteTable` are literal code.
+    want: ''

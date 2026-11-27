@@ -69,6 +69,10 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+LanceDB Embedded computed-column declaration and refresh require a source
+build with the `experimental-functions` Cargo feature. Published packages
+disable it; LanceDB Enterprise operations remain available.
+
 The `{ computed }` form stores the expression rather than evaluating it
 now: the column is committed with no values, and rows get them from
 [Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
@@ -79,7 +83,7 @@ computed, so a mutated input is reflected by the next refresh. While a
 declaration reads a column, that column cannot be renamed, retyped or
 dropped.
 
-On LanceDB Cloud and Enterprise the expression is planned by the
+In LanceDB Enterprise the expression is planned by the
 server, and the refresh runs as a server job -- see
 [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
@@ -122,6 +126,9 @@ abstract alterColumns(columnAlterations): Promise<AlterColumnsResult>
 
 Alter the name or nullability of columns.
 
+Local tables reject renaming source or vector columns referenced by
+`embedding_functions` schema metadata, preserving the embedding binding.
+
 #### Parameters
 
 * **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
@@ -143,7 +150,8 @@ containing the new version number of the table after altering the columns.
 abstract blobColumns(): Promise<string[]>
 ```
 
-Blob v2 columns, including nested dotted paths.
+Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+Blobs inside lists are omitted because a row ID does not identify an element.
 
 #### Returns
 
@@ -227,17 +235,17 @@ version of the table.
 
 ***
 
-### checkpointLsm()
+### checkpointRTE()
 
 ```ts
-abstract checkpointLsm(): Promise<void>
+abstract checkpointRTE(): Promise<void>
 ```
 
-Converge this table's LSM write path into its base table.
+Converge this table's RTE write path into its base table.
 
-Seals once, then triggers compaction and polls until the L0 that existed
+Freezes once, then triggers compaction and polls until the SSTables that existed
 at the start is gone. The target set is fixed at the start, so
-generations created *during* the checkpoint are ignored — that is what
+SSTables created *during* the checkpoint are ignored — that is what
 lets it terminate under write load, and what makes it best-effort: it
 converges the fresh tier as of some instant. Idempotent, abandonable at
 any point, and safe to run on a cadence.
@@ -253,9 +261,41 @@ is merging. The caller owns the deadline.
 #### Example
 
 ```ts
-const before = await table.getLsmStats();
-await table.checkpointLsm();
-const after = await table.getLsmStats();
+const before = await table.getRTEStats();
+await table.checkpointRTE();
+const after = await table.getRTEStats();
+```
+
+***
+
+### cleanupAsync()
+
+```ts
+cleanupAsync(_options?): Promise<Job<CleanupResult>>
+```
+
+Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+Requires table Ownership and parent Usage. Retention inherits from the table
+then deployment when omitted. Local/historical handles are unsupported.
+Before submission, disable/drain automatic cleanup and prevent other cleanup,
+tag/branch publication and restore until completion, including direct clients.
+Coordination is not enforced by the server. Cancellation cannot undo deletion
+or prove storage I/O stopped. Preview is available without deletion.
+Wait timeout leaves work running; save the ID and reopen with db.openJob().
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CleanupResult`](../interfaces/CleanupResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000 });
 ```
 
 ***
@@ -278,15 +318,15 @@ Any attempt to use the table after it is closed will result in an error.
 
 ***
 
-### closeLsmWriters()
+### closeRTEWriters()
 
 ```ts
-abstract closeLsmWriters(): Promise<void>
+abstract closeRTEWriters(): Promise<void>
 ```
 
-Drain and close any cached MemWAL shard writers held for this table.
+Drain and close any cached RTE shard writers held for this table.
 
-When an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) is installed, `mergeInsert` opens MemWAL
+When an [RTEWriteSpec](../interfaces/RTEWriteSpec.md) is installed, `mergeInsert` opens RTE
 shard writers and caches them for reuse across calls. This closes them,
 flushing pending data; writers reopen lazily on the next `mergeInsert`.
 It is a no-op when no writers are cached.
@@ -297,17 +337,51 @@ It is a no-op when no writers are cached.
 
 ***
 
-### compactLsm()
+### compactAsync()
 
 ```ts
-abstract compactLsm(): Promise<void>
+compactAsync(_options?): Promise<Job<CompactionResult>>
 ```
 
-Trigger a background L0 → base compaction pass per bucket.
+Submit remote compaction and return its durable job after acceptance.
+
+Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+a compatible remote server and table Ownership plus parent Usage. Local and
+historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+Waiting tracks the rewrite itself and returns actual row/file statistics.
+Missing result payloads are errors; older workers can omit file counts.
+Status, progress, events and cancellation reuse the generic HTTP job APIs.
+Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+
+#### Parameters
+
+* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+console.log(result.rowsSucceeded, result.fragmentsRemoved);
+```
+
+***
+
+### compactRTE()
+
+```ts
+abstract compactRTE(): Promise<void>
+```
+
+Trigger a background SSTable compaction pass per table shard.
 
 Returns once the passes are *dispatched*, not once they finish — watch
-[Table#getLsmStats](Table.md#getlsmstats) for progress, or use
-[Table#checkpointLsm](Table.md#checkpointlsm) to wait for convergence.
+[Table#getRTEStats](Table.md#getrtestats) for progress, or use
+[Table#checkpointRTE](Table.md#checkpointrte) to wait for convergence.
 
 #### Returns
 
@@ -349,6 +423,24 @@ vector and non-vector searches)
 We currently don't support custom named indexes.
 The index name will always be `${column}_idx`.
 
+On LanceDB Embedded tables the index is built before the returned promise
+resolves. On LanceDB Enterprise tables it resolves once the build is
+scheduled. Until the build finishes, a vector index may be missing from
+[Table.listIndices](Table.md#listindices), a scalar or FTS index may be listed with 0
+indexed rows, and queries won't use the index. To wait until the index is
+ready, set [IndexOptions.waitTimeoutSeconds](../interfaces/IndexOptions.md#waittimeoutseconds), call
+[Table.waitForIndex](Table.md#waitforindex), or use [Table.createIndexAsync](Table.md#createindexasync) and wait
+on its job when the server returned a job ID.
+
+`waitTimeoutSeconds` waits for the submitted build when the server returns
+a job ID. On older servers that don't return one, it falls back to polling
+the index by name. [Table.waitForIndex](Table.md#waitforindex) always waits by name. When
+replacing an existing index, those name-based waits may return before the
+new build finishes because the old index can still match.
+`createIndexAsync` can track a specific build only when the server returned
+a job ID; otherwise it returns an already-complete job and callers must
+use [Table.waitForIndex](Table.md#waitforindex) for that build.
+
 #### Parameters
 
 * **column**: `string`
@@ -381,6 +473,13 @@ await table.createIndex("vector", {
 ```
 
 ```ts
+// Or size the partitions by row count instead of choosing how many.
+await table.createIndex("vector", {
+  config: lancedb.Index.ivfPq({ targetPartitionSize: 4096 }),
+});
+```
+
+```ts
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```
@@ -390,13 +489,18 @@ await table.createIndex("my_float_col");
 ### createIndexAsync()
 
 ```ts
-abstract createIndexAsync(column, options?): Promise<Job>
+abstract createIndexAsync(column, options?): Promise<Job<void>>
 ```
 
 Create an index, returning a handle to the indexing job.
 
 The job may already be complete when returned; callers must not assume
 the index exists until [Job.wait](Job.md#wait) resolves.
+
+In LanceDB Enterprise, the returned job tracks this submission only if the
+server returns a job ID. If it does not, the job is already complete and
+does not wait for the background build; use [Table.waitForIndex](Table.md#waitforindex) and
+account for the replacement caveat described in [Table.createIndex](Table.md#createindex).
 
 #### Parameters
 
@@ -406,7 +510,7 @@ the index exists until [Job.wait](Job.md#wait) resolves.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -448,6 +552,70 @@ containing the new version number of the table
 
 ***
 
+### delta()
+
+```ts
+delta(fromVersion, toVersion?): Promise<TableDelta>
+```
+
+Compare two persisted versions or same-branch tags on an Embedded table.
+
+`fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+`toVersion` uses the version currently visible through this handle,
+including a checked-out version. The endpoints are fixed when the delta is
+created.
+
+Row readers require stable row IDs at both endpoints. Create the table with
+`storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+them. `listTransactions()` works without stable row IDs.
+
+Row readers reject ranges containing a Restore, or ranges whose transaction
+history cannot prove they are restore-free. Recompute the checkpoint with a
+full rescan and reinitialize it at the range end version.
+
+LanceDB Enterprise tables reject this operation.
+
+#### Parameters
+
+* **fromVersion**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+* **toVersion?**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+#### Returns
+
+`Promise`&lt;[`TableDelta`](TableDelta.md)&gt;
+
+#### Example
+
+```ts
+const delta = await table.delta("baseline");
+const reader = delta.insertedRows();
+console.log((await reader.schema()).fields.map((field) => field.name));
+for await (const batch of reader) {
+  console.log(batch.getChild("id")?.toJSON());
+}
+console.log(await delta.listTransactions());
+```
+
+***
+
+### disableRTE()
+
+```ts
+abstract disableRTE(): Promise<void>
+```
+
+Remove the [RTEWriteSpec](../interfaces/RTEWriteSpec.md) from this table, reverting to the standard
+`mergeInsert` write path.
+
+Errors if no spec is currently set.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### display()
 
 ```ts
@@ -474,6 +642,9 @@ This is a metadata-only operation and does not remove the data from the
 underlying storage. In order to remove the data, you must subsequently
 call ``compact_files`` to rewrite the data without the removed columns and
 then call ``cleanup_files`` to remove the old files.
+
+Local tables reject dropping source or vector columns referenced by
+`embedding_functions` schema metadata, preserving the embedding binding.
 
 #### Parameters
 
@@ -513,6 +684,106 @@ Drop an index from the table.
 
 ***
 
+### enableRTE()
+
+```ts
+abstract enableRTE(spec): Promise<void>
+```
+
+Install an [RTEWriteSpec](../interfaces/RTEWriteSpec.md) on this table, selecting Lance's MemWAL
+LSM-style write path for future `mergeInsert` calls.
+
+`RTEWriteSpec` chooses one of three sharding strategies via `specType`:
+
+- `"bucket"` — hash-bucket writes by the single-column unenforced primary
+  key (`column` and `numBuckets` required).
+- `"identity"` — shard by the raw value of a scalar `column`.
+- `"unsharded"` — route every write to a single shard.
+
+All variants require the table to have an unenforced primary key
+([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
+requires it to be the single column being bucketed.
+
+Omitting `maintainedIndexes` maintains every index the table has,
+including ones created later, and skips a kind the RTE cannot maintain.
+Naming them pins an exact set, and a still-building index is rejected
+rather than quietly omitted.
+
+#### Parameters
+
+* **spec**: [`RTEWriteSpec`](../interfaces/RTEWriteSpec.md)
+    The sharding spec to install.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+await table.setUnenforcedPrimaryKey("id");
+await table.enableRTE({
+  specType: "bucket",
+  column: "id",
+  numBuckets: 16,
+  maintainedIndexes: ["id_idx"],
+});
+```
+
+***
+
+### explainCleanup()
+
+```ts
+explainCleanup(_options?): Promise<CleanupPlan>
+```
+
+Preview version deletion without creating a job. Execution re-evaluates current state.
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`CleanupPlan`](../interfaces/CleanupPlan.md)&gt;
+
+***
+
+### explainPrewarmData()
+
+```ts
+explainPrewarmData(_options?): Promise<PrewarmDataPlan>
+```
+
+Preview prewarm with the same options as [prewarmDataAsync](Table.md#prewarmdataasync), without
+submitting a warming job. Requires LanceDB Enterprise with structured SQL
+previews, table Select and database/namespace Usage. Reads metadata and
+returns the source version, readable plan, and conservative pruning summary.
+A later submission plans its own snapshot. Historical and Embedded handles
+are unsupported. Unknown measurements remain null.
+Custom table implementations can override this method; its default rejects
+with an unsupported-operation error.
+
+#### Parameters
+
+* **\_options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`PrewarmDataPlan`](../interfaces/PrewarmDataPlan.md)&gt;
+
+#### Example
+
+```ts
+const plan = await table.explainPrewarmData({
+  columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+});
+console.log(plan.pruning.selectedFragments);
+```
+
+***
+
 ### fetchBlobFiles()
 
 ```ts
@@ -527,6 +798,8 @@ table's current checkout.
 
 Preserves input order, duplicates, and nulls. Use this for large payloads.
 See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial handles are returned.
 
 #### Parameters
 
@@ -539,6 +812,48 @@ See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
 #### Returns
 
 `Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
+
+***
+
+### fetchBlobRanges()
+
+```ts
+abstract fetchBlobRanges(
+   column,
+   requests,
+   options?): Promise<(null | Buffer)[]>
+```
+
+Materializes row-specific byte ranges at the table's current checkout.
+Preserves request order, duplicates, and nulls. Zero length returns an empty
+buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+call. See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+
+Remote tables use the batched endpoint when the server advertises support,
+splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+Older servers use descriptor queries and BlobFile range reads. Both protocols
+use one exact branch and version. Errors from an advertised endpoint propagate
+without switching protocols. All output bytes occupy memory.
+
+#### Parameters
+
+* **column**: `string`
+
+* **requests**: readonly [`BlobRangeRequest`](../type-aliases/BlobRangeRequest.md)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
+
+#### Example
+
+```ts
+const bytes = await table.fetchBlobRanges("image", [
+  { rowId: 10n, offset: 0n, length: 1024n },
+]);
+```
 
 ***
 
@@ -556,6 +871,10 @@ Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
 Reads the table's current checkout. IDs from another version can fail after
 compaction unless stable row ids are enabled. Results keep input order and
 duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial results are returned.
+Blobs inside lists cannot be fetched by row ID.
+
 Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
 The client splits requests automatically and reads an individual larger
 blob through the Range route. This method still materializes all bytes in
@@ -575,20 +894,83 @@ memory; use [Table.fetchBlobFiles](Table.md#fetchblobfiles) for large values.
 
 ***
 
-### flushLsm()
+### flushRTE()
 
 ```ts
-abstract flushLsm(): Promise<void>
+abstract flushRTE(): Promise<void>
 ```
 
-Seal every bucket's active memtable into a new L0 generation.
+Freeze every table shard's active memtable into a new SSTable.
 
-Returns once the seal is committed. Sealing an empty memtable is a no-op,
+Returns once the freeze is committed. Freezing an empty memtable is a no-op,
 so this is safe to call repeatedly.
 
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### functionColumnStatus()
+
+```ts
+abstract functionColumnStatus(column): Promise<FunctionColumnStatus>
+```
+
+Return exact freshness status for one Function-backed output column.
+
+#### Parameters
+
+* **column**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;
+
+***
+
+### functionColumnStatuses()
+
+```ts
+abstract functionColumnStatuses(column?): Promise<FunctionColumnStatus[]>
+```
+
+Return exact freshness status for Function-backed output columns.
+
+All results describe one server table version. Omit `column` for every
+Function output. Rows already failed remain visible and do not prevent
+`waitFresh` from completing. A handle pinned to an exact version requests
+that version; a latest handle retains normal read-freshness behavior.
+
+#### Parameters
+
+* **column?**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)[]&gt;
+
+***
+
+### functionErrorRows()
+
+```ts
+functionErrorRows(options?): Promise<FunctionFailedRow[]>
+```
+
+Read current failing inputs, one result per error record.
+Requires a complete LanceDB Enterprise workflow version 1 listing with
+row identities. Throws if a failed row is no longer addressable in the
+table's read snapshot. For materialized views, see the source identities
+on each error record returned by [Table#functionErrors](Table.md#functionerrors).
+
+#### Parameters
+
+* **options?**: [`FunctionErrorRowsOptions`](../interfaces/FunctionErrorRowsOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionFailedRow`](../interfaces/FunctionFailedRow.md)[]&gt;
 
 ***
 
@@ -598,77 +980,115 @@ so this is safe to call repeatedly.
 abstract functionErrors(options?): Promise<FunctionErrors>
 ```
 
-The per-row errors Function refreshes recorded on this table.
+List the per-row errors recorded by Function refreshes on this table.
 
-A refresh running under a skip policy records each row it skipped with
-the input that failed and the error. This lists those records, newest
-job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Cloud and Enterprise only; reading errors needs read
-access to the table, since a message carries the value that failed.
+On LanceDB Enterprise with workflow version 1 or later, the default
+lists current failures. Set `history: true` to include retained attempts
+for repaired rows. Older deployments keep their existing default listing.
+Reading errors requires table read access because messages can include the
+input that failed. `errorGroups` describes the returned records.
 
 #### Parameters
 
 * **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
-    Optional filters: `jobId`,
-    `column`, and `limit` (server default 10000, cap 100000).
 
 #### Returns
 
 `Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
 
-The records, the capped fragments,
-and whether the listing stopped at its limit.
-
 #### Example
 
 ```ts
-const { records, truncated } = await table.functionErrors({ column: "embedding" });
+const errors = await table.functionErrors({ column: "embedding" });
+console.log(errors.records, errors.errorGroups);
 ```
 
 ***
 
-### getLsmStats()
+### functionProvenance()
 
 ```ts
-abstract getLsmStats(includeGenerationRows?): Promise<undefined | LsmStats>
+functionProvenance(_column, _options?): Promise<FunctionProvenance>
 ```
 
-Read live per-bucket LSM state.
-
-Answers "how far behind is my fresh tier", "which bucket is hot", and
-"why is my fresh-tier vector search brute-force". Mutates no table state.
-
-Resolves to `undefined` only when the LSM write path is not enabled.
+Read the producing Function version and job for each returned value.
+Check `truncated` before treating the result as a complete listing.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
 
 #### Parameters
 
-* **includeGenerationRows?**: `boolean`
-    Also count rows per L0 generation.
-    Off by default because each count opens an uncached Lance dataset.
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionProvenanceOptions`](../interfaces/FunctionProvenanceOptions.md)
 
 #### Returns
 
-`Promise`&lt;`undefined` \| [`LsmStats`](../interfaces/LsmStats.md)&gt;
+`Promise`&lt;[`FunctionProvenance`](../interfaces/FunctionProvenance.md)&gt;
 
 ***
 
-### getLsmWriteSpec()
+### getRTESpec()
 
 ```ts
-abstract getLsmWriteSpec(): Promise<undefined | LsmWriteSpec>
+abstract getRTESpec(): Promise<undefined | RTEWriteSpec>
 ```
 
-Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on this table.
+Read the [RTEWriteSpec](../interfaces/RTEWriteSpec.md) currently installed on this table.
 
-Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
-spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
+Resolves to `undefined` when the RTE write path is not enabled (no
+spec has been set, or it was removed with [Table#disableRTE](Table.md#disablerte)).
 The spec is the one installed, including its maintained-index selection:
 an absent `maintainedIndexes` for every index the table has, an empty
 array for none.
 
 #### Returns
 
-`Promise`&lt;`undefined` \| [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)&gt;
+`Promise`&lt;`undefined` \| [`RTEWriteSpec`](../interfaces/RTEWriteSpec.md)&gt;
+
+***
+
+### getRTEStats()
+
+```ts
+abstract getRTEStats(includeSstableRows?): Promise<undefined | RTEStats>
+```
+
+Read live per-table-shard RTE state.
+
+Answers "how far behind is my fresh tier", "which table shard is hot", and
+"why is my fresh-tier vector search brute-force". Mutates no table state.
+
+Resolves to `undefined` only when the RTE write path is not enabled.
+
+#### Parameters
+
+* **includeSstableRows?**: `boolean`
+    Also count rows per SSTable.
+    Off by default because each count opens an uncached Lance dataset.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`RTEStats`](../interfaces/RTEStats.md)&gt;
+
+***
+
+### getTableOverrides()
+
+```ts
+getTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Read the stored overrides for a remote Enterprise table.
+
+Overrides configure background behavior such as automatic compaction,
+cleanup, and reindex execution. Keys use the server's snake_case names.
+Returns an empty object when no overrides are set. Local tables are unsupported.
+Custom table implementations inherit a default rejection unless they override
+this method.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
 
 ***
 
@@ -760,6 +1180,11 @@ abstract listIndices(): Promise<IndexConfig[]>
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
 
+On LanceDB Enterprise tables, an index whose build hasn't finished may be
+missing (vector indices) or listed with 0 indexed rows (scalar and FTS
+indices), and `numUnindexedRows` may be undefined. Use
+[Table.waitForIndex](Table.md#waitforindex) to wait until an index is ready.
+
 #### Returns
 
 `Promise`&lt;[`IndexConfig`](../interfaces/IndexConfig.md)[]&gt;
@@ -804,6 +1229,67 @@ rows depending on how they match.
 
 ***
 
+### openBlobFile()
+
+```ts
+openBlobFile(_descriptor, _options?): Promise<null | BlobFile>
+```
+
+Opens a lazy handle from a source-bearing SQL `blob_descriptor` result.
+
+The descriptor's source pins the table version, branch, column and row
+identity, so opening does not change this table's checkout. Null
+descriptors return `null`. Payload bytes load only when the returned
+handle is read. Pass BlobReadOptions.signal to cancel the open.
+
+#### Parameters
+
+* **\_descriptor**: `null` \| [`BlobDescriptor`](../interfaces/BlobDescriptor.md)
+
+* **\_options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;`null` \| [`BlobFile`](BlobFile.md)&gt;
+
+#### Example
+
+```ts
+const rows = await table
+  .query()
+  .select({ video: "blob_descriptor(video)" })
+  .toArray();
+const handle = await table.openBlobFile(rows[0].video);
+if (handle) {
+  const header = await handle.readRange(0n, 16n);
+  await handle.close();
+}
+```
+
+***
+
+### openBlobFiles()
+
+```ts
+openBlobFiles(descriptors, options?): AsyncGenerator<null | BlobFile, any, unknown>
+```
+
+Opens source-bearing descriptors in iteration order, preserving nulls.
+Handles open lazily as the iterable advances. Close each non-null handle
+after use.
+
+#### Parameters
+
+* **descriptors**: `Iterable`&lt;`null` \| [`BlobDescriptor`](../interfaces/BlobDescriptor.md)&gt;
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`AsyncGenerator`&lt;`null` \| [`BlobFile`](BlobFile.md), `any`, `unknown`&gt;
+
+***
+
 ### optimize()
 
 ```ts
@@ -826,6 +1312,15 @@ Modeled after ``VACUUM`` in PostgreSQL.
  you have added or modified 100,000 or more records or run more than 20 data
  modification operations.
 
+On a LanceDB Enterprise (remote) table, only compaction is currently
+supported. Pruning old versions and index optimization are silently
+skipped there instead of being attempted, so this call resolves
+successfully, with zeroed pruning statistics, once the compaction job
+has been submitted; it does not wait for that job to finish.
+`compactionOptions` can tune the four per-job settings documented in
+[CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
+retrying with the settings removed.
+
 #### Parameters
 
 * **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
@@ -838,29 +1333,99 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ### prewarmData()
 
+#### prewarmData(options)
+
 ```ts
-abstract prewarmData(columns?): Promise<void>
+abstract prewarmData(options?): Promise<void>
 ```
 
 Prewarm one or more columns of data in the table.
 
-#### Parameters
+This will load the column data into the page cache so that future queries that
+read those columns avoid the initial cold-start latency.  This call initiates
+prewarming and returns once the request is accepted; the warming itself may
+continue in the background. Submission uses SQL PREWARM and needs Flight
+SQL connectivity. Use [prewarmDataAsync](Table.md#prewarmdataasync) to retain the job handle.
+
+Prewarming is generally useful for columns used in filters or projections.
+Large columns (e.g. high-dimensional vectors or binary data) may not be
+practical to prewarm.
+
+This feature is currently only supported in LanceDB Enterprise.
+
+##### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+    Columns, a metadata-pruning filter, and per-executor concurrency.
+    Omitted or empty columns warm every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+##### Example
+
+```ts
+await table.prewarmData({
+  columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+});
+```
+
+#### prewarmData(columns)
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Submit data prewarm using the columns-array form and return after acceptance.
+
+##### Parameters
 
 * **columns?**: `string`[]
-    The columns to prewarm. If undefined, all columns are prewarmed.
-    This will load the column data into the page cache so that future queries that
-    read those columns avoid the initial cold-start latency.  This call initiates
-    prewarming and returns once the request is accepted; the warming itself may
-    continue in the background.  Calling it on already-prewarmed columns is a
-    no-op on the server.
-    Prewarming is generally useful for columns used in filters or projections.
-    Large columns (e.g. high-dimensional vectors or binary data) may not be
-    practical to prewarm.
-    This feature is currently only supported on remote tables.
+    Columns to warm; omitted or empty means every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### prewarmDataAsync()
+
+```ts
+abstract prewarmDataAsync(options?): Promise<Job<PrewarmDataResult>>
+```
+
+Submit data prewarm through SQL and return its durable warming-job handle.
+
+The table handle supplies the branch and namespace. Requires a compatible
+SQL PREWARM server and Flight SQL connectivity. Standard authorization
+requires table Select and database/namespace Usage. Status/wait use generic
+HTTP job APIs; events and cancellation retain their own privileges.
+No REST fallback or option-dropping retry is performed. Historical-version
+handles are unsupported; call `checkoutLatest()` first.
+
+Submission returns after acceptance. Use `job.wait()` for completion, or
+save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+
+#### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;[`PrewarmDataResult`](../interfaces/PrewarmDataResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.prewarmDataAsync({
+  columns: ["video"], filter: "quality > $minimum",
+  parameters: { minimum: 0.7 }, concurrency: 4,
+});
+await job.wait();
+```
 
 ***
 
@@ -883,6 +1448,28 @@ Prewarm an index in the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### quarantineFailed()
+
+```ts
+quarantineFailed(_column, _options?): Promise<number>
+```
+
+Quarantine current failures and return the number of affected rows.
+Set `quarantined: false` to release them for future refreshes.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionQuarantineOptions`](../interfaces/FunctionQuarantineOptions.md)
+
+#### Returns
+
+`Promise`&lt;`number`&gt;
 
 ***
 
@@ -959,20 +1546,25 @@ for await (const batch of table.query()) {
 ### refreshColumn()
 
 ```ts
-abstract refreshColumn(column): Promise<RefreshColumnResult>
+abstract refreshColumn(column, options?): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
+Local refresh requires a source build with `experimental-functions`.
 
 Rows appended since the last refresh are filled by the next one, and
 rows whose inputs changed since they were computed are recomputed;
-everything else is left as it is. Local tables only: a remote refresh
-runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+everything else is left as it is. LanceDB Embedded only: in LanceDB
+Enterprise a refresh runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
 * **column**: `string`
     The name of the computed column to fill.
+
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, all LanceDB
+    Enterprise only; see [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Returns
 
@@ -986,34 +1578,85 @@ number of rows filled and the new version number of the table.
 ### refreshColumnAsync()
 
 ```ts
-abstract refreshColumnAsync(column): Promise<Job>
+abstract refreshColumnAsync(column, options?): Promise<Job<void>>
 ```
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
 job instead of blocking until it completes.
+LanceDB Embedded refresh requires a source build with
+`experimental-functions`. LanceDB Enterprise jobs do not require this
+feature.
 
 The job may already be complete when returned; callers must not assume
 the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
 an unknown column, or one that is not computed -- rejects here rather
-than failing the job. On local tables the job runs in-process; on
-LanceDB Cloud and Enterprise it is the server's backfill job.
+than failing the job. In LanceDB Embedded the job runs in-process; in
+LanceDB Enterprise it is the server's backfill job.
 
 #### Parameters
 
 * **column**: `string`
     The name of the computed column to fill.
 
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, mirroring the SQL
+    `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+    `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+    and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+    `maxConcurrency`, `totalCpuMillis`, `totalMemoryBytes`, `supervisorResources`,
+    `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
+    Function refreshes. `retryPolicy` overrides user-code retries only when
+    repeating partial work is safe; set `maxAttempts: 1` to disable retries.
+    `maxConcurrency` overrides the registered default for this logical
+    execution only and is a positive integer; it is not an account-wide
+    quota. `totalCpuMillis`, `totalMemoryBytes`, and `totalGpuCount` override
+    their corresponding execution-wide resource limits independently. Unset
+    values inherit column defaults, then Function defaults, then deployment
+    defaults. A zero GPU limit is valid for CPU-only Functions.
+    `supervisorResources` and `planningWorkers.resources` are per-pod sizes.
+    `numWorkers` applies only to expression columns.
+    `publicationIntervalRows` opts into publishing completed Function split
+    ranges once their accumulated unpublished rows reach the threshold.
+    It must be a positive safe integer and requires non-Blob Function outputs.
+    Omit it for whole-fragment publication. Publications can exceed the
+    threshold, and remaining rows publish at completion.
+
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 #### Example
 
 ```ts
-const job = await table.refreshColumnAsync("doubled");
+const job = await table.refreshColumnAsync("embedding", {
+  where: "published_at > '2026-01-01'",
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  maxConcurrency: 4,
+  publicationIntervalRows: 10000,
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
 await job.wait();
 console.log(await job.status()); // "finished"
 ```
+
+***
+
+### resetTableOverrides()
+
+```ts
+resetTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Clear a remote Enterprise table's overrides and return an empty object.
+Local tables and custom table implementations without override support reject
+this operation.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
 
 ***
 
@@ -1037,6 +1680,28 @@ out state and the read_consistency_interval, if any, will apply.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### retryFailed()
+
+```ts
+retryFailed(_column, _options?): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start a job to retry exactly the current failures of one Function column.
+Filters apply on the server. Quarantined rows are excluded by default.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`RetryFailedOptions`](../interfaces/RetryFailedOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 
@@ -1083,54 +1748,6 @@ of the given query
 #### Returns
 
 [`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md) \| [`AutoQuery`](AutoQuery.md)
-
-***
-
-### setLsmWriteSpec()
-
-```ts
-abstract setLsmWriteSpec(spec): Promise<void>
-```
-
-Install an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) on this table, selecting Lance's MemWAL
-LSM-style write path for future `mergeInsert` calls.
-
-`LsmWriteSpec` chooses one of three sharding strategies via `specType`:
-
-- `"bucket"` — hash-bucket writes by the single-column unenforced primary
-  key (`column` and `numBuckets` required).
-- `"identity"` — shard by the raw value of a scalar `column`.
-- `"unsharded"` — route every write to a single shard.
-
-All variants require the table to have an unenforced primary key
-([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
-requires it to be the single column being bucketed.
-
-Omitting `maintainedIndexes` maintains every index the table has,
-including ones created later, and skips a kind the MemWAL cannot maintain.
-Naming them pins an exact set, and a still-building index is rejected
-rather than quietly omitted.
-
-#### Parameters
-
-* **spec**: [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)
-    The sharding spec to install.
-
-#### Returns
-
-`Promise`&lt;`void`&gt;
-
-#### Example
-
-```ts
-await table.setUnenforcedPrimaryKey("id");
-await table.setLsmWriteSpec({
-  specType: "bucket",
-  column: "id",
-  numBuckets: 16,
-  maintainedIndexes: ["id_idx"],
-});
-```
 
 ***
 
@@ -1273,8 +1890,12 @@ Tokenize a full-text search query using the tokenizer configured on an FTS index
 Specify exactly one of `column` or `indexName`.
 
 Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-the client process from index metadata. For remote tables, this means the
-same tokenizer model files must also exist locally.
+the client process from index metadata. In LanceDB Enterprise, this means the
+same tokenizer model files must also exist locally (under
+`LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
+mismatch cannot be detected: the returned tokens may differ from what the
+server's index produces. If the model files are missing, an error naming
+the tokenizer is raised.
 
 #### Parameters
 
@@ -1285,23 +1906,6 @@ same tokenizer model files must also exist locally.
 #### Returns
 
 `Promise`&lt;[`FtsToken`](../interfaces/FtsToken.md)[]&gt;
-
-***
-
-### unsetLsmWriteSpec()
-
-```ts
-abstract unsetLsmWriteSpec(): Promise<void>
-```
-
-Remove the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) from this table, reverting to the standard
-`mergeInsert` write path.
-
-Errors if no spec is currently set.
-
-#### Returns
-
-`Promise`&lt;`void`&gt;
 
 ***
 
@@ -1416,8 +2020,6 @@ used when appropriate:
 - `lancedb:description`: for a human-readable description of a field.
 - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-  `feature_v2` might be in the same logical column.
 - `lancedb:status`: for status options (`production`, `candidate`,
   `deprecated`, `archived`) to designate the current life cycle state of
   this column.
@@ -1434,6 +2036,66 @@ used when appropriate:
 `Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
 
 resolves to the new table version.
+
+***
+
+### updateTableOverrides()
+
+```ts
+updateTableOverrides(overrides): Promise<Record<string, unknown>>
+```
+
+Recursively merge overrides into a remote Enterprise table's stored overrides.
+
+Fetches the current overrides, merges nested objects locally, then sends the
+complete replacement using REST PUT. Other values replace existing values;
+unrelated fields from the read snapshot are preserved. This read-modify-write
+is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+Coordinate writers when concurrent edits must be preserved. An empty update
+only reads and returns the current overrides.
+
+Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+without merging. Use [Table.resetTableOverrides](Table.md#resettableoverrides) to clear all overrides.
+Local tables and custom table implementations without override support reject
+this operation.
+
+#### Parameters
+
+* **overrides**: `Record`&lt;`string`, `unknown`&gt;
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+#### Example
+
+```ts
+await table.updateTableOverrides({
+  job_types: { compaction: { enabled: false } },
+});
+```
+
+***
+
+### upgradeColumn()
+
+```ts
+upgradeColumn(_column, _options): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start an upgrade to an existing immutable Function version and choose
+which rows to recompute. New and changed inputs use the new version.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options**: [`UpgradeColumnOptions`](../interfaces/UpgradeColumnOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 
@@ -1497,3 +2159,26 @@ Waits for asynchronous indexing to complete on the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### waitFresh()
+
+```ts
+abstract waitFresh(column, timeoutSeconds?): Promise<FunctionColumnStatus>
+```
+
+Poll until no stale or never-computed rows remain.
+
+Only HTTP 503 with the exact finalization-pending error code is retried;
+every other error propagates. Failed rows do not block completion.
+
+#### Parameters
+
+* **column**: `string`
+
+* **timeoutSeconds?**: `number`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;

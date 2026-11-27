@@ -86,7 +86,10 @@ describe("remote catalog", () => {
           value: "team/search",
         });
         expect(names.pageToken()).toBe("next");
-        await catalog.dropDatabase("team/search", { ignoreMissing: true });
+        await catalog.dropDatabase("team/search", {
+          ignoreMissing: true,
+          cascade: true,
+        });
         expect(requests[0].url).toBe("/v1/namespace/team%2Fsearch/create");
         expect(requests[0].body).toEqual({ mode: "ExistOk" });
         expect(requests[5].url).toBe(
@@ -94,7 +97,7 @@ describe("remote catalog", () => {
         );
         expect(requests[6].body).toEqual({
           mode: "Skip",
-          behavior: "Restrict",
+          behavior: "Cascade",
         });
         for (const [i, request] of requests.entries()) {
           expect(request.headers["x-lancedb-database"]).toBe(
@@ -266,8 +269,41 @@ describe("remote catalog", () => {
         "limit",
       );
     }
-    await expect(catalog.connectDatabase("a$b")).rejects.toThrow(
-      "Invalid database name",
-    );
   });
+
+  it.each([
+    "",
+    ".",
+    "..",
+    "/db",
+    "db/",
+    "a//b",
+    "a/./b",
+    "a/../b",
+    "a b",
+    "a:b",
+    "a$b",
+    "a%b",
+    "a?b",
+    "a#b",
+    "a\\b",
+    "café",
+    "a\nb",
+  ])(
+    "rejects invalid database name %j before sending requests",
+    async (name) => {
+      await withCatalog([], async (catalog, requests) => {
+        for (const method of [
+          "createDatabase",
+          "connectDatabase",
+          "dropDatabase",
+        ] as const) {
+          await expect(catalog[method](name)).rejects.toThrow(
+            "Invalid database name",
+          );
+        }
+        expect(requests).toEqual([]);
+      });
+    },
+  );
 });

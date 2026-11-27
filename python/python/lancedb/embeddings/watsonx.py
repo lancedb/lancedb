@@ -87,6 +87,9 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
     url: Optional[str] = None
     params: Optional[Dict] = None
 
+    def endpoints(self) -> List[str]:
+        return [self.url] if self.url else []
+
     @staticmethod
     def sensitive_keys():
         return ["api_key"]

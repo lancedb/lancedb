@@ -16,7 +16,7 @@ The Python package is a wrapper around the Rust library, `lancedb`. We use
 
 To set up your development environment, you will need to install the following:
 
-1. Python 3.10 or later
+1. Python 3.11 or later
 2. Cargo (Rust's package manager). Use [rustup](https://rustup.rs/) to install.
 3. [protoc](https://grpc.io/docs/protoc-installation/) (Protocol Buffers compiler)
 
@@ -47,6 +47,18 @@ Build the package
 ```shell
 make develop
 ```
+
+Local SQL computed columns and materialized-view creation/refresh are experimental
+and disabled in published packages. To opt in when building from this directory:
+
+```shell
+uv run --extra tests --extra dev maturin develop --features experimental-functions --extras tests,dev
+uv run --no-sync pytest python/tests -m experimental_functions
+```
+
+Rebuild without `--features experimental-functions` to test the default package.
+The tests detect the compiled feature; remote operations, metadata protections,
+and ordinary eager `add_columns` transforms remain available in both builds.
 
 Format:
 

@@ -31,3 +31,23 @@ optional phase: string;
 ```ts
 optional retryable: boolean;
 ```
+
+***
+
+### sqlJobId?
+
+```ts
+optional sqlJobId: string;
+```
+
+Isolated SQL job that raised this failure, when supplied by the server.
+
+***
+
+### traceback?
+
+```ts
+optional traceback: string;
+```
+
+User-code traceback, possibly truncated by the server.

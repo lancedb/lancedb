@@ -1,10 +1,13 @@
 # LanceDB Documentation
 
-LanceDB docs are available at [docs.lancedb.com](https://docs.lancedb.com).
+For website guides in `docs/web`, start with
+[Documentation in CONTRIBUTING.md](../CONTRIBUTING.md#documentation). That
+covers editing pages, generated examples, previews, availability and drafts.
 
-The SDK docs are built and deployed automatically by [Github Actions](../.github/workflows/docs.yml)
-whenever a commit is pushed to the `main` branch. So it is possible for the docs to show
-unreleased features.
+This page covers the SDK reference in `docs/src`, built with MkDocs. Its
+[GitHub Actions workflow](../.github/workflows/docs.yml) builds and deploys on
+pushes to `main`, so it can include unreleased APIs. That is separate from the
+release editions of the Mintlify website.
 
 ## Building the docs
 
@@ -15,18 +18,21 @@ unreleased features.
 
 ### Preview the docs
 
+Run these commands from the LanceDB repository root. The subshell changes into
+`docs` to load `mkdocs.yml`, while leaving your shell in the repository root.
+
 ```shell
-cd docs
-mkdocs serve
+(cd docs && PYTHONPATH=. mkdocs serve)
 ```
 
 If you want to just generate the HTML files:
 
 ```shell
-PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
+(cd docs && PYTHONPATH=. mkdocs build)
 ```
 
-If successful, you should see a `docs/site` directory that you can verify locally.
+If successful, you should see a `docs/site` directory in the repository root that
+you can verify locally.
 
 ## Adding examples
 

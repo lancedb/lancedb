@@ -76,7 +76,7 @@ pub trait DuplicatePairsResolver: std::fmt::Debug + Send + Sync {
     ) -> Result<Arc<dyn TableProvider>>;
 }
 
-/// `vector_duplicate_pairs('table', version, 'column', threshold)`.
+/// `duplicate_pairs('table', version, 'column', threshold)`.
 /// Registration is explicit so the host controls catalog access and execution.
 #[derive(Debug)]
 pub struct DuplicatePairsTableFunction {
@@ -108,7 +108,7 @@ impl TableFunctionImpl for DuplicatePairsTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         if args.len() != 4 {
             return plan_err!(
-                "vector_duplicate_pairs requires (table, dataset_version, column, distance_threshold)"
+                "duplicate_pairs requires (table, dataset_version, column, distance_threshold)"
             );
         }
         let string = |expr: &Expr| match expr {
@@ -507,6 +507,16 @@ impl DisplayAs for DuplicatePairsExec {
 }
 
 impl ExecutionPlan for DuplicatePairsExec {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+        ) -> datafusion_common::Result<
+            datafusion_common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion_common::Result<datafusion_common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
+    }
     fn name(&self) -> &str {
         "DuplicatePairsExec"
     }

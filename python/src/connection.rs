@@ -20,21 +20,235 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::{
+    BasePath,
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
-    database::{CreateTableMode, Database, ReadConsistency},
+    database::{CreateTableMode, Database, JobListFilter, JobListState, ReadConsistency},
+    function::{GpuClass as LanceGpuClass, RefreshColumnResult},
+    graph::PropertyGraphDefinition,
+    materialized_view::CreateMaterializedViewBuilder,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyAnyMethods, PyDict, PyDictMethods, PyList},
+    types::{PyAnyMethods, PyBool, PyDict, PyDictMethods, PyList},
 };
+
+fn materialized_view_builder(
+    connection: &LanceConnection,
+    name: String,
+    source: Option<String>,
+    query: Option<String>,
+    has_clauses: bool,
+) -> PyResult<CreateMaterializedViewBuilder> {
+    match (source, query) {
+        (None, Some(query)) if !has_clauses => {
+            Ok(connection.create_materialized_view_from_query(name, query))
+        }
+        (Some(source), None) => Ok(connection.create_materialized_view(name, source)),
+        (None, None) => Err(PyValueError::new_err(
+            "either source or query must be provided",
+        )),
+        _ => Err(PyValueError::new_err(
+            "query cannot be combined with source, select, where or limit",
+        )),
+    }
+}
+
+/// Parse `initial_bases` into Lance base paths.
+///
+/// Accepts LanceDB's lightweight `BasePath`, a mapping with the same keys, or
+/// a duck-typed `lance.DatasetBasePath`. `None` maps to no bases. Object
+/// attributes follow `DatasetBasePath`: a reported `id` of `0` means
+/// automatic assignment, while a mapping that sets `id=0` explicitly is
+/// rejected because `0` is reserved for unregistered blob URIs. Explicit
+/// non-zero ids must be unique.
+fn parse_initial_bases(initial_bases: Option<Bound<'_, PyAny>>) -> PyResult<Option<Vec<BasePath>>> {
+    let Some(value) = initial_bases else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        return Ok(None);
+    }
+
+    let mut bases = Vec::new();
+    let mut explicit_ids: HashSet<u32> = HashSet::new();
+    for (index, item) in value.try_iter()?.enumerate() {
+        let item = item?;
+        let base = parse_base_path(&item, index)?;
+        if base.id != 0 && !explicit_ids.insert(base.id) {
+            return Err(PyValueError::new_err(format!(
+                "initial_bases[{index}] reuses base id {}; explicit ids must be unique",
+                base.id
+            )));
+        }
+        bases.push(base);
+    }
+    Ok(Some(bases))
+}
+
+fn parse_base_path(item: &Bound<'_, PyAny>, index: usize) -> PyResult<BasePath> {
+    let (path, name, is_dataset_root, id) = if let Ok(dict) = item.cast::<PyDict>() {
+        let path = required_string(dict.get_item("path")?, index, "path")?;
+        let name = optional_string(dict.get_item("name")?, index, "name")?;
+        let is_dataset_root =
+            optional_bool(dict.get_item("is_dataset_root")?, index, "is_dataset_root")?;
+        let id = match dict.get_item("id")? {
+            None => 0,
+            Some(value) if value.is_none() => 0,
+            Some(value) => {
+                let id = base_id(&value, index)?;
+                if id == 0 {
+                    return Err(PyValueError::new_err(format!(
+                        "initial_bases[{index}] sets id=0, which is reserved for unregistered \
+                         blob URIs; pass id=None to let Lance assign an ID"
+                    )));
+                }
+                id
+            }
+        };
+        (path, name, is_dataset_root, id)
+    } else {
+        let path = item.getattr("path").map_err(|_| {
+            PyTypeError::new_err(format!(
+                "initial_bases[{index}] must be a BasePath, dict, or DatasetBasePath"
+            ))
+        })?;
+        let path = required_string(Some(path), index, "path")?;
+        let name = item.getattr("name").ok().filter(|value| !value.is_none());
+        let name = optional_string(name, index, "name")?;
+        let is_dataset_root = match item.getattr("is_dataset_root") {
+            Ok(value) if !value.is_none() => value.extract::<bool>().map_err(|_| {
+                PyTypeError::new_err(format!(
+                    "initial_bases[{index}].is_dataset_root must be a bool"
+                ))
+            })?,
+            _ => false,
+        };
+        let id = match item.getattr("id") {
+            Ok(value) if !value.is_none() => base_id(&value, index)?,
+            _ => 0,
+        };
+        (path, name, is_dataset_root, id)
+    };
+
+    if path.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "initial_bases[{index}].path must not be empty"
+        )));
+    }
+    Ok(BasePath::new(id, path, name, is_dataset_root))
+}
+
+fn required_string(value: Option<Bound<'_, PyAny>>, index: usize, field: &str) -> PyResult<String> {
+    let Some(value) = value else {
+        return Err(PyValueError::new_err(format!(
+            "initial_bases[{index}] is missing '{field}'"
+        )));
+    };
+    value.extract::<String>().map_err(|_| {
+        PyTypeError::new_err(format!("initial_bases[{index}].{field} must be a string"))
+    })
+}
+
+fn optional_string(
+    value: Option<Bound<'_, PyAny>>,
+    index: usize,
+    field: &str,
+) -> PyResult<Option<String>> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => value.extract::<String>().map(Some).map_err(|_| {
+            PyTypeError::new_err(format!("initial_bases[{index}].{field} must be a string"))
+        }),
+    }
+}
+
+fn optional_bool(value: Option<Bound<'_, PyAny>>, index: usize, field: &str) -> PyResult<bool> {
+    match value {
+        None => Ok(false),
+        Some(value) if value.is_none() => Ok(false),
+        Some(value) => value.extract::<bool>().map_err(|_| {
+            PyTypeError::new_err(format!("initial_bases[{index}].{field} must be a bool"))
+        }),
+    }
+}
+
+fn base_id(value: &Bound<'_, PyAny>, index: usize) -> PyResult<u32> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(format!(
+            "initial_bases[{index}].id must be a positive integer, not a bool"
+        )));
+    }
+    value.extract::<u32>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "initial_bases[{index}].id must be a positive integer that fits in a u32"
+        ))
+    })
+}
 
 #[pyclass]
 pub struct Connection {
     inner: Option<LanceConnection>,
+}
+
+/// Configured hardware and worker limits of a Function GPU class.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct GpuClass {
+    pub name: String,
+    pub resource_name: String,
+    pub gpu_model: Option<String>,
+    pub gpu_memory_bytes: Option<u64>,
+    pub max_gpu_count_per_worker: Option<u32>,
+    pub cpu_millis: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub ephemeral_storage_bytes: Option<u64>,
+}
+
+impl From<LanceGpuClass> for GpuClass {
+    fn from(class: LanceGpuClass) -> Self {
+        Self {
+            name: class.name,
+            resource_name: class.resource_name,
+            gpu_model: class.gpu_model,
+            gpu_memory_bytes: class.gpu_memory_bytes,
+            max_gpu_count_per_worker: class.max_gpu_count_per_worker,
+            cpu_millis: class.cpu_millis,
+            memory_bytes: class.memory_bytes,
+            ephemeral_storage_bytes: class.ephemeral_storage_bytes,
+        }
+    }
+}
+
+#[pymethods]
+impl GpuClass {
+    fn __repr__(&self) -> String {
+        let gpu_model = self
+            .gpu_model
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |value| format!("{value:?}"));
+        let optional = |value: Option<u64>| {
+            value.map_or_else(|| "None".to_string(), |value| value.to_string())
+        };
+        let max_gpu_count = self
+            .max_gpu_count_per_worker
+            .map_or_else(|| "None".to_string(), |value| value.to_string());
+        format!(
+            "GpuClass(name={:?}, resource_name={:?}, gpu_model={gpu_model}, \
+             gpu_memory_bytes={}, max_gpu_count_per_worker={max_gpu_count}, \
+             cpu_millis={}, memory_bytes={}, ephemeral_storage_bytes={})",
+            self.name,
+            self.resource_name,
+            optional(self.gpu_memory_bytes),
+            optional(self.cpu_millis),
+            optional(self.memory_bytes),
+            optional(self.ephemeral_storage_bytes),
+        )
+    }
 }
 
 impl Connection {
@@ -47,6 +261,18 @@ impl Connection {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Connection is closed"))
     }
+}
+
+fn parse_read_consistency_interval(interval: Option<f64>) -> PyResult<Option<Duration>> {
+    interval
+        .map(|seconds| {
+            Duration::try_from_secs_f64(seconds).map_err(|_| {
+                PyValueError::new_err(
+                    "read_consistency_interval must be finite, non-negative, and within the supported range",
+                )
+            })
+        })
+        .transpose()
 }
 
 fn parse_namespace_client_pushdown_operations(
@@ -149,19 +375,29 @@ impl Connection {
         self.get_inner().map(|inner| inner.uri().to_string())
     }
 
-    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None, timeout=None, read_timeout=None, cancel_on_drop=false))]
     pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
         parameters: Option<PyArrowType<RecordBatch>>,
+        timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
+        cancel_on_drop: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
             let mut operation = inner
                 .execute_query_async(query)
-                .default_namespace_path(default_namespace_path);
+                .default_namespace_path(default_namespace_path)
+                .cancel_on_drop(cancel_on_drop);
+            if let Some(timeout) = timeout {
+                operation = operation.timeout(timeout);
+            }
+            if let Some(timeout) = read_timeout {
+                operation = operation.read_timeout(timeout);
+            }
             if let Some(PyArrowType(parameters)) = parameters {
                 operation = operation.parameters(parameters);
             }
@@ -219,7 +455,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, data, namespace_path=None, storage_options=None, location=None, namespace_client=None))]
+    #[pyo3(signature = (name, mode, data, namespace_path=None, storage_options=None, location=None, namespace_client=None, initial_bases=None, allow_external_blob_outside_bases=false))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -229,11 +465,14 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         location: Option<String>,
         namespace_client: Option<Py<PyAny>>,
+        initial_bases: Option<Bound<'_, PyAny>>,
+        allow_external_blob_outside_bases: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
 
         let mode = Self::parse_create_mode_str(mode)?;
+        let initial_bases = parse_initial_bases(initial_bases)?;
 
         let batches: Box<dyn arrow::array::RecordBatchReader + Send> =
             Box::new(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
@@ -241,6 +480,12 @@ impl Connection {
         let ns_path = namespace_path.clone().unwrap_or_default();
         let mut builder = inner.create_table(name.clone(), batches).mode(mode);
 
+        if let Some(bases) = initial_bases {
+            builder = builder.initial_bases(bases);
+        }
+        if allow_external_blob_outside_bases {
+            builder = builder.allow_external_blob_outside_bases(true);
+        }
         builder = builder.namespace(ns_path.clone());
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
@@ -267,7 +512,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, schema, namespace_path=None, storage_options=None, location=None, namespace_client=None))]
+    #[pyo3(signature = (name, mode, schema, namespace_path=None, storage_options=None, location=None, namespace_client=None, initial_bases=None))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -277,11 +522,13 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         location: Option<String>,
         namespace_client: Option<Py<PyAny>>,
+        initial_bases: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
 
         let mode = Self::parse_create_mode_str(mode)?;
+        let initial_bases = parse_initial_bases(initial_bases)?;
 
         let schema = Schema::from_pyarrow_bound(&schema)?;
 
@@ -290,6 +537,9 @@ impl Connection {
             .create_empty_table(name.clone(), Arc::new(schema))
             .mode(mode);
 
+        if let Some(bases) = initial_bases {
+            builder = builder.initial_bases(bases);
+        }
         builder = builder.namespace(ns_path.clone());
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
@@ -365,7 +615,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (target_table_name, source_uri, target_namespace_path=None, source_version=None, source_tag=None, is_shallow=true, *, exist_ok=false))]
     pub fn clone_table(
         self_: PyRef<'_, Self>,
         target_table_name: String,
@@ -374,6 +625,7 @@ impl Connection {
         source_version: Option<u64>,
         source_tag: Option<String>,
         is_shallow: bool,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -385,7 +637,7 @@ impl Connection {
         if let Some(tag) = source_tag {
             builder = builder.source_tag(tag);
         }
-        builder = builder.is_shallow(is_shallow);
+        builder = builder.is_shallow(is_shallow).exist_ok(exist_ok);
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
@@ -412,19 +664,59 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
-        source: String,
+        source: Option<String>,
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
+        query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let builder = materialized_view_builder(
+            &inner,
+            name,
+            source,
+            query,
+            projections.is_some() || filter.is_some() || limit.is_some(),
+        )?;
         future_into_py(self_.py(), async move {
-            let mut builder = inner.create_materialized_view(name, source);
+            let mut builder = builder.exist_ok(exist_ok);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -440,19 +732,59 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source=None, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None, total_cpu_millis=None, total_memory_bytes=None, total_gpu_count=None, gpu_class=None, gpu_count=None, *, query=None, exist_ok=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
-        source: String,
+        source: Option<String>,
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
+        total_cpu_millis: Option<u64>,
+        total_memory_bytes: Option<u64>,
+        total_gpu_count: Option<u32>,
+        gpu_class: Option<String>,
+        gpu_count: Option<u32>,
+
+        query: Option<String>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let builder = materialized_view_builder(
+            &inner,
+            name,
+            source,
+            query,
+            projections.is_some() || filter.is_some() || limit.is_some(),
+        )?;
         future_into_py(self_.py(), async move {
-            let mut builder = inner.create_materialized_view(name, source);
+            let mut builder = builder.exist_ok(exist_ok);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
+            if let Some(value) = total_cpu_millis {
+                builder = builder.total_cpu_millis(value);
+            }
+            if let Some(value) = total_memory_bytes {
+                builder = builder.total_memory_bytes(value);
+            }
+            if let Some(value) = total_gpu_count {
+                builder = builder.total_gpu_count(value);
+            }
+            if let Some(value) = gpu_class {
+                builder = builder.gpu_class(value);
+            }
+            if let Some(value) = gpu_count {
+                builder = builder.gpu_count(value);
+            }
+
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -560,29 +892,17 @@ impl Connection {
 
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_namespaces(
-        self_: PyRef<'_, Self>,
+        &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let py = self_.py();
-        future_into_py(py, async move {
-            use lance_namespace::models::ListNamespacesRequest;
-            let request = ListNamespacesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_namespaces(request).await.infer_error()?;
-            Python::attach(|py| -> PyResult<Py<PyDict>> {
-                let dict = PyDict::new(py);
-                dict.set_item("namespaces", response.namespaces)?;
-                dict.set_item("page_token", response.page_token)?;
-                Ok(dict.unbind())
-            })
-        })
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[pyo3(signature = (namespace_path, mode=None, properties=None))]
@@ -693,31 +1013,66 @@ impl Connection {
         })
     }
 
+    pub fn namespace_exists(
+        self_: PyRef<'_, Self>,
+        namespace_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let request = lance_namespace::models::DescribeNamespaceRequest {
+                id: Some(namespace_id),
+                ..Default::default()
+            };
+            match inner.describe_namespace(request).await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::Http {
+                    status_code: Some(status),
+                    ..
+                }) if status.as_u16() == 404 => Ok(false),
+                Err(lancedb::Error::Lance {
+                    source: lance_core::Error::Namespace { ref source, .. },
+                }) if matches!(
+                    source.downcast_ref::<lance_namespace::NamespaceError>(),
+                    Some(lance_namespace::NamespaceError::NamespaceNotFound { .. })
+                ) =>
+                {
+                    Ok(false)
+                }
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
+    pub fn table_exists(
+        self_: PyRef<'_, Self>,
+        mut table_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let name = table_id
+            .pop()
+            .ok_or_else(|| PyValueError::new_err("table_id must include a table name"))?;
+        future_into_py(self_.py(), async move {
+            match inner.open_table(name).namespace(table_id).execute().await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::TableNotFound { .. }) => Ok(false),
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_tables(
-        self_: PyRef<'_, Self>,
+        &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let py = self_.py();
-        future_into_py(py, async move {
-            use lance_namespace::models::ListTablesRequest;
-            let request = ListTablesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_tables(request).await.infer_error()?;
-            Python::attach(|py| -> PyResult<Py<PyDict>> {
-                let dict = PyDict::new(py);
-                dict.set_item("tables", response.tables)?;
-                dict.set_item("page_token", response.page_token)?;
-                Ok(dict.unbind())
-            })
-        })
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Get the configuration for constructing an equivalent namespace client.
@@ -743,19 +1098,40 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.open_job(&job_id).await.infer_error()?;
-            Ok(crate::job::Job::new(job))
+            match job.job_type().as_deref() {
+                Some("function_refresh" | "computed_refresh" | "refresh_column") => {
+                    Ok(crate::job::Job::new_typed(
+                        job.into_typed::<RefreshColumnResult>().infer_error()?,
+                    ))
+                }
+                Some("prewarm_page_cache") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::PrewarmDataResult>()
+                        .infer_error()?,
+                )),
+                Some("cleanup") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::CleanupResult>()
+                        .infer_error()?,
+                )),
+                Some("compact") => Ok(crate::job::Job::new_typed(
+                    job.into_typed::<lancedb::table::CompactionResult>()
+                        .infer_error()?,
+                )),
+                _ => Ok(crate::job::Job::new(job)),
+            }
         })
     }
 
-    #[pyo3(signature = (request_json, namespace_path=None))]
+    #[pyo3(signature = (request_json, namespace_path=None, *, exist_ok=false))]
     pub fn create_function_async(
         self_: PyRef<'_, Self>,
         request_json: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
+        let mut request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
             .infer_error()?;
+        request.exist_ok = exist_ok;
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
@@ -766,22 +1142,22 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, version, namespace_path=None))]
+    #[pyo3(signature = (name, version=None, namespace_path=None))]
     pub fn get_function(
         self_: PyRef<'_, Self>,
         name: String,
-        version: String,
+        version: Option<String>,
         namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
-            inner
-                .get_function(name, version, &namespace_path)
-                .await
-                .infer_error()?
-                .to_canonical_json()
-                .infer_error()
+            let function = match version {
+                Some(version) => inner.get_function(name, version, &namespace_path).await,
+                None => inner.get_function_latest(name, &namespace_path).await,
+            }
+            .infer_error()?;
+            function.to_canonical_json().infer_error()
         })
     }
 
@@ -818,6 +1194,23 @@ impl Connection {
     }
 
     #[pyo3(signature = (name, version, namespace_path=None))]
+    pub fn _drop_function_with_warnings(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_function_with_warnings(name, version, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, version, namespace_path=None))]
     pub fn drop_function_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -835,18 +1228,86 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, value, namespace_path=None))]
+    #[pyo3(signature = (name, request, namespace_path=None))]
+    pub fn create_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        request: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        let request: lancedb::storage_integration::CreateStorageIntegrationRequest =
+            serde_json::from_str(&request)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        future_into_py(py, async move {
+            let info = inner
+                .create_storage_integration(name, request, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            let info = inner
+                .describe_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (*, namespace_path=None, page_token=None, page_limit=None))]
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_storage_integrations(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            inner
+                .drop_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, value, namespace_path=None, *, exist_ok=false))]
     pub fn create_secret(
         self_: PyRef<'_, Self>,
         name: String,
         value: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
                 .create_secret(name, value, &namespace_path)
+                .exist_ok(exist_ok)
                 .await
                 .infer_error()
         })
@@ -917,18 +1378,20 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, query, namespace_path=None))]
+    #[pyo3(signature = (name, query, namespace_path=None, *, exist_ok=false))]
     pub fn create_view(
         self_: PyRef<'_, Self>,
         name: String,
         query: String,
         namespace_path: Option<Vec<String>>,
+        exist_ok: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             let view = inner
                 .create_view(name, query, &namespace_path)
+                .exist_ok(exist_ok)
                 .await
                 .infer_error()?;
             view_description_to_py(view)
@@ -997,16 +1460,137 @@ impl Connection {
         ))
     }
 
-    #[pyo3(signature = (*, page_token=None, page_limit=None))]
+    /// Create a property graph from its definition's JSON, and return its
+    /// description's JSON. The Python layer names the fields; the JSON keeps
+    /// the binding free of classes kept in step with the Rust structs.
+    #[pyo3(signature = (name, definition_json, namespace_path=None))]
+    pub fn create_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        definition_json: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let definition = PropertyGraphDefinition::from_json(&definition_json).infer_error()?;
+            inner
+                .create_property_graph(name, &definition, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    /// The JSON description of the property graph named `name`.
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .describe_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_property_graph(name, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None, *, page_token=None, page_limit=None))]
+    pub fn list_property_graphs(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_property_graphs(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (*, page_token=None, page_limit=None, table=None, namespace_path=None, state=None, job_type=None, job_types=None, created_at_gte_millis=None, created_at_lt_millis=None))]
     pub fn list_jobs(
         &self,
         page_token: Option<String>,
         page_limit: Option<u32>,
+        table: Option<String>,
+        namespace_path: Option<Vec<String>>,
+        state: Option<String>,
+        job_type: Option<String>,
+        job_types: Option<Vec<String>>,
+        created_at_gte_millis: Option<i64>,
+        created_at_lt_millis: Option<i64>,
     ) -> PyResult<crate::listing::JobListing> {
+        if job_type.is_some() && job_types.is_some() {
+            return Err(PyValueError::new_err(
+                "set only one of job_type and job_types",
+            ));
+        }
+        let mut filter = JobListFilter::default();
+        filter.table = table;
+        filter.namespace_path = namespace_path.unwrap_or_default();
+        filter.state = state
+            .as_deref()
+            .map(|state| match state {
+                "in_progress" => Ok(JobListState::InProgress),
+                "succeeded" => Ok(JobListState::Succeeded),
+                "failed" => Ok(JobListState::Failed),
+                "canceled" => Ok(JobListState::Canceled),
+                "timed_out" => Ok(JobListState::TimedOut),
+                _ => Err(PyValueError::new_err(
+                    "state must be one of: in_progress, succeeded, failed, canceled, timed_out",
+                )),
+            })
+            .transpose()?;
+        filter.job_types = job_types.unwrap_or_else(|| job_type.into_iter().collect());
+        filter.created_at_gte_millis = created_at_gte_millis;
+        filter.created_at_lt_millis = created_at_lt_millis;
         Ok(crate::listing::JobListing::new(
             self.get_inner()?
-                .list_jobs(crate::listing::options(page_token, page_limit)),
+                .list_jobs_filtered(filter, crate::listing::options(page_token, page_limit)),
         ))
+    }
+
+    pub fn server_info(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let info = inner.server_info().await.infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+
+    pub fn list_gpu_classes(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let classes = inner.list_gpu_classes().await.infer_error()?;
+            Ok(classes.into_iter().map(GpuClass::from).collect::<Vec<_>>())
+        })
     }
 
     pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
@@ -1059,6 +1643,7 @@ pub fn connect(
     namespace_client_properties: Option<HashMap<String, String>>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
         if let Some(api_key) = api_key {
@@ -1077,7 +1662,6 @@ pub fn connect(
         #[cfg(not(feature = "remote"))]
         let _ = sql_host_override;
         if let Some(read_consistency_interval) = read_consistency_interval {
-            let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);
         }
         if let Some(storage_options) = storage_options {
@@ -1126,7 +1710,7 @@ pub fn connect_namespace_client(
     namespace_client_impl: Option<String>,
     namespace_client_properties: Option<HashMap<String, String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
     let ns_properties = namespace_client_properties.unwrap_or_default();
@@ -1183,7 +1767,7 @@ pub fn connect_namespace(
     session: Option<crate::session::Session>,
     namespace_client_pushdown_operations: Option<Vec<String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
 
@@ -1220,6 +1804,7 @@ pub struct PyClientConfig {
     user_agent: String,
     retry_config: Option<PyClientRetryConfig>,
     timeout_config: Option<PyClientTimeoutConfig>,
+    blob_request_concurrency: Option<usize>,
     extra_headers: Option<HashMap<String, String>>,
     id_delimiter: Option<String>,
     tls_config: Option<PyClientTlsConfig>,
@@ -1305,6 +1890,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             user_agent: value.user_agent,
             retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
+            blob_request_concurrency: value.blob_request_concurrency,
             extra_headers: value.extra_headers.unwrap_or_default(),
             id_delimiter: value.id_delimiter,
             tls_config: value.tls_config.map(Into::into),

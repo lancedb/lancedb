@@ -26,6 +26,7 @@ pub struct UpdateBuilder {
     parent: Arc<dyn BaseTable>,
     pub(crate) filter: Option<String>,
     pub(crate) columns: Vec<(String, String)>,
+    pub(crate) retries: Option<u8>,
 }
 
 impl UpdateBuilder {
@@ -34,7 +35,15 @@ impl UpdateBuilder {
             parent,
             filter: None,
             columns: Vec::new(),
+            retries: None,
         }
+    }
+
+    /// Override the remote retry budget for this call. `0` disables retries.
+    /// Ambiguous write results are never replayed. Ignored by embedded tables.
+    pub fn retries(mut self, retries: u8) -> Self {
+        self.retries = Some(retries);
+        self
     }
 
     /// Limits the update operation to rows matching the given filter
@@ -94,10 +103,6 @@ pub(crate) async fn execute_update(
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
     crate::materialized_view::ensure_not_a_view(&table.name, &dataset.schema().metadata, "update")?;
-    super::computed_columns::ensure_no_function_bindings_for_mutation(
-        &arrow_schema::Schema::from(dataset.schema()),
-        "update",
-    )?;
     super::computed_columns::ensure_not_written(
         &arrow_schema::Schema::from(dataset.schema()),
         update.columns.iter().map(|(name, _)| name.as_str()),
@@ -112,6 +117,11 @@ pub(crate) async fn execute_update(
     }
 
     // 4. Apply the columns (SET clause)
+    let written_columns = update
+        .columns
+        .iter()
+        .map(|(column, _)| column.clone())
+        .collect::<Vec<_>>();
     for (column, value) in update.columns {
         builder = builder.set(column, &value)?;
     }
@@ -119,13 +129,26 @@ pub(crate) async fn execute_update(
     // 5. Execute the operation (Write new files)
     let operation = builder.build()?;
     let res = operation.execute().await?;
+    let mut new_dataset = res.new_dataset.as_ref().clone();
+    if res.rows_updated > 0
+        && let Err(error) = super::freshness::preserve_function_freshness(
+            &mut new_dataset,
+            super::freshness::FunctionWrite::Update {
+                columns: &written_columns,
+            },
+        )
+        .await
+    {
+        log::warn!("update committed but Function freshness could not be preserved: {error}");
+    }
 
     // 6. Update the table's view of the latest version
-    table.dataset.update(res.new_dataset.as_ref().clone());
+    let version = new_dataset.version().version;
+    table.dataset.update(new_dataset);
 
     Ok(UpdateResult {
         rows_updated: res.rows_updated,
-        version: res.new_dataset.version().version,
+        version,
     })
 }
 
@@ -444,5 +467,40 @@ mod tests {
         assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
         tbl.update().column("i", "i+1").execute().await.unwrap();
         assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn update_allows_function_inputs_but_protects_outputs() {
+        let table = crate::table::computed_columns::test_support::bound_table().await;
+        let result = table
+            .update()
+            .column("title", "'changed'")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.rows_updated, 1);
+        assert_eq!(
+            table
+                .count_rows(Some("title = 'changed' AND search_text = 'a b'".into()))
+                .await
+                .unwrap(),
+            1
+        );
+        for column in ["search_text", "search_token_count"] {
+            let version = table.version().await.unwrap();
+            let err = table
+                .update()
+                .column("title", "'must not commit'")
+                .column(column, "NULL")
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, crate::Error::InvalidInput { message }
+                if message.contains("is computed") && message.contains("cannot be written directly")),
+                "{column}: {err:?}"
+            );
+            assert_eq!(table.version().await.unwrap(), version);
+        }
     }
 }

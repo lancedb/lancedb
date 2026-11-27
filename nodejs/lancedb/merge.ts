@@ -100,27 +100,27 @@ export class MergeInsertBuilder {
     );
   }
   /**
-   * Control MemWAL routing for this merge.
+   * Control RTE routing for this merge.
    *
-   * By default (unset), a `mergeInsert` on a table with an LSM write spec is
+   * By default (unset), a `mergeInsert` on a table with an RTE write spec is
    * routed through Lance's MemWAL shard writer, and a table without one uses the
    * standard path.
    *
-   * @param enable - `true` forces MemWAL routing and errors if the table has no
-   * LSM write spec. `false` forces the standard write path even when a spec is set.
+   * @param enable - `true` forces RTE routing and errors if the table has no
+   * RTE write spec. `false` forces the standard write path even when a spec is set.
    */
-  useLsm(enable: boolean): MergeInsertBuilder {
-    return new MergeInsertBuilder(this.#native.useLsm(enable), this.#schema);
+  useRTE(enable: boolean): MergeInsertBuilder {
+    return new MergeInsertBuilder(this.#native.useRTE(enable), this.#schema);
   }
   /**
    * Controls how an LSM merge checks that its input targets a single shard.
    *
-   * When a table has an LSM write spec, every row in a `mergeInsert` call must
+   * When a table has an RTE write spec, every row in a `mergeInsert` call must
    * route to the same shard. When `true` (the default), every row is inspected
    * to verify this. When `false`, only the first row is inspected and the
    * shard it routes to is used for the whole input — a faster path for callers
    * that have already pre-sharded their input. Has no effect on tables without
-   * an LSM write spec.
+   * an RTE write spec.
    *
    * @param validateSingleShard - Whether to check every row routes to one shard. Defaults to `true`.
    */
@@ -139,6 +139,14 @@ export class MergeInsertBuilder {
     data: Data,
     execOptions?: Partial<WriteExecutionOptions>,
   ): Promise<MergeResult> {
+    if (
+      execOptions?.retries !== undefined &&
+      (!Number.isInteger(execOptions.retries) ||
+        execOptions.retries < 0 ||
+        execOptions.retries > 255)
+    ) {
+      throw new Error("retries must be an integer between 0 and 255");
+    }
     let schema: Schema;
     if (this.#schema instanceof Promise) {
       schema = await this.#schema;
@@ -152,7 +160,7 @@ export class MergeInsertBuilder {
     }
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    return await this.#native.execute(buffer);
+    return await this.#native.execute(buffer, execOptions?.retries);
   }
 }
 
@@ -168,6 +176,24 @@ export interface WriteExecutionOptions {
    * first attempt will not be cancelled.
    *
    * When this is set, the timeout is enforced on all attempts, including the first.
+   * For remote tables this is sent as a server execution timeout. It does not
+   * extend HTTP read or proxy idle timeouts, or prove that a failed request did
+   * not commit.
    */
   timeoutMs?: number;
+
+  /**
+   * Override the remote retry budget for this execution only (an integer from
+   * 0 to 255). Use `execute(data, { retries: 0 })` to disable even retries after
+   * precommit conflicts (409) or rate limits (429). This does not change
+   * connection-wide/read budgets or local transaction conflict retries.
+   *
+   * By default, remote calls use the connection's `clientConfig.retryConfig`
+   * ({@link RetryConfig}). Its `statuses` (also set through
+   * `LANCE_CLIENT_RETRY_STATUSES`) selects candidates within the retry budget;
+   * it never permits replay of ambiguous merge outcomes. In particular, 502,
+   * ordinary 503, and 504 are never replayed, even if configured. Reconcile table
+   * contents before manually repeating a merge whose commit outcome is unknown.
+   */
+  retries?: number;
 }

@@ -51,6 +51,8 @@ IndexType = Literal[
     "BTREE",
     "BITMAP",
     "LABEL_LIST",
+    "NGRAM",
+    "RTREE",
     "IVF_RQ",
 ]
 

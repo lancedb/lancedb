@@ -75,7 +75,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
             content = {"type": "text", "text": input_data}
     elif isinstance(input_data, PIL_Image.Image):
         buffered = BytesIO()
-        input_data.save(buffered, format="JPEG")
+        input_data.convert("RGB").save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         content = {
             "type": "image_base64",
@@ -84,7 +84,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
     elif isinstance(input_data, bytes):
         img = PIL_Image.open(BytesIO(input_data))
         buffered = BytesIO()
-        img.save(buffered, format="JPEG")
+        img.convert("RGB").save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         content = {
             "type": "image_base64",
@@ -103,7 +103,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
         else:
             img = PIL_Image.open(input_data)
             buffered = BytesIO()
-            img.save(buffered, format="JPEG")
+            img.convert("RGB").save(buffered, format="JPEG")
             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
             content = {
                 "type": "image_base64",
@@ -145,6 +145,8 @@ def sanitize_text_input(inputs: TEXT) -> List[str]:
     """
     if isinstance(inputs, str):
         inputs = [inputs]
+    elif isinstance(inputs, (list, np.ndarray)):
+        inputs = list(inputs)
     elif isinstance(inputs, pa.Array):
         inputs = inputs.to_pylist()
     elif isinstance(inputs, pa.ChunkedArray):

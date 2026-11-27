@@ -3,10 +3,11 @@
 
 use crate::error::PythonErrorExt;
 use crate::runtime::future_into_py;
-use futures::{StreamExt, future::poll_fn};
+use futures::{Future, StreamExt, future::poll_fn};
 use lancedb::listing::{Listing, ListingOptions};
 use pyo3::exceptions::PyStopAsyncIteration;
-use pyo3::{Bound, PyAny, PyRef, PyResult, Python, pyclass, pymethods};
+use pyo3::types::{PyDict, PyDictMethods};
+use pyo3::{Bound, Py, PyAny, PyRef, PyResult, Python, pyclass, pymethods};
 use std::sync::{Arc, Mutex};
 
 pub fn options(page_token: Option<String>, page_limit: Option<u32>) -> ListingOptions {
@@ -50,6 +51,31 @@ impl NameListing {
                 .ok_or_else(|| PyStopAsyncIteration::new_err(""))?
                 .infer_error()?;
             Ok(value)
+        })
+    }
+
+    fn next_page(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        let next_lock = self_.next_lock.clone();
+        future_into_py(self_.py(), async move {
+            let _guard = next_lock.lock().await;
+            let page = futures::future::poll_fn(|cx| {
+                let mut inner = inner.lock().unwrap();
+                let future = inner.next_page();
+                futures::pin_mut!(future);
+                future.poll(cx)
+            })
+            .await
+            .infer_error()?;
+            Python::attach(|py| -> PyResult<Option<Py<PyDict>>> {
+                page.map(|page| {
+                    let dict = PyDict::new(py);
+                    dict.set_item("items", page.items)?;
+                    dict.set_item("page_token", page.page_token)?;
+                    Ok(dict.unbind())
+                })
+                .transpose()
+            })
         })
     }
 }

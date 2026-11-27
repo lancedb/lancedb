@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::expr::PyExpr;
 use crate::runtime::future_into_py;
+use crate::sync_stream::SyncRecordBatchStream;
 use crate::util::parse_distance_type;
 use crate::{arrow::RecordBatchStream, util::PyLanceDB};
 use crate::{error::PythonErrorExt, index::class_name};
@@ -16,21 +17,24 @@ use arrow::array::make_array;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
+use futures::TryStreamExt;
+use lancedb::ApproxMode;
 use lancedb::index::scalar::{
-    BooleanQuery, BoostQuery, DocumentGranularity, FtsQuery, FullTextSearchQuery, MatchQuery,
-    MultiMatchQuery, Occur, Operator, PhraseQuery,
+    BooleanQuery, BoostQuery, CombinedFieldsQuery, DocumentGranularity, FtsQuery,
+    FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
-use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
     ColumnOrdering, ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
     VectorQuery as LanceDbVectorQuery,
 };
+use lancedb::query::{HasQuery, QueryBase};
 use lancedb::table::AnyQuery;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
+use pyo3::Py;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
@@ -63,6 +67,34 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
     Ok(options)
 }
 
+fn execute_to_reader_sync<Q>(
+    py: Python<'_>,
+    query: Q,
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> PyResult<Py<PyAny>>
+where
+    Q: ExecutableQuery + Send + 'static,
+{
+    let reader =
+        py.detach(move || crate::arrow::execute_to_reader_sync(query, max_batch_length, timeout))?;
+    Python::attach(|py| reader.into_pyarrow(py).map(|obj| obj.unbind()))
+}
+
+fn query_execution_options(
+    max_batch_length: Option<u32>,
+    timeout: Option<Duration>,
+) -> QueryExecutionOptions {
+    let mut options = QueryExecutionOptions::default();
+    if let Some(max_batch_length) = max_batch_length {
+        options.max_batch_length = max_batch_length;
+    }
+    if let Some(timeout) = timeout {
+        options.timeout = Some(timeout);
+    }
+    options
+}
+
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
     type Error = PyErr;
 
@@ -71,7 +103,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
         match class_name(&ob)?.as_str() {
             "MatchQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let boost = ob.getattr("boost")?.extract()?;
                 let fuzziness = ob.getattr("fuzziness")?.extract()?;
                 let max_expansions = ob.getattr("max_expansions")?.extract()?;
@@ -88,7 +120,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
 
                 let mut query =
                     MatchQuery::new(query)
-                        .with_column(Some(column))
+                        .with_column(column)
                         .with_boost(boost)
                         .with_fuzziness(fuzziness)
                         .with_max_expansions(max_expansions)
@@ -103,7 +135,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let slop = ob.getattr("slop")?.extract()?;
                 let document_granularity = ob
                     .getattr("document_granularity")?
@@ -114,9 +146,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                     })
                     .transpose()?;
 
-                let mut query = PhraseQuery::new(query)
-                    .with_column(Some(column))
-                    .with_slop(slop);
+                let mut query = PhraseQuery::new(query).with_column(column).with_slop(slop);
                 if let Some(document_granularity) = document_granularity {
                     query = query.with_document_granularity(document_granularity);
                 }
@@ -137,6 +167,26 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                 let operator: String = ob.getattr("operator")?.extract()?;
 
                 let q = MultiMatchQuery::try_new(query, columns)
+                    .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
+                let q = if let Some(boosts) = boosts {
+                    q.try_with_boosts(boosts)
+                        .map_err(|e| PyValueError::new_err(format!("Invalid boosts: {}", e)))?
+                } else {
+                    q
+                };
+
+                let op = Operator::try_from(operator.as_str())
+                    .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
+
+                Ok(Self(q.with_operator(op).into()))
+            }
+            "CombinedFieldsQuery" => {
+                let query = ob.getattr("query")?.extract()?;
+                let columns = ob.getattr("columns")?.extract()?;
+                let boosts: Option<Vec<f32>> = ob.getattr("boosts")?.extract()?;
+                let operator: String = ob.getattr("operator")?.extract()?;
+
+                let q = CombinedFieldsQuery::try_new(query, columns)
                     .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
                 let q = if let Some(boosts) = boosts {
                     q.try_with_boosts(boosts)
@@ -180,9 +230,6 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
-            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
-                "Combined-fields FTS queries are not yet supported in Python",
-            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;
@@ -199,7 +246,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 }
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Phrase(query) => {
                 let kwargs = PyDict::new(py);
@@ -213,7 +260,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Boost(query) => {
                 let positive = Self(query.positive.as_ref().clone()).into_pyobject(py)?;
@@ -237,6 +284,18 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 namespace
                     .getattr(intern!(py, "MultiMatchQuery"))?
                     .call((first.terms.clone(), columns), Some(&kwargs))
+            }
+            FtsQuery::CombinedFields(query) => {
+                let (columns, boosts): (Vec<_>, Vec<_>) = query
+                    .weighted_columns()
+                    .map(|(column, boost)| (column.to_string(), boost))
+                    .unzip();
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("boosts", boosts)?;
+                kwargs.set_item::<_, &str>("operator", query.operator().into())?;
+                namespace
+                    .getattr(intern!(py, "CombinedFieldsQuery"))?
+                    .call((query.terms(), columns), Some(&kwargs))
             }
             FtsQuery::Boolean(query) => {
                 let mut queries: Vec<(&str, Bound<'py, PyAny>)> = Vec::with_capacity(
@@ -327,27 +386,32 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub take_offsets: Option<Vec<u64>>,
+    pub take_row_ids: Option<Vec<u64>>,
+    pub preserve_order: Option<bool>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
     pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
-    pub use_lsm: Option<bool>,
+    pub use_rte: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub nprobes: Option<usize>,
     pub minimum_nprobes: Option<usize>,
     pub maximum_nprobes: Option<usize>,
+    pub search_effort: Option<f64>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
     pub ef: Option<usize>,
+    pub approx_mode: Option<String>,
     pub refine_factor: Option<u32>,
     pub distance_type: Option<String>,
     pub bypass_vector_index: Option<bool>,
     pub postfilter: Option<bool>,
     pub norm: Option<String>,
     pub order_by: Option<Vec<PyColumnOrdering>>,
+    pub scan_in_order: Option<bool>,
 }
 
 impl From<AnyQuery> for PyQueryRequest {
@@ -357,6 +421,8 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 take_offsets: query_request.take_offsets,
+                take_row_ids: query_request.take_row_ids,
+                preserve_order: query_request.preserve_order.then_some(true),
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
@@ -365,43 +431,50 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
-                use_lsm: query_request.use_lsm,
+                use_rte: query_request.use_rte,
                 column: None,
                 query_vector: None,
                 nprobes: None,
                 minimum_nprobes: None,
                 maximum_nprobes: None,
+                search_effort: None,
                 lower_bound: None,
                 upper_bound: None,
                 ef: None,
+                approx_mode: None,
                 refine_factor: None,
                 distance_type: None,
                 bypass_vector_index: None,
-                postfilter: None,
+                postfilter: (!query_request.prefilter).then_some(true),
                 norm: None,
                 order_by: query_request
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: query_request.scan_in_order,
             },
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
                 take_offsets: vector_query.base.take_offsets,
+                take_row_ids: vector_query.base.take_row_ids,
+                preserve_order: vector_query.base.preserve_order.then_some(true),
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
-                use_lsm: vector_query.base.use_lsm,
+                use_rte: vector_query.base.use_rte,
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
                 nprobes: vector_query.nprobes,
                 minimum_nprobes: vector_query.minimum_nprobes,
                 maximum_nprobes: vector_query.maximum_nprobes,
+                search_effort: vector_query.search_effort,
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
+                approx_mode: vector_query.approx_mode.map(|m| m.to_string()),
                 refine_factor: vector_query.refine_factor,
                 distance_type: vector_query.distance_type.map(|d| d.to_string()),
                 bypass_vector_index: Some(!vector_query.use_index),
@@ -411,6 +484,7 @@ impl From<AnyQuery> for PyQueryRequest {
                     .base
                     .order_by
                     .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
+                scan_in_order: vector_query.base.scan_in_order,
             },
         }
     }
@@ -537,8 +611,8 @@ impl Query {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -579,8 +653,18 @@ impl Query {
                 query_text = query_text[1..query_text.len() - 1].to_string();
             }
 
+            let operator = query
+                .get_item("operator")?
+                .filter(|operator| !operator.is_none())
+                .map(|operator| {
+                    let operator = operator.extract::<String>()?;
+                    Operator::try_from(operator.as_str())
+                        .map_err(|err| PyValueError::new_err(err.to_string()))
+                })
+                .transpose()?
+                .unwrap_or(Operator::Or);
             let query: FtsQuery = match (is_phrase, is_multi_match) {
-                (false, _) => MatchQuery::new(query_text).into(),
+                (false, _) => MatchQuery::new(query_text).with_operator(operator).into(),
                 (true, false) => PhraseQuery::new(query_text).into(),
                 (true, true) => {
                     return Err(PyValueError::new_err(
@@ -619,6 +703,10 @@ impl Query {
         Ok(())
     }
 
+    pub fn scan_in_order(&mut self, ordered: bool) {
+        self.inner = self.inner.clone().scan_in_order(ordered);
+    }
+
     #[pyo3(signature = ())]
     pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
@@ -636,16 +724,56 @@ impl Query {
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let mut opts = QueryExecutionOptions::default();
-            if let Some(max_batch_length) = max_batch_length {
-                opts.max_batch_length = max_batch_length;
-            }
-            if let Some(timeout) = timeout {
-                opts.timeout = Some(timeout);
-            }
+            let opts = query_execution_options(max_batch_length, timeout);
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this local query and return a pull-driven synchronous iterator.
+    ///
+    /// The query is started once. Each `__next__` fetches exactly one batch
+    /// from the caller's thread while the GIL is released. `None` keeps the
+    /// core's default 1024-row output cap, `0` lets the engine choose, and a
+    /// positive value caps each returned batch.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_sync(
+        self_: PyRef<'_, Self>,
+        py: Python<'_>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<SyncRecordBatchStream> {
+        let inner = self_.inner.clone();
+        let opts = query_execution_options(max_batch_length, timeout);
+        let stream = py.detach(move || {
+            crate::runtime::block_on_interruptible(async move {
+                inner.execute_with_options(opts).await.infer_error()
+            })
+        })?;
+        Ok(SyncRecordBatchStream::new(stream))
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
@@ -703,8 +831,12 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn preserve_order(&mut self) {
+        self.inner = self.inner.clone().preserve_order();
+    }
+
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     #[pyo3(signature = ())]
@@ -734,6 +866,20 @@ impl TakeQuery {
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
@@ -816,8 +962,8 @@ impl FTSQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -858,6 +1004,67 @@ impl FTSQuery {
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
+        })
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(
+            self_.py(),
+            self_
+                .inner
+                .clone()
+                .full_text_search(self_.fts_query.clone()),
+            max_batch_length,
+            timeout,
+        )
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(
+            self_.py(),
+            self_
+                .inner
+                .clone()
+                .full_text_search(self_.fts_query.clone()),
+            max_batch_length,
+            timeout,
+        )
+    }
+
+    pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let mut inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
+        let request = inner.mut_query();
+        request.limit = None;
+        request.offset = None;
+        request.select = Select::columns(&["_score"]);
+        request.order_by = None;
+        request.with_row_id = false;
+        request.reranker = None;
+        future_into_py(self_.py(), async move {
+            let mut stream = inner.execute().await.infer_error()?;
+            let mut count = 0_u64;
+            while let Some(batch) = stream.try_next().await.infer_error()? {
+                count += batch.num_rows() as u64;
+            }
+            Ok(count)
         })
     }
 
@@ -967,8 +1174,8 @@ impl VectorQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -995,6 +1202,15 @@ impl VectorQuery {
 
     pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
         self.inner = self.inner.clone().nprobes(nprobe as usize).infer_error()?;
+        Ok(())
+    }
+
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> PyResult<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .search_effort(search_effort)
+            .infer_error()?;
         Ok(())
     }
 
@@ -1030,6 +1246,12 @@ impl VectorQuery {
         self.inner = self.inner.clone().ef(ef as usize);
     }
 
+    pub fn approx_mode(&mut self, approx_mode: String) -> PyResult<()> {
+        let approx_mode = ApproxMode::try_from(approx_mode.as_str()).infer_error()?;
+        self.inner = self.inner.clone().approx_mode(approx_mode);
+        Ok(())
+    }
+
     pub fn bypass_vector_index(&mut self) {
         self.inner = self.inner.clone().bypass_vector_index()
     }
@@ -1061,6 +1283,29 @@ impl VectorQuery {
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
+    }
+
+    /// Execute this query eagerly and return an Arrow C Stream reader.
+    ///
+    /// The returned reader exposes batches already collected in Rust, so
+    /// `pyarrow` can build a table without a Python future per batch. `None`
+    /// leaves out the core's default 1024-row output slicing.
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        crate::arrow::execute_to_reader(self_.py(), self_.inner.clone(), max_batch_length, timeout)
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute_to_reader_sync(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Py<PyAny>> {
+        execute_to_reader_sync(self_.py(), self_.inner.clone(), max_batch_length, timeout)
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
@@ -1166,9 +1411,9 @@ impl HybridQuery {
         self.inner_fts.postfilter();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner_vec.use_lsm(enable);
-        self.inner_fts.use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner_vec.use_rte(enable);
+        self.inner_fts.use_rte(enable);
     }
 
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
@@ -1191,8 +1436,24 @@ impl HybridQuery {
         self.inner_vec.nprobes(nprobe)
     }
 
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> PyResult<()> {
+        self.inner_vec.search_effort(search_effort)
+    }
+
+    pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
+        self.inner_vec.minimum_nprobes(minimum_nprobes)
+    }
+
+    pub fn maximum_nprobes(&mut self, maximum_nprobes: u32) -> PyResult<()> {
+        self.inner_vec.maximum_nprobes(maximum_nprobes)
+    }
+
     pub fn ef(&mut self, ef: u32) {
         self.inner_vec.ef(ef);
+    }
+
+    pub fn approx_mode(&mut self, approx_mode: String) -> PyResult<()> {
+        self.inner_vec.approx_mode(approx_mode)
     }
 
     pub fn bypass_vector_index(&mut self) {
@@ -1235,7 +1496,12 @@ impl HybridQuery {
         req.query_vector = vec_req.query_vector;
         req.column = vec_req.column;
         req.distance_type = vec_req.distance_type;
+        req.nprobes = vec_req.nprobes;
+        req.minimum_nprobes = vec_req.minimum_nprobes;
+        req.maximum_nprobes = vec_req.maximum_nprobes;
+        req.search_effort = vec_req.search_effort;
         req.ef = vec_req.ef;
+        req.approx_mode = vec_req.approx_mode;
         req.refine_factor = vec_req.refine_factor;
         req.lower_bound = vec_req.lower_bound;
         req.upper_bound = vec_req.upper_bound;

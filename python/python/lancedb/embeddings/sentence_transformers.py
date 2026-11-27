@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
-from typing import List, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -27,18 +27,31 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         The device to use for the model
     normalize : bool, default True
         Whether to normalize the embeddings
-    trust_remote_code : bool, default True
-        Whether to trust the remote code
+    trust_remote_code : bool, default False
+        Whether to run code from the model's repository. Only enable this for
+        repositories you trust. When restored from table metadata, this is only
+        enabled for models allowed with
+        [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code].
+    revision : Optional[str], default None
+        The model revision to load, such as a commit hash.
     """
 
     name: str = "all-MiniLM-L6-v2"
     device: str = "cpu"
     normalize: bool = True
-    trust_remote_code: bool = True
+    trust_remote_code: bool = False
+    revision: Optional[str] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._ndims = None
+
+    def remote_code_model(self) -> Optional[Tuple[str, Optional[str]]]:
+        return (self.name, self.revision)
+
+    @classmethod
+    def _legacy_trust_remote_code_default(cls) -> bool:
+        return True
 
     @property
     def embedding_model(self):
@@ -84,5 +97,8 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
             "sentence_transformers", "sentence-transformers"
         )
         return sentence_transformers.SentenceTransformer(
-            self.name, device=self.device, trust_remote_code=self.trust_remote_code
+            self.name,
+            device=self.device,
+            trust_remote_code=self.trust_remote_code,
+            revision=self.revision,
         )

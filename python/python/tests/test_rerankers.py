@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+from unittest.mock import MagicMock
 import random
 
 import lancedb
@@ -27,6 +28,7 @@ from lancedb.rerankers import (
     WatsonxReranker,
 )
 from lancedb.table import LanceTable
+from lancedb.rerankers.base import Reranker
 
 
 def get_test_table(tmp_path):
@@ -125,7 +127,7 @@ def _run_test_reranker(
     if deterministic:
         assert result1 == result2
 
-    query_vector = table.to_pandas()["vector"][0]
+    query_vector = table.to_arrow()["vector"][0].as_py()
     result = (
         table.search(query_type="hybrid", vector_column_name="vector")
         .vector(query_vector)
@@ -248,7 +250,7 @@ def _run_test_hybrid_reranker(reranker, tmp_path):
     assert result1 == result3  # 2 & 3 should be the same as they use score as score
 
     query = "Our father who art in heaven"
-    query_vector = table.to_pandas()["vector"][0]
+    query_vector = table.to_arrow()["vector"][0].as_py()
     result = (
         table.search(query_type="hybrid", vector_column_name="vector")
         .vector(query_vector)
@@ -357,6 +359,19 @@ def test_mrr_reranker(tmp_path):
     assert len(result_deduped) == len(result)
 
 
+@pytest.mark.parametrize("deduplicate", [False, True])
+def test_base_reranker_multivector_empty_input(deduplicate):
+    class VectorReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            raise AssertionError("should not rerank")
+
+        def rerank_vector(self, query, vector_results):
+            raise AssertionError("should not rerank")
+
+    with pytest.raises(ValueError, match="vector_results must not be empty"):
+        VectorReranker().rerank_multivector([], None, deduplicate=deduplicate)
+
+
 def test_mrr_reranker_empty_input():
     reranker = MRRReranker()
     with pytest.raises(ValueError, match="must not be empty"):
@@ -425,6 +440,38 @@ def test_rrf_multivector_ranks_each_result_list():
     )
     assert scores[2] == pytest.approx(1 / 62 + 1 / 61)
     assert result["_rowid"].to_pylist() == [2, 1, 3]
+
+
+@pytest.mark.parametrize("reranker_cls", [RRFReranker, MRRReranker])
+def test_rank_fusion_return_score_all_keeps_both_scores(reranker_cls):
+    # A row found by both searches must keep its vector `_distance` and its FTS
+    # `_score` when the reranker is asked to return all scores.
+    vector_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], type=pa.uint64()),
+            "text": ["a", "b"],
+            "_distance": pa.array([0.1, 0.2], type=pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([2, 3], type=pa.uint64()),
+            "text": ["b", "c"],
+            "_score": pa.array([5.0, 4.0], type=pa.float32()),
+        }
+    )
+
+    result = reranker_cls(return_score="all").rerank_hybrid(
+        "query", vector_results, fts_results
+    )
+    rows = {row["_rowid"]: row for row in result.to_pylist()}
+
+    assert rows[1]["_distance"] == pytest.approx(0.1)
+    assert rows[1]["_score"] is None
+    assert rows[2]["_distance"] == pytest.approx(0.2)
+    assert rows[2]["_score"] == pytest.approx(5.0)
+    assert rows[3]["_distance"] is None
+    assert rows[3]["_score"] == pytest.approx(4.0)
 
 
 def test_rrf_reranker_distance():
@@ -545,6 +592,24 @@ def test_openai_reranker(tmp_path):
     table, schema = get_test_table(tmp_path)
     reranker = OpenaiReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+def test_openai_reranker_does_not_send_temperature():
+    reranker = OpenaiReranker(api_key="test-key")
+    create = MagicMock()
+    create.return_value.choices = [
+        MagicMock(
+            message=MagicMock(
+                content='{"documents": [{"content": "a", "relevance_score": 0.5}]}'
+            )
+        )
+    ]
+    reranker.__dict__["_client"] = MagicMock()
+    reranker.__dict__["_client"].chat.completions.create = create
+
+    reranker._rerank(pa.table({"text": ["a"]}), "query")
+
+    assert "temperature" not in create.call_args.kwargs
 
 
 @pytest.mark.skipif(
@@ -785,6 +850,204 @@ def test_empty_hybrid_result_reranker():
     assert "_rowid" in result.column_names
 
 
+@pytest.mark.parametrize("reranker_cls", [LinearCombinationReranker, RRFReranker])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_empty_hybrid_result_keeps_reranker_columns(
+    tmp_path, reranker_cls, return_score
+):
+    # A filter that matches nothing must not change which columns come back.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "text": ["red fox", "blue fox"],
+                "vector": pa.array([[1.0, 2.0], [3.0, 4.0]], pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    reranker = reranker_cls(return_score=return_score)
+
+    def columns(where):
+        query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
+        query = query.where(where, prefilter=True).rerank(reranker)
+        return query.to_arrow().column_names
+
+    assert columns("text = 'none'") == columns("text != 'none'")
+
+
+def test_empty_hybrid_result_skips_keep_relevance_score_override(tmp_path):
+    # An override written for non-empty results must not run on the empty path.
+    class FirstRowReranker(LinearCombinationReranker):
+        def _keep_relevance_score(self, combined_results):
+            combined_results["_relevance_score"][0]
+            return super()._keep_relevance_score(combined_results)
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "text": ["red fox", "blue fox"],
+                "vector": pa.array([[1.0, 2.0], [3.0, 4.0]], pa.list_(pa.float32(), 2)),
+            }
+        ),
+    )
+    table.create_fts_index("text")
+    query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
+    query = query.where("text = 'none'", prefilter=True).rerank(FirstRowReranker())
+    assert query.to_arrow().num_rows == 0
+
+
+@pytest.mark.parametrize("norm", ["score", "rank"])
+def test_hybrid_return_all_restores_original_scores(norm):
+    from lancedb.query import LanceHybridQueryBuilder
+
+    vector_results = pa.table(
+        {
+            "text": ["a", "b", "c"],
+            "_rowid": pa.array([0, 1, 2], type=pa.uint64()),
+            "_distance": pa.array([0.5, 2.5, 10.0], type=pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "text": ["b", "a"],
+            "_rowid": pa.array([1, 0], type=pa.uint64()),
+            "_score": pa.array([3.25, 1.75], type=pa.float32()),
+        }
+    )
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm=norm,
+        fts_query="query",
+        reranker=RRFReranker(return_score="all"),
+        limit=10,
+        with_row_ids=True,
+    )
+
+    # The raw distances and scores are returned, not the normalized values
+    # or ranks used for reranking.
+    rows = {row["_rowid"]: row for row in result.to_pylist()}
+    assert rows[0]["_distance"] == 0.5
+    assert rows[1]["_distance"] == 2.5
+    assert rows[2]["_distance"] == 10.0
+    assert rows[0]["_score"] == 1.75
+    assert rows[1]["_score"] == 3.25
+    assert rows[2]["_score"] is None
+
+
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+@pytest.mark.parametrize("first_row_id", [1, 2**63])
+@pytest.mark.parametrize("score_type", [pa.float32(), pa.float64()])
+def test_model_reranker_preserves_arrow_schema(
+    mocker, return_score, first_row_id, score_type
+):
+    common_schema = pa.schema(
+        [
+            pa.field("_rowid", pa.uint64()),
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+        ],
+        metadata={b"source": b"reranker-test"},
+    )
+    vector_results = pa.Table.from_pylist(
+        [
+            {
+                "_rowid": first_row_id,
+                "text": "vector",
+                "vector": [1, 0],
+                "_distance": 0.1,
+            },
+            {
+                "_rowid": first_row_id + 1,
+                "text": "both",
+                "vector": [0, 1],
+                "_distance": 0.2,
+            },
+        ],
+        schema=common_schema.append(pa.field("_distance", score_type)),
+    )
+    fts_results = pa.Table.from_pylist(
+        [
+            {
+                "_rowid": first_row_id + 1,
+                "text": "both",
+                "vector": [0, 1],
+                "_score": 0.9,
+            },
+            {
+                "_rowid": first_row_id + 2,
+                "text": "fts",
+                "vector": [1, 1],
+                "_score": 0.8,
+            },
+        ],
+        schema=common_schema.append(pa.field("_score", score_type)),
+    )
+    reranker = CohereReranker(return_score=return_score)
+    reranker._client = mocker.Mock()
+    reranker._client.rerank.return_value.results = [
+        mocker.Mock(index=index, relevance_score=score)
+        for index, score in [(2, 0.9), (1, 0.8), (0, 0.7)]
+    ]
+
+    result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+    assert result.select(common_schema.names).schema.equals(
+        common_schema, check_metadata=True
+    )
+    assert result["_rowid"].to_pylist() == [
+        first_row_id + 2,
+        first_row_id + 1,
+        first_row_id,
+    ]
+    assert result["text"].to_pylist() == ["fts", "both", "vector"]
+    if return_score == "all":
+        assert (
+            result["_distance"]
+            .combine_chunks()
+            .equals(pa.array([None, 0.2, 0.1], type=score_type))
+        )
+        assert (
+            result["_score"]
+            .combine_chunks()
+            .equals(pa.array([0.8, 0.9, None], type=score_type))
+        )
+
+
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_model_reranker_empty_results_preserve_schema(mocker, return_score):
+    common_schema = pa.schema(
+        [
+            ("_rowid", pa.uint64()),
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 2)),
+        ],
+        metadata={b"source": b"reranker-test"},
+    )
+    vector_results = pa.Table.from_pylist(
+        [], schema=common_schema.append(pa.field("_distance", pa.float32()))
+    )
+    fts_results = pa.Table.from_pylist(
+        [], schema=common_schema.append(pa.field("_score", pa.float32()))
+    )
+    reranker = CohereReranker(return_score=return_score)
+    reranker._client = mocker.Mock()
+
+    result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+    assert len(result) == 0
+    assert result.select(common_schema.names).schema.equals(
+        common_schema, check_metadata=True
+    )
+    assert result.schema.field("_relevance_score").type == pa.float32()
+    reranker._client.rerank.assert_not_called()
+
+
 def test_cross_encoder_reranker_return_all(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker(return_score="all")
@@ -898,6 +1161,52 @@ def test_linear_combination_missing_fts_is_penalised():
     assert scores[0] > scores[1], (
         f"Document with FTS score (rowid 0, {scores[0]:.4f}) should beat "
         f"document with no FTS match (rowid 1, {scores[1]:.4f})"
+    )
+
+
+@pytest.mark.parametrize("empty_side", ["vector", "fts"])
+def test_linear_combination_empty_side_scores_are_null(empty_side):
+    """With return_score="all", the missing side's score column is null, not NaN."""
+    from lancedb.query import LanceHybridQueryBuilder
+
+    vector_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_distance": pa.array([0.1, 0.2], pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], pa.uint64()),
+            "_score": pa.array([5.0, 4.0], pa.float32()),
+        }
+    )
+    if empty_side == "vector":
+        expected_present = fts_results["_score"].to_pylist()
+        vector_results = vector_results.slice(0, 0)
+        missing = "_distance"
+        present = "_score"
+    else:
+        expected_present = vector_results["_distance"].to_pylist()
+        fts_results = fts_results.slice(0, 0)
+        missing = "_score"
+        present = "_distance"
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm="score",
+        fts_query="query",
+        reranker=LinearCombinationReranker(return_score="all"),
+        limit=10,
+        with_row_ids=True,
+    )
+
+    assert result[missing].type == pa.float32()
+    assert result[missing].null_count == len(result) == 2
+    assert result[present].to_pylist() == expected_present
+    assert result["_relevance_score"].to_pylist() == sorted(
+        result["_relevance_score"].to_pylist(), reverse=True
     )
 
 

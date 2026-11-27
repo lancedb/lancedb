@@ -1,10 +1,44 @@
 # LanceDB Java Enterprise Client
 
+## Installation
+
+Stable releases of `com.lancedb:lancedb-core` are published to Maven Central.
+
+Beta releases are published to `https://maven.fury.io/lancedb/` instead. They
+depend on Lance beta releases, which are published to `https://maven.lance.org`.
+To use a beta, add both repositories alongside Maven Central:
+
+```xml
+<repositories>
+    <repository>
+        <id>lancedb</id>
+        <url>https://maven.fury.io/lancedb/</url>
+    </repository>
+    <repository>
+        <id>lance</id>
+        <url>https://maven.lance.org</url>
+    </repository>
+</repositories>
+```
+
+For Gradle:
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven { url = uri("https://maven.fury.io/lancedb/") }
+    maven { url = uri("https://maven.lance.org") }
+}
+```
+
+Use an explicit version, including the full `-beta.N` suffix. Beta versions are
+Maven releases, not `SNAPSHOT` versions.
+
 ## Configuration and Initialization
 
-### LanceDB Cloud
+### LanceDB Cloud (legacy)
 
-For LanceDB Cloud, use the simplified builder API:
+For LanceDB Cloud, the legacy hosted service, use the simplified builder API:
 
 ```java
 import com.lancedb.LanceDbNamespaceClientBuilder;
@@ -19,7 +53,7 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 
 ### LanceDB Enterprise
 
-For Enterprise deployments, use your custom endpoint:
+For LanceDB Enterprise deployments, use your custom endpoint:
 
 ```java
 LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
@@ -29,35 +63,35 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .build();
 ```
 
-## MemWAL LSM write path
+## RTE write path
 
 Most table operations reach LanceDB through the `LanceNamespace` above, which is
-generated from the Lance Namespace specification. The MemWAL LSM routes are not part
+generated from the Lance Namespace specification. The RTE LSM routes are not part
 of that specification, so they are issued through a separate client:
 
 ```java
 import com.lancedb.LanceDbRestClient;
-import com.lancedb.LanceDbTableLsm;
-import com.lancedb.LsmWriteSpec;
+import com.lancedb.LanceDbTableRTE;
+import com.lancedb.RTEWriteSpec;
 
 LanceDbRestClient client = LanceDbNamespaceClientBuilder.newBuilder()
     .apiKey("your_lancedb_cloud_api_key")
     .database("your_database_name")
     .buildRestClient();
 
-LanceDbTableLsm lsm = new LanceDbTableLsm(client, "my_table");
+LanceDbTableRTE rte = new LanceDbTableRTE(client, "my_table");
 
-// Route future merge_insert upserts through the MemWAL, hash-bucketed by `id`.
-lsm.setLsmWriteSpec(LsmWriteSpec.bucket("id", 16));
+// Route future merge_insert upserts through the RTE, hash-bucketed by `id`.
+rte.enableRTE(RTEWriteSpec.bucket("id", 16));
 
 // ... merge_insert traffic ...
 
 // Converge the fresh tier into the base table.
-lsm.checkpointLsm();
+rte.checkpointRTE();
 
-// Inspect live per-bucket state.
-lsm.getLsmStats().ifPresent(stats -> stats.buckets().forEach(bucket ->
-    System.out.println(bucket.shardId() + ": " + bucket.generations().size() + " L0 generations")));
+// Inspect live per-table-shard state.
+rte.getRTEStats().ifPresent(stats -> stats.tableShards().forEach(tableShard ->
+    System.out.println(tableShard.shardId() + ": " + tableShard.sstables().size() + " SSTables")));
 
 client.close();
 ```

@@ -1,19 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatch;
-use lancedb::job::JobEventsRequest;
+use lancedb::job::{
+    FunctionProfileKind, FunctionProfileOptions, FunctionProfileWaitOptions, JobEventsRequest,
+    JobWaitOptions,
+};
 use napi::bindgen_prelude::Buffer;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
 
+type JobProgressFn =
+    ThreadsafeFunction<serde_json::Value, (), serde_json::Value, napi::Status, false>;
+
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+fn profile_integer(value: f64, name: &str) -> napi::Result<u64> {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=MAX_SAFE_INTEGER).contains(&value) {
+        return Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            format!("{name} must be a nonnegative safe integer"),
+        ));
+    }
+    Ok(value as u64)
+}
+
 /// A handle to an operation that may still be running.
 #[napi]
 pub struct Job {
-    inner: Arc<lancedb::Job>,
+    inner: Arc<lancedb::Job<std::result::Result<Option<serde_json::Value>, String>>>,
 }
 
 impl Job {
@@ -22,22 +41,73 @@ impl Job {
         T: Clone + Send + Sync + 'static,
     {
         Self {
-            inner: Arc::new(inner.map(|_| ())),
+            inner: Arc::new(inner.map(|_| Ok(None))),
+        }
+    }
+    pub(crate) fn new_typed<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + serde::Serialize + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_value(result)
+                    .map(Some)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
         }
     }
 }
 
 #[napi]
 impl Job {
-    /// Identifies the operation on the server that is running it. Operations
-    /// that run in this process have no server id. The value is opaque.
+    /// The operation's opaque ID. Interpret registry and query IDs using job_type().
+    /// Local handles have no ID.
     #[napi(getter)]
     pub fn id(&self) -> Option<String> {
         self.inner.id().map(str::to_string)
     }
 
-    /// The operation's current lifecycle state: "running", "finished",
-    /// "failed", or "cancelled".
+    #[napi(getter)]
+    pub fn job_id(&self) -> Option<String> {
+        self.inner.job_id()
+    }
+
+    #[napi(getter)]
+    pub fn operation_id(&self) -> Option<String> {
+        self.inner.operation_id()
+    }
+
+    #[napi(getter)]
+    pub fn attempt(&self) -> Option<u32> {
+        self.inner.attempt()
+    }
+
+    #[napi(getter)]
+    pub fn retry_of(&self) -> Option<String> {
+        self.inner.retry_of()
+    }
+
+    #[napi(getter)]
+    pub fn lifecycle_state(&self) -> Option<String> {
+        self.inner
+            .lifecycle_state()
+            .map(|state| state.as_str().to_string())
+    }
+
+    #[napi(getter)]
+    pub fn source_table_version(&self) -> Option<f64> {
+        self.inner
+            .source_table_version()
+            .map(|version| version as f64)
+    }
+
+    #[napi(getter)]
+    pub fn execution_epoch(&self) -> Option<i64> {
+        self.inner.execution_epoch()
+    }
+
+    /// The current status, usually "running", "finished", "failed", or "cancelled".
+    /// A Function refresh waiting for execution workers reports "waiting_for_capacity".
     ///
     /// A point snapshot; unlike {@link Job.wait} it does not block or reject
     /// on a terminal failure state. States a newer server reports that this
@@ -47,10 +117,71 @@ impl Job {
         self.inner.status().await.default_error()
     }
 
-    /// Wait until the operation reaches a terminal state.
-    #[napi(catch_unwind)]
-    pub async fn wait(&self) -> napi::Result<()> {
-        self.inner.wait().await.default_error()
+    /// The current structured progress snapshot, or null for an in-process
+    /// operation. Registry snapshots include lifecycle and queue metadata even
+    /// when the job type or server does not report counters.
+    #[napi(
+        catch_unwind,
+        ts_return_type = "Promise<Record<string, unknown> | null>"
+    )]
+    pub async fn progress(&self) -> napi::Result<Option<serde_json::Value>> {
+        self.inner.progress().await.default_error()
+    }
+
+    /// Wait until the operation reaches a terminal state. When a callback is
+    /// supplied, observe the same progress snapshots fetched by the existing
+    /// backend poller without starting another polling loop.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
+    )]
+    pub async fn wait(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
+    ) -> napi::Result<()> {
+        self.wait_result(progress_callback, timeout_ms)
+            .await
+            .map(|_| ())
+    }
+
+    /// The typed terminal value used by result-returning SDK operations.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "progressCallback?: (progress: Record<string, unknown>) => void, timeoutMs?: number"
+    )]
+    pub async fn wait_result(
+        &self,
+        progress_callback: Option<JobProgressFn>,
+        timeout_ms: Option<f64>,
+    ) -> napi::Result<Option<serde_json::Value>> {
+        let mut options = JobWaitOptions::new();
+        if let Some(timeout_ms) = timeout_ms {
+            if !timeout_ms.is_finite()
+                || timeout_ms.fract() != 0.0
+                || !(0.0..=MAX_SAFE_INTEGER).contains(&timeout_ms)
+            {
+                return Err(napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "timeoutMs must be a nonnegative safe integer",
+                ));
+            }
+            options = options.timeout(Duration::from_millis(timeout_ms as u64));
+        }
+        if let Some(progress_callback) = progress_callback {
+            options = options.progress(move |description| {
+                progress_callback.call(
+                    description.progress_snapshot(),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+            });
+        }
+        let result = self
+            .inner
+            .wait_with_options(options)
+            .await
+            .default_error()?;
+        result.map_err(napi::Error::from_reason)
     }
 
     /// Request cancellation. Cancelling a finished operation is a no-op.
@@ -59,11 +190,18 @@ impl Job {
         self.inner.cancel().await.default_error()
     }
 
+    #[napi(catch_unwind)]
+    pub async fn retry(&self) -> napi::Result<Self> {
+        Ok(Self {
+            inner: Arc::new(self.inner.retry().await.default_error()?),
+        })
+    }
+
     /// Ask the backend for this job's current state, and for a server-side job
     /// its full record, then cache it for the getters below.
     ///
-    /// They are all null until this runs, because submitting an operation
-    /// returns only a job id. {@link Job.status} fetches the whole record too;
+    /// Registry details are null until this runs; query handles already expose
+    /// job_type "query". {@link Job.status} fetches the whole registry record too;
     /// {@link Job.wait} records only the terminal state it establishes.
     #[napi(catch_unwind)]
     pub async fn refresh(&self) -> napi::Result<()> {
@@ -76,8 +214,8 @@ impl Job {
         self.inner.state()
     }
 
-    /// The job's type, as the server names it. Null for an in-process job,
-    /// which has no server-side record.
+    /// "query" immediately for SQL-backed handles; otherwise the cached
+    /// server-reported job type. Null for in-process handles.
     #[napi(getter)]
     pub fn job_type(&self) -> Option<String> {
         self.inner.job_type()
@@ -106,20 +244,103 @@ impl Job {
     /// Why the job failed, when it failed and the server reports a reason.
     #[napi(getter)]
     pub fn failure(&self) -> Option<JobFailureInfo> {
-        self.inner.failure().map(|failure| JobFailureInfo {
-            phase: failure.phase,
-            message: failure.message,
-            retryable: failure.retryable,
-        })
+        self.inner.failure().map(Into::into)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn capture_profile(
+        &self,
+        worker_id: String,
+        kind: String,
+        duration_seconds: Option<f64>,
+        session_slot: Option<f64>,
+    ) -> napi::Result<String> {
+        let kind: FunctionProfileKind =
+            serde_json::from_value(serde_json::json!(kind)).map_err(|_| {
+                napi::Error::new(napi::Status::InvalidArg, "kind must be cpu, memory or gpu")
+            })?;
+        let mut options = FunctionProfileOptions::new(kind);
+        if let Some(slot) = session_slot {
+            options = options.session_slot(profile_integer(slot, "sessionSlot")? as usize);
+        }
+        if let Some(seconds) = duration_seconds {
+            let duration = Duration::try_from_secs_f64(seconds).map_err(|_| {
+                napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "durationSeconds must be finite and nonnegative",
+                )
+            })?;
+            options = options.duration(duration);
+        }
+        let profile = self
+            .inner
+            .capture_profile(worker_id, options)
+            .await
+            .default_error()?;
+        serde_json::to_string(&profile).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn profile_status(&self, profile_id: String) -> napi::Result<String> {
+        let profile = self
+            .inner
+            .profile_status(profile_id)
+            .await
+            .default_error()?;
+        serde_json::to_string(&profile).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_profile(
+        &self,
+        profile_id: String,
+        timeout_ms: Option<f64>,
+        poll_interval_ms: Option<f64>,
+    ) -> napi::Result<String> {
+        let mut options = FunctionProfileWaitOptions::new();
+        if let Some(ms) = timeout_ms {
+            options = options.timeout(Duration::from_millis(profile_integer(ms, "timeoutMs")?));
+        }
+        if let Some(ms) = poll_interval_ms {
+            options = options.poll_interval(Duration::from_millis(profile_integer(
+                ms,
+                "pollIntervalMs",
+            )?));
+        }
+        let profile = self
+            .inner
+            .wait_for_profile(profile_id, options)
+            .await
+            .default_error()?;
+        serde_json::to_string(&profile).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn profile_artifact(&self, profile_id: String) -> napi::Result<String> {
+        Ok(self
+            .inner
+            .profile_artifact(profile_id)
+            .await
+            .default_error()?
+            .to_string())
     }
 
     /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.
     /// The TypeScript wrapper turns it into an Arrow table.
     #[napi(catch_unwind)]
-    pub async fn events(&self, limit: Option<u32>, filter: Option<String>) -> napi::Result<Buffer> {
+    pub async fn events(
+        &self,
+        limit: Option<u32>,
+        filter: Option<String>,
+        page_token: Option<String>,
+    ) -> napi::Result<Buffer> {
         let batches = self
             .inner
-            .events(JobEventsRequest { limit, filter })
+            .events(JobEventsRequest {
+                limit,
+                filter,
+                page_token,
+            })
             .await
             .default_error()?;
         batches_to_ipc_buffer(&batches)
@@ -159,24 +380,67 @@ pub struct JobInfo {
     pub state: String,
     /// When the job was created, in milliseconds since the epoch.
     pub created_at_millis: i64,
+    /// Terminal timestamp in milliseconds since the epoch, when known.
+    pub completed_at_millis: Option<i64>,
+    /// Creation-to-completion wall time, including queueing and pauses.
+    pub duration_millis: Option<i64>,
+    /// Affected columns; empty when unavailable or not column-scoped.
+    pub columns: Vec<String>,
+    /// Pinned Function catalog name, with namespace segments joined by `$`.
+    pub function_name: Option<String>,
+    /// Pinned Function version, when known.
+    pub function_version: Option<String>,
+    /// Durable failure summary, when available.
+    pub failure: Option<JobFailureInfo>,
+    /// Structured lifecycle, queue, pause, and job-type-specific progress.
+    #[napi(ts_type = "Record<string, unknown>")]
+    pub progress: serde_json::Value,
+    /// Whether an operator has parked this job.
+    pub paused: bool,
 }
 
 impl From<lancedb::database::JobInfo> for JobInfo {
     fn from(info: lancedb::database::JobInfo) -> Self {
+        let progress = info.progress_snapshot();
         Self {
             job_id: info.job_id,
             table: info.table,
             job_type: info.job_type,
             state: info.state,
             created_at_millis: info.created_at_millis,
+            completed_at_millis: info.completed_at_millis,
+            duration_millis: info.duration_millis,
+            columns: info.columns,
+            function_name: info.function_name,
+            function_version: info.function_version,
+            failure: info.failure.map(Into::into),
+            progress,
+            paused: info.paused,
         }
     }
 }
 
 /// The server's account of why a job failed.
 #[napi(object)]
+#[derive(Clone, Debug)]
 pub struct JobFailureInfo {
     pub phase: Option<String>,
     pub message: Option<String>,
+    /// User-code traceback, possibly truncated by the server.
+    pub traceback: Option<String>,
     pub retryable: Option<bool>,
+    /// Isolated SQL job that raised this failure, when supplied by the server.
+    pub sql_job_id: Option<String>,
+}
+
+impl From<lancedb::error::JobFailure> for JobFailureInfo {
+    fn from(failure: lancedb::error::JobFailure) -> Self {
+        Self {
+            phase: failure.phase,
+            message: failure.message,
+            traceback: failure.traceback,
+            retryable: failure.retryable,
+            sql_job_id: failure.sql_job_id,
+        }
+    }
 }

@@ -6,23 +6,273 @@
 import tempfile
 import shutil
 import importlib
+import asyncio
+import pickle
+import warnings
 import http.server
 import json
-import threading
 from urllib.parse import parse_qs, unquote, urlparse
 import pytest
+import builtins
+import copy
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lance_namespace import DescribeTableResponse
+from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
-from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
-from lancedb.query import Query
+from lancedb.index import FTS
+from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
+from lancedb.namespace import (
+    _MAX_QUERY_K,
+    LanceNamespace,
+    LanceNamespaceDBConnection,
+    _query_to_namespace_request,
+)
+from lancedb.query import ColumnOrdering, FullTextSearchQuery, Query
 from lancedb.table import AsyncTable, LanceTable
 
 
 PUSHDOWN_DATA = pa.table(
     {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
+
+
+class _RefreshNamespaceWithExpiringOptions(LanceNamespace):
+    def __init__(self, root):
+        self.root = root
+
+    def namespace_id(self):
+        return f"refresh-test:{self.root}"
+
+    def describe_table(self, request):
+        from pathlib import Path
+
+        return DescribeTableResponse(
+            location=str(Path(self.root) / "t.lance"),
+            storage_options={"vended": "fresh", "expires_at_millis": "1"},
+        )
+
+
+class _DeclaredNamespaceWithoutProperties(LanceNamespace):
+    root = None
+
+    def __init__(self):
+        from lance.namespace import DirectoryNamespace
+
+        self.client = DirectoryNamespace(root=self.root)
+
+    def namespace_id(self):
+        return self.client.namespace_id()
+
+    def describe_table(self, request):
+        return self.client.describe_table(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table_id", [["events"], ["analytics", "events"], ["missing"]])
+async def test_custom_namespace_table_exists_uses_namespace_api(table_id):
+    class ExistenceNamespace(LanceNamespace):
+        def namespace_id(self):
+            return "existence-test"
+
+        def table_exists(self, request):
+            if request.id == ["missing"]:
+                raise TableNotFoundError("Table not found")
+
+        def describe_table(self, request):
+            raise AssertionError("Custom existence checks must not open tables")
+
+    namespace = ExistenceNamespace()
+    db = LanceNamespaceDBConnection(namespace)
+    adb = lancedb.AsyncLanceNamespaceDBConnection(namespace)
+    assert db.table_exists(table_id) is (table_id != ["missing"])
+    assert await adb.table_exists(table_id) is (table_id != ["missing"])
+
+
+def test_table_pickle_rejects_custom_namespace_connection(tmp_path):
+    pytest.importorskip("lance")
+    from lance.namespace import DirectoryNamespace
+
+    lancedb.connect_namespace("dir", {"root": str(tmp_path)}).create_table(
+        "t", [{"id": 1}]
+    )
+
+    class UnserializableNamespace(LanceNamespace):
+        def __init__(self, root):
+            from threading import Lock
+
+            self.client = DirectoryNamespace(root=str(root))
+            self.lock = Lock()
+
+        def namespace_id(self):
+            return self.client.namespace_id()
+
+        def describe_table(self, request):
+            return self.client.describe_table(request)
+
+    db = LanceNamespaceDBConnection(UnserializableNamespace(tmp_path))
+    table = db.open_table("t")
+
+    with pytest.raises(TypeError, match="namespace"):
+        pickle.dumps(table)
+
+
+def test_declared_namespace_pickle_keeps_caller_options_after_refresh(tmp_path):
+    lancedb.connect(tmp_path).create_table("t", [{"id": 1}])
+    db = lancedb.connect_namespace(
+        f"{__name__}._RefreshNamespaceWithExpiringOptions", {"root": str(tmp_path)}
+    )
+    table = db.open_table("t", storage_options={"caller_only": "keep"})
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    for current in (table, restored):
+        options = current.latest_storage_options()
+        assert options["caller_only"] == "keep"
+        assert options["vended"] == "fresh"
+
+
+def test_table_pickle_allows_declared_namespace_without_properties(tmp_path):
+    pytest.importorskip("lance")
+
+    lancedb.connect_namespace("dir", {"root": str(tmp_path)}).create_table(
+        "t", [{"id": 1}]
+    )
+    _DeclaredNamespaceWithoutProperties.root = str(tmp_path)
+    try:
+        impl = f"{__name__}._DeclaredNamespaceWithoutProperties"
+        db = LanceNamespaceDBConnection(
+            _DeclaredNamespaceWithoutProperties(), namespace_client_impl=impl
+        )
+        table = db.open_table("t")
+
+        restored = pickle.loads(pickle.dumps(table))
+
+        assert restored.to_arrow()["id"].to_pylist() == [1]
+    finally:
+        _DeclaredNamespaceWithoutProperties.root = None
+
+
+class TestNamespaceCreateTableOptions:
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_storage_version(self, tmp_path, version, empty):
+        pytest.importorskip("lance")
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "namespace")})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        assert (
+            table.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_storage_version_async(self, tmp_path, version, empty):
+        pytest.importorskip("lance")
+        root = str(tmp_path / "namespace")
+        db = lancedb.connect_namespace_async("dir", {"root": root})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        reopened = lancedb.connect_namespace("dir", {"root": root}).open_table("test")
+        assert (
+            reopened.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_manifest_paths(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert table.uses_v2_manifest_paths() == enabled
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert db.open_table("test").uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_manifest_paths_async(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert await table.uses_v2_manifest_paths() == enabled
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        reopened = await db.open_table("test")
+        assert await reopened.uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
 
 
 def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
@@ -44,6 +294,9 @@ class _FailingSyncInner:
 
     async def to_arrow(self):
         raise RuntimeError("direct table to_arrow should not be used")
+
+    async def _execute_query(self, query, **kwargs):
+        raise RuntimeError("local execution reached")
 
 
 class _FailingAsyncInner:
@@ -146,10 +399,331 @@ def paginated_rest_namespace():
             pass
 
     with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+        thread = start_server_thread(server)
         try:
             yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_rest_namespace_table_pickle_keeps_live_storage_options(tmp_path):
+    from time import time
+
+    local = lancedb.connect(tmp_path)
+    local.create_table("t", [{"id": 1}])
+    location = str(tmp_path / "t.lance")
+    ipc = _ipc_file(pa.table({"id": [42]}))
+    seen = []
+    current_options = {
+        "block_size": "4096",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            seen.append(path)
+            if path.endswith("/describe"):
+                body = json.dumps(
+                    {"location": location, "storage_options": current_options}
+                ).encode()
+                content_type = "application/json"
+            elif path.endswith("/query"):
+                body = ipc
+                content_type = "application/vnd.apache.arrow.file"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest",
+                {"uri": f"http://127.0.0.1:{server.server_port}"},
+                namespace_client_pushdown_operations=["QueryTable"],
+            )
+            table = db.open_table("t")
+            restored = pickle.loads(pickle.dumps(table))
+
+            seen.clear()
+            assert restored.search().limit(1).to_list() == [{"id": 42}]
+            assert seen == ["/v1/table/t/query"]
+
+            current_options = {
+                "block_size": "8192",
+                "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+            }
+            assert table.latest_storage_options()["block_size"] == "8192"
+            assert restored.latest_storage_options()["block_size"] == "8192"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_rest_namespace_create_empty_refresh_does_not_restore_expired_seed(tmp_path):
+    from time import time
+
+    location = str(tmp_path / "t.lance")
+    current_options = {
+        "vended_seed": "short-lived",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if not (path.endswith("/declare") or path.endswith("/describe")):
+                self.send_error(404)
+                return
+            body = json.dumps(
+                {"location": location, "storage_options": current_options}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest", {"uri": f"http://127.0.0.1:{server.server_port}"}
+            )
+            table = db.create_table("t", [{"id": 1}])
+            payload = pickle.dumps(table)
+            assert b"short-lived" not in payload
+            restored = pickle.loads(payload)
+
+            current_options = {}
+            assert table.latest_storage_options() == {}
+            assert restored.latest_storage_options() == {}
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.mark.parametrize("entrypoint", ["create", "open"])
+def test_rest_namespace_pickle_layers_caller_storage_options(tmp_path, entrypoint):
+    from time import time
+
+    location = str(tmp_path / "t.lance")
+    caller_options = {"caller_option": "kept", "conflict": "caller"}
+    vended_options = {
+        "vended_1": "old",
+        "conflict": "vended",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if path.endswith("/declare") or path.endswith("/describe"):
+                body = json.dumps(
+                    {"location": location, "storage_options": vended_options}
+                ).encode()
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            db = lancedb.connect_namespace(
+                "rest",
+                {"uri": f"http://127.0.0.1:{server.server_port}"},
+            )
+            if entrypoint == "create":
+                table = db.create_table(
+                    "t", [{"id": 1}], storage_options=caller_options
+                )
+            else:
+                db.create_table("t", [{"id": 1}])
+                table = db.open_table("t", storage_options=caller_options)
+            restored = pickle.loads(pickle.dumps(table))
+
+            for current in (table, restored):
+                options = current.latest_storage_options()
+                assert options["caller_option"] == "kept"
+                assert options["conflict"] == "vended"
+
+            vended_options.update(
+                {
+                    "vended_2": "new",
+                    "conflict": "vended-new",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                }
+            )
+
+            for current in (table, restored):
+                options = current.latest_storage_options()
+                assert options["caller_option"] == "kept"
+                assert options["vended_2"] == "new"
+                assert options["conflict"] == "vended-new"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_namespace_open_uses_explicit_storage_options_provider(tmp_path):
+    from time import time
+
+    from lancedb._lancedb import connect_namespace as connect_namespace_inner
+    from lancedb.db import AsyncConnection
+
+    location = str(tmp_path / "t.lance")
+    seed_options = {
+        "vended_seed": "short-lived",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            if not (path.endswith("/declare") or path.endswith("/describe")):
+                self.send_error(404)
+                return
+            result = {"location": location, "storage_options": seed_options}
+            body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class ExplicitClient(LanceNamespace):
+        calls = 0
+
+        def namespace_id(self):
+            return "explicit-storage-options-provider"
+
+        def describe_table(self, request):
+            self.calls += 1
+            return DescribeTableResponse(
+                location=location,
+                storage_options={
+                    "explicit_provider": "fresh",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                },
+            )
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            properties = {"uri": f"http://127.0.0.1:{server.server_port}"}
+            db = lancedb.connect_namespace("rest", properties)
+            db.create_table("t", [{"id": 1}])
+
+            async def check():
+                connection = AsyncConnection(
+                    connect_namespace_inner("rest", properties)
+                )
+                client = ExplicitClient()
+                table = await connection.open_table("t", namespace_client=client)
+                options = await table.latest_storage_options()
+                assert client.calls > 0
+                assert options["explicit_provider"] == "fresh"
+
+            asyncio.run(check())
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_namespace_create_without_seed_uses_connection_provider(tmp_path):
+    from time import time
+
+    from lancedb._lancedb import connect_namespace as connect_namespace_inner
+    from lancedb.db import AsyncConnection
+
+    location = str(tmp_path / "t.lance")
+    seed_options = {
+        "vended_seed": "short-lived",
+        "expires_at_millis": str(int(time() * 1000) + 30_000),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            path = urlparse(self.path).path
+            result = {"location": location}
+            if path.endswith("/describe"):
+                result["storage_options"] = seed_options
+            elif not path.endswith("/declare"):
+                self.send_error(404)
+                return
+            body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class ExplicitClient(LanceNamespace):
+        calls = 0
+
+        def namespace_id(self):
+            return "explicit-storage-options-provider"
+
+        def describe_table(self, request):
+            self.calls += 1
+            return DescribeTableResponse(
+                location=location,
+                storage_options={
+                    "explicit_provider": "fresh",
+                    "expires_at_millis": str(int(time() * 1000) + 3_600_000),
+                },
+            )
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
+        try:
+            properties = {"uri": f"http://127.0.0.1:{server.server_port}"}
+
+            async def check():
+                connection = AsyncConnection(
+                    connect_namespace_inner("rest", properties)
+                )
+                client = ExplicitClient()
+                table = await connection.create_table(
+                    "t", [{"id": 1}], namespace_client=client
+                )
+                options = await table.latest_storage_options()
+                assert client.calls == 0
+                assert options["vended_seed"] == "short-lived"
+
+            asyncio.run(check())
         finally:
             server.shutdown()
             thread.join()
@@ -239,7 +813,17 @@ class TestNamespaceConnection:
     def test_list_materialized_views(self):
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         db.create_table("source", [{"id": 1}])
-        db.create_materialized_view("view", "source", with_no_data=True)
+        # Model a stored view from an enabled build: listing must also work
+        # when local creation is disabled in the current build.
+        schema = pa.schema(
+            [("id", pa.int64())],
+            metadata={
+                DEFINITION_META_KEY: json.dumps(
+                    {"format": DEFINITION_FORMAT, "query": "SELECT id FROM source"}
+                ).encode()
+            },
+        )
+        db.create_table("view", schema=schema)
 
         names = db.list_materialized_views(page_limit=1)
         assert isinstance(names, Listing)
@@ -269,8 +853,16 @@ class TestNamespaceConnection:
         assert "test_ns" in db.list_namespaces().namespaces
 
         schema = pa.schema([pa.field("id", pa.int64())])
+        db.create_table("root_table", schema=schema)
+        assert db.table_exists(["root_table"]) is True
+        assert "root_table" in db
+        assert db.table_exists(["missing"]) is False
+        assert "missing" not in db
         table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
         assert table.namespace == ["test_ns"]
+        assert db.table_exists(["test_ns", "test_table"]) is True
+        assert db.table_exists(["test_ns", "missing"]) is False
+        assert "test_table" not in db
         assert "test_table" in db.table_names(namespace_path=["test_ns"])
         assert "test_table" in db.list_tables(namespace_path=["test_ns"]).tables
 
@@ -278,7 +870,10 @@ class TestNamespaceConnection:
         assert opened.namespace == ["test_ns"]
 
         db.drop_table("test_table", namespace_path=["test_ns"])
+        assert db.table_exists(["test_ns", "test_table"]) is False
         assert db.list_tables(namespace_path=["test_ns"]).tables == []
+        db.drop_table("root_table")
+        assert "root_table" not in db
         db.drop_namespace(["test_ns"])
         assert "test_ns" not in db.list_namespaces().namespaces
 
@@ -311,13 +906,14 @@ class TestNamespaceConnection:
         assert len(table_names) == 1
 
         # Verify empty table
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 0
-        assert list(result.columns) == ["id", "vector", "text"]
+        assert result.column_names == ["id", "vector", "text"]
 
     def test_table_to_pandas_blob_lazy_through_namespace(self):
         """Namespace-backed tables should use Lance blob-aware pandas conversion."""
         pytest.importorskip("lance")
+        pytest.importorskip("pandas")
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         db.create_namespace(["test_ns"])
         data = pa.table(
@@ -374,9 +970,9 @@ class TestNamespaceConnection:
         assert table.id == "test_ns$test_table"
 
         # Verify empty table with correct schema
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 0
-        assert list(result.columns) == ["id", "vector"]
+        assert result.column_names == ["id", "vector"]
 
     def test_drop_table_through_namespace(self):
         """Test dropping a table through namespace."""
@@ -445,37 +1041,43 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table(self):
-        """Test that rename_table renames a table in the namespace.
-
-        The `dir` namespace implementation in lance-namespace-impls does not
-        implement `rename_table` yet (only the `rest` backend does), so it
-        currently falls back to the default trait method which raises
-        NotSupported. This is expected to start passing once the `dir`
-        backend gains rename_table support upstream.
-        """
+    @pytest.mark.parametrize("destination_namespace", ["test_ns", "destination_ns"])
+    def test_rename_table(self, destination_namespace):
+        """Test that renaming a table preserves its data and namespace registration."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
-
-        # Create a child namespace first
         db.create_namespace(["test_ns"])
+        if destination_namespace != "test_ns":
+            db.create_namespace([destination_namespace])
 
-        # Create a table in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
+        data = pa.Table.from_pylist(
+            [{"id": 1, "vector": [1.0, 2.0]}, {"id": 2, "vector": [3.0, 4.0]}],
+            schema=schema,
+        )
+        db.create_table("old_name", data=data, namespace_path=["test_ns"])
 
-        # Rename the table within the same namespace
-        with pytest.raises(NotImplementedError, match="rename_table not implemented"):
-            db.rename_table(
-                "old_name",
-                "new_name",
-                cur_namespace_path=["test_ns"],
-                new_namespace_path=["test_ns"],
-            )
+        db.rename_table(
+            "old_name",
+            "new_name",
+            cur_namespace_path=["test_ns"],
+            new_namespace_path=[destination_namespace],
+        )
+
+        reopened = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert "old_name" not in reopened.table_names(namespace_path=["test_ns"])
+        assert "new_name" in reopened.table_names(
+            namespace_path=[destination_namespace]
+        )
+        with pytest.raises(TableNotFoundError):
+            reopened.open_table("old_name", namespace_path=["test_ns"])
+        table = reopened.open_table("new_name", namespace_path=[destination_namespace])
+        assert table.namespace == [destination_namespace]
+        assert table.to_arrow().equals(data)
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""
@@ -526,9 +1128,9 @@ class TestNamespaceConnection:
         table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
 
         # Verify empty table was created
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 0
-        assert list(result.columns) == ["id", "vector", "text"]
+        assert result.column_names == ["id", "vector", "text"]
 
         # Test add data to the table
         new_data = [
@@ -536,19 +1138,19 @@ class TestNamespaceConnection:
             {"id": 2, "vector": [2.0, 3.0], "text": "item_2"},
         ]
         table.add(new_data)
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 2
 
         # Test delete
         table.delete("id = 1")
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 1
-        assert result["id"].values[0] == 2
+        assert result["id"][0].as_py() == 2
 
         # Test update
         table.update(where="id = 2", values={"text": "updated"})
-        result = table.to_pandas()
-        assert result["text"].values[0] == "updated"
+        result = table.to_arrow()
+        assert result["text"][0].as_py() == "updated"
 
     def test_storage_options(self):
         """Test passing storage options through namespace connection."""
@@ -688,28 +1290,28 @@ class TestNamespaceConnection:
         opened_table_a = db.open_table(
             "same_name_table", namespace_path=["namespace_a"]
         )
-        result_a = opened_table_a.to_pandas().sort_values("id").reset_index(drop=True)
+        result_a = opened_table_a.to_arrow().sort_by([("id", "ascending")])
         assert len(result_a) == 2
-        assert result_a["id"].tolist() == [1, 2]
-        assert result_a["text"].tolist() == [
+        assert result_a["id"].to_pylist() == [1, 2]
+        assert result_a["text"].to_pylist() == [
             "data_from_namespace_a",
             "also_from_namespace_a",
         ]
-        assert [v.tolist() for v in result_a["vector"]] == [[1.0, 2.0], [3.0, 4.0]]
+        assert result_a["vector"].to_pylist() == [[1.0, 2.0], [3.0, 4.0]]
 
         # Verify data in namespace_b table
         opened_table_b = db.open_table(
             "same_name_table", namespace_path=["namespace_b"]
         )
-        result_b = opened_table_b.to_pandas().sort_values("id").reset_index(drop=True)
+        result_b = opened_table_b.to_arrow().sort_by([("id", "ascending")])
         assert len(result_b) == 3
-        assert result_b["id"].tolist() == [10, 20, 30]
-        assert result_b["text"].tolist() == [
+        assert result_b["id"].to_pylist() == [10, 20, 30]
+        assert result_b["text"].to_pylist() == [
             "data_from_namespace_b",
             "also_from_namespace_b",
             "more_from_namespace_b",
         ]
-        assert [v.tolist() for v in result_b["vector"]] == [
+        assert result_b["vector"].to_pylist() == [
             [10.0, 20.0],
             [30.0, 40.0],
             [50.0, 60.0],
@@ -752,7 +1354,16 @@ class TestAsyncNamespaceConnection:
     async def test_list_materialized_views(self):
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         await db.create_table("source", [{"id": 1}])
-        await db.create_materialized_view("view", "source", with_no_data=True)
+        # Model a stored view independently of the local creation feature.
+        schema = pa.schema(
+            [("id", pa.int64())],
+            metadata={
+                DEFINITION_META_KEY: json.dumps(
+                    {"format": DEFINITION_FORMAT, "query": "SELECT id FROM source"}
+                ).encode()
+            },
+        )
+        await db.create_table("view", schema=schema)
 
         names = db.list_materialized_views(page_limit=1)
         assert isinstance(names, AsyncListing)
@@ -784,12 +1395,18 @@ class TestAsyncNamespaceConnection:
         assert "test_ns" in (await db.list_namespaces()).namespaces
 
         schema = pa.schema([pa.field("id", pa.int64())])
+        await db.create_table("root_table", schema=schema)
+        assert await db.table_exists(["root_table"]) is True
+        assert await db.table_exists(["missing"]) is False
         table = await db.create_table(
             "test_table", schema=schema, namespace_path=["test_ns"]
         )
         assert table._namespace_path == ["test_ns"]
         assert table._namespace_client is None
         assert table._route_pushdown_to_rust is True
+        assert await db.table_exists(["test_ns", "test_table"]) is True
+        assert await db.table_exists(["test_ns", "missing"]) is False
+        assert await db.table_exists(["test_table"]) is False
         assert "test_table" in await db.table_names(namespace_path=["test_ns"])
         assert "test_table" in (await db.list_tables(namespace_path=["test_ns"])).tables
 
@@ -797,7 +1414,10 @@ class TestAsyncNamespaceConnection:
         assert opened._namespace_path == ["test_ns"]
 
         await db.drop_table("test_table", namespace_path=["test_ns"])
+        assert await db.table_exists(["test_ns", "test_table"]) is False
         assert (await db.list_tables(namespace_path=["test_ns"])).tables == []
+        await db.drop_table("root_table")
+        assert await db.table_exists(["root_table"]) is False
         await db.drop_namespace(["test_ns"])
         assert "test_ns" not in (await db.list_namespaces()).namespaces
 
@@ -881,9 +1501,8 @@ class TestAsyncNamespaceConnection:
         assert result.schema.field("vector").type == pa.list_(pa.float32(), 2)
 
         # Verify data content
-        result_df = result.to_pandas()
-        assert result_df["id"].tolist() == [1, 2, 3]
-        assert [v.tolist() for v in result_df["vector"]] == [
+        assert result["id"].to_pylist() == [1, 2, 3]
+        assert result["vector"].to_pylist() == [
             [1.0, 2.0],
             [3.0, 4.0],
             [5.0, 6.0],
@@ -892,15 +1511,13 @@ class TestAsyncNamespaceConnection:
         # Test update operation
         await table.update({"id": 20}, where="id = 2")
         result = await table.to_arrow()
-        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
-        assert result_df["id"].tolist() == [1, 3, 20]
+        assert result.sort_by([("id", "ascending")])["id"].to_pylist() == [1, 3, 20]
 
         # Test delete operation
         await table.delete("id = 1")
         result = await table.to_arrow()
         assert len(result) == 2
-        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
-        assert result_df["id"].tolist() == [3, 20]
+        assert result.sort_by([("id", "ascending")])["id"].to_pylist() == [3, 20]
 
     async def test_drop_table_async(self):
         """Test dropping a table asynchronously through namespace."""
@@ -1065,7 +1682,7 @@ class TestPushdownOperations:
         Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
         db = lancedb.connect_namespace(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1082,7 +1699,7 @@ class TestPushdownOperations:
         for the async path omitting the freshness header)."""
         db = lancedb.connect_namespace_async(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1093,24 +1710,44 @@ class TestPushdownOperations:
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         assert db._route_pushdown_to_rust is True
 
-    def test_lance_table_to_arrow_uses_query_pushdown(self):
+    @pytest.mark.parametrize("as_pandas", [False, True], ids=["arrow", "pandas"])
+    def test_lance_table_query_pushdown(self, as_pandas):
+        if as_pandas:
+            pytest.importorskip("pandas")
         namespace_client = _NamespaceClient()
         table = _namespace_lance_table(namespace_client)
 
-        assert table.to_arrow().equals(PUSHDOWN_DATA)
-        assert table.to_pandas()["id"].tolist() == list(range(12))
-        assert len(namespace_client.requests) == 2
+        if as_pandas:
+            assert table.to_pandas()["id"].tolist() == list(range(12))
+        else:
+            assert table.to_arrow().equals(PUSHDOWN_DATA)
+        assert len(namespace_client.requests) == 1
         assert [request.id for request in namespace_client.requests] == [
-            ["geneva", "hist"],
-            ["geneva", "hist"],
+            ["geneva", "hist"]
         ]
         # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
         # field is i32); sys.maxsize would overflow the Rust binding.
-        assert [request.k for request in namespace_client.requests] == [
-            _MAX_QUERY_K,
-            _MAX_QUERY_K,
-        ]
+        assert [request.k for request in namespace_client.requests] == [_MAX_QUERY_K]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+    @pytest.mark.parametrize(
+        "query_kwargs",
+        [
+            {"approx_mode": "fast"},
+            {"search_effort": 0.75},
+            {"approx_mode": "fast", "search_effort": 0.75},
+        ],
+        ids=["approx_mode", "search_effort", "both"],
+    )
+    def test_lance_table_local_only_options_are_not_pushed_down(self, query_kwargs):
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(namespace_client)
+
+        # The QueryTable request cannot carry these options, so the query has to
+        # run locally rather than silently ignore them.
+        with pytest.raises(RuntimeError, match="local execution reached"):
+            table._execute_query(Query(vector=[1.0, 2.0], **query_kwargs))
+        assert namespace_client.requests == []
 
     def test_probe_fields_pass_through_independently(self):
         request = _query_to_namespace_request(
@@ -1134,6 +1771,48 @@ class TestPushdownOperations:
         assert request.nprobes == 5
         assert request.maximum_nprobes == 0
         assert request.to_dict()["maximum_nprobes"] == 0
+
+    def test_lance_table_order_by_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = lancedb.connect(str(tmp_path / "db"))
+        table = db.create_table("hist", data=[{"id": 3}, {"id": 1}, {"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = table._execute_query(
+            Query(limit=1, order_by=[ColumnOrdering(column_name="id")])
+        ).read_all()
+
+        # Pushing this query down would drop order_by and return id 3.
+        assert result.column("id").to_pylist() == [1]
+        assert namespace_client.requests == []
+
+    def test_lance_table_scan_in_order_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = lancedb.connect(str(tmp_path / "db"))
+        table = db.create_table("hist", data=[{"id": 3}, {"id": 1}])
+        table.add([{"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = table._execute_query(
+            Query(
+                limit=2,
+                filter="id >= 1",
+                columns=["id"],
+                scan_in_order=True,
+            )
+        ).read_all()
+
+        # The namespace request has no scan-order field. Local execution keeps
+        # membership order, projection and limit; a dropped order or a sort
+        # would return [1, 3] or [1, 2].
+        assert result.column("id").to_pylist() == [3, 1]
+        assert namespace_client.requests == []
 
 
 @pytest.mark.asyncio
@@ -1171,7 +1850,10 @@ class TestAsyncPushdownOperations:
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         assert len(db._namespace_client_pushdown_operations) == 0
 
-    async def test_async_table_to_arrow_uses_query_pushdown(self):
+    @pytest.mark.parametrize("as_pandas", [False, True], ids=["arrow", "pandas"])
+    async def test_async_table_query_pushdown(self, as_pandas):
+        if as_pandas:
+            pytest.importorskip("pandas")
         namespace_client = _NamespaceClient()
 
         table = AsyncTable(
@@ -1181,23 +1863,90 @@ class TestAsyncPushdownOperations:
             pushdown_operations={"QueryTable"},
         )
 
-        assert (await table.to_arrow()).equals(PUSHDOWN_DATA)
-        assert (await table.to_pandas())["id"].tolist() == list(range(12))
-        assert len(namespace_client.requests) == 2
+        if as_pandas:
+            assert (await table.to_pandas())["id"].tolist() == list(range(12))
+        else:
+            assert (await table.to_arrow()).equals(PUSHDOWN_DATA)
+        assert len(namespace_client.requests) == 1
         assert [request.id for request in namespace_client.requests] == [
-            ["geneva", "hist"],
-            ["geneva", "hist"],
+            ["geneva", "hist"]
         ]
         # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
         # field is i32); sys.maxsize would overflow the Rust binding.
-        assert [request.k for request in namespace_client.requests] == [
-            _MAX_QUERY_K,
-            _MAX_QUERY_K,
-        ]
+        assert [request.k for request in namespace_client.requests] == [_MAX_QUERY_K]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
+    async def test_async_table_order_by_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = await lancedb.connect_async(str(tmp_path / "db"))
+        table = await db.create_table("hist", data=[{"id": 3}, {"id": 1}, {"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
 
-def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
+        result = await table._execute_query(
+            Query(limit=1, order_by=[ColumnOrdering(column_name="id")])
+        )
+
+        # Pushing this query down would drop order_by and return id 3.
+        batches = await result.read_all()
+        assert pa.Table.from_batches(batches).column("id").to_pylist() == [1]
+        assert namespace_client.requests == []
+
+    async def test_async_table_scan_in_order_is_not_pushed_down(self, tmp_path):
+        namespace_client = _NamespaceClient()
+        db = await lancedb.connect_async(str(tmp_path / "db"))
+        table = await db.create_table("hist", data=[{"id": 3}, {"id": 1}])
+        await table.add([{"id": 2}])
+        table._namespace_path = ["geneva"]
+        table._namespace_client = namespace_client
+        table._pushdown_operations = {"QueryTable"}
+        table._route_pushdown_to_rust = False
+
+        result = await table._execute_query(
+            Query(
+                limit=2,
+                filter="id >= 1",
+                columns=["id"],
+                scan_in_order=True,
+            )
+        )
+
+        batches = await result.read_all()
+        assert pa.Table.from_batches(batches).column("id").to_pylist() == [3, 1]
+        assert namespace_client.requests == []
+
+    @pytest.mark.parametrize(
+        "query_kwargs",
+        [
+            {"approx_mode": "fast"},
+            {"search_effort": 0.75},
+            {"approx_mode": "fast", "search_effort": 0.75},
+        ],
+        ids=["approx_mode", "search_effort", "both"],
+    )
+    async def test_async_table_local_only_options_are_not_pushed_down(
+        self, query_kwargs
+    ):
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInner(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(AssertionError, match="direct async query"):
+            await table._execute_query(Query(vector=[1.0, 2.0], **query_kwargs))
+        assert namespace_client.requests == []
+
+
+@pytest.mark.parametrize("as_pandas", [False, True], ids=["arrow", "pandas"])
+def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path, as_pandas):
+    if as_pandas:
+        pytest.importorskip("pandas")
     db = lancedb.connect(str(tmp_path / "db"))
     table = db.create_table(
         "local",
@@ -1207,5 +1956,114 @@ def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
         ],
     )
 
-    assert table.to_arrow().column("id").to_pylist() == [1, 2]
-    assert table.to_pandas()["id"].tolist() == [1, 2]
+    if as_pandas:
+        assert table.to_pandas()["id"].tolist() == [1, 2]
+    else:
+        assert table.to_arrow().column("id").to_pylist() == [1, 2]
+
+
+@pytest.mark.parametrize("effort", [0.0, 0.5, 1.0])
+def test_namespace_request_rejects_search_effort(effort):
+    from lancedb.query import Query
+
+    with pytest.raises(
+        ValueError, match="namespace QueryTable does not support search_effort"
+    ):
+        _query_to_namespace_request(
+            ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
+        )
+
+
+class AttributeAccessNamespace(LanceNamespace):
+    """A Python namespace that reads request fields as attributes.
+
+    Python implementations such as ``lance_namespace_impls.glue.GlueNamespace``
+    read requests like pydantic models (``request.id``), and expect omitted
+    optional fields to be ``None``. This fake records what it read and then
+    delegates to ``DirectoryNamespace`` so the test runs locally.
+    """
+
+    def __init__(self, root: str):
+        from lance.namespace import DirectoryNamespace
+
+        self._inner = DirectoryNamespace(root=root)
+        self.seen = {}
+
+    def namespace_id(self) -> str:
+        return f"AttributeAccessNamespace[{self._inner.namespace_id()}]"
+
+    def list_tables(self, request):
+        self.seen["list_tables"] = request
+        _ = request.id
+        _ = request.page_token
+        return self._inner.list_tables(request)
+
+    def describe_table(self, request):
+        self.seen["describe_table"] = request
+        _ = request.id
+        # Optional field omitted by the Rust side; must read as None.
+        assert request.load_detailed_metadata is None
+        return self._inner.describe_table(request)
+
+
+def test_python_namespace_attribute_access(tmp_path):
+    pytest.importorskip("lance.namespace")
+    root = str(tmp_path)
+    data = pa.table({"id": [1, 2, 3], "text": ["alpha", "beta", "gamma"]})
+    lancedb.connect_namespace("dir", {"root": root}).create_table("t", data)
+
+    ns = AttributeAccessNamespace(root)
+    db = LanceNamespaceDBConnection(ns)
+
+    assert list(db.list_tables()) == ["t"]
+    assert db.open_table("t").to_arrow().to_pylist() == data.to_pylist()
+
+    # Mapping access and model_dump() keep working.
+    request = ns.seen["describe_table"]
+    assert isinstance(request, builtins._DictWithModelDump)
+    assert request["id"] == request.id == ["t"]
+    assert request.model_dump() == dict(request)
+    assert "load_detailed_metadata" not in request
+
+    # Missing dunder lookups still raise, so copy/hasattr probes work.
+    assert not hasattr(request, "__missing_dunder__")
+    assert copy.deepcopy(request) == request
+
+
+@pytest.mark.parametrize("columns", [None, ["text"], ["title", "body"]])
+def test_namespace_fts_operator_is_preserved(columns):
+    request = _query_to_namespace_request(
+        ["matches"],
+        Query(
+            full_text_query=FullTextSearchQuery(
+                query="gripper closed", columns=columns, operator="AND"
+            )
+        ),
+    )
+    structured = request.to_dict()["full_text_query"]["structured_query"]["query"]
+    if columns and len(columns) > 1:
+        assert all(
+            query["operator"] == "And"
+            for query in structured["multi_match"]["match_queries"]
+        )
+    else:
+        assert structured["match"]["operator"] == "And"
+        assert structured["match"].get("column") == (columns[0] if columns else None)
+
+
+def test_namespace_fts_count_fast_search(tmp_path):
+    properties = {"root": str(tmp_path)}
+    db = lancedb.connect_namespace("dir", properties)
+    table = db.create_table("matches", pa.table({"text": ["gripper"] * 15}))
+    table.create_index("text", config=FTS())
+    table.add(pa.table({"text": ["gripper"] * 5}))
+    assert table.search("gripper", query_type="fts").fast_search().count_rows() == 15
+    pushed = lancedb.connect_namespace(
+        "dir", properties, namespace_client_pushdown_operations=["QueryTable"]
+    ).open_table("matches")
+    assert pushed.search("gripper", query_type="fts").count_rows() == 20
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.use_rte(False).count_rows() == 15
+    query = pushed.search("gripper", query_type="fts").fast_search()
+    assert query.count_rows() == 15
+    assert len(query.limit(100).to_list()) == 15
