@@ -68,6 +68,9 @@ Get the Sentence Transformers embedding function from the
 [embedding registry](/embedding) and declare a schema with `LanceModel`. The `text` field is
 the source field, so LanceDB fills in `vector` from it as rows are added. Keep `source_url`
 and `title` beside each chunk so search results can point back to the page they came from.
+The database goes in a new temporary directory, so each run of this step starts from an empty
+database and never overwrites a table you built earlier, including the web search results
+added in the last step.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFirecrawlTable}
@@ -90,11 +93,6 @@ result, so the results can go into the same table as the crawled pages:
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFirecrawlWebSearch}
 </CodeBlock>
-
-To refresh a page later, crawl it again, delete that page's old rows with
-`table.delete(f"source_url = '{url}'")`, and add its new chunks. Every chunk of a page shares
-the same `source_url`, so it cannot serve as a [`merge_insert`](/ingestion/merge-insert) key
-until each chunk has its own identity.
 
 ## Learn more {#learn-more}
 

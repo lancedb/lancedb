@@ -14,11 +14,10 @@ def require_env(var_name: str) -> str:
     return value
 
 
-def test_firecrawl_crawl_and_search(tmp_path, monkeypatch) -> None:
+def test_firecrawl_crawl_and_search() -> None:
     require_env("FIRECRAWL_API_KEY")
     pytest.importorskip("firecrawl")
     pytest.importorskip("sentence_transformers")
-    monkeypatch.chdir(tmp_path)
 
     # --8<-- [start:firecrawl_crawl]
     import os
@@ -54,6 +53,8 @@ def test_firecrawl_crawl_and_search(tmp_path, monkeypatch) -> None:
     # --8<-- [end:firecrawl_chunk]
 
     # --8<-- [start:firecrawl_table]
+    import tempfile
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
@@ -78,8 +79,8 @@ def test_firecrawl_crawl_and_search(tmp_path, monkeypatch) -> None:
         for chunk in chunk_markdown(page.markdown)
     ]
 
-    db = lancedb.connect("./lancedb")
-    table = db.create_table("firecrawl_docs", schema=WebChunk, mode="overwrite")
+    db = lancedb.connect(tempfile.mkdtemp(prefix="lancedb-firecrawl-"))
+    table = db.create_table("firecrawl_docs", schema=WebChunk)
     table.add(rows)
     print(f"Added {table.count_rows()} chunks")
     # --8<-- [end:firecrawl_table]
