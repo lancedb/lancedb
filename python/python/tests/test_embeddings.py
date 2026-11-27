@@ -411,6 +411,47 @@ def test_embedding_with_empty_output_vectors(tmp_path, operation, policy):
     assert db.open_table(table_name).to_arrow().to_pylist() == expected
 
 
+@pytest.mark.parametrize("operation", ["create", "append"])
+@pytest.mark.parametrize("policy", ["error", "drop", "fill", "null"])
+def test_failed_binary_embeddings_stay_null(tmp_path, operation, policy):
+    @register("binary-embedding")
+    class BinaryEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts: Union[List[str], np.ndarray]) -> list:
+            outputs = {"empty": [], "missing": None, "wrong_width": [6]}
+            return [outputs.get(text, [255, 255]) for text in texts]
+
+    model = BinaryEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims(), value_type=pa.uint8()) = model.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    texts = ["empty", "valid", "missing", "wrong_width"]
+    data = [{"text": text} for text in texts]
+    if operation == "create":
+        db.create_table("binary", data, schema=Schema, on_bad_vectors=policy)
+    else:
+        db.create_table("binary", schema=Schema).add(data, on_bad_vectors=policy)
+
+    reopened = db.open_table("binary")
+    assert reopened.schema.field("vector").type == pa.list_(pa.uint8(), 2)
+    results = (
+        reopened.search(np.array([0, 0], dtype=np.uint8))
+        .distance_type("hamming")
+        .limit(len(texts))
+        .to_arrow()
+    )
+    assert results["text"].to_pylist() == ["valid"]
+    assert reopened.to_arrow().to_pylist() == [
+        {"text": text, "vector": [255, 255] if text == "valid" else None}
+        for text in texts
+    ]
+
+
 def test_with_existing_vectors(tmp_path):
     @register("mock-embedding")
     class MockEmbeddingFunction(TextEmbeddingFunction):

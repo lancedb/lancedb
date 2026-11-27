@@ -1428,7 +1428,7 @@ def _append_vector_columns(
                 dtype = pa.list_(pa.float32(), conf.function.ndims())
                 field = pa.field(vector_column, type=dtype, nullable=True)
             fields.append(field)
-    schema = pa.schema(fields, metadata=reader.schema.metadata)
+    output_schema = pa.schema(fields, metadata=reader.schema.metadata)
 
     def gen():
         for batch in reader:
@@ -1439,14 +1439,25 @@ def _append_vector_columns(
                     col_data = func.compute_source_embeddings_with_retry(
                         batch[conf.source_column]
                     )
-                    # Represent generation failures as a non-null list of null
-                    # components. This fits a fixed-size list while letting the
-                    # bad-vector policy distinguish it from a valid null parent.
-                    field = schema.field(vector_column)
+                    field = output_schema.field(vector_column)
                     expected_ndims = conf.function.ndims()
                     if pa.types.is_fixed_size_list(field.type):
                         expected_ndims = field.type.list_size
-                    invalid_vector = [None] * expected_ndims
+                    # Only floating-point vectors go through bad-vector
+                    # sanitization. Use a marker that lets it distinguish
+                    # generation failures from valid null parents. For types
+                    # it skips, such as binary vectors, keep a null parent so
+                    # the failure is never stored as a searchable vector.
+                    sanitize_type = (
+                        schema.field(vector_column).type
+                        if schema is not None and vector_column in schema.names
+                        else field.type
+                    )
+                    invalid_vector = (
+                        [None] * expected_ndims
+                        if _is_floating_list_type(sanitize_type)
+                        else None
+                    )
                     col_data = [
                         v
                         if v is not None and len(v) == expected_ndims
@@ -1462,7 +1473,7 @@ def _append_vector_columns(
                         )
             yield batch
 
-    return pa.RecordBatchReader.from_batches(schema, gen())
+    return pa.RecordBatchReader.from_batches(output_schema, gen())
 
 
 def _table_path(base: str, table_name: str) -> str:
@@ -7018,9 +7029,7 @@ def _find_vector_columns(
         )
         vector_columns = []
         for field in reader_schema:
-            if not _is_list_like(field.type) or not pa.types.is_floating(
-                field.type.value_type
-            ):
+            if not _is_floating_list_type(field.type):
                 continue
 
             fixed_size = pa.types.is_fixed_size_list(field.type)
@@ -7054,9 +7063,7 @@ def _find_vector_columns(
     for field in target_schema:
         if field.name not in reader_column_names:
             continue
-        if not _is_list_like(field.type) or not pa.types.is_floating(
-            field.type.value_type
-        ):
+        if not _is_floating_list_type(field.type):
             continue
 
         reader_field = reader_schema.field(field.name)
@@ -7301,6 +7308,10 @@ def _is_list_like(data_type: pa.DataType) -> bool:
         or pa.types.is_large_list(data_type)
         or pa.types.is_fixed_size_list(data_type)
     )
+
+
+def _is_floating_list_type(data_type: pa.DataType) -> bool:
+    return _is_list_like(data_type) and pa.types.is_floating(data_type.value_type)
 
 
 def _merge_metadata(*metadata_dicts: Optional[dict]) -> dict:
