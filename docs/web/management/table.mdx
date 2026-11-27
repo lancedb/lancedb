@@ -1736,10 +1736,20 @@ page).
 The tags API supports the standard CRUD operations (create, list, update, delete),
 plus checking out by tag name.
 
-A tag identifies both a branch and a version. On Enterprise tables, a tag must belong
-to the handle's current branch; checking out a tag on another branch raises an
-error without changing the current selection. Obtain a handle for the tag's
-branch first: in Python, use `branch_table = table.branches.checkout("exp")`, then
+A tag identifies both a branch and a version.
+
+On Embedded tables, checking out a tag on another branch selects a read-only
+snapshot on that branch. `checkout_latest()` (Python and Rust) or
+`checkoutLatest()` (TypeScript) returns to the handle's original branch, so later
+writes stay on that branch. Restoring a snapshot from another branch raises an
+error before writing. To restore the tag's snapshot, first open a handle on its
+branch with `branches.checkout()` (Python and TypeScript) or `checkout_branch()`
+(Rust).
+
+On Enterprise tables, a tag must belong to the handle's current branch;
+checking out a tag on another branch raises an error without changing the
+current selection. Obtain a handle for the tag's branch first: in Python, use
+`branch_table = table.branches.checkout("exp")`, then
 `branch_table.checkout("baseline")` to read a tag named `baseline` on `exp`.
 See [Branches](/tables/branching) for more on branch handles.
 
