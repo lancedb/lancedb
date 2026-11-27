@@ -6,7 +6,7 @@ from unittest import mock
 
 import lancedb
 
-from lancedb.query import LanceHybridQueryBuilder
+from lancedb.query import AsyncFTSQuery, AsyncVectorQuery, LanceHybridQueryBuilder
 from lancedb.rerankers.base import Reranker
 from lancedb.rerankers.rrf import RRFReranker
 import numpy as np
@@ -770,28 +770,81 @@ async def test_async_hybrid_query_custom_reranker_keeps_candidate_budget(
     assert reranker.calls == [(5, 5)]
 
 
+def _counting_child_queries():
+    # Count executions of the two hybrid sub-queries: a limit(0) page must
+    # run neither retrieval, so both counters have to stay at zero.
+    executions = []
+    original_fts = AsyncFTSQuery.to_arrow
+    original_vec = AsyncVectorQuery.to_arrow
+
+    async def counting_fts(self, *args, **kwargs):
+        executions.append("fts")
+        return await original_fts(self, *args, **kwargs)
+
+    async def counting_vec(self, *args, **kwargs):
+        executions.append("vec")
+        return await original_vec(self, *args, **kwargs)
+
+    patchers = (
+        mock.patch.object(AsyncFTSQuery, "to_arrow", counting_fts),
+        mock.patch.object(AsyncVectorQuery, "to_arrow", counting_vec),
+    )
+    return executions, patchers
+
+
 @pytest.mark.asyncio
 async def test_async_hybrid_query_empty_page_does_not_fetch_candidates(
     tmpdir_factory,
 ):
-    # An empty page must not get the #4758 candidate floor: limit(0) should
-    # not retrieve and score 50 rows per side just to return nothing.
+    # An empty page must not get the #4758 candidate floor, and must not
+    # fetch or score anything at all: limit(0) is handled before either
+    # sub-query runs, and the result is simply empty.
     db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
     table = await db.create_table("t", _candidate_rows())
     await table.create_index("text", config=FTS(with_position=False))
 
     reranker = _RecordingReranker()
-    query = (
-        table.query()
-        .nearest_to([0.5, 0.5])
-        .nearest_to_text("match")
-        .rerank(reranker)
-        .limit(0)
-    )
-    # Same as before the floor: the empty window is rejected up front.
-    with pytest.raises(ValueError, match="k must be positive"):
-        await query.to_arrow()
+    executions, patchers = _counting_child_queries()
+    with patchers[0], patchers[1]:
+        result = await (
+            table.query()
+            .nearest_to([0.5, 0.5])
+            .nearest_to_text("match")
+            .rerank(reranker)
+            .limit(0)
+            .to_arrow()
+        )
+    assert len(result) == 0
     assert reranker.calls == []
+    assert executions == []
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_empty_page_with_offset_fetches_nothing(
+    tmpdir_factory,
+):
+    # offset(2).limit(0) is still an empty page. The sub-queries would carry
+    # k=2, so without an explicit zero-limit check they fetch two rows per
+    # side and call the reranker just to return nothing.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    executions, patchers = _counting_child_queries()
+    with patchers[0], patchers[1]:
+        result = await (
+            table.query()
+            .nearest_to([0.5, 0.5])
+            .nearest_to_text("match")
+            .rerank(reranker)
+            .offset(2)
+            .limit(0)
+            .to_arrow()
+        )
+    assert len(result) == 0
+    assert reranker.calls == []
+    assert executions == []
 
 
 @pytest.mark.asyncio
