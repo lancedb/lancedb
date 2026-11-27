@@ -4547,6 +4547,11 @@ class LanceTable(Table):
             LOOP.run(table._table._checkout_snapshot(state["branch"], version))
             table._branch = state["branch"]
             table._checkout_version = version
+        # Apply after checkout so a foreign snapshot remains readable even if
+        # the original branch was replaced while the handle was serialized.
+        identifier = state.get("tracking_branch_identifier")
+        if identifier is not None:
+            LOOP.run(table._table._set_tracking_branch_identifier(identifier))
         return table
 
     def __getstate__(self) -> dict[str, Any]:
@@ -4582,6 +4587,9 @@ class LanceTable(Table):
             "route_pushdown_to_rust": self._route_pushdown_to_rust,
             "branch": self._branch,
             "tracking_branch": self._table._inner._tracking_branch(),
+            "tracking_branch_identifier": LOOP.run(
+                self._table._tracking_branch_identifier()
+            ),
             "checkout_version": self._checkout_version,
         }
 
@@ -10032,6 +10040,14 @@ class AsyncTable:
     async def _checkout_snapshot(self, branch: Optional[str], version: int) -> None:
         """Reopen a snapshot while retaining the handle's original branch."""
         await self._inner._checkout_snapshot(branch, version)
+
+    async def _tracking_branch_identifier(self) -> Optional[str]:
+        """Serialize the original branch identity for reopening."""
+        return await self._inner._tracking_branch_identifier()
+
+    async def _set_tracking_branch_identifier(self, identifier: str) -> None:
+        """Restore branch identity after reopening a serialized snapshot."""
+        await self._inner._set_tracking_branch_identifier(identifier)
 
     async def list_versions(self):
         """

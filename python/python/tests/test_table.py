@@ -1297,6 +1297,69 @@ def test_lance_table_pickle_preserves_cross_branch_tag_checkout(tmp_path):
     assert branch.to_arrow()["id"].to_pylist() == [0, 1]
 
 
+@pytest.mark.parametrize("operation", ["checkout_latest", "restore"])
+@pytest.mark.parametrize(
+    "consistency_interval", [None, timedelta(0), timedelta(seconds=60)]
+)
+def test_lance_table_pickle_retains_original_branch_identity(
+    tmp_path, operation, consistency_interval
+):
+    db = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
+    main = db.create_table("pickle_branch_identity", pa.table({"id": [0]}))
+    exp = main.branches.create("exp")
+    exp.add(pa.table({"id": [10]}))
+    main.add(pa.table({"id": [100]}))
+    main.tags.create("main_v2", 2)
+    exp.checkout("main_v2")
+    payload = pickle.dumps(exp)
+
+    # Reuse the original branch name while the handle is serialized. Both
+    # branches have version 2, but neither is the original exp identity.
+    main.branches.delete("exp")
+    replacement = main.branches.create("exp", from_version=1)
+    replacement.add(pa.table({"id": [20]}))
+    replacement.tags.create("replacement_v1", 1)
+
+    restored = pickle.loads(payload)
+    assert restored.current_branch() is None
+    assert restored.version == 2
+    assert restored.to_arrow()["id"].to_pylist() == [0, 100]
+    with pytest.raises(RuntimeError, match="deleted and recreated"):
+        if operation == "checkout_latest":
+            restored.checkout_latest()
+        else:
+            restored.restore("replacement_v1")
+
+    for branch, ids in [(None, [0, 100]), ("exp", [0, 20])]:
+        fresh = db.open_table("pickle_branch_identity", branch=branch)
+        assert fresh.version == 2
+        assert fresh.to_arrow()["id"].to_pylist() == ids
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_lance_table_pickle_rejects_replaced_visible_branch(tmp_path, pinned):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("pickle_visible_identity", pa.table({"id": [0]}))
+    exp = main.branches.create("exp")
+    exp.add(pa.table({"id": [10]}))
+    if pinned:
+        exp.checkout(2)
+    payload = pickle.dumps(exp)
+
+    main.branches.delete("exp")
+    replacement = main.branches.create("exp", from_version=1)
+    replacement.add(pa.table({"id": [20]}))
+
+    # A latest or same-branch pinned handle must not reopen replacement data
+    # with the old identity, even when its version number still exists.
+    with pytest.raises(RuntimeError, match="deleted and recreated"):
+        pickle.loads(payload)
+    for branch, version, ids in [(None, 1, [0]), ("exp", 2, [0, 20])]:
+        fresh = db.open_table("pickle_visible_identity", branch=branch)
+        assert fresh.version == version
+        assert fresh.to_arrow()["id"].to_pylist() == ids
+
+
 def test_restore_cross_branch_tag_does_not_write(tmp_path):
     db = lancedb.connect(tmp_path)
     main = db.create_table("restore_tag", pa.table({"id": [0]}))

@@ -275,6 +275,38 @@ impl DatasetConsistencyWrapper {
             .clone()
     }
 
+    /// Retain the original branch identity in serialized handle state.
+    #[doc(hidden)]
+    pub async fn tracking_branch_identifier(&self) -> Result<refs::BranchIdentifier> {
+        let state = self.state.lock()?.clone();
+        Ok(state
+            .tracking_branch_identifier
+            .get_or_try_init(|| state.dataset.branch_identifier())
+            .await?
+            .clone())
+    }
+
+    /// Restore the original identity after reopening a serialized handle.
+    /// A foreign snapshot can still be read, but reattachment and restore must
+    /// validate against this identity rather than the newly opened branch.
+    #[doc(hidden)]
+    pub async fn set_tracking_branch_identifier(
+        &self,
+        identifier: refs::BranchIdentifier,
+    ) -> Result<()> {
+        let state = self.state.lock()?.clone();
+        if state.pinned_version.is_none()
+            || state.dataset.manifest().branch == state.tracking_branch
+        {
+            // Do not expose a writable replacement branch, or read replacement
+            // data at the same version as an original same-branch snapshot.
+            validate_branch_identity(&state.dataset, &identifier).await?;
+        }
+        self.state.lock()?.tracking_branch_identifier =
+            Arc::new(OnceCell::new_with(Some(identifier)));
+        Ok(())
+    }
+
     /// Validate restore against the handle's branch before any commit is made.
     pub(crate) async fn restore_target(&self) -> Result<Arc<Dataset>> {
         let state = self.state.lock()?.clone();

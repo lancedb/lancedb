@@ -2103,6 +2103,40 @@ impl Table {
             .unwrap_or_else(|| inner.current_branch()))
     }
 
+    /// Serialize the original branch identity as opaque pickle state.
+    pub fn _tracking_branch_identifier(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            if let Some(dataset) = inner.dataset() {
+                let identifier = dataset.tracking_branch_identifier().await.infer_error()?;
+                serde_json::to_string(&identifier)
+                    .map(Some)
+                    .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    /// Restore the original branch identity after reopening the visible snapshot.
+    pub fn _set_tracking_branch_identifier(
+        self_: PyRef<'_, Self>,
+        identifier: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let identifier = serde_json::from_str(&identifier)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let dataset = inner.dataset().ok_or_else(|| {
+                PyValueError::new_err("branch identity is only available for Embedded tables")
+            })?;
+            dataset
+                .set_tracking_branch_identifier(identifier)
+                .await
+                .infer_error()
+        })
+    }
+
     /// Reopen an exact snapshot without changing the handle's tracking branch.
     #[pyo3(signature = (branch, version))]
     pub fn _checkout_snapshot(
