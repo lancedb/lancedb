@@ -1006,9 +1006,16 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
                     base_offset: offset,
                 }
             }
-            BlobLocationItem::Inline { size, data_base64 } => PresignedBlobState::Inline {
-                bytes: decode_inline_data(&data_base64, size)?,
-            },
+            BlobLocationItem::Inline { size, data_base64 } => {
+                if size != self.logical_size {
+                    return Err(Error::InvalidInput {
+                        message: "inline blob size changed at the pinned version".into(),
+                    });
+                }
+                PresignedBlobState::Inline {
+                    bytes: decode_inline_data(&data_base64, size)?,
+                }
+            }
             BlobLocationItem::Proxy { size } => {
                 if size != self.logical_size {
                     return Err(Error::InvalidInput {
@@ -2430,7 +2437,7 @@ impl<S: HttpSend> RemoteTable<S> {
                     | BlobLocationItem::Inline { size, .. }
                     | BlobLocationItem::Proxy { size } => *size,
                 };
-                let requester = match item {
+                let requester: Option<Arc<dyn BlobRangeReader>> = match item {
                     BlobLocationItem::Presigned {
                         source_index,
                         offset,
