@@ -1663,6 +1663,11 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<Vec<serde_json::Value>> {
         query.validate_search_effort()?;
         query.validate_query_parallelism()?;
+        if query.query_parallelism.is_some() {
+            return Err(Error::NotSupported {
+                message: "Enterprise vector search does not support query_parallelism".into(),
+            });
+        }
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -1683,9 +1688,6 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         if let Some(search_effort) = query.search_effort {
             body["search_effort"] = search_effort.into();
-        }
-        if let Some(parallelism) = query.query_parallelism {
-            body["query_parallelism"] = parallelism.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -8491,20 +8493,39 @@ mod tests {
     }
 
     #[rstest]
-    #[case(None)]
-    #[case(Some(-1))]
-    #[case(Some(0))]
-    #[case(Some(1))]
-    #[case(Some(4))]
+    #[case(-1)]
+    #[case(0)]
+    #[case(1)]
+    #[case(4)]
     #[tokio::test]
-    async fn test_query_parallelism_wire(#[case] parallelism: Option<i32>) {
-        let table = Table::new_with_handler("my_table", move |request| {
-            let body = request_body_json(&request);
-            if let Some(value) = parallelism {
-                assert_eq!(body["query_parallelism"], value);
-            } else {
-                assert!(body.get("query_parallelism").is_none());
-            }
+    async fn test_explicit_query_parallelism_is_unsupported_on_enterprise(
+        #[case] parallelism: i32,
+    ) {
+        let table =
+            Table::new_with_handler::<&str>("my_table", |_| panic!("unsupported query sent"));
+        let error = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .query_parallelism(parallelism)
+            .unwrap()
+            .execute()
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error, Error::NotSupported { message } if message.contains("query_parallelism"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unset_query_parallelism_on_enterprise() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert!(
+                request_body_json(&request)
+                    .get("query_parallelism")
+                    .is_none()
+            );
             let batch = RecordBatch::try_new(
                 Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
                 vec![Arc::new(Int32Array::from(vec![1]))],
@@ -8519,8 +8540,6 @@ mod tests {
         let batches: Vec<_> = table
             .query()
             .nearest_to(vec![0.1, 0.2])
-            .unwrap()
-            .query_parallelism(parallelism)
             .unwrap()
             .execute()
             .await

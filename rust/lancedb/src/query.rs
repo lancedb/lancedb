@@ -1544,7 +1544,7 @@ impl VectorQuery {
         self
     }
 
-    /// Set IVF partition-search concurrency for each vector query.
+    /// Set partition-search concurrency within each Embedded IVF index segment.
     ///
     /// `None` preserves Lance's default. `0` selects its automatic policy, which
     /// may choose sequential execution depending on the index. `-1` uses the CPU
@@ -1555,7 +1555,8 @@ impl VectorQuery {
     /// This controls how selected IVF partitions are searched, not how many are
     /// probed. It does not set the thread count for a brute-force scan without an
     /// index. More concurrency may reduce latency but increase resource use.
-    /// Remote execution requires a server that supports this parameter.
+    /// Separate index segments can run concurrently. Enterprise, the shared batch IVF
+    /// plan, and RTE vector search return `NotSupported` for any explicit value.
     ///
     /// ```no_run
     /// # use lancedb::{Table, Result};

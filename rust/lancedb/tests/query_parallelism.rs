@@ -6,6 +6,7 @@ use std::sync::Arc;
 use arrow_array::{
     Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, types::Float32Type,
 };
+use datafusion_common::tree_node::TreeNode;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::TryStreamExt;
 use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
@@ -99,6 +100,24 @@ async fn query_parallelism_reaches_lance_and_preserves_results() -> lancedb::Res
             .query_parallelism,
         None
     );
+    let batch_query = query.clone().add_query_vector(&[9.0f32, 2.0])?;
+    let plan = batch_query
+        .create_plan(QueryExecutionOptions::default())
+        .await?;
+    assert!(plan.exists(|node| Ok(node.is::<ANNIvfBatchExec>()))?);
+    let batches: Vec<_> = batch_query.execute().await?.try_collect().await?;
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 16);
+    for setting in [0, 1, -1, 4] {
+        let error = batch_query
+            .clone()
+            .query_parallelism(setting)?
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, lancedb::Error::NotSupported { message } if message.contains("batch IVF"))
+        );
+    }
     assert!(query.clone().query_parallelism(-2).is_err());
     // Public request fields must be validated too, even if the builder is bypassed.
     let mut request = query.into_request();

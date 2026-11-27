@@ -21,6 +21,7 @@ use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
+use datafusion_common::tree_node::TreeNode;
 use datafusion_common::{Column, DataFusionError, ScalarValue, SchemaError};
 use datafusion_expr::Operator;
 use datafusion_physical_expr::expressions::{BinaryExpr, Column as PhysicalColumn, Literal};
@@ -495,6 +496,11 @@ pub async fn create_plan(
         .create_plan()
         .await
         .map_err(|error| enrich_lance_field_not_found(error, schema))?;
+    if query.query_parallelism.is_some() && plan.exists(|node| Ok(node.is::<ANNIvfBatchExec>()))? {
+        return Err(Error::NotSupported {
+            message: "query_parallelism is unsupported by the batch IVF search plan".into(),
+        });
+    }
     let normalized_l2_indices = normalized_l2_ann_indices(plan.as_ref()).await?;
     if !normalized_l2_indices.is_empty() {
         // Rebuild only the affected ANN nodes with internal normalized squared-L2

@@ -326,7 +326,8 @@ setting them equal fixes the count.
 #### Set partition-search concurrency {#partition-search-concurrency}
 
 In Rust, use `VectorQuery::query_parallelism` to control how many selected IVF
-partitions can be searched concurrently:
+partitions can be searched concurrently within each Embedded IVF index segment.
+Separate segments may be searched at the same time:
 
 ```rust
 let results = table.query().nearest_to(query_vector)?
@@ -340,9 +341,9 @@ Values below `-1` are invalid. Pass `None` to reset the setting.
 
 This setting changes concurrency, not the probe budget. It does not control
 brute-force scans without an IVF index. Benchmark latency and throughput together:
-giving one query more CPU can reduce capacity for concurrent queries. Remote
-execution requires server support; un-compacted RTE queries do not support this
-setting.
+giving one query more CPU can reduce capacity for concurrent queries. Enterprise, shared batch IVF search, and RTE vector search return
+`NotSupported` for any explicit value, including `0`. Leave the option unset
+to use their default scheduling.
 
 #### Check result quality {#measure-auto-probe-recall}
 
