@@ -982,6 +982,8 @@ export class Index {
    * not accelerate range filters. Unset options use Lance's defaults.
    *
    * @example
+   * Tuning a Bloom filter on an Embedded table:
+   *
    * ```ts
    * await table.createIndex("id", {
    *   config: Index.bloomFilter({ numberOfItems: 4096, probability: 0.01 }),
