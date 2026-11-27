@@ -791,9 +791,12 @@ def _cast_to_target_schema(
                     for column, field in zip(cast_batch.columns, reordered_schema):
                         _check_struct_children(column, field.type)
                     # Nullability does not change the buffer layout, so the same
-                    # message can be read back with the declared schema.
-                    cast_batch = pa.ipc.read_record_batch(
-                        cast_batch.serialize(), reordered_schema
+                    # arrays can be imported with the declared schema, uncopied.
+                    # (IPC would lose dictionaries, and Array.view rejects the
+                    # null child slots beneath null parents.)
+                    cast_batch = pa.RecordBatch._import_from_c_capsule(
+                        reordered_schema.__arrow_c_schema__(),
+                        cast_batch.__arrow_c_array__()[1],
                     )
                 yield cast_batch
 

@@ -630,12 +630,18 @@ def test_create_table_keeps_declared_non_nullable_field(tmp_path):
 
 def test_create_table_enforces_non_nullable_child_only_under_present_parent(tmp_path):
     profile = pa.struct([pa.field("country", pa.string(), nullable=False)])
-    schema = pa.schema([pa.field("profile", profile)])
+    schema = pa.schema(
+        [
+            pa.field("profile", profile),
+            pa.field("tag", pa.dictionary(pa.int32(), pa.string())),
+        ]
+    )
     # A Parquet round trip leaves a null child slot beneath the null parent.
     buffer = pa.BufferOutputStream()
-    rows = [{"profile": {"country": "CN"}}, {"profile": None}]
+    rows = [{"profile": {"country": "CN"}, "tag": "a"}, {"profile": None, "tag": "b"}]
     pq.write_table(pa.Table.from_pylist(rows), buffer)
     data = pq.read_table(pa.BufferReader(buffer.getvalue()))
+    data = data.set_column(1, "tag", data.column("tag").dictionary_encode())
 
     db = lancedb.connect(tmp_path)
     db.create_table("test", data=data, schema=schema)
@@ -644,7 +650,9 @@ def test_create_table_enforces_non_nullable_child_only_under_present_parent(tmp_
     assert not reopened.schema.field("profile").type.field("country").nullable
 
     with pytest.raises(RuntimeError, match="'country' is non-nullable"):
-        db.create_table("bad", data=[{"profile": {"country": None}}], schema=schema)
+        db.create_table(
+            "bad", data=[{"profile": {"country": None}, "tag": "a"}], schema=schema
+        )
 
 
 def test_add_dictionary(mem_db: DBConnection):
