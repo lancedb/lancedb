@@ -830,6 +830,11 @@ The other fetch methods load bytes directly:
   slice per request, in order. A request list can repeat a row to read more
   than one slice of that blob.
 
+On Enterprise clusters with direct Blob reads enabled, the SDK's default
+threshold for eligible Blob V2 payloads or ranges is **32 MiB (inclusive)**.
+Smaller reads go through LanceDB. Direct reads use parts of up to 16 MiB and
+require the client to reach the object-store endpoint as well as LanceDB.
+
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {BlobApiFetch}

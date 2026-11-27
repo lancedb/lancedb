@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -14,6 +15,11 @@ jest.setTimeout(15000);
 
 const IDENTITY = `v1:${"a".repeat(64)}`;
 const MIB = 1024 * 1024;
+const DIRECT_READ_BYTES = BigInt(32 * MIB);
+
+function sha256(bytes: Buffer) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 function descriptor(size: bigint): BlobDescriptor {
   return {
@@ -54,22 +60,24 @@ async function withOpenServer(
     state: {
       directStatus: number;
       blobLocationsCalls: number;
-      objectCalls: number;
+      objectRanges: string[];
       proxyCalls: number;
       lastLocationBody: Record<string, unknown> | undefined;
     },
+    payload: Buffer,
   ) => Promise<void>,
-  size: bigint = 10n * BigInt(MIB),
+  size: bigint = DIRECT_READ_BYTES,
 ) {
   let port = 0;
   const state = {
     directStatus: 200,
     blobLocationsCalls: 0,
-    objectCalls: 0,
+    objectRanges: [] as string[],
     proxyCalls: 0,
     lastLocationBody: undefined as Record<string, unknown> | undefined,
   };
   const payload = Buffer.alloc(Number(size), 0x61);
+  payload.fill(0x62, Math.floor(payload.length / 2));
   const server = createServer(async (req, res) => {
     const url = req.url ?? "";
     if (url === "/v1/table/test/describe/") {
@@ -117,8 +125,8 @@ async function withOpenServer(
       return;
     }
     if (url.startsWith("/object")) {
-      state.objectCalls++;
       const range = req.headers.range ?? "";
+      state.objectRanges.push(range);
       const match = /^bytes=(\d+)-(\d+)$/.exec(range);
       if (match === null) {
         res.writeHead(416).end();
@@ -169,7 +177,7 @@ async function withOpenServer(
   });
   const table = await db.openTable("test");
   try {
-    await run(db, table, state);
+    await run(db, table, state, payload);
   } finally {
     await new Promise<void>((resolve) => {
       server.closeAllConnections();
@@ -179,19 +187,25 @@ async function withOpenServer(
 }
 
 describe("openBlobFile", () => {
-  it("opens a large descriptor through the direct resolver and reads bytes", async () => {
-    await withOpenServer(async (_db, table, state) => {
-      const handle = (await table.openBlobFile(descriptor(10n * BigInt(MIB))))!;
+  it("routes reads at the inclusive default direct threshold", async () => {
+    await withOpenServer(async (_db, table, state, payload) => {
+      const handle = (await table.openBlobFile(descriptor(DIRECT_READ_BYTES)))!;
       expect(handle).not.toBeNull();
-      // Below the per-read threshold the same handle stays on the proxy.
-      expect(await handle.readRange(0n, 4n)).toEqual(Buffer.alloc(4, 0x61));
+      const below = await handle.readRange(0n, DIRECT_READ_BYTES - 1n);
+      expect(below.length).toBe(payload.length - 1);
+      expect(sha256(below)).toBe(sha256(payload.subarray(0, -1)));
       expect(state.proxyCalls).toBe(1);
-      expect(state.objectCalls).toBe(0);
-      const large = await handle.readRange(0n, 10n * BigInt(MIB));
-      expect(large.length).toBe(10 * MIB);
-      expect(large.equals(Buffer.alloc(10 * MIB, 0x61))).toBe(true);
+      expect(state.objectRanges).toEqual([]);
+
+      const exact = await handle.readRange(0n, DIRECT_READ_BYTES);
+      expect(exact.length).toBe(payload.length);
+      expect(sha256(exact)).toBe(sha256(payload));
+      const partBytes = 16 * MIB;
+      expect(state.objectRanges.sort()).toEqual([
+        `bytes=0-${partBytes - 1}`,
+        `bytes=${partBytes}-${2 * partBytes - 1}`,
+      ]);
       expect(state.blobLocationsCalls).toBe(1);
-      expect(state.objectCalls).toBe(1);
       expect(state.proxyCalls).toBe(1);
       expect(state.lastLocationBody).toMatchObject({
         version: 46,
@@ -209,15 +223,14 @@ describe("openBlobFile", () => {
   });
 
   it("falls back to the proxy when the resolver returns 503", async () => {
-    await withOpenServer(async (_db, table, state) => {
+    await withOpenServer(async (_db, table, state, payload) => {
       state.directStatus = 503;
-      const handle = (await table.openBlobFile(descriptor(10n * BigInt(MIB))))!;
+      const handle = (await table.openBlobFile(descriptor(DIRECT_READ_BYTES)))!;
       expect(handle).not.toBeNull();
-      const large = await handle.readRange(0n, 10n * BigInt(MIB));
-      expect(large.length).toBe(10 * MIB);
-      expect(large.equals(Buffer.alloc(10 * MIB, 0x61))).toBe(true);
+      const large = await handle.readRange(0n, DIRECT_READ_BYTES);
+      expect(large.equals(payload)).toBe(true);
       expect(state.blobLocationsCalls).toBe(1);
-      expect(state.objectCalls).toBe(0);
+      expect(state.objectRanges).toEqual([]);
       expect(state.proxyCalls).toBe(1);
       await handle.close();
     });
@@ -228,7 +241,7 @@ describe("openBlobFile", () => {
       const handle = (await table.openBlobFile(descriptor(BigInt(MIB))))!;
       expect(await handle.readRange(0n, 4n)).toEqual(Buffer.alloc(4, 0x61));
       expect(state.blobLocationsCalls).toBe(0);
-      expect(state.objectCalls).toBe(0);
+      expect(state.objectRanges).toEqual([]);
       expect(state.proxyCalls).toBe(1);
       await handle.close();
     }, BigInt(MIB));
@@ -239,7 +252,7 @@ describe("openBlobFile", () => {
       const handles = [];
       for await (const handle of table.openBlobFiles([
         null,
-        descriptor(10n * BigInt(MIB)),
+        descriptor(DIRECT_READ_BYTES),
         null,
       ])) {
         handles.push(handle);
