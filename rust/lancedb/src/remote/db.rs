@@ -1049,13 +1049,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let name = integration_sql::object_name(name, namespace_path)?;
         let result = self
             .execute_query_async(ExecuteQueryRequest {
-                query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
+                query: format!("DESCRIBE STORAGE INTEGRATION {name} FORMAT JSON"),
                 default_namespace_path: namespace_path.to_vec(),
                 parameters: None,
                 options: Default::default(),
             })
             .await?;
-        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+        super::sql::description(result.reader().await?.try_collect::<Vec<_>>().await?)
     }
 
     async fn list_storage_integrations(
