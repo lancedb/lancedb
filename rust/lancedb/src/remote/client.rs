@@ -22,6 +22,7 @@ use tokio::sync::Semaphore;
 use crate::error::{Error, HttpErrorSource, RemoteErrorMetadata, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
+use crate::remote::table::blobs::BlobLocationCache;
 use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -368,6 +369,7 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) blob_request_semaphore: Arc<Semaphore>,
     pub(crate) object_store_read_parallelism: usize,
+    pub(crate) blob_location_cache: BlobLocationCache,
     /// Logical blob/range size at which a handle prefers a presigned direct
     /// read over the existing proxy byte-range route.
     pub(crate) blob_presign_threshold_bytes: u64,
@@ -703,6 +705,7 @@ impl RestfulLanceDbClient<Sender> {
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(lance_io::object_store::DEFAULT_CLOUD_IO_PARALLELISM)
                 .clamp(1, blob_request_concurrency),
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: client_config.header_provider,
@@ -982,29 +985,44 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.put(full_uri)
     }
 
-    /// Apply dynamic headers from the header provider if configured
-    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+    pub(crate) async fn dynamic_headers(&self) -> Result<HeaderMap> {
+        let mut result = HeaderMap::new();
         if let Some(ref provider) = self.header_provider {
             let headers = provider.get_headers().await?;
-            let request_headers = request.headers_mut();
             for (key, value) in headers {
                 if let Ok(header_name) = HeaderName::from_str(&key) {
                     if let Ok(header_value) = HeaderValue::from_str(&value) {
-                        request_headers.insert(header_name, header_value);
+                        result.insert(header_name, header_value);
                     } else {
                         debug!("Invalid header value for key {}", key);
                     }
                 } else {
-                    debug!("Invalid header name: {}", key);
+                    debug!("Invalid header name for key {}", key);
                 }
             }
         }
+        Ok(result)
+    }
+
+    /// Apply dynamic headers from the header provider if configured.
+    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+        request.headers_mut().extend(self.dynamic_headers().await?);
         redact_sensitive_headers(request.headers_mut());
         Ok(request)
     }
 
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
-        self.send_logging(req, BodyLogging::Allowed).await
+        self.send_logging(req, BodyLogging::Allowed, None).await
+    }
+
+    /// Send using the same header values that the caller used for its cache lookup.
+    pub(crate) async fn send_with_resolved_headers(
+        &self,
+        req: RequestBuilder,
+        headers: HeaderMap,
+    ) -> Result<(String, Response)> {
+        self.send_logging(req, BodyLogging::Allowed, Some(headers))
+            .await
     }
 
     /// Send a request whose body must never reach a debug log.
@@ -1012,20 +1030,25 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     /// The body is built by the caller, so only the caller knows it holds a
     /// credential; `log_request` sees serialized bytes and cannot tell.
     pub async fn send_suppressing_body(&self, req: RequestBuilder) -> Result<(String, Response)> {
-        self.send_logging(req, BodyLogging::Suppressed).await
+        self.send_logging(req, BodyLogging::Suppressed, None).await
     }
 
     async fn send_logging(
         &self,
         req: RequestBuilder,
         body_logging: BodyLogging,
+        resolved_headers: Option<HeaderMap>,
     ) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
         let request_id = self.extract_request_id(&mut request);
 
-        // Apply dynamic headers before sending
-        request = self.apply_dynamic_headers(request).await?;
+        if let Some(headers) = resolved_headers {
+            request.headers_mut().extend(headers);
+            redact_sensitive_headers(request.headers_mut());
+        } else {
+            request = self.apply_dynamic_headers(request).await?;
+        }
 
         self.log_request(&request, &request_id, body_logging);
 
@@ -1348,6 +1371,7 @@ pub mod test_utils {
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
@@ -1384,6 +1408,7 @@ pub mod test_utils {
             object_store_read_parallelism: config
                 .blob_request_concurrency
                 .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
@@ -2173,6 +2198,7 @@ mod tests {
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -2215,6 +2241,7 @@ mod tests {
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -2283,6 +2310,7 @@ mod tests {
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
