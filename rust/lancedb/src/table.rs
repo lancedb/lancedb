@@ -4591,7 +4591,7 @@ impl BaseTable for NativeTable {
     async fn restore(&self) -> Result<()> {
         // Restore is the only write allowed in time travel mode. Validate the
         // snapshot's branch before Lance can publish any restore transaction.
-        let mut dataset = self.dataset.restore_target()?.as_ref().clone();
+        let mut dataset = self.dataset.restore_target().await?.as_ref().clone();
         dataset.restore().await?;
         // Restore moves "latest", so bump before resolving it (as RemoteTable does).
         self.bump_freshness();
@@ -6033,6 +6033,94 @@ mod tests {
                 fresh.count_rows(Some(format!("i = {row}"))).await.unwrap(),
                 1
             );
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some(Duration::ZERO))]
+    #[case(Some(Duration::from_secs(60)))]
+    #[tokio::test]
+    async fn test_branch_identity_after_foreign_snapshot(
+        #[case] interval: Option<Duration>,
+        #[values(false, true)] restore: bool,
+        #[values(false, true)] snapshot_copy: bool,
+    ) {
+        let tmp_dir = tempdir().unwrap();
+        let mut builder = ConnectBuilder::new(tmp_dir.path().to_str().unwrap());
+        if let Some(interval) = interval {
+            builder = builder.read_consistency_interval(interval);
+        }
+        let conn = builder.execute().await.unwrap();
+        let main = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let stale = main.create_branch("exp", 1u64).await.unwrap();
+        stale.add(sample_rows(vec![10])).execute().await.unwrap();
+        let ordinary_pin = stale.checkout_current().await.unwrap();
+        main.add(sample_rows(vec![100])).execute().await.unwrap();
+        main.tags()
+            .await
+            .unwrap()
+            .create("main-tip", 2)
+            .await
+            .unwrap();
+
+        stale.checkout_tag("main-tip").await.unwrap();
+        let stale = if snapshot_copy {
+            stale.checkout_current().await.unwrap()
+        } else {
+            stale
+        };
+        // Reusing a name must not let the old handle attach or commit to the
+        // replacement, even after its visible snapshot left the original branch.
+        main.delete_branch("exp").await.unwrap();
+        let replacement = main.create_branch("exp", 1u64).await.unwrap();
+        replacement
+            .add(sample_rows(vec![20]))
+            .execute()
+            .await
+            .unwrap();
+        replacement
+            .tags()
+            .await
+            .unwrap()
+            .create("replacement", 1)
+            .await
+            .unwrap();
+
+        let err = if restore {
+            // This tag resolves to the original branch name, but a different
+            // BranchIdentifier. Merely comparing branch names cannot catch it.
+            stale.checkout_tag("replacement").await.unwrap();
+            stale.restore().await.unwrap_err()
+        } else {
+            stale.checkout_latest().await.unwrap_err()
+        };
+        assert!(err.to_string().contains("deleted and recreated"), "{err}");
+        assert_eq!(stale.version().await.unwrap(), if restore { 1 } else { 2 });
+        assert!(stale.add(sample_rows(vec![999])).execute().await.is_err());
+        assert!(ordinary_pin.checkout_latest().await.is_err());
+
+        // Neither rejection may publish a new version or change either tip.
+        for (branch, expected_row) in [("main", 100), ("exp", 20)] {
+            let fresh = conn
+                .open_table("my_table")
+                .branch(branch)
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(fresh.version().await.unwrap(), 2);
+            assert_eq!(fresh.count_rows(None).await.unwrap(), 2);
+            for row in [0, 10, 20, 100, 999] {
+                assert_eq!(
+                    fresh.count_rows(Some(format!("i = {row}"))).await.unwrap(),
+                    usize::from(row == 0 || row == expected_row),
+                    "unexpected contents on {branch} for row {row}"
+                );
+            }
         }
     }
 
