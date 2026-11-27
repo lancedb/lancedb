@@ -15,6 +15,37 @@ use crate::{
     utils::{validate_function_name, validate_namespace},
 };
 
+// These parser diagnostics identify a rejected clause emitted by this SDK.
+// They do not identify the server build.
+fn with_catalog_pairing(mut error: Error, clause: &str) -> Error {
+    if let Error::Sql {
+        message,
+        grpc_code,
+        metadata,
+        ..
+    } = &mut error
+        && *grpc_code == tonic::Code::InvalidArgument as i32
+        && metadata.error_code.is_none()
+        && metadata.resource.is_none()
+    {
+        let diagnostic = metadata.server.as_ref().map_or(message.as_str(), |build| {
+            message
+                .strip_suffix(&format!(" [server: {build}]"))
+                .unwrap_or(message)
+        });
+        if diagnostic.strip_prefix("unexpected trailing input after the statement: ")
+            == Some(clause)
+        {
+            message.push_str(
+                ". Check the Python SDK version paired with your LanceDB Enterprise build. \
+                 For a build paired with b8, install lancedb==0.42.0b8. \
+                 To use lancedb==0.42.0b38, connect to a LanceDB Enterprise build that pins b38.",
+            );
+        }
+    }
+    error
+}
+
 /// The SQL result of one Function drop, before the public boolean wrapper
 /// discards the advisory details.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -69,6 +100,7 @@ impl SqlClient {
             Some(version) => format!(" WITH (version = {})", literal(version)),
             None => String::new(),
         };
+        let with_pairing = |error| with_catalog_pairing(error, "FORMAT");
         self.object_job(
             ExecuteQueryRequest {
                 query: format!(
@@ -81,9 +113,11 @@ impl SqlClient {
             },
             description,
         )
-        .await?
+        .await
+        .map_err(with_pairing)?
         .wait()
         .await
+        .map_err(with_pairing)
     }
     pub(in crate::remote) async fn list_functions(
         &self,
@@ -92,7 +126,8 @@ impl SqlClient {
     ) -> Result<ListingPage<FunctionVersion>> {
         let (batches, page_token) = self
             .listing_page("SHOW FUNCTIONS HISTORY", namespace, options)
-            .await?;
+            .await
+            .map_err(|error| with_catalog_pairing(error, "LIMIT"))?;
         let items = strings(&batches, "definition")?
             .into_iter()
             .map(|value| {
