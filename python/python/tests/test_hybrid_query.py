@@ -822,6 +822,136 @@ async def test_async_hybrid_query_empty_page_does_not_fetch_candidates(
     assert executions == []
 
 
+def _counting_leg_plans():
+    # Count plan executions of the two hybrid legs: analyze_plan runs both
+    # legs, so a limit(0) page must leave both counters at zero.
+    executions = []
+    original_fts = AsyncFTSQuery.analyze_plan
+    original_vec = AsyncVectorQuery.analyze_plan
+
+    async def counting_fts(self, *args, **kwargs):
+        executions.append("fts")
+        return await original_fts(self, *args, **kwargs)
+
+    async def counting_vec(self, *args, **kwargs):
+        executions.append("vec")
+        return await original_vec(self, *args, **kwargs)
+
+    patchers = (
+        mock.patch.object(AsyncFTSQuery, "analyze_plan", counting_fts),
+        mock.patch.object(AsyncVectorQuery, "analyze_plan", counting_vec),
+    )
+    return executions, patchers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0, 2])
+async def test_async_hybrid_query_empty_page_analyze_plan_does_not_execute(
+    tmpdir_factory, offset
+):
+    # analyze_plan does not go through _run_hybrid: it executes both legs
+    # itself, so it has to reject an explicit zero limit before either leg
+    # runs, whatever the offset.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    executions, patchers = _counting_leg_plans()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .offset(offset)
+        .limit(0)
+    )
+    with patchers[0], patchers[1]:
+        with pytest.raises(ValueError, match="k must be positive"):
+            await query.analyze_plan()
+    assert executions == []
+
+
+def _candidate_rows_with_blob():
+    # _candidate_rows plus a blob v2 column, built from the storage struct
+    # the way test_blob.py builds blob arrays.
+    rows = _candidate_rows()
+    field = lancedb.blob("payload")
+    storage_type = field.type.storage_type
+    storage = pa.StructArray.from_arrays(
+        [
+            pa.array(
+                [b"blob-%d" % i for i in range(rows.num_rows)],
+                type=pa.large_binary(),
+            ),
+            pa.array([None] * rows.num_rows, type=pa.string()),
+            pa.array([None] * rows.num_rows, type=pa.uint64()),
+            pa.array([None] * rows.num_rows, type=pa.uint64()),
+        ],
+        fields=list(storage_type),
+    )
+    payload = pa.ExtensionArray.from_storage(field.type, storage)
+    return rows.append_column(field, payload)
+
+
+def _counting_vector_output_schema():
+    # Count Blob schema discovery calls: _blob_output_schema asks the
+    # vector leg for its output schema, which on a remote table sends the
+    # query itself, so a limit(0) page must leave this counter at zero.
+    calls = []
+    original = AsyncVectorQuery.output_schema
+
+    async def counting(self, *args, **kwargs):
+        calls.append(1)
+        return await original(self, *args, **kwargs)
+
+    patcher = mock.patch.object(AsyncVectorQuery, "output_schema", counting)
+    return calls, patcher
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_empty_page_blob_bytes_skips_discovery(
+    tmpdir_factory,
+):
+    # to_arrow(blob_mode="bytes") discovers the Blob output schema before
+    # the query runs, and on a remote table that discovery sends the
+    # vector query itself. An explicit zero limit has to be rejected
+    # before discovery runs, not by it.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows_with_blob())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    executions, exec_patchers = _counting_child_queries()
+    schema_calls, schema_patcher = _counting_vector_output_schema()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .limit(0)
+    )
+    with exec_patchers[0], exec_patchers[1], schema_patcher:
+        with pytest.raises(ValueError, match="k must be positive") as excinfo:
+            await query.to_arrow(blob_mode="bytes")
+    # The rejection is the query builder's, not the native "Invalid input"
+    # error the undiscovered schema call would have raised instead.
+    assert str(excinfo.value) == (
+        "k must be positive: a hybrid query needs limit(1) or more"
+    )
+    assert schema_calls == []
+    assert executions == []
+    assert reranker.calls == []
+
+    # A positive limit still discovers the schema and returns the rows.
+    result = await (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .limit(2)
+        .to_arrow(blob_mode="bytes")
+    )
+    assert len(result) == 2
+
+
 @pytest.mark.asyncio
 async def test_async_hybrid_query_default_rrf_candidate_window(tmpdir_factory):
     # The default RRF reranker gets the #4758 floor: 50 candidates per side

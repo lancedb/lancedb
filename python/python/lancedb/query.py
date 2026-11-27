@@ -4582,7 +4582,30 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
+    def _reject_explicit_zero_limit(self) -> None:
+        """Reject an explicit zero limit before any work runs for this query.
+
+        `_run_hybrid` checks the limit that `_create_child_queries`
+        derives, but Blob schema discovery and plan analysis do not go
+        through it, so they call this first instead. The effective limit
+        can sit on either sub-query (see `_create_child_queries`), so look
+        at both.
+        """
+        fts_req = self._inner.to_fts_query().to_query_request()
+        vec_req = self._inner.to_vector_query().to_query_request()
+        limit = fts_req.limit if fts_req.limit is not None else vec_req.limit
+        if limit is None:
+            limit = DEFAULT_HYBRID_LIMIT
+        if limit == 0:
+            raise ValueError(
+                "k must be positive: a hybrid query needs limit(1) or more"
+            )
+
     async def _blob_output_schema(self) -> pa.Schema:
+        # Schema discovery calls output_schema() on the vector leg, which
+        # on a remote table sends the query itself, so an explicit zero
+        # limit has to be rejected before it runs.
+        self._reject_explicit_zero_limit()
         vector_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
         return await vector_query.output_schema()
 
@@ -4800,6 +4823,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         -------
         plan : str
         """
+        # Plan analysis executes both legs, so an explicit zero limit has
+        # to be rejected before either of them runs.
+        self._reject_explicit_zero_limit()
         fts_query, vec_query, _, _ = await self._create_child_queries()
 
         results = ["Vector Search Query:"]
