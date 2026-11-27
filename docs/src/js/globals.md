@@ -23,7 +23,6 @@
 - [BlobFile](classes/BlobFile.md)
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
-- [BranchContents](classes/BranchContents.md)
 - [Branches](classes/Branches.md)
 - [Catalog](classes/Catalog.md)
 - [Connection](classes/Connection.md)
@@ -67,6 +66,7 @@
 - [BlobDescriptorSource](interfaces/BlobDescriptorSource.md)
 - [BranchColumnChange](interfaces/BranchColumnChange.md)
 - [BranchColumnSummary](interfaces/BranchColumnSummary.md)
+- [BranchContents](interfaces/BranchContents.md)
 - [BranchDiff](interfaces/BranchDiff.md)
 - [BranchIndexSummary](interfaces/BranchIndexSummary.md)
 - [BranchRowCountSummary](interfaces/BranchRowCountSummary.md)
@@ -137,6 +137,7 @@
 - [JobInfo](interfaces/JobInfo.md)
 - [JobProgress](interfaces/JobProgress.md)
 - [JobWaitOptions](interfaces/JobWaitOptions.md)
+- [ListedBranchContents](interfaces/ListedBranchContents.md)
 - [ListingOptions](interfaces/ListingOptions.md)
 - [MaterializedViewDefinition](interfaces/MaterializedViewDefinition.md)
 - [MemtableStats](interfaces/MemtableStats.md)
@@ -224,6 +225,10 @@
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)
 - [TokenizeTableOptions](type-aliases/TokenizeTableOptions.md)
+
+## Variables
+
+- [BranchContents](variables/BranchContents.md)
 
 ## Functions
 

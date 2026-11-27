@@ -152,7 +152,10 @@ snapshot.
 
 Writes go through the branch handle and stay there: the `main` handle keeps
 reporting its original row count. Listing branches returns a mapping of each
-branch name to its metadata, including the version it was forked from.
+branch name to its metadata, including the version it was forked from. Each
+entry also carries the branch creation time in Unix seconds (`createAt` in
+TypeScript, `create_at` in Python) and a string map of application-defined
+`metadata`.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">

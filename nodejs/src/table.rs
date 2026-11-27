@@ -2746,7 +2746,87 @@ pub struct TagContents {
 pub struct BranchContents {
     pub parent_branch: Option<String>,
     pub parent_version: i64,
+    /// Branch creation time in Unix seconds.
+    pub create_at: i64,
     pub manifest_size: i64,
+    metadata: HashMap<String, String>,
+}
+
+#[napi]
+impl BranchContents {
+    /// Application-defined string metadata stored with the branch.
+    ///
+    /// Every key is preserved, including keys like `__proto__` that ordinary
+    /// object assignment would route to the prototype setter.
+    #[napi(getter, ts_return_type = "Record<string, string>")]
+    pub fn metadata(&self, env: Env) -> napi::Result<Object<'static>> {
+        let raw_env = env.raw();
+        let mut raw_obj = std::ptr::null_mut();
+        unsafe {
+            napi::check_status!(
+                napi::sys::napi_create_object(raw_env, &mut raw_obj),
+                "Failed to create metadata object"
+            )?;
+        }
+        for (key, value) in &self.metadata {
+            define_own_data_property(raw_env, raw_obj, key, value)?;
+        }
+        Ok(Object::from_raw(raw_env, raw_obj))
+    }
+
+    #[napi(setter)]
+    pub fn set_metadata(&mut self, metadata: HashMap<String, String>) {
+        self.metadata = metadata;
+    }
+}
+
+/// Defines `key` as an own enumerable data property holding `value`.
+///
+/// napi-rs converts maps with `napi_set_property`, whose `[[Set]]` semantics
+/// send a `__proto__` key to the prototype setter and drop it from the
+/// object's own keys. `napi_define_properties` uses `[[DefineOwnProperty]]`,
+/// which keeps every key.
+fn define_own_data_property(
+    raw_env: napi::sys::napi_env,
+    raw_obj: napi::sys::napi_value,
+    key: &str,
+    value: &str,
+) -> napi::Result<()> {
+    use napi::sys;
+    use std::ffi::CString;
+    use std::ptr;
+
+    let key_c =
+        CString::new(key).map_err(|e| napi::Error::new(napi::Status::InvalidArg, e.to_string()))?;
+    unsafe {
+        let mut raw_value = ptr::null_mut();
+        napi::check_status!(
+            sys::napi_create_string_utf8(
+                raw_env,
+                value.as_ptr().cast(),
+                value.len() as isize,
+                &mut raw_value
+            ),
+            "Failed to create metadata value"
+        )?;
+        let descriptor = sys::napi_property_descriptor {
+            utf8name: key_c.as_ptr(),
+            name: ptr::null_mut(),
+            method: None,
+            getter: None,
+            setter: None,
+            value: raw_value,
+            attributes: sys::PropertyAttributes::enumerable
+                | sys::PropertyAttributes::writable
+                | sys::PropertyAttributes::configurable,
+            data: ptr::null_mut(),
+        };
+        napi::check_status!(
+            sys::napi_define_properties(raw_env, raw_obj, 1, &descriptor),
+            "Failed to define metadata property"
+        )?;
+    }
+    Ok(())
 }
 
 fn from_tag_hint(name: &str, tag: &str) -> String {
@@ -2922,7 +3002,9 @@ impl Branches {
                     BranchContents {
                         parent_branch: v.parent_branch,
                         parent_version: v.parent_version as i64,
+                        create_at: v.create_at as i64,
                         manifest_size: v.manifest_size as i64,
+                        metadata: v.metadata,
                     },
                 )
             })

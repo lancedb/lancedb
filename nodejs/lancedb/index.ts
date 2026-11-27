@@ -52,7 +52,6 @@ export {
   FragmentSummaryStats,
   Tags,
   TagContents,
-  BranchContents,
   MergeResult,
   AddResult,
   AddColumnsResult,
@@ -83,6 +82,8 @@ export {
   ShuffleOptions,
   OAuthConfig as NativeOAuthConfig,
 } from "./native.js";
+
+export { BranchContents, ListedBranchContents } from "./table";
 
 export {
   makeArrowTable,

@@ -61,7 +61,6 @@ import {
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
-  BranchContents,
   DeleteResult,
   DropColumnsResult,
   FunctionErrors,
@@ -73,6 +72,7 @@ import {
   IndexStatistics,
   JobFailureInfo,
   RecordBatchIterator as NativeBatchIterator,
+  BranchContents as NativeBranchContents,
   Branches as NativeBranches,
   DeltaRef as NativeDeltaRef,
   TableDelta as NativeTableDelta,
@@ -87,6 +87,34 @@ import {
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
+
+/**
+ * Copies accessor properties from a napi-rs class prototype onto an instance
+ * as own enumerable properties, reusing the same getters and setters. napi-rs
+ * exposes class fields as prototype accessors, which are invisible to
+ * `Object.keys`, object spread and `JSON.stringify`; promoting them to own
+ * properties keeps the class (and `instanceof`) intact while making returned
+ * values serializable.
+ */
+function exposeOwnAccessors<T extends object>(instance: T, keys: string[]): T {
+  const proto = Object.getPrototypeOf(instance);
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(instance, key)) continue;
+    const desc = Object.getOwnPropertyDescriptor(proto, key);
+    if (
+      desc !== undefined &&
+      (desc.get !== undefined || desc.set !== undefined)
+    ) {
+      Object.defineProperty(instance, key, {
+        get: desc.get,
+        set: desc.set,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  return instance;
+}
 import {
   AutoQuery,
   FullTextQuery,
@@ -2865,6 +2893,41 @@ class TableDeltaReaderImpl implements TableDeltaReader {
 }
 
 /**
+ * Contents of a table branch.
+ *
+ * This is the shape released in 0.41.0. Newer fields exposed by
+ * {@link Branches.list} are declared on {@link ListedBranchContents} so that
+ * values and interfaces written against the released shape remain assignable.
+ */
+export interface BranchContents {
+  /** Branch this branch was forked from. Absent for direct forks of `main`. */
+  parentBranch?: string;
+  /** Version on the parent branch this branch was forked from. */
+  parentVersion: number;
+  /** Size in bytes of the branch's manifest file. */
+  manifestSize: number;
+}
+
+/**
+ * Branch contents as returned by {@link Branches.list}, with the newer
+ * `createAt` and `metadata` fields guaranteed to be present.
+ */
+export interface ListedBranchContents extends BranchContents {
+  /** Branch creation time in Unix seconds. */
+  createAt: number;
+  /** Application-defined string metadata. */
+  metadata: Record<string, string>;
+}
+
+/**
+ * Runtime class of the branch contents returned by {@link Branches.list}.
+ * Returned instances pass `instanceof BranchContents` checks.
+ */
+export const BranchContents: (new () => BranchContents) & {
+  prototype: BranchContents;
+} = NativeBranchContents;
+
+/**
  * Branch manager for a {@link Table}.
  *
  * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
@@ -2881,9 +2944,24 @@ export class Branches {
     this.#inner = inner;
   }
 
-  /** List all branches, mapping name to branch metadata. */
-  async list(): Promise<Record<string, BranchContents>> {
-    return await this.#inner.list();
+  /**
+   * List all branches, mapping name to branch metadata.
+   *
+   * Every entry always carries `createAt` (the branch creation time in Unix
+   * seconds) and `metadata` (a string map), in addition to the fork source.
+   */
+  async list(): Promise<Record<string, ListedBranchContents>> {
+    const branches = await this.#inner.list();
+    for (const contents of Object.values(branches)) {
+      exposeOwnAccessors(contents, [
+        "parentBranch",
+        "parentVersion",
+        "createAt",
+        "manifestSize",
+        "metadata",
+      ]);
+    }
+    return branches;
   }
 
   /**

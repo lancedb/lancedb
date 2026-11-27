@@ -158,11 +158,14 @@ Compare a branch against main without modifying either branch.
 ### list()
 
 ```ts
-list(): Promise<Record<string, BranchContents>>
+list(): Promise<Record<string, ListedBranchContents>>
 ```
 
 List all branches, mapping name to branch metadata.
 
+Every entry always carries `createAt` (the branch creation time in Unix
+seconds) and `metadata` (a string map), in addition to the fork source.
+
 #### Returns
 
-`Promise`&lt;`Record`&lt;`string`, [`BranchContents`](BranchContents.md)&gt;&gt;
+`Promise`&lt;`Record`&lt;`string`, [`ListedBranchContents`](../interfaces/ListedBranchContents.md)&gt;&gt;
