@@ -1305,6 +1305,8 @@ class Permutation:
         skip_last_batch is True, the last batch will be skipped if it has fewer
         than batch_size rows.
         """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than 0")
         self._ensure_open()
 
         async def get_iter():
@@ -1650,6 +1652,8 @@ def _rebatch(
     The permutation reader only bounds batches by batch_size; a filtered
     split read can yield short batches before the end of the stream.
     """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than 0")
     pending: list[pa.RecordBatch] = []
     pending_rows = 0
     for batch in batches:
@@ -1675,4 +1679,11 @@ def _rebatch(
 
 
 def _single_batch(table: pa.Table) -> pa.RecordBatch:
-    return table.combine_chunks().to_batches()[0]
+    batches = table.combine_chunks().to_batches()
+    if len(batches) != 1 or batches[0].num_rows != table.num_rows:
+        raise ValueError(
+            f"A batch of {table.num_rows} rows cannot be represented as a single "
+            "Arrow record batch (column data exceeds Arrow's size limits); "
+            "use a smaller batch_size"
+        )
+    return batches[0]

@@ -2152,3 +2152,48 @@ def test_rebatch_regroups_short_and_empty_batches():
 
     assert list(_rebatch(iter([make(0, 0)]), 4)) == []
     assert list(_rebatch(iter([]), 4)) == []
+
+
+def test_rebatch_rejects_non_positive_batch_size():
+    """_rebatch raises before consuming any input when batch_size <= 0."""
+    from lancedb.permutation import _rebatch
+
+    consumed = []
+
+    def tracking():
+        consumed.append(True)
+        yield pa.record_batch({"id": pa.array([0], pa.int64())})
+
+    for batch_size in (0, -1):
+        with pytest.raises(ValueError, match="batch_size must be greater than 0"):
+            next(_rebatch(tracking(), batch_size))
+    assert consumed == []
+
+
+def test_iter_rejects_non_positive_batch_size(some_permutation: Permutation):
+    for batch_size in (0, -1):
+        with pytest.raises(ValueError, match="batch_size must be greater than 0"):
+            next(some_permutation.iter(batch_size))
+
+
+def test_single_batch_rejects_multi_chunk_combine():
+    """_single_batch raises instead of dropping rows Arrow cannot fit in one batch."""
+    from lancedb.permutation import _single_batch
+
+    parts = [
+        pa.record_batch({"id": pa.array([0], pa.int64())}),
+        pa.record_batch({"id": pa.array([1], pa.int64())}),
+    ]
+
+    class Combined:
+        def to_batches(self):
+            return parts
+
+    class Table:
+        num_rows = 2
+
+        def combine_chunks(self):
+            return Combined()
+
+    with pytest.raises(ValueError, match="smaller batch_size"):
+        _single_batch(Table())
