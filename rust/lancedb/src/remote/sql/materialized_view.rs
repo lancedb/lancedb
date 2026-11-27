@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_array::{Array, StringArray};
 use futures::TryStreamExt;
 
-use super::SqlClient;
 use super::receipt::ReceiptRow;
+use super::{SqlClient, objects::description};
 use crate::database::ExecuteQueryRequest;
 use crate::error::{Error, Result};
 use crate::listing::{ListingOptions, ListingPage};
@@ -19,22 +19,9 @@ pub(in crate::remote) fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn strings(batch: &RecordBatch, name: &str) -> Result<Vec<String>> {
-    let values = batch
-        .column_by_name(name)
-        .and_then(|column| column.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| Error::Runtime {
-            message: format!("materialized-view SQL result is missing UTF-8 column '{name}'"),
-        })?;
-    if values.null_count() != 0 {
-        return Err(Error::Runtime {
-            message: format!("materialized-view SQL result contains null '{name}'"),
-        });
-    }
-    Ok(values
-        .iter()
-        .map(|value| value.unwrap().to_owned())
-        .collect())
+#[derive(serde::Deserialize)]
+struct MaterializedViewMetadata {
+    query: String,
 }
 
 pub(in crate::remote) enum MaterializedViewJobSubmission {
@@ -103,21 +90,19 @@ impl SqlClient {
         validate_namespace(namespace)?;
         let query = self
             .execute(ExecuteQueryRequest {
-                query: format!("DESCRIBE MATERIALIZED VIEW {}", quote_identifier(name)),
+                query: format!(
+                    "DESCRIBE MATERIALIZED VIEW {} FORMAT JSON",
+                    quote_identifier(name)
+                ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
                 options: Default::default(),
             })
             .await?;
-        let mut reader = query.reader().await?;
-        let mut definitions = Vec::new();
-        while let Some(batch) = reader.try_next().await? {
-            definitions.extend(strings(&batch, "query")?);
-        }
-        let [definition_sql] =
-            <[String; 1]>::try_from(definitions).map_err(|_| Error::Runtime {
-                message: "DESCRIBE MATERIALIZED VIEW must return exactly one definition".into(),
-            })?;
+        let reader = query.reader().await?;
+        let metadata: MaterializedViewMetadata =
+            description(reader.try_collect::<Vec<_>>().await?)?;
+        let definition_sql = metadata.query;
         let parsed_definition = MaterializedViewDefinition::from_sql(&definition_sql).ok();
         Ok(MaterializedViewInfo {
             definition_sql,

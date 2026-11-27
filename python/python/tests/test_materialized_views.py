@@ -92,10 +92,13 @@ async def test_remote_refresh_reports_unknown_metrics(
                 return flight.RecordBatchStream(
                     pa.table(
                         {
-                            "name": ["view"],
-                            "query": ["SELECT * FROM source"],
+                            "description": [
+                                json.dumps(
+                                    {"name": "view", "query": "SELECT * FROM source"}
+                                )
+                            ],
                         }
-                    )
+                    ).replace_schema_metadata({b"lancedb.describe.format": b"json"})
                 )
             assert b"REFRESH MATERIALIZED VIEW" in ticket.ticket
             # SQL completion carries no refresh statistics.
@@ -151,7 +154,8 @@ async def test_remote_refresh_reports_unknown_metrics(
         assert len(describes) == 2
         assert len(refreshes) == 1
         assert all(
-            b'DESCRIBE MATERIALIZED VIEW "view"' in command for command in describes
+            b'DESCRIBE MATERIALIZED VIEW "view" FORMAT JSON' in command
+            for command in describes
         )
         (refresh,) = refreshes
         assert b'REFRESH MATERIALIZED VIEW "view"' in refresh

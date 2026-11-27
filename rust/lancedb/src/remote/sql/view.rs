@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use super::{SqlClient, materialized_view::quote_identifier, objects::strings};
+use super::{
+    SqlClient,
+    materialized_view::quote_identifier,
+    objects::{description, strings},
+};
 use crate::{
     database::ExecuteQueryRequest,
     error::{Error, Result},
@@ -40,7 +44,7 @@ impl ViewDefinition {
     }
 }
 
-fn view_description(
+fn created_view_definition(
     batches: Vec<arrow_array::RecordBatch>,
     namespace: Vec<String>,
 ) -> Result<ViewDefinition> {
@@ -53,11 +57,29 @@ fn view_description(
         }
         Ok(values.remove(0))
     };
-    let name = one("name")?;
-    let json: JsonArrowSchema =
-        serde_json::from_str(&one("schema")?).map_err(|error| Error::Runtime {
-            message: format!("View '{name}' has invalid schema JSON: {error}"),
-        })?;
+    let metadata = ViewMetadata {
+        name: one("name")?,
+        query: one("query")?,
+        schema: serde_json::from_str(&one("schema")?).map_err(|error| Error::Runtime {
+            message: format!("View metadata has invalid schema JSON: {error}"),
+        })?,
+    };
+    view_definition(metadata, namespace)
+}
+
+#[derive(serde::Deserialize)]
+struct ViewMetadata {
+    name: String,
+    query: String,
+    schema: JsonArrowSchema,
+}
+
+fn view_definition(metadata: ViewMetadata, namespace: Vec<String>) -> Result<ViewDefinition> {
+    let ViewMetadata {
+        name,
+        query,
+        schema: json,
+    } = metadata;
     let schema = lance_namespace::schema::convert_json_arrow_schema(&json).map_err(|error| {
         Error::Runtime {
             message: format!("View '{name}' has an undecodable schema: {error}"),
@@ -84,7 +106,7 @@ fn view_description(
     Ok(ViewDefinition {
         name,
         namespace,
-        query: one("query")?,
+        query,
         default_database,
         default_namespace: default_namespace_path,
         schema: json,
@@ -113,7 +135,7 @@ impl SqlClient {
                 parameters: None,
                 options: Default::default(),
             },
-            move |batches| view_description(batches, namespace_path),
+            move |batches| created_view_definition(batches, namespace_path),
         )
         .await?
         .wait()
@@ -130,12 +152,12 @@ impl SqlClient {
         let namespace_path = namespace.to_vec();
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("DESCRIBE VIEW {}", quote_identifier(name)),
+                query: format!("DESCRIBE VIEW {} FORMAT JSON", quote_identifier(name)),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
                 options: Default::default(),
             },
-            move |batches| view_description(batches, namespace_path),
+            move |batches| view_definition(description(batches)?, namespace_path),
         )
         .await?
         .wait()

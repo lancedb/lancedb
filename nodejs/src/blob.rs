@@ -8,12 +8,65 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use arrow_array::{Array, LargeBinaryArray};
 use futures::future::abortable;
-use lancedb::blob::BlobFile as LanceBlobFile;
+use lancedb::blob::{
+    BlobDescriptor as LanceBlobDescriptor, BlobDescriptorSource as LanceBlobDescriptorSource,
+    BlobFile as LanceBlobFile,
+};
 use napi::Env;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::error::convert_error;
+
+#[napi(object)]
+pub struct BlobDescriptorInputSource {
+    pub uri: String,
+    pub version: BigInt,
+    pub committed_at_micros: BigInt,
+    pub branch: Option<String>,
+    pub column: String,
+    pub row_reference: BigInt,
+    pub row_is_address: bool,
+}
+
+#[napi(object)]
+pub struct BlobDescriptorInput {
+    pub kind: u32,
+    pub position: BigInt,
+    pub size: BigInt,
+    pub blob_id: u32,
+    pub blob_uri: String,
+    pub source: BlobDescriptorInputSource,
+}
+
+impl BlobDescriptorInput {
+    pub(crate) fn into_descriptor(self) -> napi::Result<LanceBlobDescriptor> {
+        Ok(LanceBlobDescriptor {
+            kind: u8::try_from(self.kind).map_err(|_| {
+                napi::Error::from_reason("blob descriptor kind must be between 0 and 255")
+            })?,
+            position: parse_u64(self.position, "blob descriptor position")?,
+            size: parse_u64(self.size, "blob descriptor size")?,
+            blob_id: self.blob_id,
+            blob_uri: self.blob_uri,
+            source: LanceBlobDescriptorSource {
+                uri: self.source.uri,
+                version: parse_u64(self.source.version, "blob descriptor source version")?,
+                committed_at_micros: parse_u64(
+                    self.source.committed_at_micros,
+                    "blob descriptor source committed_at_micros",
+                )?,
+                branch: self.source.branch,
+                column: self.source.column,
+                row_reference: parse_u64(
+                    self.source.row_reference,
+                    "blob descriptor source row_reference",
+                )?,
+                row_is_address: self.source.row_is_address,
+            },
+        })
+    }
+}
 
 #[napi(object)]
 pub struct BlobRange {

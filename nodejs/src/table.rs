@@ -19,7 +19,10 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids, spawn_abortable};
+use crate::blob::{
+    BlobDescriptorInput, BlobFile, BlobRangeRequest, copy_blob_buffers, parse_row_ids,
+    spawn_abortable,
+};
 use crate::error::{NapiErrorExt, convert_error};
 use crate::index::Index;
 use crate::iterator::RecordBatchIterator;
@@ -623,6 +626,21 @@ impl Table {
                 .into_iter()
                 .map(|file| file.map(BlobFile::new))
                 .collect())
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn open_blob_file<'env>(
+        &self,
+        env: &'env Env,
+        descriptor: BlobDescriptorInput,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, BlobFile>> {
+        let descriptor = descriptor.into_descriptor()?;
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let file = table.open_blob_file(&descriptor).await.default_error()?;
+            Ok(BlobFile::new(file))
         })
     }
 

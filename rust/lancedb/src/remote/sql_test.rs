@@ -765,6 +765,17 @@ impl FlightService for TestSqlService {
     }
 }
 
+fn description_batch(document: serde_json::Value) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("description", DataType::Utf8, false)]).with_metadata(
+        HashMap::from([("lancedb.describe.format".into(), "json".into())]),
+    );
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+    )
+    .unwrap()
+}
+
 fn parameter_row() -> RecordBatch {
     let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
         [Some([0.1_f32, 1e-45, -0.0].map(Some))],
@@ -1801,17 +1812,8 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
         let (socket, _) = listener.accept().await?;
         Ok::<_, std::io::Error>(Some((socket, listener)))
     });
-    let result = RecordBatch::try_from_iter(vec![
-        (
-            "name",
-            Arc::new(StringArray::from(vec!["view"])) as ArrayRef,
-        ),
-        (
-            "query",
-            Arc::new(StringArray::from(vec!["SELECT * FROM source"])) as ArrayRef,
-        ),
-    ])
-    .unwrap();
+    let result =
+        description_batch(serde_json::json!({"name":"view", "query":"SELECT * FROM source"}));
     let service = TestSqlService {
         result,
         ..Default::default()
@@ -1921,7 +1923,7 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     assert_eq!(
         *statements.lock().unwrap(),
         [
-            "DESCRIBE MATERIALIZED VIEW \"view\"",
+            "DESCRIBE MATERIALIZED VIEW \"view\" FORMAT JSON",
             "REFRESH MATERIALIZED VIEW \"view\"",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
             "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true, total_cpu_millis = 8000, total_memory_bytes = 17179869184, total_gpu_count = 2, gpu_class = 'h100', gpu_count = 2)",
@@ -3216,11 +3218,8 @@ async fn remote_mv_listing_uses_server_continuation_tokens() {
 async fn remote_describe_materialized_view_preserves_the_sql_definition() {
     for defer in [false, true] {
         let definition = "SELECT s.x, d.label FROM source s JOIN dim d ON s.id = d.id";
-        let result = RecordBatch::try_from_iter(vec![(
-            "query",
-            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
-        )])
-        .unwrap();
+        let result =
+            description_batch(serde_json::json!({"name":"daily_sales", "query":definition}));
         let service = TestSqlService {
             adaptive: true,
             defer,
@@ -3245,7 +3244,7 @@ async fn remote_describe_materialized_view_preserves_the_sql_definition() {
         assert!(info.parsed_definition.is_none());
         assert_eq!(
             *statements.lock().unwrap(),
-            ["DESCRIBE MATERIALIZED VIEW \"daily_sales\""]
+            ["DESCRIBE MATERIALIZED VIEW \"daily_sales\" FORMAT JSON"]
         );
         shutdown.send(()).unwrap();
     }
@@ -3283,6 +3282,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
             result: RecordBatch::try_from_iter(columns.clone()).unwrap(),
             adaptive: true,
             defer,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([(
+                "DESCRIBE STORAGE INTEGRATION \"raw\" FORMAT JSON".into(),
+                description_batch(info.clone()),
+            )]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3310,13 +3313,14 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
             created.trust_policy["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"],
             created.aws_external_id
         );
+        let described = database
+            .describe_storage_integration("raw", &namespace)
+            .await
+            .unwrap();
+        assert_eq!(described.aws_external_id, created.aws_external_id);
         assert_eq!(
-            database
-                .describe_storage_integration("raw", &namespace)
-                .await
-                .unwrap()
-                .aws_external_id,
-            created.aws_external_id
+            serde_json::to_value(&described).unwrap(),
+            serde_json::to_value(&created).unwrap()
         );
         assert_eq!(
             database
@@ -3347,7 +3351,10 @@ async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata()
             .unwrap();
         let statements = statements.lock().unwrap();
         assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
-        assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
+        assert_eq!(
+            statements[1],
+            "DESCRIBE STORAGE INTEGRATION \"raw\" FORMAT JSON"
+        );
         assert_eq!(
             statements[2],
             "SHOW STORAGE INTEGRATIONS IN \"platform$aws\" LIMIT 1000"
@@ -3467,6 +3474,16 @@ async fn function_creation_and_description_use_sql_query_handles() {
             adaptive: true,
             defer,
             result,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([
+                (
+                    "DESCRIBE FUNCTION \"embed\" WITH (version = '1') FORMAT JSON".into(),
+                    description_batch(version_json.clone()),
+                ),
+                (
+                    "DESCRIBE FUNCTION \"embed\" FORMAT JSON".into(),
+                    description_batch(version_json.clone()),
+                ),
+            ]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -3621,8 +3638,11 @@ async fn function_creation_and_description_use_sql_query_handles() {
         assert_eq!(listed_json["row_timeout_seconds"], 8.0);
         assert_eq!(listed_json["result_stability"], "input_and_context");
         let seen = statements.lock().unwrap();
-        assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
-        assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\"");
+        assert_eq!(
+            seen[1],
+            "DESCRIBE FUNCTION \"embed\" WITH (version = '1') FORMAT JSON"
+        );
+        assert_eq!(seen[2], "DESCRIBE FUNCTION \"embed\" FORMAT JSON");
         shutdown.send(()).unwrap();
     }
 }
@@ -3888,27 +3908,16 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
 }
 #[tokio::test]
 async fn secret_description_uses_the_sql_metadata_projection() {
-    let result = RecordBatch::try_from_iter(vec![
-        (
-            "name",
-            Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
-        ),
-        (
-            "created_at_millis",
-            Arc::new(arrow_array::Int64Array::from(vec![1])) as ArrayRef,
-        ),
-        (
-            "updated_at_millis",
-            Arc::new(arrow_array::Int64Array::from(vec![2])) as ArrayRef,
-        ),
-    ])
-    .unwrap();
+    let result = description_batch(
+        serde_json::json!({"name":"api-key", "created_at_millis":1, "updated_at_millis":2, "history":[]}),
+    );
     let service = TestSqlService {
         adaptive: true,
         defer: true,
         result,
         ..Default::default()
     };
+    let statements = service.statements.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
     let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
         panic!("unexpected REST request");
@@ -3917,6 +3926,10 @@ async fn secret_description_uses_the_sql_metadata_projection() {
     let info = db.describe_secret("api-key", &[]).await.unwrap();
     assert_eq!(info.name, "api-key");
     assert_eq!(info.updated_at_millis, 2);
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["DESCRIBE SECRET \"api-key\" FORMAT JSON"]
+    );
     shutdown.send(()).unwrap();
 }
 
@@ -4220,6 +4233,12 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             adaptive: true,
             defer,
             result,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([(
+                "DESCRIBE VIEW \"adults\" FORMAT JSON".into(),
+                description_batch(
+                    serde_json::json!({"name":"adults", "query":"SELECT name FROM people", "schema":serde_json::from_str::<serde_json::Value>(schema).unwrap()}),
+                ),
+            )]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4256,7 +4275,7 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
                 "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
-                "DESCRIBE VIEW \"adults\""
+                "DESCRIBE VIEW \"adults\" FORMAT JSON"
             ]
         );
         assert!(

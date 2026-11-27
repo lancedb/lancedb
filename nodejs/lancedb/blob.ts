@@ -310,6 +310,80 @@ export class BlobFile {
   }
 }
 
+/**
+ * A source-bearing Blob V2 descriptor returned by the SQL `blob_descriptor`
+ * function. Field names match the descriptor object/Arrow struct shape.
+ */
+export interface BlobDescriptorSource {
+  uri: string;
+  version: bigint | number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  committed_at_micros: bigint | number;
+  branch?: string | null;
+  column: string;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  row_reference: bigint | number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  row_is_address: boolean;
+}
+
+/**
+ * A source-bearing Blob V2 descriptor accepted by {@link Table.openBlobFile}.
+ * Query results expose these fields as an Arrow struct. The source pins the
+ * table version, branch, column and row identity used to open the handle.
+ */
+export interface BlobDescriptor {
+  kind: number;
+  position: bigint | number;
+  size: bigint | number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  blob_id: number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  blob_uri: string;
+  source: BlobDescriptorSource;
+}
+
+function descriptorBigInt(value: bigint | number, field: string): bigint {
+  if (typeof value === "bigint") {
+    if (value < 0n) {
+      throw new TypeError(`blob descriptor ${field} cannot be negative`);
+    }
+    return value;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(
+      `blob descriptor ${field} must be a non-negative safe integer or bigint`,
+    );
+  }
+  return BigInt(value);
+}
+
+/** @ignore */
+export function toNativeBlobDescriptor(descriptor: BlobDescriptor) {
+  return {
+    kind: descriptor.kind,
+    position: descriptorBigInt(descriptor.position, "position"),
+    size: descriptorBigInt(descriptor.size, "size"),
+    blobId: descriptor.blob_id,
+    blobUri: descriptor.blob_uri,
+    source: {
+      uri: descriptor.source.uri,
+      version: descriptorBigInt(descriptor.source.version, "source.version"),
+      committedAtMicros: descriptorBigInt(
+        descriptor.source.committed_at_micros,
+        "source.committed_at_micros",
+      ),
+      branch: descriptor.source.branch ?? undefined,
+      column: descriptor.source.column,
+      rowReference: descriptorBigInt(
+        descriptor.source.row_reference,
+        "source.row_reference",
+      ),
+      rowIsAddress: descriptor.source.row_is_address,
+    },
+  };
+}
+
 /** Options for blob reads. */
 export type BlobReadOptions = {
   /**
