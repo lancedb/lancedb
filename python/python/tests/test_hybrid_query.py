@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import random
 from unittest import mock
 
 import lancedb
 
-from lancedb.query import LanceHybridQueryBuilder
+from lancedb.query import AsyncFTSQuery, AsyncVectorQuery, LanceHybridQueryBuilder
+from lancedb.rerankers.base import Reranker
 from lancedb.rerankers.rrf import RRFReranker
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
@@ -58,8 +61,10 @@ async def test_async_hybrid_query(table: AsyncTable):
         table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2).to_arrow()
     )
     assert len(result) == 2
-    # ensure we get results that would match well for text and vector
-    assert result["text"].to_pylist() == ["a", "dog"]
+    # ensure we get results that would match well for text and vector.
+    # 'dog' matches both the text query and the vector query, so rank fusion
+    # over the full candidate window (#4758) puts it first.
+    assert result["text"].to_pylist() == ["dog", "a"]
 
     # ensure there is no rowid by default
     assert "_rowid" not in result
@@ -76,9 +81,11 @@ async def test_async_hybrid_query_with_row_ids(table: AsyncTable):
         .to_arrow()
     )
     assert len(result) == 2
-    # ensure we get results that would match well for text and vector
-    assert result["text"].to_pylist() == ["a", "dog"]
-    assert result["_rowid"].to_pylist() == [0, 3]
+    # ensure we get results that would match well for text and vector.
+    # 'dog' matches both the text query and the vector query, so rank fusion
+    # over the full candidate window (#4758) puts it first.
+    assert result["text"].to_pylist() == ["dog", "a"]
+    assert result["_rowid"].to_pylist() == [3, 0]
 
 
 def test_hybrid_fragment_constraints_fail_loud(sync_table: Table):
@@ -294,10 +301,11 @@ async def test_async_hybrid_query_fts_first_default_limit(table: AsyncTable):
 
 @pytest.mark.asyncio
 async def test_async_hybrid_query_explain_plan_matches_execution(table: AsyncTable):
-    # Paging rewrites the sub-queries: each one fetches limit + offset rows with
-    # no offset of its own, and the window is sliced out after fusion. The plans
-    # have to be built from those rewritten sub-queries, otherwise explain_plan
-    # and analyze_plan describe a query that is never run.
+    # Paging rewrites the sub-queries: each one fetches enough rows to cover
+    # limit + offset, and never fewer than the rank-fusion window (#4758),
+    # with no offset of its own, and the window is sliced out after fusion.
+    # The plans have to be built from those rewritten sub-queries, otherwise
+    # explain_plan and analyze_plan describe a query that is never run.
     query = (
         table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").offset(2).limit(2)
     )
@@ -307,12 +315,12 @@ async def test_async_hybrid_query_explain_plan_matches_execution(table: AsyncTab
     assert [
         line.strip() for line in plan.splitlines() if "GlobalLimitExec" in line
     ] == [
-        "GlobalLimitExec: skip=0, fetch=4",
-        "GlobalLimitExec: skip=0, fetch=4",
+        "GlobalLimitExec: skip=0, fetch=50",
+        "GlobalLimitExec: skip=0, fetch=50",
     ]
 
     analyzed = await query.analyze_plan()
-    assert analyzed.count("skip=0, fetch=4") == 2
+    assert analyzed.count("skip=0, fetch=50") == 2
     assert "skip=2" not in analyzed
 
 
@@ -339,6 +347,81 @@ def test_hybrid_query_offset(sync_table: Table):
         .to_arrow()
     )
     assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+
+def test_hybrid_query_top_result_stable_across_limits(tmpdir_factory):
+    # Regression test for #4758: the top result of a hybrid search must not
+    # depend on `limit`. Each side used to fetch only `limit + offset` rows
+    # before fusion, so asking for fewer results could return a different
+    # first result instead of just a shorter list.
+    rng = np.random.default_rng(0)
+    random.seed(0)
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa".split()
+    rows = [
+        {
+            "id": i,
+            "text": " ".join(random.choice(words) for _ in range(12)),
+            "vector": rng.random(16).astype("float32"),
+        }
+        for i in range(300)
+    ]
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    table = lancedb.connect(tmp_path).create_table("t", data=rows)
+    table.create_fts_index("text", with_position=False)
+
+    query_vec = rng.random(16).astype("float32")
+
+    def top_id(limit):
+        result = (
+            table.search(query_type="hybrid")
+            .vector(query_vec)
+            .text("alpha beta gamma")
+            .limit(limit)
+            .to_list()
+        )
+        assert len(result) == limit
+        return result[0]["id"]
+
+    assert top_id(1) == top_id(3) == top_id(10)
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_top_result_stable_across_limits(tmpdir_factory):
+    # Async mirror of test_hybrid_query_top_result_stable_across_limits:
+    # regression test for #4758. The top result of a hybrid search must not
+    # depend on `limit`. The async path previously had no behavioral
+    # assertion for this — only the explain-plan fetch=50 check — so a
+    # regression on this side would have slipped through.
+    rng = np.random.default_rng(0)
+    random.seed(0)
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa".split()
+    rows = [
+        {
+            "id": i,
+            "text": " ".join(random.choice(words) for _ in range(12)),
+            "vector": rng.random(16).astype("float32"),
+        }
+        for i in range(300)
+    ]
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", data=rows)
+    await table.create_index("text", config=FTS(with_position=False))
+
+    query_vec = rng.random(16).astype("float32")
+
+    async def top_id(limit):
+        result = await (
+            table.query()
+            .nearest_to(query_vec)
+            .nearest_to_text("alpha beta gamma")
+            .limit(limit)
+            .to_list()
+        )
+        assert len(result) == limit
+        return result[0]["id"]
+
+    assert await top_id(1) == await top_id(3) == await top_id(10)
 
 
 @pytest.mark.parametrize(
@@ -645,3 +728,309 @@ def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
         "or set `vector()` and `text()` explicitly for hybrid search. "
         "But not both."
     )
+
+
+class _RecordingReranker(Reranker):
+    """Records how many candidates each side of a hybrid query hands over."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def rerank_hybrid(self, query, vector_results, fts_results):
+        self.calls.append((len(vector_results), len(fts_results)))
+        combined = self.merge_results(vector_results, fts_results)
+        scores = pa.array([1.0] * len(combined), type=pa.float32())
+        return combined.append_column("_relevance_score", scores)
+
+
+def _candidate_rows():
+    rng = np.random.default_rng(0)
+    return pa.table(
+        {
+            "id": pa.array(range(100), type=pa.int64()),
+            "text": pa.array(["match"] * 100),
+            "vector": pa.array(
+                rng.random((100, 2)).astype("float32").tolist(),
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+
+
+def test_hybrid_query_custom_reranker_keeps_candidate_budget(tmpdir_factory):
+    # The #4758 candidate floor only applies to the default RRF reranker.
+    # Custom and model rerankers get every candidate, so they must keep
+    # receiving `limit + offset` rows per side.
+    db = lancedb.connect(str(tmpdir_factory.mktemp("data")))
+    table = db.create_table("t", _candidate_rows())
+    table.create_fts_index("text", with_position=False)
+
+    reranker = _RecordingReranker()
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.5, 0.5])
+        .text("match")
+        .rerank(reranker)
+        .limit(1)
+        .to_list()
+    )
+    assert len(result) == 1
+    assert reranker.calls == [(1, 1)]
+
+    reranker = _RecordingReranker()
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.5, 0.5])
+        .text("match")
+        .rerank(reranker)
+        .offset(2)
+        .limit(3)
+        .to_list()
+    )
+    assert len(result) == 3
+    assert reranker.calls == [(5, 5)]
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_custom_reranker_keeps_candidate_budget(
+    tmpdir_factory,
+):
+    # Async mirror of test_hybrid_query_custom_reranker_keeps_candidate_budget.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    result = await (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .limit(1)
+        .to_arrow()
+    )
+    assert len(result) == 1
+    assert reranker.calls == [(1, 1)]
+
+    reranker = _RecordingReranker()
+    result = await (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .offset(2)
+        .limit(3)
+        .to_arrow()
+    )
+    assert len(result) == 3
+    assert reranker.calls == [(5, 5)]
+
+
+def _counting_child_queries():
+    # Count executions of the two hybrid sub-queries: a limit(0) page must
+    # run neither retrieval, so both counters have to stay at zero.
+    executions = []
+    original_fts = AsyncFTSQuery.to_arrow
+    original_vec = AsyncVectorQuery.to_arrow
+
+    async def counting_fts(self, *args, **kwargs):
+        executions.append("fts")
+        return await original_fts(self, *args, **kwargs)
+
+    async def counting_vec(self, *args, **kwargs):
+        executions.append("vec")
+        return await original_vec(self, *args, **kwargs)
+
+    patchers = (
+        mock.patch.object(AsyncFTSQuery, "to_arrow", counting_fts),
+        mock.patch.object(AsyncVectorQuery, "to_arrow", counting_vec),
+    )
+    return executions, patchers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0, 2])
+async def test_async_hybrid_query_empty_page_does_not_fetch_candidates(
+    tmpdir_factory, offset
+):
+    # An empty page must not get the #4758 candidate floor, and must not
+    # fetch or score anything at all: limit(0) is rejected before either
+    # sub-query runs, whatever the offset. With offset(2) the sub-queries
+    # would otherwise carry k=2 and fetch two rows per side for nothing.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    executions, patchers = _counting_child_queries()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .offset(offset)
+        .limit(0)
+    )
+    with patchers[0], patchers[1]:
+        with pytest.raises(ValueError, match="k must be positive"):
+            await query.to_arrow()
+    assert reranker.calls == []
+    assert executions == []
+
+
+def _counting_leg_plans():
+    # Count plan executions of the two hybrid legs: analyze_plan runs both
+    # legs, so a limit(0) page must leave both counters at zero.
+    executions = []
+    original_fts = AsyncFTSQuery.analyze_plan
+    original_vec = AsyncVectorQuery.analyze_plan
+
+    async def counting_fts(self, *args, **kwargs):
+        executions.append("fts")
+        return await original_fts(self, *args, **kwargs)
+
+    async def counting_vec(self, *args, **kwargs):
+        executions.append("vec")
+        return await original_vec(self, *args, **kwargs)
+
+    patchers = (
+        mock.patch.object(AsyncFTSQuery, "analyze_plan", counting_fts),
+        mock.patch.object(AsyncVectorQuery, "analyze_plan", counting_vec),
+    )
+    return executions, patchers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0, 2])
+async def test_async_hybrid_query_empty_page_analyze_plan_does_not_execute(
+    tmpdir_factory, offset
+):
+    # analyze_plan does not go through _run_hybrid: it executes both legs
+    # itself, so it has to reject an explicit zero limit before either leg
+    # runs, whatever the offset.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    executions, patchers = _counting_leg_plans()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .offset(offset)
+        .limit(0)
+    )
+    with patchers[0], patchers[1]:
+        with pytest.raises(ValueError, match="k must be positive"):
+            await query.analyze_plan()
+    assert executions == []
+
+
+def _candidate_rows_with_blob():
+    # _candidate_rows plus a blob v2 column, built from the storage struct
+    # the way test_blob.py builds blob arrays.
+    rows = _candidate_rows()
+    field = lancedb.blob("payload")
+    storage_type = field.type.storage_type
+    storage = pa.StructArray.from_arrays(
+        [
+            pa.array(
+                [b"blob-%d" % i for i in range(rows.num_rows)],
+                type=pa.large_binary(),
+            ),
+            pa.array([None] * rows.num_rows, type=pa.string()),
+            pa.array([None] * rows.num_rows, type=pa.uint64()),
+            pa.array([None] * rows.num_rows, type=pa.uint64()),
+        ],
+        fields=list(storage_type),
+    )
+    payload = pa.ExtensionArray.from_storage(field.type, storage)
+    return rows.append_column(field, payload)
+
+
+def _counting_vector_output_schema():
+    # Count Blob schema discovery calls: _blob_output_schema asks the
+    # vector leg for its output schema, which on a remote table sends the
+    # query itself, so a limit(0) page must leave this counter at zero.
+    calls = []
+    original = AsyncVectorQuery.output_schema
+
+    async def counting(self, *args, **kwargs):
+        calls.append(1)
+        return await original(self, *args, **kwargs)
+
+    patcher = mock.patch.object(AsyncVectorQuery, "output_schema", counting)
+    return calls, patcher
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_empty_page_blob_bytes_skips_discovery(
+    tmpdir_factory,
+):
+    # to_arrow(blob_mode="bytes") discovers the Blob output schema before
+    # the query runs, and on a remote table that discovery sends the
+    # vector query itself. An explicit zero limit has to be rejected
+    # before discovery runs, not by it.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows_with_blob())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    executions, exec_patchers = _counting_child_queries()
+    schema_calls, schema_patcher = _counting_vector_output_schema()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .limit(0)
+    )
+    with exec_patchers[0], exec_patchers[1], schema_patcher:
+        with pytest.raises(ValueError, match="k must be positive") as excinfo:
+            await query.to_arrow(blob_mode="bytes")
+    # The rejection is the query builder's, not the native "Invalid input"
+    # error the undiscovered schema call would have raised instead.
+    assert str(excinfo.value) == (
+        "k must be positive: a hybrid query needs limit(1) or more"
+    )
+    assert schema_calls == []
+    assert executions == []
+    assert reranker.calls == []
+
+    # A positive limit still discovers the schema and returns the rows.
+    result = await (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .limit(2)
+        .to_arrow(blob_mode="bytes")
+    )
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_default_rrf_candidate_window(tmpdir_factory):
+    # The default RRF reranker gets the #4758 floor: 50 candidates per side
+    # even when a single row is requested.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    seen = []
+    original = RRFReranker.rerank_hybrid
+
+    def recording_rerank_hybrid(self, query, vector_results, fts_results, *a, **kw):
+        seen.append((len(vector_results), len(fts_results)))
+        return original(self, query, vector_results, fts_results, *a, **kw)
+
+    with mock.patch.object(RRFReranker, "rerank_hybrid", recording_rerank_hybrid):
+        result = await (
+            table.query()
+            .nearest_to([0.5, 0.5])
+            .nearest_to_text("match")
+            .limit(1)
+            .to_arrow()
+        )
+    assert len(result) == 1
+    assert seen == [(50, 50)]

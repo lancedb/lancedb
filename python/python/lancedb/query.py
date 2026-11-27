@@ -164,6 +164,29 @@ _SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 # mirrors the default the Rust query builder applies to its sub-queries.
 DEFAULT_HYBRID_LIMIT = 10
 
+# Minimum number of rows each side of a hybrid query fetches before rank
+# fusion. Fusion needs a candidate window larger than the page it returns:
+# with only `limit + offset` rows per side, asking for fewer results can
+# return a different top result instead of just a shorter list (#4758).
+DEFAULT_HYBRID_RANK_WINDOW = 50
+
+
+def _hybrid_sub_query_limit(
+    limit: int, offset: int, reranker: Optional[Reranker]
+) -> int:
+    """Number of rows each side of a hybrid query fetches before reranking.
+
+    Each side always fetches the skipped prefix plus the page itself. For the
+    default RRF reranker the window is raised to DEFAULT_HYBRID_RANK_WINDOW so
+    that a smaller page does not change the fused ranking (#4758). Custom and
+    model rerankers keep the caller's `limit + offset` budget, since every
+    candidate is sent to them, and an empty page never gets the floor.
+    """
+    window = limit + offset
+    if limit > 0 and (reranker is None or type(reranker) is RRFReranker):
+        return max(window, DEFAULT_HYBRID_RANK_WINDOW)
+    return window
+
 
 @runtime_checkable
 class _LanceScanner(Protocol):
@@ -3967,9 +3990,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # Apply common configurations
         # The final offset/limit window is sliced out of the combined,
         # reranked results, so each sub-query must fetch enough rows to
-        # cover the skipped prefix as well as the window itself.
+        # cover the skipped prefix as well as the window itself. Default RRF
+        # fusion additionally needs a candidate window larger than the
+        # returned page (#4758): with only `limit + offset` rows per side, a
+        # smaller limit can return a different top result instead of just a
+        # shorter list.
         limit = self._limit or DEFAULT_HYBRID_LIMIT
-        sub_query_limit = limit + (self._offset or 0)
+        sub_query_limit = _hybrid_sub_query_limit(
+            limit, self._offset or 0, self._reranker
+        )
         self._vector_query.limit(sub_query_limit)
         self._fts_query.limit(sub_query_limit)
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
@@ -5763,7 +5792,30 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
+    def _reject_explicit_zero_limit(self) -> None:
+        """Reject an explicit zero limit before any work runs for this query.
+
+        `_run_hybrid` checks the limit that `_create_child_queries`
+        derives, but Blob schema discovery and plan analysis do not go
+        through it, so they call this first instead. The effective limit
+        can sit on either sub-query (see `_create_child_queries`), so look
+        at both.
+        """
+        fts_req = self._inner.to_fts_query().to_query_request()
+        vec_req = self._inner.to_vector_query().to_query_request()
+        limit = fts_req.limit if fts_req.limit is not None else vec_req.limit
+        if limit is None:
+            limit = DEFAULT_HYBRID_LIMIT
+        if limit == 0:
+            raise ValueError(
+                "k must be positive: a hybrid query needs limit(1) or more"
+            )
+
     async def _blob_output_schema(self) -> pa.Schema:
+        # Schema discovery calls output_schema() on the vector leg, which
+        # on a remote table sends the query itself, so an explicit zero
+        # limit has to be rejected before it runs.
+        self._reject_explicit_zero_limit()
         vector_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
         return await vector_query.output_schema()
 
@@ -5821,9 +5873,13 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         # offset() pushes the offset down into both sub-queries, which would make
         # each of them skip its own first `offset` rows. The window has to be
         # taken out of the combined, reranked results instead, so fetch the
-        # skipped prefix here too and slice it off afterwards.
-        fts_query.limit(limit + offset)
-        vec_query.limit(limit + offset)
+        # skipped prefix here too and slice it off afterwards. Default RRF
+        # fusion additionally needs a candidate window larger than the
+        # returned page (#4758), so with that reranker never fetch fewer than
+        # DEFAULT_HYBRID_RANK_WINDOW rows per side.
+        sub_query_limit = _hybrid_sub_query_limit(limit, offset, self._reranker)
+        fts_query.limit(sub_query_limit)
+        vec_query.limit(sub_query_limit)
         fts_query.offset(0)
         vec_query.offset(0)
 
@@ -5865,6 +5921,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         blob_sources: Optional[dict[str, str]] = None,
     ) -> AsyncRecordBatchReader:
         fts_query, vec_query, limit, offset = await self._create_child_queries()
+        if limit == 0:
+            # An empty page needs no candidates. Reject it before anything
+            # runs, whatever the offset: building an empty result would need
+            # the output schema, and on a remote table output_schema() itself
+            # sends the vector and full-text queries.
+            raise ValueError(
+                "k must be positive: a hybrid query needs limit(1) or more"
+            )
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = bool(blob_sources)
@@ -5933,14 +5997,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         RRFReranker(K=60)
             ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance, _rowid@1 as _rowid]
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
-                GlobalLimitExec: skip=0, fetch=10
+                GlobalLimitExec: skip=0, fetch=50
                   FilterExec: _distance@2 IS NOT NULL
                     SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
                         LanceRead: uri=..., projection=[vector], num_fragments=..., ...
             ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
-                GlobalLimitExec: skip=0, fetch=10
+                GlobalLimitExec: skip=0, fetch=50
                   MatchQuery: column=text, query=[hello]
 
         Parameters
@@ -5982,6 +6046,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         -------
         plan : str
         """
+        # Plan analysis executes both legs, so an explicit zero limit has
+        # to be rejected before either of them runs.
+        self._reject_explicit_zero_limit()
         fts_query, vec_query, _, _ = await self._create_child_queries()
 
         results = ["Vector Search Query:"]
