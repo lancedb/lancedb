@@ -396,10 +396,15 @@ cannot match a filter. It works best for numeric or temporal columns whose
 values are correlated with row order, such as timestamps or sequential IDs.
 
 For strings, binary data, and supported types wider than eight bytes, this
-index enables per-fragment write seeds and activates a table capability.
-Upgrade all readers and writers before creating such an index: older clients
-cannot access the resulting snapshots. Dropping the index or restoring an
-older version does not remove the capability from subsequent snapshots.
+index uses per-fragment write seeds. By default, these use version 0 and do
+not activate the version 1 table capability.
+
+A commit that explicitly sets the table configuration key
+`lance.zone_write_seeds.version` to `"1"` activates a persistent reader and
+writer capability. Upgrade all readers and writers before opting in: clients
+that do not support this capability cannot access the resulting snapshots.
+Dropping the index or restoring an older version does not remove the
+capability from subsequent snapshots.
 
 #### Returns
 
