@@ -14,7 +14,7 @@ runs:
   steps:
     - uses: ./.github/actions/setup-protoc
     - name: Build wheel
-      uses: PyO3/maturin-action@v1
+      uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
       with:
         command: build
         maturin-version: "1.12.4"

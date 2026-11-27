@@ -5,7 +5,7 @@ import * as http from "http";
 import type { AddressInfo } from "net";
 import * as tmp from "tmp";
 
-import { type Table, connect } from "../lancedb";
+import { type Table, blob, connect } from "../lancedb";
 import {
   Table as ArrowTable,
   Field,
@@ -15,6 +15,7 @@ import {
   tableToIPC,
 } from "../lancedb/arrow";
 import { Expr, col, func, lit, litBool, litInt } from "../lancedb/expr";
+import { Index } from "../lancedb/indices";
 
 describe("expr", () => {
   describe("col", () => {
@@ -268,6 +269,171 @@ describe("expr", () => {
       } finally {
         escaped.close();
       }
+    });
+  });
+
+  describe("select", () => {
+    let db: Awaited<ReturnType<typeof connect>>;
+    let table: Table;
+    let tmpDir: tmp.DirResult;
+
+    beforeAll(async () => {
+      tmpDir = tmp.dirSync({ unsafeCleanup: true });
+      db = await connect(tmpDir.name);
+      table = await db.createTable("items", [
+        { id: 1, firstName: "Alice", unitPrice: 10, vector: [1, 0] },
+        { id: 2, firstName: "Bob", unitPrice: 20, vector: [0, 1] },
+        { id: 3, firstName: "Charlie", unitPrice: 30, vector: [-1, 0] },
+      ]);
+      await table.createIndex("firstName", { config: Index.fts() });
+    });
+
+    afterAll(() => {
+      table.close();
+      db.close();
+      tmpDir.removeCallback();
+    });
+
+    it("accepts Expr values in a Map, mixed with SQL strings", async () => {
+      const rows = await table
+        .query()
+        .select(
+          new Map<string, string | Expr>([
+            ["id", "id"],
+            ["name", col("firstName")],
+            ["doubled", col("unitPrice").mul(2)],
+          ]),
+        )
+        .toArray();
+      expect(Object.keys(rows[0])).toEqual(["id", "name", "doubled"]);
+      expect(rows.map((row) => [row.id, row.name, row.doubled])).toEqual([
+        [1, "Alice", 20],
+        [2, "Bob", 40],
+        [3, "Charlie", 60],
+      ]);
+    });
+
+    it("accepts Expr values in a Record, mixed with SQL strings", async () => {
+      const [row] = await table
+        .query()
+        .where(col("firstName").eq("Bob"))
+        .select({
+          shout: col("firstName").upper(),
+          quiet: func("lower", col("firstName")),
+          id: "id",
+        })
+        .toArray();
+      expect(Object.keys(row)).toEqual(["shout", "quiet", "id"]);
+      expect([row.shout, row.quiet, row.id]).toEqual(["BOB", "bob", 2]);
+    });
+
+    it("accepts Expr values in a vector query", async () => {
+      const rows = await table
+        .vectorSearch([1, 0])
+        .select({ name: col("firstName"), doubled: col("unitPrice").mul(2) })
+        .limit(1)
+        .toArray();
+      expect(rows).toHaveLength(1);
+      expect([rows[0].name, rows[0].doubled]).toEqual(["Alice", 20]);
+    });
+
+    it("accepts Expr values in an automatic search", async () => {
+      const rows = await table
+        .search("Bob")
+        .select({ name: col("firstName"), doubled: col("unitPrice").mul(2) })
+        .toArray();
+      expect(rows).toHaveLength(1);
+      expect([rows[0].name, rows[0].doubled]).toEqual(["Bob", 40]);
+    });
+
+    it("accepts Expr values in a take query", async () => {
+      const rows = await table
+        .takeOffsets([2, 0])
+        .select(
+          new Map<string, string | Expr>([
+            ["name", col("firstName")],
+            ["doubled", col("unitPrice").mul(2)],
+          ]),
+        )
+        .toArray();
+      expect(
+        rows.map((row) => [row.name, row.doubled]).sort((a, b) => a[1] - b[1]),
+      ).toEqual([
+        ["Alice", 20],
+        ["Charlie", 60],
+      ]);
+    });
+
+    it("rejects a value that is neither SQL nor an Expr", () => {
+      const select = () => table.query().select({ id: 1 as unknown as string });
+      expect(select).toThrow(TypeError);
+      expect(select).toThrow(
+        'select() values must be SQL strings or Expr objects, got number for "id"',
+      );
+    });
+
+    describe("with blobMode bytes", () => {
+      const alpha = Buffer.from("alpha");
+      const beta = Buffer.from("beta");
+      let blobs: Table;
+
+      beforeAll(async () => {
+        const schema = new Schema([
+          new Field("id", new Int64(), true),
+          blob("imageData"),
+        ]);
+        blobs = await db.createTable(
+          "blobs",
+          [
+            { id: 1n, imageData: alpha },
+            { id: 2n, imageData: beta },
+          ],
+          { schema },
+        );
+      });
+
+      afterAll(() => {
+        blobs.close();
+      });
+
+      it("fills a camelCase blob column renamed with col()", async () => {
+        const [row] = await blobs
+          .query()
+          .where("id = 2")
+          .select(
+            new Map<string, string | Expr>([
+              ["key", "id"],
+              ["picture", col("imageData")],
+            ]),
+          )
+          .toArray({ blobMode: "bytes" });
+        expect(Object.keys(row)).toEqual(["key", "picture"]);
+        expect(Number(row.key)).toBe(2);
+        expect(Buffer.from(row.picture)).toEqual(beta);
+      });
+
+      it("fills a blob column next to a computed Expr", async () => {
+        const rows = await blobs
+          .query()
+          .select({ imageData: col("imageData"), next: col("id").add(1) })
+          .toArray({ blobMode: "bytes" });
+        expect(Object.keys(rows[0])).toEqual(["imageData", "next"]);
+        expect(
+          rows.map((row) => [Buffer.from(row.imageData), Number(row.next)]),
+        ).toEqual([
+          [alpha, 2],
+          [beta, 3],
+        ]);
+      });
+
+      it("fills a blob column selected with col() in a take query", async () => {
+        const rows = await blobs
+          .takeOffsets([0])
+          .select({ picture: col("imageData") })
+          .toArray({ blobMode: "bytes" });
+        expect(Object.keys(rows[0])).toEqual(["picture"]);
+        expect(Buffer.from(rows[0].picture)).toEqual(alpha);
+      });
     });
   });
 

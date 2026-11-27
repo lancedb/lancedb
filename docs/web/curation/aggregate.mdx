@@ -144,9 +144,9 @@ same way any other curation Function is registered:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf
+@function
 def caption_quality(caption: str) -> float:
     ...  # score the caption, e.g. with a lightweight heuristic or model
 

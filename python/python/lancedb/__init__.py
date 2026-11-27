@@ -17,9 +17,18 @@ __version__ = str(_Version(_native_version))
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import (
+    FunctionColumnAutoRefreshStatus as FunctionColumnAutoRefreshStatus,
+)
+from ._lancedb import (
+    FunctionColumnLastRefreshJob as FunctionColumnLastRefreshJob,
+)
+from ._lancedb import FunctionColumnStatus as FunctionColumnStatus
+from ._lancedb import (
+    FunctionColumnVersionStatus as FunctionColumnVersionStatus,
+)
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
-from ._lancedb import FunctionErrors as FunctionErrors
 from ._lancedb import GpuClass as GpuClass
 from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
@@ -29,23 +38,32 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import blob, vector
+from .schema import BasePath, blob, blob_uri_array, vector
 from ._blob_reader import BlobReader as BlobReader
-from .job import AsyncJob, Job
+from .job import AsyncJob, Job, JobState
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
 from .functions import (
+    FunctionErrors as FunctionErrors,
+    AsyncFunctionErrors as AsyncFunctionErrors,
+    FunctionErrorGroup as FunctionErrorGroup,
+    FunctionProvenance as FunctionProvenance,
+    FunctionValueProvenance as FunctionValueProvenance,
     AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
     FunctionDefinition as FunctionDefinition,
+    FunctionEnvironment as FunctionEnvironment,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionRetryPolicy as FunctionRetryPolicy,
     FunctionVersion as FunctionVersion,
     HuggingFaceModel as HuggingFaceModel,
     PythonRuntimeSpec as PythonRuntimeSpec,
+    ResolvedEnvironment as ResolvedEnvironment,
+    ResolvedEnvironmentProvenance as ResolvedEnvironmentProvenance,
+    ResolvedPackage as ResolvedPackage,
     RefreshColumnResult as RefreshColumnResult,
     function as function,
     udf as udf,
@@ -61,6 +79,7 @@ from .materialized_view import (
 from .view import ViewDescription as ViewDescription
 from .graph import PropertyGraph, PropertyGraphDescription
 from .table import AsyncTable, CompactionOptions, Table
+from .query import ColumnOrdering as ColumnOrdering
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -660,6 +679,15 @@ __all__ = [
     "AsyncTable",
     "CompactionOptions",
     "FtsToken",
+    "FunctionColumnAutoRefreshStatus",
+    "FunctionColumnLastRefreshJob",
+    "FunctionColumnStatus",
+    "FunctionColumnVersionStatus",
+    "FunctionErrors",
+    "AsyncFunctionErrors",
+    "FunctionErrorGroup",
+    "FunctionProvenance",
+    "FunctionValueProvenance",
     "col",
     "Expr",
     "func",
@@ -668,9 +696,12 @@ __all__ = [
     "sanitize_uri",
     "blob",
     "BlobType",
+    "BasePath",
+    "blob_uri_array",
     "vector",
     "DBConnection",
     "Job",
+    "JobState",
     "QueryDescription",
     "SqlQuery",
     "LanceDBConnection",

@@ -161,6 +161,8 @@ class LanceMergeInsertBuilder(object):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         timeout: Optional[timedelta] = None,
+        *,
+        retries: Optional[int] = None,
     ) -> MergeInsertResult:
         """
         Executes the merge insert operation
@@ -189,7 +191,22 @@ class LanceMergeInsertBuilder(object):
             first attempt will not be cancelled.
 
             When this is set, the timeout is enforced on all attempts, including
-            the first.
+            the first. For remote tables it is sent as a server execution timeout;
+            it does not extend HTTP read or proxy idle timeouts, or prove that a
+            failed request did not commit.
+        retries: int, optional
+            Override the remote retry budget for this execution only (0 to 255).
+            Use ``execute(new_data, retries=0)`` to disable even retries after
+            precommit conflicts (409) or rate limits (429). This does not change
+            connection-wide/read budgets or local transaction conflict retries.
+
+            By default, remote calls use the connection's
+            [RetryConfig][lancedb.remote.RetryConfig]. Its ``statuses`` (also set
+            through ``LANCE_CLIENT_RETRY_STATUSES``) selects candidates within
+            the retry budget; it never permits replay of ambiguous merge outcomes.
+            In particular, 502, ordinary 503, and 504 are never replayed, even if
+            configured. Reconcile table contents before manually repeating a merge
+            whose commit outcome is unknown.
 
         Returns
         -------
@@ -198,4 +215,6 @@ class LanceMergeInsertBuilder(object):
         """
         if timeout is not None:
             self._timeout = timeout
-        return self._table._do_merge(self, new_data, on_bad_vectors, fill_value)
+        return self._table._do_merge(
+            self, new_data, on_bad_vectors, fill_value, retries=retries
+        )

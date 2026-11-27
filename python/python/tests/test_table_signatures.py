@@ -115,7 +115,11 @@ def test_vector_tuning_options(sync_table):
     }.items():
         assert getattr(config, name) == value
     assert kwargs == dict(
-        wait_timeout=timeout, name="custom_idx", replace=False, train=False
+        wait_timeout=timeout,
+        name="custom_idx",
+        replace=False,
+        train=False,
+        exist_ok=False,
     )
 
 

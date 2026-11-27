@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Field, LargeBinary, Struct, Uint64, Utf8 } from "apache-arrow";
+import {
+  DataType,
+  Field,
+  LargeBinary,
+  Struct,
+  Uint64,
+  Utf8,
+} from "apache-arrow";
 import { BlobFile as NativeBlobFile } from "./native";
 
 const BLOB_V2_EXTENSION_NAME = "lance.blob.v2";
@@ -178,6 +185,39 @@ export function isBlobField(field: Field): boolean {
   return field.metadata?.get("ARROW:extension:name") === BLOB_V2_EXTENSION_NAME;
 }
 
+/** @ignore */
+export function isBlobDescriptorField(field: Field): boolean {
+  // Native descriptor scans replace the logical extension metadata. Require
+  // both the encoding marker and the v2 layout to exclude v1 and plain structs.
+  if (
+    field.metadata?.get("lance-encoding:blob") !== "true" ||
+    !DataType.isStruct(field.type)
+  ) {
+    return false;
+  }
+  const children = field.type.children;
+  const integers = [
+    ["kind", 8],
+    ["position", 64],
+    ["size", 64],
+    ["blob_id", 32],
+  ] as const;
+  return (
+    children.length === 5 &&
+    integers.every(([name, width], index) => {
+      const child = children[index];
+      return (
+        child.name === name &&
+        DataType.isInt(child.type) &&
+        !child.type.isSigned &&
+        child.type.bitWidth === width
+      );
+    }) &&
+    children[4].name === "blob_uri" &&
+    DataType.isUtf8(children[4].type)
+  );
+}
+
 /**
  * A lazy handle to blob bytes. Create one with {@link Table.fetchBlobFiles}.
  *
@@ -270,6 +310,80 @@ export class BlobFile {
   }
 }
 
+/**
+ * A source-bearing Blob V2 descriptor returned by the SQL `blob_descriptor`
+ * function. Field names match the descriptor object/Arrow struct shape.
+ */
+export interface BlobDescriptorSource {
+  uri: string;
+  version: bigint | number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  committed_at_micros: bigint | number;
+  branch?: string | null;
+  column: string;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  row_reference: bigint | number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  row_is_address: boolean;
+}
+
+/**
+ * A source-bearing Blob V2 descriptor accepted by {@link Table.openBlobFile}.
+ * Query results expose these fields as an Arrow struct. The source pins the
+ * table version, branch, column and row identity used to open the handle.
+ */
+export interface BlobDescriptor {
+  kind: number;
+  position: bigint | number;
+  size: bigint | number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  blob_id: number;
+  // biome-ignore lint/style/useNamingConvention: Matches the SQL descriptor field.
+  blob_uri: string;
+  source: BlobDescriptorSource;
+}
+
+function descriptorBigInt(value: bigint | number, field: string): bigint {
+  if (typeof value === "bigint") {
+    if (value < 0n) {
+      throw new TypeError(`blob descriptor ${field} cannot be negative`);
+    }
+    return value;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(
+      `blob descriptor ${field} must be a non-negative safe integer or bigint`,
+    );
+  }
+  return BigInt(value);
+}
+
+/** @ignore */
+export function toNativeBlobDescriptor(descriptor: BlobDescriptor) {
+  return {
+    kind: descriptor.kind,
+    position: descriptorBigInt(descriptor.position, "position"),
+    size: descriptorBigInt(descriptor.size, "size"),
+    blobId: descriptor.blob_id,
+    blobUri: descriptor.blob_uri,
+    source: {
+      uri: descriptor.source.uri,
+      version: descriptorBigInt(descriptor.source.version, "source.version"),
+      committedAtMicros: descriptorBigInt(
+        descriptor.source.committed_at_micros,
+        "source.committed_at_micros",
+      ),
+      branch: descriptor.source.branch ?? undefined,
+      column: descriptor.source.column,
+      rowReference: descriptorBigInt(
+        descriptor.source.row_reference,
+        "source.row_reference",
+      ),
+      rowIsAddress: descriptor.source.row_is_address,
+    },
+  };
+}
+
 /** Options for blob reads. */
 export type BlobReadOptions = {
   /**
@@ -304,6 +418,16 @@ export async function runWithSignal<T>(
     signal.removeEventListener("abort", onAbort);
   }
 }
+
+/** One row-specific range for {@link Table.fetchBlobRanges}. */
+export type BlobRangeRequest = {
+  /** A row ID from a query with row IDs enabled. */
+  rowId: bigint | number;
+  /** Byte offset from the beginning of the logical blob, as a uint64. */
+  offset: bigint;
+  /** Number of bytes to read, as a uint64. Zero returns an empty non-null value. */
+  length: bigint;
+};
 
 /** A half-open byte range `[start, end)` for {@link BlobFile.readRanges}. */
 export type BlobRange = {

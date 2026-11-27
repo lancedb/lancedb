@@ -132,13 +132,31 @@ ignore = [
     { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 via arrow-ipc 58; affected seekable API is not enabled" },
     { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 via arrow-ipc 58; affected streaming decoder API is unused" },
 
-    # pin-utils: unmaintained; reviewed 2026-11-05. Transitive via
-    # aws-smithy-http/runtime/types, including aws-config -> lance-io.
-    # No safe upgrade exists; clearing requires AWS Smithy to migrate to
-    # core::pin::pin!, pin-project, or pin-project-lite. Revisit on AWS updates.
+    # pin-utils: unmaintained; reviewed 2026-11-05, removed 2026-11-17 after
+    # the lockfile dropped the aws-smithy pins that carried it.
     # https://rustsec.org/advisories/RUSTSEC-2026-0441
-    # https://github.com/rustsec/advisory-db/issues/3314
-    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained via AWS Smithy; no safe upgrade, awaiting upstream migration" },
+
+    # chrono: unmaintained; reviewed 2026-11-17. Informational notice, not a
+    # vulnerability. Transitive via arrow 59 / datafusion 55 and the lance
+    # stack throughout the workspace. RustSec lists no patched version and
+    # recommends jiff/time; clearing it requires the arrow/datafusion/lance
+    # ecosystem to migrate.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0543
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained via arrow/datafusion/lance; no fixed upstream release, awaiting ecosystem migration" },
+
+    # chrono-tz: unmaintained; reviewed 2026-11-17. Informational notice, not
+    # a vulnerability. Transitive via arrow-array → arrow → datafusion/lance.
+    # No patched version exists; clearing it needs the same ecosystem
+    # migration off chrono as RUSTSEC-2026-0543.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0555
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained via arrow/datafusion/lance; no fixed upstream release" },
+
+    # humantime: unmaintained; reviewed 2026-11-17. Informational notice, not
+    # a vulnerability. Transitive via lance, object_store (through datafusion)
+    # and xet-runtime. No patched version exists; the advisory follows chrono's
+    # maintenance status.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0542
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained via lance/object_store/xet-runtime; no fixed upstream release" },
 ]
 
 

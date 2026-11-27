@@ -79,6 +79,51 @@ def test_embedding_aws_usage() -> None:
     # --8<-- [end:embedding_aws_usage]
 
 
+def test_embedding_aws_image_usage() -> None:
+    require_flag("RUN_AWS_BEDROCK_SNIPPETS")
+
+    # --8<-- [start:embedding_aws_image_usage]
+    import io
+    import tempfile
+    from pathlib import Path
+
+    import lancedb
+    from lancedb.embeddings import get_registry
+    from lancedb.pydantic import LanceModel, Vector
+    from PIL import Image
+
+    model = get_registry().get("bedrock-image").create()
+
+    class Photo(LanceModel):
+        label: str
+        image: bytes = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    def png_bytes(color: str) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    db_path = Path(tempfile.mkdtemp()) / "bedrock-image-demo"
+    db = lancedb.connect(db_path)
+    table = db.create_table("photos", schema=Photo, mode="overwrite")
+
+    table.add(
+        [
+            {"label": "red", "image": png_bytes("red")},
+            {"label": "blue", "image": png_bytes("blue")},
+        ]
+    )
+
+    text_matches = table.search("red square").limit(1).to_list()
+    print(text_matches[0]["label"])
+
+    query_image = Image.new("RGB", (64, 64), "blue")
+    image_matches = table.search(query_image).limit(1).to_list()
+    print(image_matches[0]["label"])
+    # --8<-- [end:embedding_aws_image_usage]
+
+
 def test_embedding_cohere_usage() -> None:
     require_env("COHERE_API_KEY")
 
@@ -106,6 +151,39 @@ def test_embedding_cohere_usage() -> None:
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
     tbl.add(data)
     # --8<-- [end:embedding_cohere_usage]
+
+
+def test_embedding_cohere_foundry(monkeypatch) -> None:
+    from lancedb.embeddings import EmbeddingFunctionRegistry
+
+    monkeypatch.setenv("FOUNDRY_COHERE_API_KEY", "test-foundry-key")
+    registry = EmbeddingFunctionRegistry.get_instance()
+    monkeypatch.setattr(registry, "_variables", {})
+    monkeypatch.setattr(registry, "_allowed_endpoints", set())
+
+    # --8<-- [start:embedding_cohere_foundry]
+    import os
+
+    from lancedb.embeddings import get_registry
+    from lancedb.pydantic import LanceModel
+
+    registry = get_registry()
+    registry.set_var("foundry-cohere-key", os.environ["FOUNDRY_COHERE_API_KEY"])
+    endpoint = "https://<resource>.services.ai.azure.com/providers/cohere"
+    embed = registry.get("cohere").create(
+        name="embed-v-4-0",
+        base_url=endpoint,
+        output_dimension=1536,
+        api_key="$var:foundry-cohere-key",
+    )
+
+    class Document(LanceModel):
+        text: str = embed.SourceField()
+        vector: list[float] = embed.VectorField()
+
+    # --8<-- [end:embedding_cohere_foundry]
+
+    assert Document.to_arrow_schema().field("vector").type.list_size == 1536
 
 
 def test_embedding_gemini_usage() -> None:

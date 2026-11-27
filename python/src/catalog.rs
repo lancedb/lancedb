@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -127,7 +128,8 @@ impl DatabaseNames {
 }
 
 #[pyfunction]
-#[pyo3(signature = (endpoint, *, api_key=None, client_config=None, sql_host_override=None, read_consistency_interval=None, oauth_config=None))]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (endpoint, *, api_key=None, client_config=None, sql_host_override=None, read_consistency_interval=None, oauth_config=None, storage_options=None))]
 pub fn connect_catalog(
     py: Python<'_>,
     endpoint: String,
@@ -136,6 +138,7 @@ pub fn connect_catalog(
     sql_host_override: Option<String>,
     read_consistency_interval: Option<f64>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<Bound<'_, PyAny>> {
     let interval = read_consistency_interval
         .map(Duration::try_from_secs_f64)
@@ -150,6 +153,9 @@ pub fn connect_catalog(
         }
         if let Some(config) = client_config {
             builder = builder.client_config(config.into());
+        }
+        if let Some(options) = storage_options {
+            builder = builder.storage_options(options);
         }
         if let Some(endpoint) = sql_host_override {
             builder = builder.sql_host_override(endpoint);

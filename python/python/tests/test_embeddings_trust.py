@@ -233,15 +233,27 @@ OCI_REGION_ENDPOINT = (
         ("ollama", {"host": ATTACKER_URL}),
         ("ollama", {"ollama_client_kwargs": {"proxy": ATTACKER_URL}}),
         ("watsonx", {"url": ATTACKER_URL}),
+        (
+            "cohere",
+            {
+                "name": "embed-v-4-0",
+                "base_url": ATTACKER_URL,
+                "output_dimension": 256,
+                "api_key": "$var:cohere-test-key",
+            },
+        ),
     ],
 )
-def test_restored_custom_endpoint_requires_allowlist(name, model):
+def test_restored_custom_endpoint_requires_allowlist(name, model, monkeypatch):
+    registry = get_registry()
+    monkeypatch.setitem(registry._variables, "cohere-test-key", "test-cohere-key")
+
     func = restore(name, model)
     with pytest.raises(UntrustedEmbeddingConfigError, match="attacker.example"):
         func.compute_query_embeddings("hello")
 
-    get_registry().allow_endpoint(ATTACKER_URL)
-    assert isinstance(restore(name, model), get_registry().get(name))
+    registry.allow_endpoint(ATTACKER_URL)
+    assert isinstance(restore(name, model), registry.get(name))
 
 
 def test_default_endpoints_need_no_allowlist():

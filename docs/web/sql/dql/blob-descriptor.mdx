@@ -15,10 +15,10 @@ SELECT id, blob_descriptor(video) AS descriptor FROM videos
 ```
 </CodeGroup>
 
-A [BlobV2](/management/table#managed-blobs) column's bytes are not fetched by
-a plain `SELECT`: that already returns `large_binary`, the same as any other
-binary column. `blob_descriptor` instead returns a small struct describing
-where the payload lives, without reading it. Pass one row's descriptor to
+A plain `SELECT` of a [BlobV2](/management/table#managed-blobs) column returns
+its payload as `large_binary`. `blob_descriptor` instead returns a small
+struct describing where the payload lives, without reading the payload.
+Pass one row's descriptor to
 the SDK's blob file reader to open that payload directly:
 
 <CodeGroup>
@@ -26,6 +26,33 @@ the SDK's blob file reader to open that payload directly:
 rows = db.execute_query("SELECT id, blob_descriptor(video) AS descriptor FROM videos").read_all().to_pylist()
 with table.open_blob_file(rows[0]["descriptor"]) as reader:
     payload = reader.read()
+```
+
+```typescript TypeScript icon="typescript"
+const rows = await table
+  .query()
+  .select({ descriptor: "blob_descriptor(video)" })
+  .toArray();
+const reader = await table.openBlobFile(rows[0].descriptor);
+if (reader) {
+  const payload = await reader.read();
+  await reader.close();
+}
+```
+
+```rust Rust icon="rust"
+use lancedb::{blob::BlobDescriptor, Table};
+
+async fn read_descriptor(
+    table: &Table,
+    descriptor: &BlobDescriptor,
+) -> lancedb::Result<()> {
+    let reader = table.open_blob_file(descriptor).await?;
+    let payload = reader.read().await?;
+    println!("{} bytes", payload.len());
+    reader.close().await?;
+    Ok(())
+}
 ```
 </CodeGroup>
 
