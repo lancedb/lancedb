@@ -27,6 +27,7 @@ from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pyarrow.dataset
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
@@ -625,6 +626,25 @@ def test_create_table_keeps_declared_non_nullable_field(tmp_path):
     db.create_table("test", data=[{"id": 1, "note": "new"}], schema=schema)
     reopened = lancedb.connect(tmp_path).open_table("test")
     assert not reopened.schema.field("note").nullable
+
+
+def test_create_table_enforces_non_nullable_child_only_under_present_parent(tmp_path):
+    profile = pa.struct([pa.field("country", pa.string(), nullable=False)])
+    schema = pa.schema([pa.field("profile", profile)])
+    # A Parquet round trip leaves a null child slot beneath the null parent.
+    buffer = pa.BufferOutputStream()
+    rows = [{"profile": {"country": "CN"}}, {"profile": None}]
+    pq.write_table(pa.Table.from_pylist(rows), buffer)
+    data = pq.read_table(pa.BufferReader(buffer.getvalue()))
+
+    db = lancedb.connect(tmp_path)
+    db.create_table("test", data=data, schema=schema)
+    reopened = lancedb.connect(tmp_path).open_table("test")
+    assert reopened.to_arrow().to_pylist() == rows
+    assert not reopened.schema.field("profile").type.field("country").nullable
+
+    with pytest.raises(RuntimeError, match="'country' is non-nullable"):
+        db.create_table("bad", data=[{"profile": {"country": None}}], schema=schema)
 
 
 def test_add_dictionary(mem_db: DBConnection):

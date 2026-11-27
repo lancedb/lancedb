@@ -770,19 +770,82 @@ def _cast_to_target_schema(
         )
         reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
 
+    # Arrow's cast rejects a null in a non-nullable struct child even when the parent
+    # is null too. Cast without those constraints, then check them only where the
+    # parent is present.
+    cast_schema = pa.schema(
+        [_relax_struct_children(field) for field in reordered_schema],
+        metadata=reordered_schema.metadata,
+    )
+
     def gen():
         for batch in reader:
             batch = _coerce_blob_write_columns(batch, reordered_schema)
             # Table but not RecordBatch has cast.
-            cast_batches = (
-                pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
-            )
+            cast_batches = pa.Table.from_batches([batch]).cast(cast_schema).to_batches()
             if cast_batches:
-                yield pa.RecordBatch.from_arrays(
-                    cast_batches[0].columns, schema=reordered_schema
+                cast_batch = pa.RecordBatch.from_arrays(
+                    cast_batches[0].columns, schema=cast_schema
                 )
+                if not cast_schema.equals(reordered_schema):
+                    for column, field in zip(cast_batch.columns, reordered_schema):
+                        _check_struct_children(column, field.type)
+                    # Nullability does not change the buffer layout, so the same
+                    # message can be read back with the declared schema.
+                    cast_batch = pa.ipc.read_record_batch(
+                        cast_batch.serialize(), reordered_schema
+                    )
+                yield cast_batch
 
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
+
+
+def _relax_struct_children(field: pa.Field, in_struct: bool = False) -> pa.Field:
+    """Make every field nested under a struct nullable, at any depth."""
+    data_type = field.type
+    if pa.types.is_struct(data_type):
+        data_type = pa.struct(
+            [_relax_struct_children(child, True) for child in data_type]
+        )
+    elif pa.types.is_list(data_type):
+        data_type = pa.list_(_relax_struct_children(data_type.value_field))
+    elif pa.types.is_large_list(data_type):
+        data_type = pa.large_list(_relax_struct_children(data_type.value_field))
+    elif pa.types.is_fixed_size_list(data_type):
+        data_type = pa.list_(
+            _relax_struct_children(data_type.value_field), data_type.list_size
+        )
+    elif pa.types.is_map(data_type):
+        data_type = pa.map_(
+            data_type.key_field,
+            _relax_struct_children(data_type.item_field),
+            keys_sorted=data_type.keys_sorted,
+        )
+    return field.with_type(data_type).with_nullable(field.nullable or in_struct)
+
+
+def _check_struct_children(array: pa.Array, data_type: pa.DataType) -> None:
+    """Reject nulls in non-nullable struct children of the parents that are present."""
+    if pa.types.is_struct(data_type):
+        present = array.filter(array.is_valid())
+        for index, child_field in enumerate(data_type):
+            child = present.field(index)
+            if not child_field.nullable and child.null_count:
+                raise ValueError(
+                    f"field '{child_field.name}' is non-nullable but has null values"
+                )
+            _check_struct_children(child, child_field.type)
+    elif (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        _check_struct_children(array.flatten(), data_type.value_type)
+    elif pa.types.is_map(data_type):
+        entries = array.cast(
+            pa.list_(pa.struct([data_type.key_field, data_type.item_field]))
+        )
+        _check_struct_children(entries.flatten().field(1), data_type.item_type)
 
 
 def _preserve_blob_v2_fields(
