@@ -5,6 +5,7 @@ import importlib
 import importlib.metadata
 import re
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -52,13 +53,85 @@ def test_pyo3_abi_matches_minimum_supported_python():
 
     major, minor = minimum_python.groups()
     expected_abi = f"abi3-py{major}{minor}"
-    configured_abis = re.findall(r'"(abi3-py\d+)"', cargo_manifest)
+    configured_abis = re.findall(r'"(?:pyo3/)?(abi3-py\d+)"', cargo_manifest)
 
     # PyO3 0.29 configures the ABI through the runtime dependency; its
     # build-config crate no longer exposes ABI features.
     assert configured_abis == [expected_abi], (
         "the pyo3 runtime ABI feature must match requires-python"
     )
+
+
+def test_cargo_profiles_preserve_abi3_and_enable_native_free_threading():
+    project_dir = Path(__file__).parents[2]
+    cargo_manifest = (project_dir / "Cargo.toml").read_text()
+    features_section = re.search(
+        r"(?ms)^\[features\]\s*(.*?)(?=^\[[^]]+\]|\Z)", cargo_manifest
+    )
+    assert features_section is not None
+
+    def feature_values(name):
+        match = re.search(
+            rf"(?ms)^{re.escape(name)}\s*=\s*\[(.*?)\]", features_section.group(1)
+        )
+        assert match is not None, f"missing Cargo feature {name!r}"
+        return re.findall(r'"([^"]+)"', match.group(1))
+
+    default_python_features = {
+        "remote",
+        "lancedb/aws",
+        "lancedb/gcs",
+        "lancedb/azure",
+        "lancedb/dynamodb",
+        "lancedb/oss",
+        "lancedb/huggingface",
+        "lancedb/cos",
+        "lancedb/goosefs",
+        "lancedb/metrics-otel",
+        "lancedb/geo",
+    }
+    assert set(feature_values("default-python")) == default_python_features
+    assert set(feature_values("default")) == {"stable-abi", "default-python"}
+    assert feature_values("stable-abi") == ["pyo3/abi3-py311"]
+    assert feature_values("free-threaded") == ["default-python"]
+
+    pyo3_dependency = re.search(r"(?m)^pyo3\s*=\s*\{([^}]*)\}", cargo_manifest)
+    assert pyo3_dependency is not None
+    assert "abi3-py311" not in pyo3_dependency.group(1)
+
+
+def _expected_windows_wheel_suffix(project_dir):
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        major, minor = sys.version_info[:2]
+        return f"-cp{major}{minor}-cp{major}{minor}t-win_amd64.whl"
+
+    # The regular wheel follows the package's minimum supported Python.
+    minimum_python = re.search(
+        r'^requires-python\s*=\s*">=(\d+)\.(\d+)"$',
+        (project_dir / "pyproject.toml").read_text(),
+        re.MULTILINE,
+    )
+    assert minimum_python is not None
+    major, minor = minimum_python.groups()
+    return f"-cp{major}{minor}-abi3-win_amd64.whl"
+
+
+@pytest.mark.parametrize(
+    ("gil_disabled", "expected"),
+    [
+        (None, "-cp311-abi3-win_amd64.whl"),
+        (0, "-cp311-abi3-win_amd64.whl"),
+        (1, "-cp315-cp315t-win_amd64.whl"),
+    ],
+)
+def test_windows_wheel_suffix_for_interpreter(
+    tmp_path, monkeypatch, gil_disabled, expected
+):
+    (tmp_path / "pyproject.toml").write_text('requires-python = ">=3.11"\n')
+    with monkeypatch.context() as patch:
+        patch.setattr(sysconfig, "get_config_var", lambda name: gil_disabled)
+        patch.setattr(sys, "version_info", (3, 15, 0))
+        assert _expected_windows_wheel_suffix(tmp_path) == expected
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows wheel regression test")
@@ -68,17 +141,8 @@ def test_windows_wheel_tag_and_native_import():
     if not wheels:
         pytest.skip("no wheel artifact is available in this development environment")
 
-    # The wheel is tagged with the abi3 floor, which follows requires-python.
-    minimum_python = re.search(
-        r'^requires-python\s*=\s*">=(\d+)\.(\d+)"$',
-        (project_dir / "pyproject.toml").read_text(),
-        re.MULTILINE,
-    )
-    assert minimum_python is not None
-    major, minor = minimum_python.groups()
-
     assert len(wheels) == 1
-    assert wheels[0].name.endswith(f"-cp{major}{minor}-abi3-win_amd64.whl")
+    assert wheels[0].name.endswith(_expected_windows_wheel_suffix(project_dir))
 
     native_module = importlib.import_module("lancedb._lancedb")
     assert Path(native_module.__file__).suffix == ".pyd"
