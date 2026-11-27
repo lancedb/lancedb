@@ -14,6 +14,7 @@
 package com.lancedb;
 
 import org.lance.namespace.LanceNamespace;
+import org.lance.namespace.RestNamespace;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -132,6 +133,18 @@ public class LanceDbNamespaceClientBuilder {
   /**
    * Build the LanceNamespace instance.
    *
+   * <p>Retries apply to calls made on the returned namespace client. They do not apply to
+   * credential refresh or namespace commits that {@code Dataset.open} makes through the native
+   * handle. Namespace error code 21 (throttling, what Lance maps from HTTP 429 with a namespace
+   * error body) is retried on every such call, as is a pre-execution HTTP 429 whose body is not a
+   * namespace error. Error code 17 (service unavailable, including HTTP 503, connect failures, and
+   * timeouts) is retried on reads only. A 503 without a namespace error body, and any other
+   * internal error, surfaces as {@link org.lance.namespace.errors.InternalException} and is not
+   * retried. Other 4xx errors are not retried. {@code Retry-After} is not available through JNI.
+   * The budget is four attempts in total, with base waits of 250 ms, 500 ms, and 1000 ms, plus up
+   * to 250 ms of jitter. The RTE client's own 429/503 loop is unchanged and is not stacked on top
+   * of this one.
+   *
    * @return A configured LanceNamespace
    * @throws IllegalStateException if required parameters are missing
    */
@@ -144,7 +157,11 @@ public class LanceDbNamespaceClientBuilder {
     config.put("header.x-api-key", apiKey);
     config.put("uri", resolveUri());
 
-    return LanceNamespace.connect("rest", config, null);
+    LanceNamespace namespace = LanceNamespace.connect("rest", config, null);
+    if (namespace instanceof RestNamespace) {
+      return new RetryingRestNamespace((RestNamespace) namespace);
+    }
+    return namespace;
   }
 
   /**

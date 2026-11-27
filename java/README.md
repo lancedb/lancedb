@@ -63,6 +63,18 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .build();
 ```
 
+Calls made on the namespace client from `build()` retry namespace error code 21
+(throttling, what Lance maps from HTTP 429 with a namespace error body) on every
+such call. A pre-execution HTTP 429 whose body is plain text is retried on that
+same budget. Error code 17 (service unavailable, including HTTP 503, connect
+failures, and timeouts) is retried on reads only. A 503 without a namespace
+error body surfaces as an internal error and is not retried. `Retry-After` is not
+available through JNI. The budget is four attempts in total, with base waits of
+250 ms, 500 ms, and 1000 ms, plus up to 250 ms of jitter. These retries do
+not cover credential refresh or namespace commits that `Dataset.open` makes
+through the native handle. The RTE client below keeps its own retry budget
+and does not add another one.
+
 ## RTE write path
 
 Most table operations reach LanceDB through the `LanceNamespace` above, which is

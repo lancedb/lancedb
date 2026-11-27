@@ -55,6 +55,18 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 | `region(String)` | LanceDB Cloud (legacy) region (default: "us-east-1") | No |
 | `config(String, String)` | Additional configuration parameters | No |
 
+Calls made on the namespace client from `build()` retry namespace error code 21
+(throttling, what Lance maps from HTTP 429 with a namespace error body) on every
+such call. A pre-execution HTTP 429 whose body is plain text is retried on that
+same budget. Error code 17 (service unavailable, including HTTP 503, connect
+failures, and timeouts) is retried on reads only. A 503 without a namespace
+error body surfaces as an internal error and is not retried. `Retry-After` is not
+available through JNI. The budget is four attempts in total, with base waits of
+250 ms, 500 ms, and 1000 ms, plus up to 250 ms of jitter. These retries do not
+cover credential refresh or namespace commits that `Dataset.open` makes
+through the native handle. The separate RTE
+client keeps its own 429/503 budget and does not stack a second one.
+
 ### Opening a Table with Vended Credentials
 
 When the catalog vends temporary object store credentials, open the table through the
