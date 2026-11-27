@@ -61,6 +61,11 @@ class GeminiText(TextEmbeddingFunction):
         Sets the task type for the queries.
     source_task_type : str, default "retrieval_document"
         Sets the task type for ingestion.
+    normalize : bool, default False
+        L2-normalize gemini-embedding-001 outputs with fewer than 3072
+        dimensions, which the API does not return normalized. The setting is
+        saved with the table. Enable it for new tables only: existing rows
+        are not rewritten.
 
     Examples
     --------
@@ -88,6 +93,7 @@ class GeminiText(TextEmbeddingFunction):
     dim: Optional[int] = None
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
+    normalize: bool = False
 
     model_config = ConfigDict(ignored_types=(cached_property,))
 
@@ -151,7 +157,11 @@ class GeminiText(TextEmbeddingFunction):
             )
             embeddings.extend([np.array(e.values) for e in response.embeddings])
 
-        if self.ndims() < FULL_EMBEDDING_DIMS:
+        if (
+            self.normalize
+            and self.name.removeprefix("models/") == "gemini-embedding-001"
+            and self.ndims() < FULL_EMBEDDING_DIMS
+        ):
             embeddings = [self._l2_normalize(e) for e in embeddings]
 
         return embeddings
