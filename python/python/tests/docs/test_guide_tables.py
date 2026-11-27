@@ -37,10 +37,6 @@ from datetime import timedelta
 from lancedb.embeddings import get_registry
 
 # --8<-- [end:import-embeddings]
-# --8<-- [start:import-ffi-dataset]
-from lance import FFILanceTableProvider
-
-# --8<-- [end:import-ffi-dataset]
 # --8<-- [start:import-pydantic-basemodel]
 from pydantic import BaseModel
 
@@ -349,25 +345,54 @@ def test_table_with_embedding():
     # --8<-- [end:create_table_with_embedding]
 
 
-def test_sql_query():
-    db = lancedb.connect("data/sample-lancedb")
-    data = [
-        {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
-        {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1},
-    ]
-    table = db.create_table("lance_table", data)
+@pytest.mark.parametrize(
+    ("interval", "ids_after_write"), [(None, [1]), (timedelta(0), [1, 2])]
+)
+def test_sql_query(tmp_path, interval, ids_after_write):
+    writer = lancedb.connect(tmp_path).create_table("items", [{"id": 1}])
+    reader = lancedb.connect(tmp_path, read_consistency_interval=interval)
+    table = reader.open_table("items")
 
-    # --8<-- [start:lance_sql_basic]
     ctx = SessionContext()
-    ffi_lance_table = FFILanceTableProvider(
-        table.to_lance(), with_row_id=False, with_row_addr=False
-    )
+    ctx.register_table("items", table)
 
-    ctx.register_table_provider("ffi_lance_table", ffi_lance_table)
-    ctx.table("ffi_lance_table")
+    def query_ids():
+        return (
+            ctx.sql("SELECT id FROM items WHERE id >= 1 ORDER BY id")
+            .to_arrow_table()["id"]
+            .to_pylist()
+        )
 
-    ctx.sql("SELECT vector FROM ffi_lance_table")
-    # --8<-- [end:lance_sql_basic]
+    assert query_ids() == [1]
+    writer.add([{"id": 2}])
+    assert query_ids() == ids_after_write
+
+    table.checkout_latest()
+    assert query_ids() == [1, 2]
+
+    table.checkout(1)
+    assert query_ids() == [1]
+
+
+@pytest.mark.asyncio
+async def test_register_async_table(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("items", [{"id": 1}])
+    ctx = SessionContext()
+    ctx.register_table("items", table)
+
+    await table.add([{"id": 2}])
+    rows = ctx.sql("SELECT id FROM items ORDER BY id").to_arrow_table()
+    assert rows["id"].to_pylist() == [1, 2]
+
+
+def test_datafusion_version_guard(tmp_path, monkeypatch):
+    import datafusion
+
+    table = lancedb.connect(tmp_path).create_table("items", [{"id": 1}])
+    monkeypatch.setattr(datafusion, "__version__", "54.0.0")
+    with pytest.raises(ImportError, match="requires DataFusion"):
+        table.__datafusion_table_provider__(SessionContext())
 
 
 @pytest.mark.skip

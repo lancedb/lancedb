@@ -20,7 +20,9 @@ arrow = { workspace = true, features = ["pyarrow"] }
 async-trait.workspace = true
 bytes.workspace = true
 lancedb.workspace = true
+datafusion.workspace = true
 datafusion-common.workspace = true
+datafusion-ffi.workspace = true
 lance-core.workspace = true
 lance-arrow.workspace = true
 lance-namespace.workspace = true

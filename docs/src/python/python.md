@@ -453,6 +453,27 @@ code that used the former LanceDB Enterprise-only argument order.
 
 ::: lancedb.RTEWriteSpec
 
+### Registering a table with DataFusion
+
+With DataFusion Python 55.x installed, register a LanceDB Embedded `Table` or
+`AsyncTable` directly with a DataFusion `SessionContext` for SQL reads.
+Each new query follows the LanceDB handle's version and
+`read_consistency_interval`. The registration uses the table's schema when
+registered. Deregister and re-register it after changing its schema.
+
+```python
+from datetime import timedelta
+
+import lancedb
+from datafusion import SessionContext
+
+db = lancedb.connect("./data", read_consistency_interval=timedelta(0))
+table = db.open_table("items")
+ctx = SessionContext()
+ctx.register_table("items", table)
+rows = ctx.sql("SELECT * FROM items").to_arrow_table()
+```
+
 ## Functions and Jobs
 
 Use `progress=True` when waiting for Function registration in a notebook or

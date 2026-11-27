@@ -57,6 +57,7 @@ datafusion-catalog = "55.0.0"
 datafusion-common = { version = "55.0.0", default-features = false }
 datafusion-execution = "55.0.0"
 datafusion-expr = "55.0.0"
+datafusion-ffi = { version = "55.0.0", default-features = false }
 datafusion-functions = "55.0.0"
 datafusion-physical-plan = "55.0.0"
 datafusion-physical-expr = "55.0.0"
