@@ -6993,7 +6993,7 @@ def _find_vector_columns(
             named_vector_col = (
                 _is_list_like(field.type)
                 and pa.types.is_floating(field.type.value_type)
-                and field.name == VECTOR_COLUMN_NAME
+                and _name_suggests_vector_column(field.name)
             )
             likely_vector_col = (
                 pa.types.is_fixed_size_list(field.type)
@@ -7028,7 +7028,10 @@ def _find_vector_columns(
         named_vector_col = (
             field.name in embedding_function_columns
             or field.name == VECTOR_COLUMN_NAME
-            or (field.name == "embedding" and pa.types.is_fixed_size_list(field.type))
+            or (
+                pa.types.is_fixed_size_list(field.type)
+                and _name_suggests_vector_column(field.name)
+            )
         )
         typed_fixed_vector_col = (
             pa.types.is_fixed_size_list(reader_field.type)

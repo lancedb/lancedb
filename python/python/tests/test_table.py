@@ -2896,6 +2896,46 @@ def test_write_vectors_with_null_elements(
     assert table.to_arrow().to_pylist() == expected
 
 
+@pytest.mark.parametrize("column", ["vector", "text_embedding", "image_VECTOR"])
+@pytest.mark.parametrize("operation", ["create", "append", "overwrite"])
+@pytest.mark.parametrize(
+    "policy, expected_vectors",
+    [
+        ("drop", [[1.0, 2.0], [3.0, 4.0]]),
+        ("fill", [[1.0, 2.0], [3.0, 4.0], [5.0, -1.0], [-1.0, 6.0]]),
+        ("null", [[1.0, 2.0], [3.0, 4.0], None, None]),
+    ],
+)
+def test_bad_vectors_in_name_inferred_columns(
+    mem_db: DBConnection, column, operation, policy, expected_vectors
+):
+    vectors = [[1.0, 2.0], [3.0, 4.0], [5.0], [np.nan, 6.0]]
+    rows = [{"id": i, column: vector} for i, vector in enumerate(vectors)]
+    options = {"on_bad_vectors": policy, "fill_value": -1.0}
+
+    if operation == "create":
+        table = mem_db.create_table("test", rows, **options)
+        expected_rows = []
+    else:
+        initial_row = {"id": -1, column: [7.0, 8.0]}
+        table = mem_db.create_table("test", [initial_row])
+        table.add(rows, mode=operation, **options)
+        expected_rows = [initial_row] if operation == "append" else []
+
+    expected_rows.extend(
+        {"id": i, column: vector} for i, vector in enumerate(expected_vectors)
+    )
+    assert table.schema.field(column).type == pa.list_(pa.float32(), 2)
+    assert table.to_arrow().to_pylist() == expected_rows
+
+
+def test_bad_vectors_in_name_inferred_columns_default_error(mem_db: DBConnection):
+    with pytest.raises(ValueError, match="Vector column 'embedding' has NaNs"):
+        mem_db.create_table(
+            "test", [{"embedding": [1.0, 2.0]}, {"embedding": [np.nan, 4.0]}]
+        )
+
+
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
