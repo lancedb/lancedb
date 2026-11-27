@@ -27,8 +27,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 
 /**
- * Minimal HTTP client for LanceDB Enterprise routes that the Lance Namespace
- * specification does not cover.
+ * Minimal HTTP client for LanceDB Enterprise routes that the Lance Namespace specification does not
+ * cover.
  *
  * <p>Most table operations reach LanceDB through {@link org.lance.namespace.LanceNamespace}, which
  * is generated from the namespace spec. A handful of routes — the RTE write path in particular —
@@ -54,6 +54,7 @@ public class LanceDbRestClient implements Closeable {
     // silently double its explicit retry budget and would also retry compact_rte in
     // place, where the loop is designed to fall through to a fresh stats poll instead.
     // The checkpoint loop owns the 421/429/503 transitions; the transport must not.
+    // Namespace throttling is retried by RetryingRestNamespace instead.
     this.http = HttpClients.custom().disableAutomaticRetries().build();
   }
 
