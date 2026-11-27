@@ -3544,8 +3544,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         sort_indices = np.argsort(scores)
         if not ascending:
             sort_indices = sort_indices[::-1]
-        ranks = np.empty_like(sort_indices)
+        ranks = np.empty(len(scores))
         ranks[sort_indices] = np.arange(len(scores)) + 1
+        # Equal scores share the average of their ranks, so the order argsort
+        # happens to put them in does not decide which one counts as better.
+        _, groups, counts = np.unique(scores, return_inverse=True, return_counts=True)
+        ranks = (np.bincount(groups, weights=ranks) / counts)[groups]
         # replace the _score column with the ranks
         _score_idx = results.column_names.index(column)
         results = results.set_column(

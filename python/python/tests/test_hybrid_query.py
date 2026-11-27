@@ -635,6 +635,43 @@ def test_hybrid_single_fts_match_keeps_fts_weight(tmp_path, normalize):
     ]
 
 
+@pytest.mark.parametrize("normalize", ["score", "rank"])
+def test_hybrid_tied_fts_matches_share_fts_weight(tmp_path, normalize):
+    from lancedb.rerankers import LinearCombinationReranker
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        [
+            {"text": "zebra apple", "vector": [5.0, 5.0]},
+            {"text": "zebra grape", "vector": [5.0, 5.1]},
+            {"text": "cherry plum", "vector": [0.0, 0.0]},
+        ],
+    )
+    table.create_fts_index("text")
+
+    results = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("zebra")
+        .rerank(LinearCombinationReranker(weight=0.3), normalize=normalize)
+        .limit(3)
+        .to_arrow()
+    )
+
+    # Both FTS matches have the same BM25 score, so both rank above the
+    # document without the keyword.
+    assert results["text"].to_pylist()[-1] == "cherry plum"
+
+
+def test_rank_gives_tied_scores_the_same_rank():
+    table = pa.table({"_score": pa.array([0.5, 0.9, 0.5, 0.1], pa.float32())})
+    ranked = LanceHybridQueryBuilder._rank(table, "_score")
+    assert ranked["_score"].to_pylist() == [2.5, 4.0, 2.5, 1.0]
+    ranked = LanceHybridQueryBuilder._rank(table, "_score", ascending=False)
+    assert ranked["_score"].to_pylist() == [2.5, 1.0, 2.5, 4.0]
+
+
 def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
     # Pins the full message: the space between "hybrid search." and "But" is
     # load-bearing (see the _validate_query literal concatenation).
