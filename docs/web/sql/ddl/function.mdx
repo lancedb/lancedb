@@ -1,5 +1,6 @@
 ---
 title: "Function"
+tag: "Early access"
 sidebarTitle: "Function"
 description: "Create, describe, alter, list, and drop registered functions with SQL."
 icon: function
@@ -9,9 +10,20 @@ availability:
   enterprise: available
 ---
 
+<Badge color="purple">Early access</Badge>
+
 [SQL runs in LanceDB Enterprise.](/sql)
 
 ## CREATE FUNCTION {#create}
+
+{/* Draft for the function exist_ok release.
+
+`CREATE FUNCTION IF NOT EXISTS` preserves an existing named Function version,
+including its code, credentials and execution settings. In Python, pass
+`exist_ok=True` to `create_function` or `create_function_async`. The default
+retains the existing version-creation behavior.
+
+*/}
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -51,8 +63,9 @@ version is unaffected.
 | `apt` | OS packages to install in the worker environment |
 | `image` | a specific container image to run the worker in, such as `'host/repo@sha256:...'` |
 | `python_version` | worker Python version; `3.12` when omitted, whatever Python you send the statement from |
-| `gpu` | `'true'` when every execution needs a GPU |
-| `gpu_class` | which configured GPU class to run on, when `gpu = 'true'` |
+| `gpu` | Enable GPU execution with `True` (Python) or `true` (SQL); defaults to CPU execution |
+| `gpu_class` | Operator-configured GPU class, such as `h100`; requires GPU execution |
+| `gpu_count` | GPUs allocated together per Function worker; positive integer, defaults to one; requires GPU execution |
 | `result_stability` | `'input_and_context'` or `'per_call'` |
 | `batch_size` | maximum rows per Function call |
 | `row_timeout_seconds` | per-row (or per-batch, for a vectorized Function) execution timeout |
@@ -64,7 +77,7 @@ version is unaffected.
 | `LANGUAGE` other than `python` | refused |
 | `pip` and `conda` together | refused (pick one) |
 | `conda_channels` without `conda` | refused |
-| `gpu` set to anything but `'true'` | refused |
+| An invalid GPU class, zero GPU count, or a count above the configured class limit | refused; use a configured `gpu_class` and a positive `gpu_count` |
 | An empty body | refused |
 | Any other option | refused, and the message lists what is supported |
 
@@ -91,9 +104,12 @@ registration handle has type `query` and uses the SQL query UUID as its single
 
 ```sql
 DESCRIBE FUNCTION embed WITH (version = '1', include_source = true)
+DESCRIBE FUNCTION embed
 ```
 
-DESCRIBE returns one `definition` JSON column for the exact version.
+DESCRIBE returns one `definition` JSON column for the exact version. When
+`version` is omitted, it resolves and returns the latest currently visible
+immutable revision.
 `include_source` defaults to false; source-inclusive reads report an omission
 when the stored artifact exceeds the inline source limit.
 
@@ -120,20 +136,33 @@ from it.
 
 ## SHOW FUNCTIONS {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW FUNCTIONS
-SHOW FUNCTIONS HISTORY IN "analytics" WITH (name = 'embed', limit = 100)
-SHOW FUNCTIONS HISTORY WITH (after_name = 'embed', after_version = '1', limit = 100)
+```sql
+SHOW FUNCTIONS IN analytics.`team$ml` LIMIT 100;
+SHOW FUNCTIONS IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-`SHOW FUNCTIONS` returns the highest published numeric revision for each name.
-Add `HISTORY` to list every published revision, as Python's `list_functions()`
-does. Rows are ordered by name and numeric revision, so `2` comes before `10`.
-`after_name` and `after_version` must be supplied together for keyset pagination.
-`limit` bounds
-the response; `include_definition = false` omits the optional definition JSON.
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+`SHOW FUNCTIONS` lists each function once. Add `HISTORY` to list every
+published revision with its metadata and definition, as `list_functions()`
+does. History uses the same pagination suffix; numeric revision order is
+encoded in the token, so revision `2` precedes `10`.
+
+```sql
+SHOW FUNCTIONS HISTORY IN analytics.`team$ml` LIMIT 100;
+SHOW FUNCTIONS HISTORY IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
+```
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## DROP FUNCTION {#drop}
 

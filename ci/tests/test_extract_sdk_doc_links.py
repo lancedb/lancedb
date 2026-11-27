@@ -27,7 +27,7 @@ class TestExtractSdkDocLinks(unittest.TestCase):
             urls,
         )
         self.assertIn(
-            "https://docs.lancedb.com/enterprise",
+            "https://docs.lancedb.com/basics/embedded-vs-enterprise",
             urls,
         )
 

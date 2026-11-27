@@ -1567,11 +1567,17 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
       const records = [
         { text: "dog", vector: [0.1, 0.2] },
         { text: "cat", vector: [0.3, 0.4] },
+        { text: null, vector: null },
       ];
-      const table = await convertToTable(records);
+      const table = arrow.tableFromArrays({
+        text: records.map((row) => row.text),
+        vector: records.map((row) => row.vector),
+      });
       const batch = table.batches[0];
 
-      const buffer = await fromRecordBatchToBuffer(batch);
+      const buffer = await fromRecordBatchToBuffer(
+        batch as Parameters<typeof fromRecordBatchToBuffer>[0],
+      );
       const result = await fromBufferToRecordBatch(buffer);
 
       expect(JSON.stringify(batch.toArray())).toEqual(

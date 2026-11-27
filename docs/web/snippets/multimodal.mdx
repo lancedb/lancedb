@@ -42,7 +42,7 @@ export const TsBlobApiFiles = "const rows = await blobTable\n  .query()\n  .sele
 
 export const TsBlobApiIngest = "const blobTable = await db.createEmptyTable(\"photos\", blobSchema, {\n  mode: \"overwrite\",\n});\n\nawait blobTable.add([\n  { id: 1n, label: \"door\", image: Buffer.from(\"inline_image_bytes\") },\n  { id: 2n, label: \"window\", image: Buffer.from(\"second_image_bytes\") },\n]);\n";
 
-export const TsBlobApiRanges = "const [secondImage] = await blobTable.fetchBlobFiles(\"image\", [rowIds[1]!]);\nconst parts = await secondImage!.readRanges([\n  { start: 0n, end: 6n },\n  { start: 7n, end: 12n },\n]);\nawait secondImage!.close();\n";
+export const TsBlobApiRanges = "const slices = await blobTable.fetchBlobRanges(\"image\", [\n  { rowId: rowIds[0]!, offset: 0n, length: 6n },\n  { rowId: rowIds[1]!, offset: 7n, length: 5n },\n]);\n";
 
 export const TsBlobApiSchema = "const blobSchema = new arrow.Schema([\n  new arrow.Field(\"id\", new arrow.Int64()),\n  new arrow.Field(\"label\", new arrow.Utf8()),\n  lancedb.blob(\"image\"),\n]);\n";
 

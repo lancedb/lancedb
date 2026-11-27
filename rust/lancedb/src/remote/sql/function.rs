@@ -4,7 +4,7 @@
 use super::{
     SqlClient,
     materialized_view::quote_identifier,
-    objects::{definition, literal, strings},
+    objects::{definition, description, literal, string_lists, strings},
 };
 use crate::{
     database::ExecuteQueryRequest,
@@ -14,7 +14,14 @@ use crate::{
     listing::{ListingOptions, ListingPage},
     utils::{validate_function_name, validate_namespace},
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+/// The SQL result of one Function drop, before the public boolean wrapper
+/// discards the advisory details.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub(in crate::remote) struct DropFunctionOutcome {
+    pub(in crate::remote) dropped: bool,
+    pub(in crate::remote) warnings: Vec<String>,
+}
 
 impl SqlClient {
     pub(in crate::remote) async fn register_function(
@@ -26,15 +33,25 @@ impl SqlClient {
         validate_function_name(&request.name)?;
         validate_namespace(namespace)?;
         let name = quote_identifier(&request.name);
+        let if_not_exists = if request.exist_ok {
+            " IF NOT EXISTS"
+        } else {
+            ""
+        };
         let mut body = serde_json::to_value(request).map_err(|error| Error::Runtime {
             message: error.to_string(),
         })?;
         body.as_object_mut().unwrap().remove("name");
+        body.as_object_mut().unwrap().remove("exist_ok");
         self.object_job(
             ExecuteQueryRequest {
-                query: format!("CREATE FUNCTION {name} FROM {}", literal(&body.to_string())),
+                query: format!(
+                    "CREATE FUNCTION{if_not_exists} {name} FROM {}",
+                    literal(&body.to_string())
+                ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
             definition,
         )
@@ -43,22 +60,26 @@ impl SqlClient {
     pub(in crate::remote) async fn describe_function(
         &self,
         name: &str,
-        version: &str,
+        version: Option<&str>,
         namespace: &[String],
     ) -> Result<FunctionVersion> {
         validate_function_name(name)?;
         validate_namespace(namespace)?;
+        let version_clause = match version {
+            Some(version) => format!(" WITH (version = {})", literal(version)),
+            None => String::new(),
+        };
         self.object_job(
             ExecuteQueryRequest {
                 query: format!(
-                    "DESCRIBE FUNCTION {} WITH (version = {})",
-                    quote_identifier(name),
-                    literal(version)
+                    "DESCRIBE FUNCTION {}{version_clause} FORMAT JSON",
+                    quote_identifier(name)
                 ),
                 default_namespace_path: namespace.to_vec(),
                 parameters: None,
+                options: Default::default(),
             },
-            definition,
+            description,
         )
         .await?
         .wait()
@@ -69,89 +90,25 @@ impl SqlClient {
         namespace: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<FunctionVersion>> {
-        validate_namespace(namespace)?;
-        let limit = options.page_limit.unwrap_or(100);
-        if limit == 0 || limit > i32::MAX as u32 {
-            return Err(Error::InvalidInput {
-                message: "page limit must be between 1 and i32::MAX".into(),
-            });
-        }
-        let invalid = || Error::InvalidInput {
-            message: "invalid function page token for this database or namespace".into(),
-        };
-        let after = if let Some(token) = options.page_token.filter(|token| !token.is_empty()) {
-            let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid())?;
-            let (database, prefix, path, name, version): (
-                String,
-                Option<String>,
-                Vec<String>,
-                String,
-                String,
-            ) = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-            if database != self.inner.database
-                || prefix != self.inner.database_prefix
-                || path != namespace
-            {
-                return Err(invalid());
-            }
-            Some((name, version))
-        } else {
-            None
-        };
-        let mut sql_options = vec![
-            format!("limit = {}", u64::from(limit) + 1),
-            "include_definition = true".to_owned(),
-        ];
-        if let Some((name, version)) = &after {
-            sql_options.push(format!("after_name = {}", literal(name)));
-            sql_options.push(format!("after_version = {}", literal(version)));
-        }
-        let mut items: Vec<FunctionVersion> = self
-            .object_job(
-                ExecuteQueryRequest {
-                    query: format!("SHOW FUNCTIONS HISTORY WITH ({})", sql_options.join(", ")),
-                    default_namespace_path: namespace.to_vec(),
-                    parameters: None,
-                },
-                |batches| {
-                    strings(&batches, "definition")?
-                        .into_iter()
-                        .map(|value| {
-                            serde_json::from_str(&value).map_err(|error| Error::Runtime {
-                                message: error.to_string(),
-                            })
-                        })
-                        .collect::<Result<Vec<FunctionVersion>>>()
-                },
-            )
-            .await?
-            .wait()
+        let (batches, page_token) = self
+            .listing_page("SHOW FUNCTIONS HISTORY", namespace, options)
             .await?;
-        let page_token = if items.len() > limit as usize {
-            items.truncate(limit as usize);
-            let last = items.last().unwrap();
-            let bytes = serde_json::to_vec(&(
-                &self.inner.database,
-                &self.inner.database_prefix,
-                namespace,
-                last.name(),
-                last.version(),
-            ))
-            .map_err(|error| Error::Runtime {
-                message: error.to_string(),
-            })?;
-            Some(URL_SAFE_NO_PAD.encode(bytes))
-        } else {
-            None
-        };
+        let items = strings(&batches, "definition")?
+            .into_iter()
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|error| Error::Runtime {
+                    message: error.to_string(),
+                })
+            })
+            .collect::<Result<Vec<FunctionVersion>>>()?;
         Ok(ListingPage { items, page_token })
     }
-    pub(in crate::remote) async fn drop_function(
+    pub(in crate::remote) async fn drop_function_outcome(
         &self,
         name: &str,
         version: &str,
         namespace: &[String],
-    ) -> Result<(bool, Job)> {
+    ) -> Result<(DropFunctionOutcome, Job)> {
         validate_function_name(name)?;
         validate_namespace(namespace)?;
         let job = self
@@ -164,26 +121,41 @@ impl SqlClient {
                     ),
                     default_namespace_path: namespace.to_vec(),
                     parameters: None,
+                    options: Default::default(),
                 },
                 |batches| {
                     let rows = strings(&batches, "status")?;
-                    match rows.as_slice() {
-                        [status] if status == "dropped" => Ok(true),
-                        [status] if status == "not_found" => Ok(false),
-                        _ => Err(Error::Runtime {
-                            message: "invalid DROP FUNCTION result".into(),
-                        }),
-                    }
+                    let dropped = match rows.as_slice() {
+                        [status] if status == "dropped" => true,
+                        [status] if status == "not_found" => false,
+                        _ => {
+                            return Err(Error::Runtime {
+                                message: "invalid DROP FUNCTION result".into(),
+                            });
+                        }
+                    };
+                    Ok(DropFunctionOutcome {
+                        dropped,
+                        warnings: string_lists(&batches, "warnings")?,
+                    })
                 },
             )
             .await?;
         let id = job.id().unwrap().parse().map_err(|_| Error::Runtime {
             message: "invalid SQL query job id".into(),
         })?;
-        let dropped = job.wait().await?;
-        Ok((
-            dropped,
-            Job::from_query_task(id, tokio::spawn(async { Ok(()) }), || async { Ok(()) }),
-        ))
+        let outcome = job.wait().await?;
+        let job = Job::from_query_task(id, tokio::spawn(async { Ok(()) }), || async { Ok(()) });
+        Ok((outcome, job))
+    }
+
+    pub(in crate::remote) async fn drop_function(
+        &self,
+        name: &str,
+        version: &str,
+        namespace: &[String],
+    ) -> Result<(bool, Job)> {
+        let (outcome, job) = self.drop_function_outcome(name, version, namespace).await?;
+        Ok((outcome.dropped, job))
     }
 }

@@ -197,11 +197,39 @@ export class MaterializedView {
   async refresh(options?: {
     full?: boolean;
     sourceVersion?: number;
+    totalCpuMillis?: number;
+    totalMemoryBytes?: number;
+    totalGpuCount?: number;
+    gpuClass?: string;
+    gpuCount?: number;
   }): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
+    for (const [name, value] of [
+      ["totalCpuMillis", options?.totalCpuMillis],
+      ["totalMemoryBytes", options?.totalMemoryBytes],
+      ["totalGpuCount", options?.totalGpuCount],
+      ["gpuCount", options?.gpuCount],
+    ] as const) {
+      validateNonNegativeInteger(value, name);
+      if (value === 0 && name !== "totalGpuCount") {
+        throw new Error(`${name} must be positive`);
+      }
+      if (
+        (name === "gpuCount" || name === "totalGpuCount") &&
+        value !== undefined &&
+        value > 4294967295
+      ) {
+        throw new Error(`${name} exceeds 4294967295`);
+      }
+    }
     return await this.inner.refreshMaterializedView(
       options?.sourceVersion,
       options?.full,
+      options?.totalCpuMillis,
+      options?.totalMemoryBytes,
+      options?.totalGpuCount,
+      options?.gpuClass,
+      options?.gpuCount,
     );
   }
 }

@@ -82,7 +82,7 @@ impl SecretReference {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum SecretBinding {
-    /// Delivered as an environment variable, which the UDF's library already
+    /// Delivered as an environment variable, which the function's library already
     /// reads. The variable is the delivery target; the Secret is what fills it.
     Env {
         variable: String,

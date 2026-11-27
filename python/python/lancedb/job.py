@@ -5,9 +5,25 @@
 
 import asyncio
 import json
+import logging
+import reprlib
 import time
+from contextlib import suppress
 from datetime import timedelta
-from typing import Any, Callable, Generic, Optional, TypeVar, cast
+from enum import Enum
+from os import PathLike
+from pathlib import Path
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Generic,
+    Iterator,
+    Optional,
+    TypeVar,
+    cast,
+)
+from uuid import uuid4
 
 import pyarrow as pa
 
@@ -15,6 +31,11 @@ from lancedb.background_loop import LOOP
 
 from . import _lancedb
 from ._lancedb import JobDescription, JobFailureInfo, JobInfo, _append_doc_url
+from .functions import RefreshColumnResult
+from .compaction import CompactionResult
+from .cleanup import CleanupResult
+from .prewarm import PrewarmDataResult
+from .profiling import FunctionProfile, FunctionProfileKind, FunctionProfileStatus
 from .remote.errors import HttpError, RetryError
 
 T = TypeVar("T")
@@ -25,7 +46,58 @@ __all__ = [
     "JobDescription",
     "JobFailureInfo",
     "JobInfo",
+    "JobState",
+    "FunctionProfile",
+    "FunctionProfileKind",
+    "FunctionProfileStatus",
 ]
+
+
+class JobState(str, Enum):
+    """Detailed lifecycle of one attempt, retaining unknown future values."""
+
+    CREATED = "created"
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    TIMED_OUT = "timed_out"
+
+    @classmethod
+    def _missing_(cls, value):
+        if not isinstance(value, str):
+            return None
+        aliases = {
+            "running": cls.IN_PROGRESS,
+            "finished": cls.SUCCEEDED,
+            "cancelled": cls.CANCELED,
+        }
+        if value in aliases:
+            return aliases[value]
+        member = str.__new__(cls, value)
+        member._name_ = None
+        member._value_ = value
+        return member
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (self.SUCCEEDED, self.FAILED, self.CANCELED, self.TIMED_OUT)
+
+    @property
+    def is_success(self) -> bool:
+        return self == self.SUCCEEDED
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def _profile_seconds(value: Optional[timedelta], name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if not isinstance(value, timedelta):
+        raise TypeError(f"{name} must be a datetime.timedelta")
+    return value.total_seconds()
 
 
 def _timeout_message(
@@ -36,7 +108,7 @@ def _timeout_message(
     if job_id is None:
         return (
             f"operation still running after {seconds} {unit}; "
-            "it continues on the server"
+            "keep this handle to continue waiting"
         )
     if job_type == "query":
         return (
@@ -50,11 +122,13 @@ def _timeout_message(
     )
 
 
-def _normalize_job_progress(progress):
+def _normalize_job_progress(progress, *, query=False):
     """Normalize ``wait(progress=...)`` using the same convention as writes."""
     if progress is True:
         from tqdm.auto import tqdm
 
+        if query:
+            return tqdm(bar_format="Query{postfix} [{elapsed}]"), True
         return tqdm(unit=" rows"), True
     if progress is False or progress is None:
         return None, False
@@ -62,6 +136,7 @@ def _normalize_job_progress(progress):
 
 
 _ETA_MAX_SAMPLE_INTERVAL_MILLIS = 10 * 60 * 1_000
+_QUERY_PROGRESS_INTERVAL_SECONDS = 1.0
 
 
 def _progress_eta(previous, current):
@@ -139,6 +214,19 @@ def _job_progress_callback(progress, enrich):
         planned = snapshot.get("rows_planned")
         remaining = snapshot.get("rows_remaining")
         computed = snapshot.get("rows_computed")
+        job_type = snapshot.get("job_type")
+        maintenance = job_type in ("compact", "prewarm_page_cache")
+        if job_type == "compact":
+            computed = snapshot.get("rows_rewritten")
+            remaining = None
+            if hasattr(progress, "unit"):
+                progress.unit = " rows"
+        elif job_type == "prewarm_page_cache":
+            planned = snapshot.get("executors_targeted")
+            computed = snapshot.get("executors_completed")
+            remaining = None
+            if hasattr(progress, "unit"):
+                progress.unit = " executors"
         if isinstance(planned, int):
             epoch = snapshot.get("execution_epoch")
             reset = (isinstance(last_planned, int) and planned < last_planned) or (
@@ -164,7 +252,7 @@ def _job_progress_callback(progress, enrich):
         if completed is not None:
             if isinstance(planned, int):
                 completed = min(completed, planned)
-            if first_snapshot and completed < last_rows:
+            if (first_snapshot or maintenance) and completed < last_rows:
                 # The server may have started a new execution while a
                 # caller-owned bar retained its old position.
                 last_rows = completed
@@ -190,6 +278,11 @@ class AsyncJob(Generic[T]):
     The operation may already be complete when the handle is created. ``T``
     is the endpoint's terminal result type; unit-result jobs resolve to
     ``None``.
+
+    Methods such as ``state()``, ``result()``, ``failure()`` and ``spec()`` read
+    cached values without contacting the backend, including on async handles. Use
+    ``await job.checkout_latest()`` to refresh the cached state and registry
+    details together. ``events()`` makes a separate request for event history.
     """
 
     def __init__(
@@ -200,26 +293,32 @@ class AsyncJob(Generic[T]):
         self._inner = inner
         self._result_decoder = result_decoder
         self._last_progress_snapshot = None
+        self._created_at = time.monotonic()
+        self._local_job_id = str(uuid4()) if inner is None else None
 
     def _enrich_progress(self, snapshot):
         enriched = _with_progress_eta(self._last_progress_snapshot, snapshot)
         self._last_progress_snapshot = enriched
         return enriched
 
-    @property
     def id(self) -> Optional[str]:
-        """The operation's opaque ID, interpreted according to :attr:`job_type`.
+        """Return the operation's opaque ID, interpreted according to ``job_type()``.
 
         Registry jobs expose a registry job ID; SQL-backed jobs expose a
         connection-scoped query ID as a string. Local operations return ``None``.
         Query IDs cannot be used with registry job APIs or to resume after a
         client restart.
         """
+        return self._id
+
+    @property
+    def _id(self) -> Optional[str]:
         return self._inner.id if self._inner is not None else None
 
     async def status(self) -> str:
-        """The operation's current lifecycle state: "running", "finished",
-        "failed", or "cancelled".
+        """Return the current status, usually "running", "finished", "failed",
+        or "cancelled". A Function refresh waiting for execution workers reports
+        "waiting_for_capacity".
 
         A point snapshot; unlike `wait` it does not block or raise on a
         terminal failure state. States a newer server reports that this
@@ -229,20 +328,79 @@ class AsyncJob(Generic[T]):
             return "finished"
         return await self._inner.status()
 
+    def job_id(self) -> Optional[str]:
+        """Identity of the selected attempt last observed by this handle.
+
+        For operation handles, ``refresh()`` or ``status()`` can select a
+        different attempt while ``id()`` stays unchanged. Save this value after
+        refreshing and use it throughout paged diagnostics. Embedded IDs cannot
+        be reopened on a server.
+        """
+        return (
+            getattr(self._inner, "job_id", self.id())
+            if self._inner is not None
+            else self._local_job_id
+        )
+
+    def operation_id(self) -> Optional[str]:
+        """Root of the explicit retry lineage, when known."""
+        return (
+            getattr(self._inner, "operation_id", None)
+            if self._inner is not None
+            else self._local_job_id
+        )
+
+    def attempt(self) -> Optional[int]:
+        """One-based attempt ordinal; worker replacement does not increment it."""
+        return getattr(self._inner, "attempt", None) if self._inner is not None else 1
+
+    def retry_of(self) -> Optional[str]:
+        """Immediate predecessor attempt, when supplied by the backend."""
+        return getattr(self._inner, "retry_of", None)
+
+    def lifecycle_state(self) -> Optional[JobState]:
+        """Detailed state last observed; unknown values never imply success."""
+        raw = getattr(self._inner, "lifecycle_state", None) or self.state()
+        return JobState(raw) if raw is not None else None
+
+    async def status_typed(self) -> JobState:
+        """Refresh and return the detailed, forward-compatible lifecycle state."""
+        state = await self.status()
+        return self.lifecycle_state() or JobState(state)
+
+    def source_table_version(self) -> Optional[int]:
+        """Source snapshot pinned for this attempt, when reported."""
+        return getattr(self._inner, "source_table_version", None)
+
+    def execution_epoch(self) -> Optional[int]:
+        """Most recent execution's fencing token, when reported."""
+        return getattr(self._inner, "execution_epoch", None)
+
     async def progress(self) -> Optional[dict[str, Any]]:
         """Fetch a structured progress snapshot.
 
-        Registry jobs always report lifecycle fields. Queue metadata and
-        counters are included when supplied by the server. Older servers may
+        Registry jobs always report lifecycle fields. SQL query handles report
+        lifecycle state and ``client_elapsed_time_millis``, measured since this
+        handle was created. They do not expose server build phases or logs.
+        Queue metadata and counters are included when supplied by the server.
+        Older servers may
         omit counters, and in-process operations return ``None``. A missing
-        counter is unknown rather than zero. This is additive to :meth:`status`,
-        whose string contract is unchanged.
+        counter is unknown rather than zero.
         """
         if self._inner is None:
             return None
-        await self._inner.status()
+        state = await self._inner.status()
         description = getattr(self._inner, "_description", None)
         if description is None or description.progress is None:
+            if self.job_type() == "query":
+                return {
+                    "job_id": self.id(),
+                    "job_type": "query",
+                    "state": state,
+                    "client_elapsed_time_millis": int(
+                        (time.monotonic() - self._created_at) * 1_000
+                    ),
+                }
             return None
         return self._enrich_progress(description.progress)
 
@@ -265,7 +423,18 @@ class AsyncJob(Generic[T]):
         a caller-owned bar with the server's current completed rows and total;
         later observations in a stable execution epoch use a high-water mark. A
         new execution epoch or smaller plan resets the bar to that plan.
+        Maintenance jobs display reported rewritten rows or completed executors;
+        revised maintenance counters replace earlier retry observations. Totals
+        remain unknown until the server reports them. Rewritten rows describe
+        execution work, not committed compaction results.
         ``False`` preserves the original wait behavior.
+
+        For SQL-backed Function registration, progress shows the query's
+        lifecycle state and client elapsed time. It observes the existing
+        query handle while its original waiter runs; it does not resubmit or
+        cancel the registration. Detailed bake phases and build logs are not
+        available from the current query handle. Failure exceptions retain the
+        server's cause and request identifiers.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
@@ -282,7 +451,12 @@ class AsyncJob(Generic[T]):
         """
         if self._inner is None:
             return cast(T, None)
-        progress_obj, owns = _normalize_job_progress(progress)
+        query_progress = (
+            progress is not False
+            and progress is not None
+            and self.job_type() == "query"
+        )
+        progress_obj, owns = _normalize_job_progress(progress, query=query_progress)
         progress_callback = _job_progress_callback(progress_obj, self._enrich_progress)
         last_error = None
 
@@ -308,28 +482,61 @@ class AsyncJob(Generic[T]):
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
+        async def observe_query():
+            async def report():
+                try:
+                    snapshot = await self.progress()
+                    if snapshot is not None:
+                        progress_callback(snapshot)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "job progress observer failed", exc_info=True
+                    )
+
+            waiter = asyncio.create_task(wait_with_retries())
+            try:
+                while not waiter.done():
+                    await report()
+                    await asyncio.wait(
+                        {waiter}, timeout=_QUERY_PROGRESS_INTERVAL_SECONDS
+                    )
+                try:
+                    return await waiter
+                finally:
+                    await report()
+            finally:
+                if not waiter.done():
+                    waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await waiter
+
+        wait_for_result = (
+            observe_query
+            if query_progress and progress_callback is not None
+            else wait_with_retries
+        )
         try:
             try:
                 if timeout is None:
-                    result = await wait_with_retries()
+                    result = await wait_for_result()
                 else:
                     result = await asyncio.wait_for(
-                        wait_with_retries(), timeout.total_seconds()
+                        wait_for_result(), timeout.total_seconds()
                     )
             except asyncio.TimeoutError as error:
                 if last_error is None:
                     if timeout is None:
                         raise
                     raise TimeoutError(
-                        _timeout_message(self.id, timeout, self.job_type)
+                        _timeout_message(self.id(), timeout, self.job_type())
                     ) from error
                 identity = (
-                    f"job {self.id!r}" if self.id is not None else "the operation"
+                    f"job {self.id()!r}" if self.id() is not None else "the operation"
                 )
-                if self.id is not None and self.job_type != "query":
+                if self.id() is not None and self.job_type() != "query":
                     reconnect = (
-                        f"Use db.open_job({self.id!r}) to reconnect, then call wait() "
-                        "on the returned job."
+                        f"Use db.open_job({self.id()!r}) to reconnect, "
+                        "then call wait() on the returned job."
                     )
                 else:
                     reconnect = "Call wait() on this job handle to reconnect."
@@ -351,9 +558,21 @@ class AsyncJob(Generic[T]):
             return
         await self._inner.cancel()
 
+    async def retry(self) -> "AsyncJob[T]":
+        """Select a successor for this exact failed attempt using pinned inputs.
+
+        Repeated requests select the same successor even after it finishes.
+        Requires a supporting server and a safely retryable Function job.
+        In-process operations do not retain a replayable specification and
+        raise ``NotImplementedError``.
+        """
+        if self._inner is None:
+            raise NotImplementedError("retry requires a registry-backed job")
+        return AsyncJob(await self._inner.retry(), self._result_decoder)
+
     async def refresh(self) -> None:
         """Ask the backend for this job's current state, and for a server-side
-        job its full record, then cache it for the properties below.
+        job its full record, then cache it for the read methods below.
 
         Registry details are `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
@@ -365,49 +584,96 @@ class AsyncJob(Generic[T]):
             return
         await self._inner.refresh()
 
-    @property
-    def state(self) -> Optional[str]:
-        """The last observed lifecycle state, without contacting the backend.
+    async def checkout_latest(self) -> None:
+        """Refresh this handle's cached state and complete job record together.
 
-        `None` until the handle has talked to it. See :meth:`AsyncJob.refresh`.
+        For a registry job, each call fetches one current record and updates
+        the values returned by ``state()``, ``job_type()``, ``creation_ms()``,
+        ``spec()``, ``result()`` and ``failure()`` from that observation. Calling
+        those read methods afterward does not contact the backend. Query-backed
+        and in-process jobs update their lifecycle state without registry details.
+
+        Updates this handle in place and returns ``None``. It does not wait for
+        completion or restart the operation. Failed or cancelled states are
+        cached without raising a job-failure exception; request errors propagate
+        and leave the cached record unchanged. Event history remains a separate
+        live request through [events()][lancedb.job.AsyncJob.events].
+
+        [refresh()][lancedb.job.AsyncJob.refresh] remains available with the
+        same behavior.
+
+        Examples
+        --------
+        >>> await job.checkout_latest()  # doctest: +SKIP
+        >>> print(job.state(), job.result(), job.failure())  # doctest: +SKIP
         """
-        if self._inner is None:
-            return "finished"
-        return self._inner._state
+        await self.refresh()
+
+    def state(self) -> Optional[str]:
+        """Return the last observed lifecycle state without contacting the backend.
+
+        `None` until the handle has talked to it. Call
+        [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] to refresh
+        the state and registry details together.
+        """
+        return self._state
 
     @property
+    def _state(self) -> Optional[str]:
+        return self._inner._state if self._inner is not None else "finished"
+
     def job_type(self) -> Optional[str]:
-        """The job's kind of work, without contacting the backend.
+        """Return the job's kind of work without contacting the backend.
 
         SQL-backed handles report ``"query"`` immediately. Registry handles
         report the server's job type after :meth:`refresh` or :meth:`status`.
         In-process handles return ``None``.
         """
+        return self._job_type
+
+    @property
+    def _job_type(self) -> Optional[str]:
         return self._inner.job_type if self._inner is not None else None
 
-    @property
     def creation_ms(self) -> Optional[int]:
-        """When the job was created, in milliseconds since the epoch."""
+        """Return the cached creation time in epoch milliseconds; no backend call."""
+        return self._creation_ms
+
+    @property
+    def _creation_ms(self) -> Optional[int]:
         return self._field("creation_ms")
 
-    @property
     def spec(self) -> Optional[Any]:
-        """The job-type-specific specification it was submitted with."""
+        """Return the complete cached job specification without a backend call."""
+        return self._spec
+
+    @property
+    def _spec(self) -> Optional[Any]:
         return self._field("spec")
 
-    @property
     def result(self) -> Optional[Any]:
-        """The job-type-specific terminal result, as reported data rather than
-        the typed model :meth:`AsyncJob.wait` returns.
+        """Return the cached job-specific terminal result without a backend call.
 
-        `None` until the job succeeds, so a job that never terminates reports
-        its progress through :meth:`AsyncJob.events` instead.
+        This is reported data rather than the typed model
+        [wait()][lancedb.job.AsyncJob.wait] returns. It can remain `None` until
+        a successful registry record is fetched with
+        [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] or another
+        live status request. For ongoing progress, use
+        [progress()][lancedb.job.AsyncJob.progress] or
+        [events()][lancedb.job.AsyncJob.events].
         """
+        return self._result
+
+    @property
+    def _result(self) -> Optional[Any]:
         return self._field("result")
 
-    @property
     def failure(self) -> Optional[JobFailureInfo]:
-        """Why the job failed, when it failed and the server reports a reason."""
+        """Return cached failure details, when reported, without a backend call."""
+        return self._failure
+
+    @property
+    def _failure(self) -> Optional[JobFailureInfo]:
         return self._field("failure")
 
     @property
@@ -422,15 +688,211 @@ class AsyncJob(Generic[T]):
         description = self._inner._description if self._inner is not None else None
         return getattr(description, name) if description is not None else None
 
+    async def stack(self, worker_id: str) -> dict[str, Any]:
+        """Capture Python thread stacks from a running Function worker.
+
+        Requires server support and system operate privilege. The response has
+        ``status``, ``worker_id``, ``execution_epoch`` and ``stacks``. Each session
+        reports its status, capture timestamp, Python frames and truncation.
+        ``omitted_sessions`` counts sessions beyond the server's capture limit.
+        Captures exclude source text, locals and native frames; a recent capture
+        may be reused to bound overhead. Unsupported or unavailable captures
+        have an explicit status. Transport and authorization errors propagate.
+        Local operations and SQL query handles raise ``NotImplementedError``.
+        Timeout stack evidence remains in the job's failure events.
+
+        Examples
+        --------
+        >>> evidence = await job.stack("worker-id")  # doctest: +SKIP
+        >>> print(evidence["stacks"])  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "worker stacks require a server-side Function job"
+            )
+        return json.loads(await self._inner.stack(worker_id))
+
+    async def capture_profile(
+        self,
+        worker_id: str,
+        *,
+        kind: FunctionProfileKind = "cpu",
+        duration: Optional[timedelta] = None,
+        session_slot: int = 0,
+    ) -> FunctionProfile:
+        """Request a profile of one running Enterprise Function worker session.
+
+        Return an accepted capture identity without waiting for recording to
+        finish. The capture belongs to this existing refresh job. The server
+        pins its worker, Python session and execution epoch. System Operate
+        permission and server profiling support are required.
+
+        ``kind`` is ``"cpu"`` for Python CPU samples, ``"memory"`` for Python
+        allocations retained at the end of capture, or ``"gpu"`` for PyTorch
+        CUDA activities. CPU and memory allow 1–30 seconds, defaulting to 10;
+        GPU allows 1–5 seconds, defaulting to 5. Slot zero is the first Python
+        session. GPU tracing requires initialized PyTorch CUDA/CUPTI. CPU
+        sampling requires readable per-thread procfs and is unavailable in
+        dedicated sandboxes. Captures add workload-dependent overhead.
+
+        Examples
+        --------
+        >>> from datetime import timedelta
+        >>> profile = await job.capture_profile(  # doctest: +SKIP
+        ...     "worker-id", kind="gpu", duration=timedelta(seconds=2)
+        ... )
+        >>> print(profile.profile_id)  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return FunctionProfile._from_json(
+            await self._inner.capture_profile(
+                worker_id,
+                kind=kind,
+                duration_seconds=_profile_seconds(duration, "duration"),
+                session_slot=session_slot,
+            )
+        )
+
+    async def profile_status(self, profile_id: str) -> FunctionProfile:
+        """Fetch capture status and identity without waiting.
+
+        A failed capture returns ``status="failed"`` and the server's ``error``.
+        This does not change the parent job's status. Keep the profile ID to
+        retrieve retained evidence after the refresh finishes.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return FunctionProfile._from_json(await self._inner.profile_status(profile_id))
+
+    async def wait_for_profile(
+        self,
+        profile_id: str,
+        *,
+        timeout: Optional[timedelta] = None,
+        poll_interval: Optional[timedelta] = None,
+    ) -> FunctionProfile:
+        """Wait for a capture independently of the parent Function refresh.
+
+        Defaults to a 60-second timeout and two seconds between status requests.
+        Set ``poll_interval`` to change the polling cadence. The timeout includes
+        HTTP requests and sleeps. It raises ``TimeoutError`` without cancelling
+        either the capture or the refresh; keep the ID to wait again. A failed
+        capture raises ``RuntimeError`` with the server's reason. Use
+        ``profile_status`` to inspect a failed capture's typed metadata.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return FunctionProfile._from_json(
+            await self._inner.wait_for_profile(
+                profile_id,
+                timeout_seconds=_profile_seconds(timeout, "timeout"),
+                poll_interval_seconds=_profile_seconds(poll_interval, "poll_interval"),
+            )
+        )
+
+    async def profile_artifact(self, profile_id: str) -> dict[str, Any]:
+        """Retrieve the actual JSON for a completed capture.
+
+        CPU artifacts use speedscope, Python allocations use tracemalloc, and
+        GPU artifacts use Chrome Trace Event JSON. Truncation metadata is
+        preserved. The server retains up to eight captures per job for at most
+        an hour, or until job scratch is reclaimed or archived. Permission,
+        expired-artifact and unsupported-server errors propagate to the caller.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return json.loads(await self._inner.profile_artifact(profile_id))
+
+    async def export_profile(self, profile_id: str, path: str | PathLike[str]) -> None:
+        """Write a completed capture's actual JSON to a file.
+
+        The destination is overwritten only after retrieval succeeds. Export a
+        CPU capture to a speedscope file, or a GPU capture to a trace file for
+        Perfetto. GPU kernel/transfer durations may overlap and are not GPU
+        utilization. Python operator attribution and GPU allocation stacks are
+        outside the GPU trace format.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        artifact = await self._inner.profile_artifact(profile_id)
+        await asyncio.to_thread(Path(path).write_text, artifact, encoding="utf-8")
+
+    async def stats(self) -> Optional[str]:
+        """Return a printable run report for this Function job.
+
+        The report includes recorded phase timings, finishing-supervisor slot
+        occupancy, all-attempt split execution and batch latency, and accepted-row
+        throughput. Each call reads the current server report.
+        Returns ``None`` while the job is running or if no recorded profile is
+        available, without waiting for completion. Missing measurements remain
+        unavailable rather than becoming zero. The server formats the report;
+        the SDK returns it verbatim.
+
+        Requires a server-side Function job and a server supporting run reports.
+        Local operations and SQL query handles do not support this operation.
+        Unsupported operations raise ``NotImplementedError`` or a server error.
+        This method returns text; use ``print`` to display it.
+
+        Examples
+        --------
+        >>> print(await job.stats())  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job statistics require a server-side Function job"
+            )
+        return await self._inner.stats()
+
+    async def export_timeline(self, path: str | PathLike[str]) -> None:
+        """Write a fresh recorded Function job timeline as Chrome trace JSON.
+
+        Open the file in Perfetto or Chrome tracing. The recording contains
+        retained split spans grouped by worker and timestamped job phases.
+        Batch counts and latency statistics are included as details; individual
+        batch timestamps are not recorded. Running jobs export a partial snapshot
+        without waiting or cancelling. Download again to include later work.
+
+        Requires a server-side Function job and a server supporting timeline
+        export. Unsupported operations raise ``NotImplementedError`` or a server
+        error. The destination is overwritten only after the trace is fetched.
+        Filesystem errors propagate to the caller.
+
+        Examples
+        --------
+        >>> await job.export_timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        trace = await self._inner.timeline()
+        await asyncio.to_thread(Path(path).write_text, trace, encoding="utf-8")
+
     async def events(
         self,
         *,
         limit: Optional[int] = None,
         filter: Optional[str] = None,
+        page_token: Optional[str] = None,
     ) -> "pa.Table":
         """This job's recorded lifecycle events.
 
-        Where the properties above report a terminal result only once the job
+        Each call requests event history without updating the cached record.
+        Use [checkout_latest()][lancedb.job.AsyncJob.checkout_latest] to refresh
+        the job's state and registry details together.
+
+        Where the read methods above report a terminal result only once the job
         reaches one, events are written as the job runs and outlive the workers
         that produced them. A distributed job records a `claim`/`claim_complete`
         pair per unit of work, each carrying `rows_processed`, so a job that
@@ -454,71 +916,163 @@ class AsyncJob(Generic[T]):
                     "jobs",
                 )
             )
-        return await self._inner.events(limit=limit, filter=filter)
+        if page_token is None:
+            return await self._inner.events(limit=limit, filter=filter)
+        return await self._inner.events(
+            limit=limit, filter=filter, page_token=page_token
+        )
+
+    async def history(
+        self, *, limit: Optional[int] = None, filter: Optional[str] = None
+    ) -> AsyncIterator["pa.Table"]:
+        """Walk retained history in pages, following opaque server continuations."""
+        token = None
+        while True:
+            page = await self.events(limit=limit, filter=filter, page_token=token)
+            yield page
+            next_token = (page.schema.metadata or {}).get(
+                b"lancedb.job_coordinator.page_token"
+            )
+            if next_token is None:
+                return
+            next_token = next_token.decode()
+            if next_token == token:
+                raise RuntimeError("job history repeated its page token")
+            token = next_token
 
     def __repr__(self) -> str:
         return _job_repr("AsyncJob", self)
 
 
 _REPR_INDENT = " " * 4
+_REPR_MAX_FIELD_LENGTH = 240
+_PAYLOAD_REPR = reprlib.Repr()
+_PAYLOAD_REPR.maxlevel = 2
+_PAYLOAD_REPR.maxdict = 4
+_PAYLOAD_REPR.maxlist = 4
+_PAYLOAD_REPR.maxtuple = 4
+_PAYLOAD_REPR.maxstring = 120
+_PAYLOAD_REPR.maxother = 120
 
 
 def _repr_payload(value: Any) -> str:
-    """Render a job payload as indented JSON, aligned under its field."""
-    try:
-        rendered = json.dumps(value, indent=4)
-    except TypeError:
-        return repr(value)
-    return rendered.replace("\n", "\n" + _REPR_INDENT)
+    """Bound nested payload previews without changing the stored values."""
+    rendered = _PAYLOAD_REPR.repr(value).replace("\n", "\\n")
+    if len(rendered) > _REPR_MAX_FIELD_LENGTH:
+        return rendered[: _REPR_MAX_FIELD_LENGTH - 3] + "..."
+    return rendered
 
 
 def _job_repr(kind: str, job: Any) -> str:
-    """Render every field the handle currently knows, omitting the rest.
+    """Show cached job identity and bounded previews without backend calls.
 
-    One field per line, with the JSON payloads indented, because a refresh
-    job's spec and result are the point of printing it.
+    The complete payloads remain available through ``spec()`` and ``result()``.
     """
-    state = job.state
+    state = job.state()
     if state is None:
         # Nothing has been fetched yet, so there is nothing to lay out.
-        known = f"id={job.id!r}, " if job.id is not None else ""
+        known = f"id={_repr_payload(job.id())}, " if job.id() is not None else ""
         return f"{kind}({known}not refreshed)"
 
     fields = []
-    if job.id is not None:
-        fields.append(f"id={job.id!r}")
-    fields.append(f"state={state!r}")
+    if job.id() is not None:
+        fields.append(f"id={_repr_payload(job.id())}")
+    fields.append(f"state={_repr_payload(state)}")
     for name in ("job_type", "creation_ms"):
-        value = getattr(job, name)
-        if value is not None:
-            fields.append(f"{name}={value!r}")
-    for name in ("spec", "result"):
-        value = getattr(job, name)
+        value = getattr(job, name)()
         if value is not None:
             fields.append(f"{name}={_repr_payload(value)}")
-    if job.failure is not None:
-        fields.append(f"failure={job.failure!r}")
+    for name in ("spec", "result"):
+        value = getattr(job, name)()
+        if value is not None:
+            fields.append(f"{name}={_repr_payload(value)}")
+    if job.failure() is not None:
+        fields.append(f"failure={_repr_payload(job.failure())}")
     body = "".join(f"\n{_REPR_INDENT}{field}," for field in fields)
     return f"{kind}({body}\n)"
 
 
 class Job(Generic[T]):
-    """Synchronous counterpart of `AsyncJob` with the same result type."""
+    """Synchronous counterpart of `AsyncJob` with the same result type.
+
+    Call ``state()``, ``result()``, ``failure()`` and ``spec()`` to read the
+    cached record after ``job.checkout_latest()`` refreshes it holistically.
+    ``events()`` makes a separate live request for event history.
+    """
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
-        self._inner = inner
+        self._inner = inner if inner is not None else AsyncJob(None)
+
+    def job_id(self) -> Optional[str]:
+        """Selected attempt ID; refresh can change it while ``id()`` stays fixed.
+
+        Save the value after refreshing for paged diagnostics.
+        See [AsyncJob.job_id()][lancedb.job.AsyncJob.job_id].
+        """
+        return self._inner.job_id()
+
+    def operation_id(self) -> Optional[str]:
+        """Root retry identity.
+
+        See [AsyncJob.operation_id()][lancedb.job.AsyncJob.operation_id].
+        """
+        return self._inner.operation_id()
+
+    def attempt(self) -> Optional[int]:
+        """One-based attempt ordinal.
+
+        See [AsyncJob.attempt()][lancedb.job.AsyncJob.attempt].
+        """
+        return self._inner.attempt()
+
+    def retry_of(self) -> Optional[str]:
+        """Immediate predecessor.
+
+        See [AsyncJob.retry_of()][lancedb.job.AsyncJob.retry_of].
+        """
+        return self._inner.retry_of()
+
+    def lifecycle_state(self) -> Optional[JobState]:
+        """Detailed state last observed.
+
+        See [AsyncJob.lifecycle_state()][lancedb.job.AsyncJob.lifecycle_state].
+        """
+        return self._inner.lifecycle_state()
+
+    def status_typed(self) -> JobState:
+        """Refresh the detailed lifecycle state. See :meth:`AsyncJob.status_typed`."""
+        return LOOP.run(self._inner.status_typed())
+
+    def source_table_version(self) -> Optional[int]:
+        """Pinned source snapshot.
+
+        See the async handle's
+        [source_table_version()][lancedb.job.AsyncJob.source_table_version].
+        """
+        return self._inner.source_table_version()
+
+    def execution_epoch(self) -> Optional[int]:
+        """Execution fencing token.
+
+        See [AsyncJob.execution_epoch()][lancedb.job.AsyncJob.execution_epoch].
+        """
+        return self._inner.execution_epoch()
+
+    def id(self) -> Optional[str]:
+        """Return the operation's opaque server ID without a backend call.
+
+        See [AsyncJob.id()][lancedb.job.AsyncJob.id].
+        """
+        return self._id
 
     @property
-    def id(self) -> Optional[str]:
-        """Identifies the operation on the server that is running it.
-
-        See :attr:`AsyncJob.id`.
-        """
-        return self._inner.id if self._inner is not None else None
+    def _id(self) -> Optional[str]:
+        return self._inner._id if self._inner is not None else None
 
     def status(self) -> str:
-        """The operation's current lifecycle state: "running", "finished",
-        "failed", or "cancelled".
+        """Return the current status, usually "running", "finished", "failed",
+        or "cancelled". A Function refresh waiting for execution workers reports
+        "waiting_for_capacity".
 
         See :meth:`AsyncJob.status`.
         """
@@ -565,6 +1119,10 @@ class Job(Generic[T]):
             return
         LOOP.run(self._inner.cancel())
 
+    def retry(self) -> "Job[T]":
+        """Select this attempt's pinned successor. See :meth:`AsyncJob.retry`."""
+        return Job(LOOP.run(self._inner.retry()))
+
     def refresh(self) -> None:
         """Ask the backend for this job's current state and record.
 
@@ -574,35 +1132,87 @@ class Job(Generic[T]):
             return
         LOOP.run(self._inner.refresh())
 
-    @property
+    def checkout_latest(self) -> None:
+        """Refresh this handle's cached state and complete job record together.
+
+        Updates this handle in place and returns ``None`` without waiting for
+        completion. See
+        [AsyncJob.checkout_latest()][lancedb.job.AsyncJob.checkout_latest]
+        for refreshed fields and availability. ``refresh()`` remains available
+        with the same behavior.
+
+        Examples
+        --------
+        >>> job.checkout_latest()  # doctest: +SKIP
+        >>> print(job.state(), job.result(), job.failure())  # doctest: +SKIP
+        """
+        self.refresh()
+
     def state(self) -> Optional[str]:
-        """The last observed lifecycle state. See :attr:`AsyncJob.state`."""
-        return self._inner.state if self._inner is not None else "finished"
+        """Return the cached lifecycle state without a backend call.
+
+        See [AsyncJob.state()][lancedb.job.AsyncJob.state].
+        """
+        return self._state
 
     @property
+    def _state(self) -> Optional[str]:
+        return self._inner._state if self._inner is not None else "finished"
+
     def job_type(self) -> Optional[str]:
-        """The job's type. See :attr:`AsyncJob.job_type`."""
-        return self._inner.job_type if self._inner is not None else None
+        """Return the cached job type without a backend call.
+
+        See [AsyncJob.job_type()][lancedb.job.AsyncJob.job_type].
+        """
+        return self._job_type
 
     @property
+    def _job_type(self) -> Optional[str]:
+        return self._inner._job_type if self._inner is not None else None
+
     def creation_ms(self) -> Optional[int]:
-        """When the job was created. See :attr:`AsyncJob.creation_ms`."""
-        return self._field("creation_ms")
+        """Return the cached creation time in epoch milliseconds.
+
+        See [AsyncJob.creation_ms()][lancedb.job.AsyncJob.creation_ms].
+        """
+        return self._creation_ms
 
     @property
+    def _creation_ms(self) -> Optional[int]:
+        return self._field("_creation_ms")
+
     def spec(self) -> Optional[Any]:
-        """The job's specification. See :attr:`AsyncJob.spec`."""
-        return self._field("spec")
+        """Return the complete cached specification without a backend call.
+
+        See [AsyncJob.spec()][lancedb.job.AsyncJob.spec].
+        """
+        return self._spec
 
     @property
+    def _spec(self) -> Optional[Any]:
+        return self._field("_spec")
+
     def result(self) -> Optional[Any]:
-        """The job's terminal result. See :attr:`AsyncJob.result`."""
-        return self._field("result")
+        """Return the cached terminal result without a backend call.
+
+        See [AsyncJob.result()][lancedb.job.AsyncJob.result].
+        """
+        return self._result
 
     @property
+    def _result(self) -> Optional[Any]:
+        return self._field("_result")
+
     def failure(self) -> Optional[JobFailureInfo]:
-        """Why the job failed. See :attr:`AsyncJob.failure`."""
-        return self._field("failure")
+        """Return cached failure details without a backend call.
+
+        See [AsyncJob.failure()][lancedb.job.AsyncJob.failure].
+        """
+        return self._failure
+
+    @property
+    def _failure(self) -> Optional[JobFailureInfo]:
+        return self._field("_failure")
 
     @property
     def _spec_json(self) -> Optional[str]:
@@ -615,11 +1225,146 @@ class Job(Generic[T]):
     def _field(self, name: str) -> Optional[Any]:
         return getattr(self._inner, name) if self._inner is not None else None
 
+    def stack(self, worker_id: str) -> dict[str, Any]:
+        """Capture Python thread stacks from a running Function worker.
+
+        See [AsyncJob.stack][lancedb.job.AsyncJob.stack] for availability,
+        permissions and response fields.
+
+        Examples
+        --------
+        >>> print(job.stack("worker-id")["stacks"])  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "worker stacks require a server-side Function job"
+            )
+        return LOOP.run(self._inner.stack(worker_id))
+
+    def capture_profile(
+        self,
+        worker_id: str,
+        *,
+        kind: FunctionProfileKind = "cpu",
+        duration: Optional[timedelta] = None,
+        session_slot: int = 0,
+    ) -> FunctionProfile:
+        """Request a profile of a running Enterprise Function worker session.
+
+        See [AsyncJob.capture_profile][lancedb.job.AsyncJob.capture_profile] for
+        kinds, recording windows, permissions and runtime requirements.
+
+        >>> from datetime import timedelta
+        >>> profile = job.capture_profile(  # doctest: +SKIP
+        ...     "worker-id", kind="cpu", duration=timedelta(seconds=10)
+        ... )
+        >>> job.wait_for_profile(profile.profile_id)  # doctest: +SKIP
+        >>> job.export_profile(  # doctest: +SKIP
+        ...     profile.profile_id, "cpu.speedscope.json"
+        ... )
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(
+            self._inner.capture_profile(
+                worker_id, kind=kind, duration=duration, session_slot=session_slot
+            )
+        )
+
+    def profile_status(self, profile_id: str) -> FunctionProfile:
+        """Fetch capture status, including retained captures after refresh.
+
+        See [AsyncJob.profile_status][lancedb.job.AsyncJob.profile_status].
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(self._inner.profile_status(profile_id))
+
+    def wait_for_profile(
+        self,
+        profile_id: str,
+        *,
+        timeout: Optional[timedelta] = None,
+        poll_interval: Optional[timedelta] = None,
+    ) -> FunctionProfile:
+        """Wait for a capture with a configurable timeout and polling cadence.
+
+        See [AsyncJob.wait_for_profile][lancedb.job.AsyncJob.wait_for_profile].
+        A client timeout never cancels the capture or parent refresh job.
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(
+            self._inner.wait_for_profile(
+                profile_id, timeout=timeout, poll_interval=poll_interval
+            )
+        )
+
+    def profile_artifact(self, profile_id: str) -> dict[str, Any]:
+        """Retrieve a completed capture's actual JSON, preserving its format.
+
+        See [AsyncJob.profile_artifact][lancedb.job.AsyncJob.profile_artifact].
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(self._inner.profile_artifact(profile_id))
+
+    def export_profile(self, profile_id: str, path: str | PathLike[str]) -> None:
+        """Write a retained capture's JSON after successful retrieval.
+
+        See [AsyncJob.export_profile][lancedb.job.AsyncJob.export_profile].
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "Function profiling requires an Enterprise Function refresh job"
+            )
+        return LOOP.run(self._inner.export_profile(profile_id, path))
+
+    def stats(self) -> Optional[str]:
+        """Return a printable Function job run report.
+
+        See [AsyncJob.stats][lancedb.job.AsyncJob.stats] for metrics and availability.
+
+        Examples
+        --------
+        >>> print(job.stats())  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job statistics require a server-side Function job"
+            )
+        return LOOP.run(self._inner.stats())
+
+    def export_timeline(self, path: str | PathLike[str]) -> None:
+        """Write Chrome trace JSON for this Function job.
+
+        See :meth:`AsyncJob.export_timeline`. Open the file in Perfetto or
+        Chrome tracing.
+
+        Examples
+        --------
+        >>> job.export_timeline("refresh.trace.json")  # doctest: +SKIP
+        """
+        if self._inner is None:
+            raise NotImplementedError(
+                "job timeline export requires a server-side Function job"
+            )
+        return LOOP.run(self._inner.export_timeline(path))
+
     def events(
         self,
         *,
         limit: Optional[int] = None,
         filter: Optional[str] = None,
+        page_token: Optional[str] = None,
     ) -> "pa.Table":
         """This job's recorded lifecycle events.
 
@@ -632,7 +1377,20 @@ class Job(Generic[T]):
                     "jobs",
                 )
             )
-        return LOOP.run(self._inner.events(limit=limit, filter=filter))
+        return LOOP.run(
+            self._inner.events(limit=limit, filter=filter, page_token=page_token)
+        )
+
+    def history(
+        self, *, limit: Optional[int] = None, filter: Optional[str] = None
+    ) -> Iterator["pa.Table"]:
+        """Walk retained history in pages. See :meth:`AsyncJob.history`."""
+        pages = self._inner.history(limit=limit, filter=filter)
+        try:
+            while (page := LOOP.run(anext(pages, None))) is not None:
+                yield page
+        finally:
+            LOOP.run(pages.aclose())
 
     def __repr__(self) -> str:
         return _job_repr("Job", self)
@@ -643,3 +1401,15 @@ def _typed_job(
 ) -> AsyncJob[T]:
     """Bind an internal JSON-producing job to its public result model."""
     return AsyncJob(inner, result_decoder)
+
+
+def _opened_job(inner: "_lancedb.Job") -> AsyncJob:
+    if inner.job_type == "cleanup":
+        return _typed_job(inner, CleanupResult.from_json)
+    if inner.job_type in ("function_refresh", "computed_refresh", "refresh_column"):
+        return _typed_job(inner, RefreshColumnResult.from_json)
+    if inner.job_type == "prewarm_page_cache":
+        return _typed_job(inner, PrewarmDataResult.from_json)
+    if inner.job_type == "compact":
+        return _typed_job(inner, CompactionResult.from_json)
+    return AsyncJob(inner)

@@ -7,9 +7,10 @@ use lancedb::index::vector::{
     IvfPqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
 };
 use lancedb::index::{
-    Index as LanceDbIndex,
+    Index as LanceDbIndex, IndexType,
     scalar::{
         BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder, NGramIndexBuilder,
+        PluginIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
     },
 };
 use pyo3::IntoPyObject;
@@ -117,6 +118,26 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
             "NGram" => Ok(LanceDbIndex::NGram(NGramIndexBuilder::default())),
+            "ZoneMap" => Ok(LanceDbIndex::ZoneMap(ZoneMapIndexBuilder::default())),
+            "RTree" => {
+                let params = source.extract::<RTreeParams>()?;
+                let mut builder = RTreeIndexBuilder::default();
+                if let Some(page_size) = params.page_size {
+                    builder = builder
+                        .page_size(page_size)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                }
+                Ok(LanceDbIndex::RTree(builder))
+            }
+            "ScalarPlugin" => {
+                let params = source.extract::<ScalarPluginParams>()?;
+                let invalid = |err: lancedb::Error| PyValueError::new_err(err.to_string());
+                let mut builder = PluginIndexBuilder::new(params.index_type).map_err(invalid)?;
+                if let Some(json) = params.params_json {
+                    builder = builder.params_json(json).map_err(invalid)?;
+                }
+                Ok(LanceDbIndex::Plugin(builder))
+            }
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
                 let code_options = CodeAnalyzerOptions {
@@ -291,13 +312,20 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
             }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, ScalarPlugin, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
     } else {
         Ok(LanceDbIndex::Auto)
     }
+}
+
+#[derive(FromPyObject)]
+struct ScalarPluginParams {
+    index_type: String,
+    #[pyo3(attribute("_params_json"))]
+    params_json: Option<String>,
 }
 
 #[derive(FromPyObject)]
@@ -323,6 +351,11 @@ struct FtsParams {
     split_on_numerics: Option<bool>,
     preserve_original: Option<bool>,
     index_operators: Option<bool>,
+}
+
+#[derive(FromPyObject)]
+struct RTreeParams {
+    page_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -537,7 +570,12 @@ fn parse_index_details(py: Python<'_>, s: String) -> Py<PyAny> {
 
 impl IndexConfig {
     pub fn from_lancedb(py: Python<'_>, value: lancedb::index::IndexConfig) -> Self {
-        let index_type = format!("{:?}", value.index_type);
+        // A registered plugin's type is its display name, such as "MinHashLsh",
+        // which `Debug` would render as `Custom("MinHashLsh")`.
+        let index_type = match value.index_type {
+            IndexType::Custom(name) => name,
+            index_type => format!("{index_type:?}"),
+        };
         Self {
             index_type,
             columns: value.columns,

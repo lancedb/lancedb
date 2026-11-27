@@ -115,7 +115,11 @@ def test_vector_tuning_options(sync_table):
     }.items():
         assert getattr(config, name) == value
     assert kwargs == dict(
-        wait_timeout=timeout, name="custom_idx", replace=False, train=False
+        wait_timeout=timeout,
+        name="custom_idx",
+        replace=False,
+        train=False,
+        exist_ok=False,
     )
 
 
@@ -192,7 +196,10 @@ def test_remote_optimize_options():
     with pytest.raises(NotImplementedError, match="remote optimize"):
         table.optimize(cleanup_older_than=age, delete_unverified=True, retrain=True)
     handle.optimize.assert_awaited_once_with(
-        cleanup_older_than=age, delete_unverified=True, retrain=True
+        cleanup_older_than=age,
+        delete_unverified=True,
+        retrain=True,
+        compaction_options=None,
     )
 
 

@@ -27,6 +27,16 @@ CREATE MATERIALIZED VIEW <name> AS SELECT ...
 ```
 </CodeGroup>
 
+{/* Draft for the materialized-view exist_ok release.
+
+`IF NOT EXISTS` preserves an existing materialized view's definition, data and
+refresh settings without refreshing it. The Python equivalent is
+`db.create_materialized_view("saved", "source", exist_ok=True)`. A skipped
+asynchronous creation returns a completed job without submitting a refresh job.
+Existing names are errors by default.
+
+*/}
+
 Once created, a materialized view can be queried like a table. Use the
 statements below to list, refresh and drop it. For SDK methods, see
 [Materialized views](/management/materialized-view#create).
@@ -60,16 +70,25 @@ automatic execution needs the same server-side switch enabled. Omitting
 
 ## SHOW MATERIALIZED VIEWS {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW MATERIALIZED VIEWS
+```sql
+SHOW MATERIALIZED VIEWS IN analytics.`team$ml` LIMIT 100;
+SHOW MATERIALIZED VIEWS IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-<Note>
-This asks the server for its views, as the SDK's `list_materialized_views` does
-on a `db://` connection.
-</Note>
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+The listing contains identifiers; use `DESCRIBE MATERIALIZED VIEW` for its defining query and refresh metadata.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## Refreshing one {#refresh}
 
@@ -136,3 +155,23 @@ same underlying job as dropping any table, `drop_table` or `drop_object`.
     How a refresh works, in LanceDB Enterprise.
   </Card>
 </CardGroup>
+
+
+### Resource settings
+
+Creation accepts `total_cpu_millis`, `total_memory_bytes`, and `total_gpu_count`
+as execution-wide defaults, plus `gpu_class` and positive `gpu_count` for each
+worker. Refresh accepts the same names and overrides each supplied field.
+Unspecified fields inherit creation settings, then Function settings, then
+deployment defaults. A materialized view sums total budgets across distinct
+pinned Function versions; per-worker counts use the largest Function default
+unless overridden.
+
+```sql
+CREATE MATERIALIZED VIEW embeddings
+WITH (gpu_class = 'any', gpu_count = 2, total_gpu_count = 8)
+AS SELECT embed(text) AS embedding FROM documents;
+
+REFRESH MATERIALIZED VIEW embeddings
+WITH (gpu_class = 'h100', gpu_count = 4, total_gpu_count = 8);
+```

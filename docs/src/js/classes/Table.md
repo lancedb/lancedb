@@ -268,6 +268,38 @@ const after = await table.getRTEStats();
 
 ***
 
+### cleanupAsync()
+
+```ts
+cleanupAsync(_options?): Promise<Job<CleanupResult>>
+```
+
+Submit durable remote cleanup through SQL VACUUM and return after acceptance.
+Requires table Ownership and parent Usage. Retention inherits from the table
+then deployment when omitted. Local/historical handles are unsupported.
+Before submission, disable/drain automatic cleanup and prevent other cleanup,
+tag/branch publication and restore until completion, including direct clients.
+Coordination is not enforced by the server. Cancellation cannot undo deletion
+or prove storage I/O stopped. Preview is available without deletion.
+Wait timeout leaves work running; save the ID and reopen with db.openJob().
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CleanupResult`](../interfaces/CleanupResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.cleanupAsync({ minAgeSeconds: 604800 });
+const result = await job.wait({ timeoutMs: 600000 });
+```
+
+***
+
 ### close()
 
 ```ts
@@ -302,6 +334,40 @@ It is a no-op when no writers are cached.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### compactAsync()
+
+```ts
+compactAsync(_options?): Promise<Job<CompactionResult>>
+```
+
+Submit remote compaction and return its durable job after acceptance.
+
+Uses SQL OPTIMIZE, inheriting branch and namespace from this table. Requires
+a compatible remote server and table Ownership plus parent Usage. Local and
+historical-version handles are unsupported. Existing optimize() behavior is unchanged.
+Waiting tracks the rewrite itself and returns actual row/file statistics.
+Missing result payloads are errors; older workers can omit file counts.
+Status, progress, events and cancellation reuse the generic HTTP job APIs.
+Reopen with db.openJob<CompactionResult>(job.id!). A wait timeout does not cancel work.
+
+#### Parameters
+
+* **\_options?**: [`CompactionOptions`](../interfaces/CompactionOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`CompactionResult`](../interfaces/CompactionResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.compactAsync({ targetRowsPerFragment: 1000 });
+const result = await job.wait();
+console.log(result.rowsSucceeded, result.fragmentsRemoved);
+```
 
 ***
 
@@ -423,7 +489,7 @@ await table.createIndex("my_float_col");
 ### createIndexAsync()
 
 ```ts
-abstract createIndexAsync(column, options?): Promise<Job>
+abstract createIndexAsync(column, options?): Promise<Job<void>>
 ```
 
 Create an index, returning a handle to the indexing job.
@@ -444,7 +510,7 @@ account for the replacement caveat described in [Table.createIndex](Table.md#cre
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -483,6 +549,53 @@ Delete the rows that satisfy the predicate.
 
 A promise that resolves to an object
 containing the new version number of the table
+
+***
+
+### delta()
+
+```ts
+delta(fromVersion, toVersion?): Promise<TableDelta>
+```
+
+Compare two persisted versions or same-branch tags on an Embedded table.
+
+`fromVersion` is exclusive and `toVersion` is inclusive. Omitting
+`toVersion` uses the version currently visible through this handle,
+including a checked-out version. The endpoints are fixed when the delta is
+created.
+
+Row readers require stable row IDs at both endpoints. Create the table with
+`storageOptions: { new_table_enable_stable_row_ids: "true" }` to enable
+them. `listTransactions()` works without stable row IDs.
+
+Row readers reject ranges containing a Restore, or ranges whose transaction
+history cannot prove they are restore-free. Recompute the checkpoint with a
+full rescan and reinitialize it at the range end version.
+
+LanceDB Enterprise tables reject this operation.
+
+#### Parameters
+
+* **fromVersion**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+* **toVersion?**: [`DeltaVersion`](../type-aliases/DeltaVersion.md)
+
+#### Returns
+
+`Promise`&lt;[`TableDelta`](TableDelta.md)&gt;
+
+#### Example
+
+```ts
+const delta = await table.delta("baseline");
+const reader = delta.insertedRows();
+console.log((await reader.schema()).fields.map((field) => field.name));
+for await (const batch of reader) {
+  console.log(batch.getChild("id")?.toJSON());
+}
+console.log(await delta.listTransactions());
+```
 
 ***
 
@@ -619,6 +732,58 @@ await table.enableRTE({
 
 ***
 
+### explainCleanup()
+
+```ts
+explainCleanup(_options?): Promise<CleanupPlan>
+```
+
+Preview version deletion without creating a job. Execution re-evaluates current state.
+
+#### Parameters
+
+* **\_options?**: [`CleanupOptions`](../interfaces/CleanupOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`CleanupPlan`](../interfaces/CleanupPlan.md)&gt;
+
+***
+
+### explainPrewarmData()
+
+```ts
+explainPrewarmData(_options?): Promise<PrewarmDataPlan>
+```
+
+Preview prewarm with the same options as [prewarmDataAsync](Table.md#prewarmdataasync), without
+submitting a warming job. Requires LanceDB Enterprise with structured SQL
+previews, table Select and database/namespace Usage. Reads metadata and
+returns the source version, readable plan, and conservative pruning summary.
+A later submission plans its own snapshot. Historical and Embedded handles
+are unsupported. Unknown measurements remain null.
+Custom table implementations can override this method; its default rejects
+with an unsupported-operation error.
+
+#### Parameters
+
+* **\_options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`PrewarmDataPlan`](../interfaces/PrewarmDataPlan.md)&gt;
+
+#### Example
+
+```ts
+const plan = await table.explainPrewarmData({
+  columns: ["video"], filter: "quality > $minimum", parameters: {minimum: 0.7},
+});
+console.log(plan.pruning.selectedFragments);
+```
+
+***
+
 ### fetchBlobFiles()
 
 ```ts
@@ -647,6 +812,48 @@ tables; no partial handles are returned.
 #### Returns
 
 `Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
+
+***
+
+### fetchBlobRanges()
+
+```ts
+abstract fetchBlobRanges(
+   column,
+   requests,
+   options?): Promise<(null | Buffer)[]>
+```
+
+Materializes row-specific byte ranges at the table's current checkout.
+Preserves request order, duplicates, and nulls. Zero length returns an empty
+buffer for a non-null blob. Invalid ranges or missing rows reject the entire
+call. See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+
+Remote tables use the batched endpoint when the server advertises support,
+splitting at 1024 ranges and 64 MiB, including individual larger ranges.
+Older servers use descriptor queries and BlobFile range reads. Both protocols
+use one exact branch and version. Errors from an advertised endpoint propagate
+without switching protocols. All output bytes occupy memory.
+
+#### Parameters
+
+* **column**: `string`
+
+* **requests**: readonly [`BlobRangeRequest`](../type-aliases/BlobRangeRequest.md)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
+
+#### Example
+
+```ts
+const bytes = await table.fetchBlobRanges("image", [
+  { rowId: 10n, offset: 0n, length: 1024n },
+]);
+```
 
 ***
 
@@ -704,38 +911,119 @@ so this is safe to call repeatedly.
 
 ***
 
+### functionColumnStatus()
+
+```ts
+abstract functionColumnStatus(column): Promise<FunctionColumnStatus>
+```
+
+Return exact freshness status for one Function-backed output column.
+
+#### Parameters
+
+* **column**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;
+
+***
+
+### functionColumnStatuses()
+
+```ts
+abstract functionColumnStatuses(column?): Promise<FunctionColumnStatus[]>
+```
+
+Return exact freshness status for Function-backed output columns.
+
+All results describe one server table version. Omit `column` for every
+Function output. Rows already failed remain visible and do not prevent
+`waitFresh` from completing. A handle pinned to an exact version requests
+that version; a latest handle retains normal read-freshness behavior.
+
+#### Parameters
+
+* **column?**: `string`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)[]&gt;
+
+***
+
+### functionErrorRows()
+
+```ts
+functionErrorRows(options?): Promise<FunctionFailedRow[]>
+```
+
+Read current failing inputs, one result per error record.
+Requires a complete LanceDB Enterprise workflow version 1 listing with
+row identities. Throws if a failed row is no longer addressable in the
+table's read snapshot. For materialized views, see the source identities
+on each error record returned by [Table#functionErrors](Table.md#functionerrors).
+
+#### Parameters
+
+* **options?**: [`FunctionErrorRowsOptions`](../interfaces/FunctionErrorRowsOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionFailedRow`](../interfaces/FunctionFailedRow.md)[]&gt;
+
+***
+
 ### functionErrors()
 
 ```ts
 abstract functionErrors(options?): Promise<FunctionErrors>
 ```
 
-The per-row errors Function refreshes recorded on this table.
+List the per-row errors recorded by Function refreshes on this table.
 
-A refresh running under a skip policy records each row it skipped with
-the input that failed and the error. This lists those records, newest
-job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Enterprise only; reading errors needs read
-access to the table, since a message carries the value that failed.
+On LanceDB Enterprise with workflow version 1 or later, the default
+lists current failures. Set `history: true` to include retained attempts
+for repaired rows. Older deployments keep their existing default listing.
+Reading errors requires table read access because messages can include the
+input that failed. `errorGroups` describes the returned records.
 
 #### Parameters
 
 * **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
-    Optional filters: `jobId`,
-    `column`, and `limit` (server default 10000, cap 100000).
 
 #### Returns
 
 `Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
 
-The records, the capped fragments,
-and whether the listing stopped at its limit.
-
 #### Example
 
 ```ts
-const { records, truncated } = await table.functionErrors({ column: "embedding" });
+const errors = await table.functionErrors({ column: "embedding" });
+console.log(errors.records, errors.errorGroups);
 ```
+
+***
+
+### functionProvenance()
+
+```ts
+functionProvenance(_column, _options?): Promise<FunctionProvenance>
+```
+
+Read the producing Function version and job for each returned value.
+Check `truncated` before treating the result as a complete listing.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionProvenanceOptions`](../interfaces/FunctionProvenanceOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FunctionProvenance`](../interfaces/FunctionProvenance.md)&gt;
 
 ***
 
@@ -781,6 +1069,26 @@ Resolves to `undefined` only when the RTE write path is not enabled.
 #### Returns
 
 `Promise`&lt;`undefined` \| [`RTEStats`](../interfaces/RTEStats.md)&gt;
+
+***
+
+### getTableOverrides()
+
+```ts
+getTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Read the stored overrides for a remote Enterprise table.
+
+Overrides configure background behavior such as automatic compaction,
+cleanup, and reindex execution. Keys use the server's snake_case names.
+Returns an empty object when no overrides are set. Local tables are unsupported.
+Custom table implementations inherit a default rejection unless they override
+this method.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
 
 ***
 
@@ -921,6 +1229,67 @@ rows depending on how they match.
 
 ***
 
+### openBlobFile()
+
+```ts
+openBlobFile(_descriptor, _options?): Promise<null | BlobFile>
+```
+
+Opens a lazy handle from a source-bearing SQL `blob_descriptor` result.
+
+The descriptor's source pins the table version, branch, column and row
+identity, so opening does not change this table's checkout. Null
+descriptors return `null`. Payload bytes load only when the returned
+handle is read. Pass BlobReadOptions.signal to cancel the open.
+
+#### Parameters
+
+* **\_descriptor**: `null` \| [`BlobDescriptor`](../interfaces/BlobDescriptor.md)
+
+* **\_options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;`null` \| [`BlobFile`](BlobFile.md)&gt;
+
+#### Example
+
+```ts
+const rows = await table
+  .query()
+  .select({ video: "blob_descriptor(video)" })
+  .toArray();
+const handle = await table.openBlobFile(rows[0].video);
+if (handle) {
+  const header = await handle.readRange(0n, 16n);
+  await handle.close();
+}
+```
+
+***
+
+### openBlobFiles()
+
+```ts
+openBlobFiles(descriptors, options?): AsyncGenerator<null | BlobFile, any, unknown>
+```
+
+Opens source-bearing descriptors in iteration order, preserving nulls.
+Handles open lazily as the iterable advances. Close each non-null handle
+after use.
+
+#### Parameters
+
+* **descriptors**: `Iterable`&lt;`null` \| [`BlobDescriptor`](../interfaces/BlobDescriptor.md)&gt;
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`AsyncGenerator`&lt;`null` \| [`BlobFile`](BlobFile.md), `any`, `unknown`&gt;
+
+***
+
 ### optimize()
 
 ```ts
@@ -943,6 +1312,15 @@ Modeled after ``VACUUM`` in PostgreSQL.
  you have added or modified 100,000 or more records or run more than 20 data
  modification operations.
 
+On a LanceDB Enterprise (remote) table, only compaction is currently
+supported. Pruning old versions and index optimization are silently
+skipped there instead of being attempted, so this call resolves
+successfully, with zeroed pruning statistics, once the compaction job
+has been submitted; it does not wait for that job to finish.
+`compactionOptions` can tune the four per-job settings documented in
+[CompactionOptions](../interfaces/CompactionOptions.md). Older-server errors are propagated without
+retrying with the settings removed.
+
 #### Parameters
 
 * **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
@@ -955,29 +1333,99 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ### prewarmData()
 
+#### prewarmData(options)
+
 ```ts
-abstract prewarmData(columns?): Promise<void>
+abstract prewarmData(options?): Promise<void>
 ```
 
 Prewarm one or more columns of data in the table.
 
-#### Parameters
+This will load the column data into the page cache so that future queries that
+read those columns avoid the initial cold-start latency.  This call initiates
+prewarming and returns once the request is accepted; the warming itself may
+continue in the background. Submission uses SQL PREWARM and needs Flight
+SQL connectivity. Use [prewarmDataAsync](Table.md#prewarmdataasync) to retain the job handle.
+
+Prewarming is generally useful for columns used in filters or projections.
+Large columns (e.g. high-dimensional vectors or binary data) may not be
+practical to prewarm.
+
+This feature is currently only supported in LanceDB Enterprise.
+
+##### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
+    Columns, a metadata-pruning filter, and per-executor concurrency.
+    Omitted or empty columns warm every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+##### Example
+
+```ts
+await table.prewarmData({
+  columns: ["payload"], filter: "quality > 0.7", concurrency: 4,
+});
+```
+
+#### prewarmData(columns)
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Submit data prewarm using the columns-array form and return after acceptance.
+
+##### Parameters
 
 * **columns?**: `string`[]
-    The columns to prewarm. If undefined, all columns are prewarmed.
-    This will load the column data into the page cache so that future queries that
-    read those columns avoid the initial cold-start latency.  This call initiates
-    prewarming and returns once the request is accepted; the warming itself may
-    continue in the background.  Calling it on already-prewarmed columns is a
-    no-op on the server.
-    Prewarming is generally useful for columns used in filters or projections.
-    Large columns (e.g. high-dimensional vectors or binary data) may not be
-    practical to prewarm.
-    This feature is currently only supported in LanceDB Enterprise.
+    Columns to warm; omitted or empty means every column.
+
+##### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### prewarmDataAsync()
+
+```ts
+abstract prewarmDataAsync(options?): Promise<Job<PrewarmDataResult>>
+```
+
+Submit data prewarm through SQL and return its durable warming-job handle.
+
+The table handle supplies the branch and namespace. Requires a compatible
+SQL PREWARM server and Flight SQL connectivity. Standard authorization
+requires table Select and database/namespace Usage. Status/wait use generic
+HTTP job APIs; events and cancellation retain their own privileges.
+No REST fallback or option-dropping retry is performed. Historical-version
+handles are unsupported; call `checkoutLatest()` first.
+
+Submission returns after acceptance. Use `job.wait()` for completion, or
+save `job.id` and reopen it with `db.openJob(id)`. A timeout does not cancel
+the job. After `job.refresh()`, `job.spec.table_version` is the pinned version.
+
+#### Parameters
+
+* **options?**: [`PrewarmDataOptions`](../interfaces/PrewarmDataOptions.md)
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;[`PrewarmDataResult`](../interfaces/PrewarmDataResult.md)&gt;&gt;
+
+#### Example
+
+```ts
+const job = await table.prewarmDataAsync({
+  columns: ["video"], filter: "quality > $minimum",
+  parameters: { minimum: 0.7 }, concurrency: 4,
+});
+await job.wait();
+```
 
 ***
 
@@ -1000,6 +1448,28 @@ Prewarm an index in the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### quarantineFailed()
+
+```ts
+quarantineFailed(_column, _options?): Promise<number>
+```
+
+Quarantine current failures and return the number of affected rows.
+Set `quarantined: false` to release them for future refreshes.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`FunctionQuarantineOptions`](../interfaces/FunctionQuarantineOptions.md)
+
+#### Returns
+
+`Promise`&lt;`number`&gt;
 
 ***
 
@@ -1076,7 +1546,7 @@ for await (const batch of table.query()) {
 ### refreshColumn()
 
 ```ts
-abstract refreshColumn(column): Promise<RefreshColumnResult>
+abstract refreshColumn(column, options?): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
@@ -1092,6 +1562,10 @@ Enterprise a refresh runs as a server job, through [Table#refreshColumnAsync](Ta
 * **column**: `string`
     The name of the computed column to fill.
 
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, all LanceDB
+    Enterprise only; see [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+
 #### Returns
 
 `Promise`&lt;[`RefreshColumnResult`](../interfaces/RefreshColumnResult.md)&gt;
@@ -1104,7 +1578,7 @@ number of rows filled and the new version number of the table.
 ### refreshColumnAsync()
 
 ```ts
-abstract refreshColumnAsync(column): Promise<Job>
+abstract refreshColumnAsync(column, options?): Promise<Job<void>>
 ```
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
@@ -1124,17 +1598,65 @@ LanceDB Enterprise it is the server's backfill job.
 * **column**: `string`
     The name of the computed column to fill.
 
+* **options?**: [`RefreshColumnOptions`](../interfaces/RefreshColumnOptions.md)
+    Refresh options, mirroring the SQL
+    `REFRESH COLUMN ... WHERE ... WITH (...)` form: `where` narrows the rows,
+    `errorPolicy`, `maxFailedFraction`, `maxFailedRows`, `rowTimeoutSeconds`
+    and `initTimeoutSeconds` govern failing rows. `batchSize`, `gpuClass`,
+    `maxConcurrency`, `totalCpuMillis`, `totalMemoryBytes`, `supervisorResources`,
+    `planningWorkers` and `maxExecutorProcessesPerWorker` size registered
+    Function refreshes. `retryPolicy` overrides user-code retries only when
+    repeating partial work is safe; set `maxAttempts: 1` to disable retries.
+    `maxConcurrency` overrides the registered default for this logical
+    execution only and is a positive integer; it is not an account-wide
+    quota. `totalCpuMillis`, `totalMemoryBytes`, and `totalGpuCount` override
+    their corresponding execution-wide resource limits independently. Unset
+    values inherit column defaults, then Function defaults, then deployment
+    defaults. A zero GPU limit is valid for CPU-only Functions.
+    `supervisorResources` and `planningWorkers.resources` are per-pod sizes.
+    `numWorkers` applies only to expression columns.
+    `publicationIntervalRows` opts into publishing completed Function split
+    ranges once their accumulated unpublished rows reach the threshold.
+    It must be a positive safe integer and requires non-Blob Function outputs.
+    Omit it for whole-fragment publication. Publications can exceed the
+    threshold, and remaining rows publish at completion.
+
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 #### Example
 
 ```ts
-const job = await table.refreshColumnAsync("doubled");
+const job = await table.refreshColumnAsync("embedding", {
+  where: "published_at > '2026-01-01'",
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  maxConcurrency: 4,
+  publicationIntervalRows: 10000,
+  errorPolicy: "skip",
+  maxFailedFraction: 0.01,
+  rowTimeoutSeconds: 30,
+});
 await job.wait();
 console.log(await job.status()); // "finished"
 ```
+
+***
+
+### resetTableOverrides()
+
+```ts
+resetTableOverrides(): Promise<Record<string, unknown>>
+```
+
+Clear a remote Enterprise table's overrides and return an empty object.
+Local tables and custom table implementations without override support reject
+this operation.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
 
 ***
 
@@ -1158,6 +1680,28 @@ out state and the read_consistency_interval, if any, will apply.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### retryFailed()
+
+```ts
+retryFailed(_column, _options?): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start a job to retry exactly the current failures of one Function column.
+Filters apply on the server. Quarantined rows are excluded by default.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options?**: [`RetryFailedOptions`](../interfaces/RetryFailedOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
 
 ***
 
@@ -1495,6 +2039,66 @@ resolves to the new table version.
 
 ***
 
+### updateTableOverrides()
+
+```ts
+updateTableOverrides(overrides): Promise<Record<string, unknown>>
+```
+
+Recursively merge overrides into a remote Enterprise table's stored overrides.
+
+Fetches the current overrides, merges nested objects locally, then sends the
+complete replacement using REST PUT. Other values replace existing values;
+unrelated fields from the read snapshot are preserved. This read-modify-write
+is not atomic: concurrent edits can be overwritten, even to unrelated fields.
+Coordinate writers when concurrent edits must be preserved. An empty update
+only reads and returns the current overrides.
+
+Unlike this SDK method, CLI `set` and REST PUT replace the overrides object
+without merging. Use [Table.resetTableOverrides](Table.md#resettableoverrides) to clear all overrides.
+Local tables and custom table implementations without override support reject
+this operation.
+
+#### Parameters
+
+* **overrides**: `Record`&lt;`string`, `unknown`&gt;
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `unknown`&gt;&gt;
+
+#### Example
+
+```ts
+await table.updateTableOverrides({
+  job_types: { compaction: { enabled: false } },
+});
+```
+
+***
+
+### upgradeColumn()
+
+```ts
+upgradeColumn(_column, _options): Promise<Job<RefreshColumnJobResult>>
+```
+
+Start an upgrade to an existing immutable Function version and choose
+which rows to recompute. New and changed inputs use the new version.
+Requires LanceDB Enterprise Function failure workflow version 1 or later.
+
+#### Parameters
+
+* **\_column**: `string`
+
+* **\_options**: [`UpgradeColumnOptions`](../interfaces/UpgradeColumnOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&lt;[`RefreshColumnJobResult`](../interfaces/RefreshColumnJobResult.md)&gt;&gt;
+
+***
+
 ### vectorSearch()
 
 ```ts
@@ -1555,3 +2159,26 @@ Waits for asynchronous indexing to complete on the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### waitFresh()
+
+```ts
+abstract waitFresh(column, timeoutSeconds?): Promise<FunctionColumnStatus>
+```
+
+Poll until no stale or never-computed rows remain.
+
+Only HTTP 503 with the exact finalization-pending error code is retried;
+every other error propagates. Failed rows do not block completion.
+
+#### Parameters
+
+* **column**: `string`
+
+* **timeoutSeconds?**: `number`
+
+#### Returns
+
+`Promise`&lt;[`FunctionColumnStatus`](../interfaces/FunctionColumnStatus.md)&gt;

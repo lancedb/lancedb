@@ -30,6 +30,8 @@ pub struct RemoteCatalogOptions {
     pub api_key: Option<String>,
     /// Shared transport and authentication settings.
     pub client_config: ClientConfig,
+    /// Storage options supported by remote database connections.
+    pub storage_options: HashMap<String, String>,
     /// SQL service endpoint used by returned database connections.
     /// Required for SQL when the catalog endpoint uses HTTPS.
     pub sql_host_override: Option<String>,
@@ -391,6 +393,10 @@ mod tests {
         .await;
         let mut options = RemoteCatalogOptions {
             api_key: Some("test-key".into()),
+            storage_options: HashMap::from([(
+                "azure_storage_account_name".into(),
+                "catalog-account".into(),
+            )]),
             ..Default::default()
         };
         options.client_config.extra_headers = HashMap::from([
@@ -460,6 +466,10 @@ mod tests {
             );
             assert!(!request.headers.contains_key("x-lancedb-database-prefix"));
             assert_eq!(request.headers["authorization"], "Bearer refreshed");
+            assert_eq!(
+                request.headers["x-azure-storage-account-name"],
+                "catalog-account"
+            );
         }
         assert_eq!(
             requests[0].line,

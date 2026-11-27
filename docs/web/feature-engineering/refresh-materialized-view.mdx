@@ -59,6 +59,72 @@ Use `view.table.count_rows()` for the view's row count at any time; on
 LanceDB Embedded it always matches `rows_written` from the most recent
 refresh.
 
+{/*
+Draft: publish this section after the resource-control SDK support is released.
+
+## Resource budgets {#resources}
+
+Bound the resources used to recompute a view:
+
+<CodeGroup>
+```python Python icon="python"
+job = view.refresh_async(
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=4,
+    gpu_class="h100",
+    gpu_count=2,
+)
+job.wait()
+```
+
+```rust Rust icon="rust"
+use lancedb::materialized_view::MaterializedView;
+
+async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
+    let job = view
+        .refresh()
+        .total_cpu_millis(8000)
+        .total_memory_bytes(16_u64 << 30)
+        .total_gpu_count(4)
+        .gpu_class("h100")
+        .gpu_count(2)
+        .execute_async()
+        .await?;
+    job.wait().await?;
+    Ok(())
+}
+```
+
+```typescript TypeScript icon="js"
+await view.refresh({
+  totalCpuMillis: 8000,
+  totalMemoryBytes: 16 * 1024 ** 3,
+  totalGpuCount: 4,
+  gpuClass: "h100",
+  gpuCount: 2,
+});
+```
+</CodeGroup>
+
+CPU is in millicores (8000 means eight cores), memory is in bytes, and
+`total_gpu_count` is the aggregate concurrent GPU cap. `gpu_count` allocates
+that many devices together to each worker; the total cap must fit at least
+one worker. Use `total_gpu_count=0` for a CPU-only view.
+
+Each omitted setting inherits the view's creation setting, then the Function
+setting. Total budgets across distinct pinned Function versions are summed;
+the per-worker count uses their largest default. Remaining total budgets use
+deployment defaults. An unresolved GPU class is equivalent to `"any"`, and
+an explicit `gpu_class="any"` overrides a concrete creation or Function class.
+Discover configured classes with `db.list_gpu_classes()`.
+
+These controls require LanceDB Enterprise with an isolated backend that can
+enforce them; Embedded and unsupported execution backends reject them. See the
+[SQL resource options](/sql/dml/refresh-materialized-view#resources).
+
+*/}
+
 ## Automatic refresh {#auto-refresh}
 
 A materialized view can refresh itself on a schedule instead of waiting

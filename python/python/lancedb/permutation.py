@@ -8,14 +8,35 @@ import os
 from deprecation import deprecated
 import pyarrow as pa
 
+from ._lancedb import Connection as NativeConnection
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable, Table
 from .background_loop import LOOP
-from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
+from .util import (
+    batch_to_tensor,
+    batch_to_tensor_columns,
+    batch_to_tensor_dict,
+    batch_to_tensor_rows,
+    get_uri_scheme,
+)
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from lancedb.dependencies import pandas as pd, numpy as np, polars as pl
+    from .db import DBConnection
+
+
+def _native_connection(db: Any) -> Any:
+    """Return the native connection wrapped by a sync or async connection."""
+    async_connection = getattr(db, "_conn", None)
+    if async_connection is not None:
+        return _native_connection(async_connection)
+    inner = getattr(db, "_inner", None)
+    if inner is not None:
+        return _native_connection(inner)
+    if isinstance(db, NativeConnection):
+        return db
+    raise TypeError("db must be a LanceDB connection")
 
 
 class PermutationBuilder:
@@ -38,7 +59,9 @@ class PermutationBuilder:
     be referenced by name in the future.  If names are not provided then they can only
     be referenced by their ordinal index.  There is no requirement to name every split.
 
-    The permutation is stored in memory and will be lost when the program exits.
+    The permutation is stored in memory and will be lost when the program exits,
+    unless [persist][lancedb.permutation.PermutationBuilder.persist] is called before
+    [execute][lancedb.permutation.PermutationBuilder.execute].
     """
 
     def __init__(self, table: Table):
@@ -51,6 +74,9 @@ class PermutationBuilder:
         Tables with an RTE write spec are rejected: unflushed rows have no row id.
         """
         self._async = async_permutation_builder(table)
+        self._persist_connection: Optional[Any] = None
+        self._persist_table_name: Optional[str] = None
+        self._persist_namespace_path: list[str] = []
 
     def split_random(
         self,
@@ -257,6 +283,80 @@ class PermutationBuilder:
         self._async.filter(filter)
         return self
 
+    def persist(
+        self,
+        db: "DBConnection",
+        table_name: str,
+        *,
+        namespace_path: Optional[list[str]] = None,
+        mode: Literal["create", "overwrite"] = "create",
+    ) -> "PermutationBuilder":
+        """
+        Store the permutation table in an embedded database.
+
+        The base table can be Embedded or Enterprise; this connection is only the
+        plan destination. Persisting a plan makes the same split available to
+        another process or another machine with access to the destination storage.
+        The plan is an ordinary LanceDB table containing row ids and split ids; it
+        can be opened with [open_table][lancedb.db.DBConnection.open_table] and
+        passed to
+        [Permutation.from_tables][lancedb.permutation.Permutation.from_tables].
+        The table returned by ``execute`` keeps the destination connection and
+        namespace context, so it can be pickled and reopened directly.
+
+        Parameters
+        ----------
+        db: DBConnection
+            An embedded LanceDB connection for the plan destination. Local files
+            and object storage are supported. The base table may be Embedded or
+            Enterprise; persisting the plan itself to Enterprise is not supported
+            yet.
+        table_name: str
+            The name of the permutation table to create.
+        namespace_path: list[str], optional
+            The namespace to create the table in. The default is the root
+            namespace.
+        mode: {"create", "overwrite"}, default "create"
+            ``create`` fails if the destination table already exists.
+            ``overwrite`` writes a new version of the table. Readers that already
+            opened the previous version keep reading that snapshot.
+
+        Returns
+        -------
+        PermutationBuilder
+            This builder, so ``persist`` can be chained with the split, filter,
+            and execute methods.
+        """
+        if mode not in ("create", "overwrite"):
+            raise ValueError(f"Invalid mode {mode!r}; expected 'create' or 'overwrite'")
+
+        uri = getattr(db, "uri", None)
+        if uri is None:
+            raise TypeError("db must be a LanceDB connection")
+        if get_uri_scheme(str(uri)) == "db":
+            raise NotImplementedError(
+                "Permutation persistence is not supported for LanceDB Enterprise "
+                "connections yet; reproducible Enterprise plan ordering requires "
+                "deterministic remote row ordering."
+            )
+
+        if namespace_path is None:
+            namespace_path = []
+        elif not isinstance(namespace_path, (list, tuple)):
+            raise TypeError("namespace_path must be a list of strings or None")
+
+        namespace_path = list(namespace_path)
+        self._async.persist(
+            _native_connection(db),
+            table_name,
+            namespace_path=namespace_path,
+            mode=mode,
+        )
+        self._persist_connection = db
+        self._persist_table_name = table_name
+        self._persist_namespace_path = namespace_path
+        return self
+
     def execute(self) -> LanceTable:
         """
         Execute the configuration and create the permutation table.
@@ -264,7 +364,14 @@ class PermutationBuilder:
 
         async def do_execute():
             inner_tbl = await self._async.execute()
-            return await LanceTable.from_inner(inner_tbl)
+            if self._persist_connection is None:
+                return await LanceTable.from_inner(inner_tbl)
+            return await LanceTable.from_inner(
+                inner_tbl,
+                connection=self._persist_connection,
+                name=self._persist_table_name,
+                namespace_path=self._persist_namespace_path,
+            )
 
         return LOOP.run(do_execute())
 
@@ -405,11 +512,100 @@ class Transforms:
 # HuggingFace uses 10 which is pretty small
 DEFAULT_BATCH_SIZE = 100
 
+_MAP_FORMAT_ERROR = (
+    "map cannot be combined with with_format or with_transform; convert the "
+    "output inside the map callback or in the DataLoader collate_fn instead"
+)
+
+
+def _map_rows(data: Any, num_rows: int) -> list[dict[str, Any]]:
+    """Return the data flowing through a map chain as a list of row dicts."""
+    if isinstance(data, pa.RecordBatch):
+        return data.to_pylist()
+    if isinstance(data, dict):
+        return [
+            {name: values[i] for name, values in data.items()} for i in range(num_rows)
+        ]
+    return data
+
+
+def _map_columns(data: Any) -> dict[str, Any]:
+    """Return the data flowing through a map chain as a dict of columns."""
+    if isinstance(data, pa.RecordBatch):
+        return data.to_pydict()
+    if isinstance(data, list):
+        names = data[0].keys()
+        if any(row.keys() != names for row in data):
+            raise ValueError(
+                "Cannot pass rows to a batched map callback because the previous "
+                "callback did not return the same keys for every row"
+            )
+        return {name: [row[name] for row in data] for name in names}
+    return data
+
+
+class _MapTransform:
+    """
+    The transform installed by [map][lancedb.permutation.Permutation.map]
+
+    Each step is a ``(fn, batched)`` pair.  This is a module-level class, and not a
+    closure, so that a mapped permutation pickles whenever its callbacks do.
+    """
+
+    def __init__(self, steps: tuple[tuple[Callable, bool], ...]):
+        self.steps = steps
+
+    def __call__(self, batch: pa.RecordBatch) -> list[dict[str, Any]]:
+        num_rows = batch.num_rows
+        if num_rows == 0:
+            return []
+
+        # The layout is only converted when a callback needs the other one
+        data = batch
+        for fn, batched in self.steps:
+            if batched:
+                data = fn(_map_columns(data))
+                if not isinstance(data, dict):
+                    raise TypeError(
+                        "A batched map callback must return a dict of columns, "
+                        f"got {type(data).__name__}"
+                    )
+                for name, values in data.items():
+                    # A str or dict can be indexed but is not a column of values
+                    if isinstance(values, (str, bytes, dict)) or not hasattr(
+                        values, "__getitem__"
+                    ):
+                        raise TypeError(
+                            "A batched map callback must return a list of values "
+                            f"for column `{name}`, got {type(values).__name__}"
+                        )
+                    if len(values) != num_rows:
+                        raise ValueError(
+                            f"A batched map callback returned {len(values)} values "
+                            f"for column `{name}` but the batch has {num_rows} rows"
+                        )
+            else:
+                data = [fn(row) for row in _map_rows(data, num_rows)]
+                for row in data:
+                    if not isinstance(row, dict):
+                        raise TypeError(
+                            "A map callback must return a dict for each row, "
+                            f"got {type(row).__name__}"
+                        )
+        return _map_rows(data, num_rows)
+
+
+def _is_persisted_plan(table: Table) -> bool:
+    """Whether a permutation table lives in reopenable storage rather than memory."""
+    return isinstance(table, LanceTable) and not table._conn.uri.startswith("memory://")
+
 
 def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     from .remote.table import RemoteTable
 
     if isinstance(table, RemoteTable):
+        # RemoteTable already owns its reopen state; keep the table object so
+        # pickle delegates to its __getstate__ without duplicating the fields.
         return {
             "kind": "remote",
             "table": table,
@@ -418,20 +614,15 @@ def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     if not isinstance(table, LanceTable):
         raise ValueError(f"Cannot pickle table of type {type(table)!r}")
 
-    base_uri = table._conn.uri
-    if base_uri.startswith("memory://"):
+    state = table.__getstate__()
+    if state.get("kind") == "memory":
         return {
             "kind": "memory",
-            "name": table.name,
-            "data": table.to_arrow(),
+            "state": state,
         }
-
     return {
-        "kind": "local",
-        "name": table.name,
-        "uri": base_uri,
-        "namespace": table._namespace_path,
-        "storage_options": table._conn.storage_options,
+        "kind": "lance",
+        "state": state,
     }
 
 
@@ -444,13 +635,25 @@ def _drop_base_version(permutation_data: pa.Table) -> pa.Table:
     return permutation_data.replace_schema_metadata(metadata)
 
 
+def _lance_table_from_pickle_state(state: dict[str, Any]) -> LanceTable:
+    table = LanceTable.__new__(LanceTable)
+    table.__setstate__(state)
+    return table
+
+
 def _table_from_pickle_state(state: dict[str, Any]) -> Table:
     from . import connect
 
     kind = state["kind"]
     if kind == "remote":
         return state["table"]
+    if kind == "lance":
+        return _lance_table_from_pickle_state(state["state"])
     if kind == "memory":
+        if "state" in state:
+            return _lance_table_from_pickle_state(state["state"])
+        # Backward compatibility for pickles written before tables carried
+        # their own state.
         return connect("memory://").create_table(state["name"], state["data"])
     if kind == "local":
         db = connect(state["uri"], storage_options=state["storage_options"])
@@ -483,6 +686,9 @@ class Permutation:
         limit: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Table]] = None,
         _reader: Optional[PermutationReader] = None,
+        _plan_metadata: Optional[dict[bytes, bytes]] = None,
+        _plan_version: Optional[int] = None,
+        _plan_branch: Optional[str] = None,
     ):
         """
         Internal constructor.  Use
@@ -495,10 +701,16 @@ class Permutation:
         self.split = split
         self.selection = selection
         self.transform_fn = transform_fn
+        # Whether the default transform was replaced, by with_format, by
+        # with_transform, or by a caller passing its own transform here
+        self._explicit_transform = transform_fn is not Transforms.arrow2python
         self.batch_size = batch_size
         self.offset = offset
         self.limit = limit
         self.connection_factory = connection_factory
+        self._plan_metadata = _plan_metadata
+        self._plan_version = _plan_version
+        self._plan_branch = _plan_branch
         if _reader is None:
             _reader = LOOP.run(self._build_reader())
         self.reader: PermutationReader = _reader
@@ -638,6 +850,17 @@ class Permutation:
         then the first split will be used.
         """
         assert base_table is not None, "base_table is required"
+        persisted_plan = permutation_table is not None and _is_persisted_plan(
+            permutation_table
+        )
+        if persisted_plan:
+            # Pin before reading metadata or constructing the reader. The caller's
+            # handle may keep tracking latest, but the live reader and pickle must
+            # share one immutable plan snapshot.
+            permutation_table = permutation_table._pin_current_snapshot()
+        plan_metadata = None if permutation_table is not None else {}
+        if permutation_table is not None and (isinstance(split, str) or persisted_plan):
+            plan_metadata = dict(permutation_table.schema.metadata or {})
         if split is not None:
             if permutation_table is None:
                 raise ValueError(
@@ -645,12 +868,7 @@ class Permutation:
                     " because no permutation table is provided"
                 )
             if isinstance(split, str):
-                if permutation_table.schema.metadata is None:
-                    raise ValueError(
-                        f"Cannot create a permutation on split `{split}`"
-                        " because no split names are defined in the permutation table"
-                    )
-                raw = permutation_table.schema.metadata.get(b"split_names")
+                raw = (plan_metadata or {}).get(b"split_names")
                 split_names = raw.decode("utf-8") if raw is not None else None
                 if split_names is None:
                     raise ValueError(
@@ -673,6 +891,14 @@ class Permutation:
         else:
             split = 0
 
+        plan_version = None
+        plan_branch = None
+        if persisted_plan:
+            # Pin the pickled plan to the snapshot this object was created from,
+            # not what the destination name points at after an overwrite.
+            plan_version = permutation_table.version
+            plan_branch = permutation_table.current_branch()
+
         async def do_from_tables():
             reader = await PermutationReader.from_tables(
                 base_table, permutation_table, split
@@ -687,6 +913,9 @@ class Permutation:
                 DEFAULT_BATCH_SIZE,
                 Transforms.arrow2python,
                 _reader=reader,
+                _plan_metadata=plan_metadata,
+                _plan_version=plan_version,
+                _plan_branch=plan_branch,
             )
 
         return LOOP.run(do_from_tables())
@@ -696,37 +925,59 @@ class Permutation:
 
         The base table is captured either via a user-supplied
         ``connection_factory`` (see [with_connection_factory]) or, as a
-        fallback, by the table's own picklable reopen state. The permutation
-        table is captured as a pyarrow Table (which pickles via Arrow IPC
-        natively). The reader is dropped from the wire format and rebuilt
-        lazily on first use.
+        fallback, by the table's own picklable reopen state. A permutation
+        table in memory is captured as a pyarrow Table (which pickles via Arrow
+        IPC natively). A persisted plan is reopened by reference and pinned to
+        the plan snapshot this object was built from. The reader is dropped
+        from the wire format and rebuilt lazily on first use.
         """
+        base_table_state = (
+            None
+            if self.connection_factory is not None
+            else _table_to_pickle_state(self.base_table)
+        )
+        base_is_memory = (
+            base_table_state is not None and base_table_state["kind"] == "memory"
+        )
+
         permutation_data: Optional[pa.Table] = None
-        if self.permutation_table is not None:
+        permutation_table_state: Optional[dict[str, Any]] = None
+        if (
+            self.permutation_table is not None
+            and _is_persisted_plan(self.permutation_table)
+            and not base_is_memory
+        ):
+            plan_state = _table_to_pickle_state(self.permutation_table)
+            # Keep the plan's own branch/version coordinate. A later overwrite
+            # of the destination must not change what this pickle reads.
+            table_state = plan_state["state"]
+            if self._plan_version is not None:
+                table_state["checkout_version"] = self._plan_version
+                # None is the main branch. Restore it explicitly because the
+                # live handle may have moved to another branch since capture.
+                table_state["branch"] = self._plan_branch
+            permutation_table_state = plan_state
+        elif self.permutation_table is not None:
             permutation_data = self.permutation_table.to_arrow()
 
         common = {
             "base_table_name": self.base_table.name,
-            "permutation_data": permutation_data,
             "split": self.split,
             "selection": self.selection,
             "batch_size": self.batch_size,
             "transform_fn": self.transform_fn,
+            "explicit_transform": self._explicit_transform,
             "offset": self.offset,
             "limit": self.limit,
             "connection_factory": self.connection_factory,
         }
-
-        if self.connection_factory is not None:
-            # The factory carries enough state to recover the base table on
-            # its own; we don't need to capture the URI / storage options /
-            # namespace from the existing connection.
-            return common
-
-        return {
-            **common,
-            "base_table_state": _table_to_pickle_state(self.base_table),
-        }
+        if permutation_table_state is not None:
+            common["permutation_table_state"] = permutation_table_state
+        else:
+            common["permutation_data"] = permutation_data
+        if base_table_state is not None:
+            common["base_table_state"] = base_table_state
+        return common
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         from . import connect
@@ -758,26 +1009,98 @@ class Permutation:
             )
 
         permutation_table: Optional[Table] = None
-        permutation_data = state["permutation_data"]
-        if permutation_data is not None:
-            if rebuilt_base:
-                # The base table was materialized from Arrow, so it is a fresh
-                # single-version dataset and the recorded pin cannot resolve on it.
-                permutation_data = _drop_base_version(permutation_data)
-            mem_db = connect("memory://")
-            permutation_table = mem_db.create_table("permutation", permutation_data)
+        plan_metadata: dict[bytes, bytes] = {}
+        plan_version = None
+        plan_branch = None
+        if "permutation_table_state" in state:
+            plan_state = state["permutation_table_state"]
+            permutation_table = _table_from_pickle_state(plan_state)
+            nested_state = plan_state.get("state", {})
+            plan_version = nested_state.get("checkout_version")
+            plan_branch = nested_state.get("branch")
+            plan_metadata = dict(permutation_table.schema.metadata or {})
+        else:
+            permutation_data = state.get("permutation_data")
+            if permutation_data is not None:
+                if rebuilt_base:
+                    # The base table was materialized from Arrow, so it is a fresh
+                    # single-version dataset and the recorded pin cannot resolve on it.
+                    permutation_data = _drop_base_version(permutation_data)
+                mem_db = connect("memory://")
+                permutation_table = mem_db.create_table("permutation", permutation_data)
+                plan_metadata = dict(permutation_table.schema.metadata or {})
 
         self.base_table = base_table
         self.permutation_table = permutation_table
+        self._plan_metadata = plan_metadata
+        self._plan_version = plan_version
+        self._plan_branch = plan_branch
         self.split = state["split"]
         self.selection = state["selection"]
         self.batch_size = state["batch_size"]
         self.transform_fn = state["transform_fn"]
+        # Pickles written before this flag existed still carry their transform.
+        # Anything but the default must have been set explicitly.
+        self._explicit_transform = state.get(
+            "explicit_transform", self.transform_fn is not Transforms.arrow2python
+        )
         self.offset = state["offset"]
         self.limit = state["limit"]
         self.connection_factory = connection_factory
         self.reader = None
         self._pid = None
+
+    def __copy__(self) -> "Permutation":
+        """Return a shallow copy without going through the pickle path.
+
+        The ``with_*`` builders use ``copy.copy`` to derive a new permutation.
+        The default copy protocol would use ``__getstate__``/``__setstate__``,
+        which materializes the permutation table with ``to_arrow()`` (not
+        supported for remote tables) and rebuilds the base table and reader.
+        A shallow copy instead keeps the existing table handles and reader;
+        the caller replaces only the attribute it is changing.
+        """
+        new = self.__class__.__new__(self.__class__)
+        new.__dict__ = self.__dict__.copy()
+        return new
+
+    def _loaded_plan_metadata(self) -> dict[bytes, bytes]:
+        if self._plan_metadata is None:
+            self._plan_metadata = (
+                dict(self.permutation_table.schema.metadata or {})
+                if self.permutation_table is not None
+                else {}
+            )
+        return self._plan_metadata
+
+    @property
+    def base_version(self) -> Optional[int]:
+        """The base table version recorded in the plan, or ``None`` for legacy plans.
+
+        This value comes from the plan's schema metadata, so reading it does not
+        query the base table. Version numbers are per-branch; see
+        [base_branch][lancedb.permutation.Permutation.base_branch].
+        """
+        raw = self._loaded_plan_metadata().get(b"base_version")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as error:
+            raise ValueError(
+                f"Permutation table has an unreadable base_version of {raw!r}"
+            ) from error
+
+    @property
+    def base_branch(self) -> Optional[str]:
+        """The base table branch recorded in the plan, or ``None`` for main.
+
+        Legacy plans recorded no branch and therefore also return ``None``.
+        """
+        raw = self._loaded_plan_metadata().get(b"base_branch")
+        if raw is None:
+            return None
+        return raw.decode("utf-8")
 
     def _ensure_open(self) -> None:
         pid = os.getpid()
@@ -1008,6 +1331,7 @@ class Permutation:
             "pandas",
             "arrow",
             "torch",
+            "torch_dict",
             "torch_row",
             "torch_col",
             "polars",
@@ -1019,34 +1343,68 @@ class Permutation:
         If this method is not called, the "python" format will be used.
 
         The format can be one of:
-        - "numpy" - the batch will be a dict of numpy arrays (one per column)
+        - "numpy" - a single NumPy ndarray built with
+          ``batch.to_pandas().to_numpy()``. This conversion may copy data and
+          may promote mixed numeric columns to a common numeric dtype, for
+          example int64 and float32 to float64. Nested or incompatible columns
+          produce an object array.
         - "python" - the batch will be a list of dicts (one per row)
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a list of per-row dicts mapping column
-          name to a 0-D torch tensor. Works with the default
-          ``torch.utils.data.DataLoader`` collate, which stacks the per-row
-          dicts back into a dict of batched tensors.
-        - "torch_row" - the batch will be a list of tensors, one per row
-        - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
+        - "torch" - a list of per-row dicts mapping column names to tensors with
+          shape ``(*S)``. The default DataLoader collate stacks these into a
+          dict of ``(B, *S)`` tensors.
+        - "torch_dict" - a dict mapping each column name to one tensor with
+          shape ``(B, *S)``. Columns may have different sample shapes ``S``.
+          Use an identity collate to consume the batch directly. Tensors share
+          Arrow storage where the layout allows.
+        - "torch_row" - a list of per-row tensors with shape ``(C, *S)``. All
+          columns must have the same sample shape ``S``. A single scalar column
+          produces ``(1,)`` tensors. Numeric dtypes are combined with
+          ``torch.promote_types``.
+        - "torch_col" - one tensor with shape ``(C, B, *S)``. All columns must
+          have the same sample shape ``S``. For one column this is an
+          ``unsqueeze(0)`` view of the column tensor.
         - "polars" - the batch will be a polars DataFrame
 
-        Conversion may or may not involve a data copy.  Lance uses Arrow internally
-        and so it is able to zero-copy to the arrow and polars formats.
+        For torch formats, ``S`` is the shape of one sample. Scalar columns have
+        ``S = ()``. A fixed-size-list column of width ``D`` contributes a
+        dimension ``D``, and nested fixed-size lists contribute one dimension
+        per level. Fixed-shape tensors use their logical shape, including any
+        axis permutation. "torch_dict", "torch", and "torch_col" reject nulls;
+        use the "python" or "arrow" format for nullable columns. "torch_row"
+        preserves the previous NaN behavior for nullable scalar integer and
+        floating columns, but rejects nulls in nested fixed-size-list and tensor
+        columns.
 
-        Conversion to torch and torch_col will be zero-copy but will only support a
-        subset of data types (numeric types).
+        ``lance.bfloat16`` values become ``torch.bfloat16`` tensors when the
+        leaf field is ``fixed_size_binary[2]`` and carries the
+        ``ARROW:extension:name`` metadata value ``lance.bfloat16``. Unmarked
+        binary columns are rejected.
 
-        Conversion to numpy and/or pandas will typically be zero-copy for numeric
-        types.  Conversion of strings, lists, and structs will require creating python
-        objects and this is not zero-copy.
+        Conversion may or may not involve a data copy. Lance uses Arrow
+        internally and can zero-copy to the arrow and polars formats.
+        "torch_dict", "torch", and a single-column "torch_col" produce
+        numeric and fixed-size-list tensors without copying where the Arrow
+        layout allows. Multi-column "torch_col" and "torch_row" stack columns
+        and therefore copy. Conversion to numpy and/or pandas can copy even
+        homogeneous numeric columns. Conversion of strings, lists, and structs
+        will require creating Python objects and this is not zero-copy.
 
         For custom formatting, use
         [with_transform][lancedb.permutation.Permutation.with_transform] which
         overrides this method.
+
+        A format cannot be combined with
+        [map][lancedb.permutation.Permutation.map], which always yields a list
+        of dicts.  Doing so raises a ValueError.
         """
         assert format is not None, "format is required"
+        # Checked before with_transform does, so that a format with an optional
+        # dependency cannot fail on its import first
+        if isinstance(self.transform_fn, _MapTransform):
+            raise ValueError(_MAP_FORMAT_ERROR)
         if format == "python":
             return self.with_transform(Transforms.arrow2python)
         if format == "python_col":
@@ -1059,6 +1417,8 @@ class Permutation:
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
             return self.with_transform(batch_to_tensor_dict)
+        elif format == "torch_dict":
+            return self.with_transform(batch_to_tensor_columns)
         elif format == "torch_row":
             return self.with_transform(batch_to_tensor_rows)
         elif format == "torch_col":
@@ -1077,10 +1437,109 @@ class Permutation:
 
         Note: transforms are not invoked in parallel.  This method is not a good place
         for expensive operations such as image decoding.
+
+        For a higher-level API that works with Python dicts, see
+        [map][lancedb.permutation.Permutation.map].  A transform cannot be combined
+        with ``map``.  Doing so raises a ValueError.
         """
         assert transform is not None, "transform is required"
+        if isinstance(self.transform_fn, _MapTransform):
+            raise ValueError(_MAP_FORMAT_ERROR)
         new = copy.copy(self)
         new.transform_fn = transform
+        new._explicit_transform = True
+        return new
+
+    def map(
+        self,
+        fn: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        batched: bool = False,
+    ) -> "Permutation":
+        """
+        Apply a function to the rows of the permutation
+
+        This is a dict-based alternative to
+        [with_transform][lancedb.permutation.Permutation.with_transform], loosely
+        modeled after the huggingface ``Dataset.map``.  It is lazy: ``fn`` is not
+        called until data is read.
+
+        Calls to ``map`` can be chained.  The callbacks run in order and the dict
+        returned by a callback replaces the row entirely, so the next callback only
+        sees what the previous one returned.  Unlike the huggingface method, the
+        returned dict is not merged into the row: return every column to keep.
+
+        A mapped permutation always yields a list of dicts (one per row) for each
+        batch, which is the same shape as the default "python" format.  ``batched``
+        only controls what ``fn`` receives.  Rows keep their position, so a callback
+        cannot add, drop, or reorder rows.
+
+        Since ``map`` decides the output format it cannot be combined with
+        [with_format][lancedb.permutation.Permutation.with_format] or
+        [with_transform][lancedb.permutation.Permutation.with_transform].  Calling
+        one after the other, in either order, raises a ValueError.  Convert the
+        mapped rows to tensors in the DataLoader ``collate_fn`` instead.
+
+        [select_columns][lancedb.permutation.Permutation.select_columns],
+        [remove_columns][lancedb.permutation.Permutation.remove_columns],
+        [rename_column][lancedb.permutation.Permutation.rename_column] and
+        [schema][lancedb.permutation.Permutation.schema] describe the columns read
+        from the base table, which are the input of the first callback.  They do
+        not describe the output of ``map``, whether they are used before or after it.
+
+        Parameters
+        ----------
+        fn: Callable
+            The function to apply.  It receives and returns a single row as a dict
+            mapping column names to values.  If ``batched`` is True it instead
+            receives and returns a whole batch as a dict mapping column names to
+            lists of values, and every returned column must have one value per
+            input row.
+
+            DataLoader workers started with ``spawn`` or ``forkserver`` receive a
+            pickled copy of the permutation, so ``fn`` must then be picklable.
+            Use a top-level function; lambdas and local functions do not pickle.
+        batched: bool, default False
+            Whether ``fn`` is called once per batch instead of once per row.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory:///")
+        >>> tbl = db.create_table("tbl", data=[{"x": x} for x in range(3)])
+        >>> def add_y(row):
+        ...     return {**row, "y": row["x"] * 2}
+        >>> def add_z(batch):
+        ...     return {**batch, "z": [x + y for x, y in zip(batch["x"], batch["y"])]}
+        >>> permutation = Permutation.identity(tbl).map(add_y).map(add_z, batched=True)
+        >>> permutation.take_offsets([0, 1])
+        [{'x': 0, 'y': 0, 'z': 0}, {'x': 1, 'y': 2, 'z': 3}]
+
+        With a PyTorch DataLoader, a ``collate_fn`` turns the mapped rows of each
+        batch into tensors::
+
+            import torch
+
+            def collate(rows):
+                return {
+                    "x": torch.tensor([row["x"] for row in rows]),
+                    "z": torch.tensor([row["z"] for row in rows]),
+                }
+
+            dataloader = torch.utils.data.DataLoader(
+                permutation, batch_size=32, shuffle=True, collate_fn=collate
+            )
+        """
+        if not callable(fn):
+            raise TypeError("fn must be callable")
+        if self._explicit_transform:
+            raise ValueError(_MAP_FORMAT_ERROR)
+
+        steps = ((fn, batched),)
+        if isinstance(self.transform_fn, _MapTransform):
+            steps = self.transform_fn.steps + steps
+        new = copy.copy(self)
+        new.transform_fn = _MapTransform(steps)
         return new
 
     def take_offsets(self, offsets: list[int]) -> Any:
@@ -1088,8 +1547,8 @@ class Permutation:
         Take rows from the permutation by offset
 
         The returned value is passed through the permutation's current transform,
-        so `with_format` and `with_transform` affect this method in the same way
-        they affect iteration.
+        so `with_format`, `with_transform`, and `map` affect this method in the
+        same way they affect iteration.
         """
         self._ensure_open()
 

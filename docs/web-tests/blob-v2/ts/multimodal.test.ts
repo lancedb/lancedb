@@ -78,16 +78,14 @@ test("blob column tutorial", async () => {
     assert.equal(payloads.length, 2);
 
     // --8<-- [start:blob_api_ranges]
-    const [secondImage] = await blobTable.fetchBlobFiles("image", [rowIds[1]!]);
-    const parts = await secondImage!.readRanges([
-      { start: 0n, end: 6n },
-      { start: 7n, end: 12n },
+    const slices = await blobTable.fetchBlobRanges("image", [
+      { rowId: rowIds[0]!, offset: 0n, length: 6n },
+      { rowId: rowIds[1]!, offset: 7n, length: 5n },
     ]);
-    await secondImage!.close();
     // --8<-- [end:blob_api_ranges]
     assert.deepEqual(
-      parts.map((part) => part.toString("utf8")),
-      ["second", "image"],
+      slices.map((slice) => slice!.toString("utf8")),
+      ["inline", "image"],
     );
 
     // --8<-- [start:blob_api_bytes_mode]

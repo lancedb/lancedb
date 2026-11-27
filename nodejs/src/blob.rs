@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use arrow_array::{Array, LargeBinaryArray};
 use futures::future::abortable;
-use lancedb::blob::BlobFile as LanceBlobFile;
+use lancedb::blob::{
+    BlobDescriptor as LanceBlobDescriptor, BlobDescriptorSource as LanceBlobDescriptorSource,
+    BlobFile as LanceBlobFile,
+};
 use napi::Env;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -16,9 +19,78 @@ use napi_derive::napi;
 use crate::error::convert_error;
 
 #[napi(object)]
+pub struct BlobDescriptorInputSource {
+    pub uri: String,
+    pub version: BigInt,
+    pub committed_at_micros: BigInt,
+    pub branch: Option<String>,
+    pub column: String,
+    pub row_reference: BigInt,
+    pub row_is_address: bool,
+}
+
+#[napi(object)]
+pub struct BlobDescriptorInput {
+    pub kind: u32,
+    pub position: BigInt,
+    pub size: BigInt,
+    pub blob_id: u32,
+    pub blob_uri: String,
+    pub source: BlobDescriptorInputSource,
+}
+
+impl BlobDescriptorInput {
+    pub(crate) fn into_descriptor(self) -> napi::Result<LanceBlobDescriptor> {
+        Ok(LanceBlobDescriptor {
+            kind: u8::try_from(self.kind).map_err(|_| {
+                napi::Error::from_reason("blob descriptor kind must be between 0 and 255")
+            })?,
+            position: parse_u64(self.position, "blob descriptor position")?,
+            size: parse_u64(self.size, "blob descriptor size")?,
+            blob_id: self.blob_id,
+            blob_uri: self.blob_uri,
+            source: LanceBlobDescriptorSource {
+                uri: self.source.uri,
+                version: parse_u64(self.source.version, "blob descriptor source version")?,
+                committed_at_micros: parse_u64(
+                    self.source.committed_at_micros,
+                    "blob descriptor source committed_at_micros",
+                )?,
+                branch: self.source.branch,
+                column: self.source.column,
+                row_reference: parse_u64(
+                    self.source.row_reference,
+                    "blob descriptor source row_reference",
+                )?,
+                row_is_address: self.source.row_is_address,
+            },
+        })
+    }
+}
+
+#[napi(object)]
 pub struct BlobRange {
     pub start: BigInt,
     pub end: BigInt,
+}
+
+#[napi(object)]
+pub struct BlobRangeRequest {
+    pub row_id: BigInt,
+    pub offset: BigInt,
+    pub length: BigInt,
+}
+
+impl BlobRangeRequest {
+    pub(crate) fn parse(self) -> napi::Result<lancedb::blob::BlobRangeRequest> {
+        let row_id = parse_u64(self.row_id, "row id")?;
+        let offset = parse_u64(self.offset, "offset")?;
+        let length = parse_u64(self.length, "length")?;
+        offset
+            .checked_add(length)
+            .ok_or_else(|| napi::Error::from_reason("blob range offset + length overflows u64"))?;
+        Ok(lancedb::blob::BlobRangeRequest::new(row_id, offset, length))
+    }
 }
 
 #[napi]
@@ -205,14 +277,25 @@ pub fn parse_row_ids(row_ids: Vec<BigInt>) -> napi::Result<Vec<u64>> {
         .collect()
 }
 
-pub fn copy_blob_buffers(array: LargeBinaryArray) -> Vec<Option<Buffer>> {
-    (0..array.len())
-        .map(|i| {
-            if array.is_null(i) {
-                None
-            } else {
-                Some(Buffer::from(array.value(i).to_vec()))
-            }
-        })
-        .collect()
+pub fn copy_blob_buffers(array: LargeBinaryArray) -> napi::Result<Vec<Option<Buffer>>> {
+    let allocation_error =
+        |error| napi::Error::from_reason(format!("cannot allocate blob result: {error}"));
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(array.len())
+        .map_err(allocation_error)?;
+    for value in array.iter() {
+        let buffer = value
+            .map(|value| {
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(value.len())
+                    .map_err(allocation_error)?;
+                bytes.extend_from_slice(value);
+                Ok::<_, napi::Error>(Buffer::from(bytes))
+            })
+            .transpose()?;
+        result.push(buffer);
+    }
+    Ok(result)
 }

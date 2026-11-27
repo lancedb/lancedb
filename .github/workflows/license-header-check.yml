@@ -21,11 +21,10 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v6
+      # `go install` at a fixed version is verified against the Go checksum database.
       - name: Install license-header-checker
-        working-directory: /tmp
         run: |
-            curl -s https://raw.githubusercontent.com/lluissm/license-header-checker/master/install.sh | bash
-            mv /tmp/bin/license-header-checker /usr/local/bin/
+            GOBIN=/usr/local/bin go install github.com/lluissm/license-header-checker/cmd/license-header-checker@v1.5.0
       - name: Check license headers (rust)
         run: license-header-checker -a -v ./rust/license_header.txt ./ rs && [[ -z `git status -s` ]]
       - name: Check license headers (python)
