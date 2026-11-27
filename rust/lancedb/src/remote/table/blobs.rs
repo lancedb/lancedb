@@ -6606,6 +6606,7 @@ mod tests {
         http::Response::builder()
             .status(200)
             .header(VERSION_HEADER, version.to_string())
+            .header(QUERY_SNAPSHOT_HEADER, SNAPSHOT_A)
             .body(body)
             .unwrap()
     }
