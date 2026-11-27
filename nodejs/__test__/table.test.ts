@@ -2802,6 +2802,17 @@ describe("when dealing with versioning", () => {
       "checkout before running restore",
     );
   });
+
+  it("rejects a fractional checkout version", async () => {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    // A fractional version would be silently truncated at the N-API boundary.
+    await expect(table.checkout(1.5)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+  });
 });
 
 function legacyBlob(name: string): Field {
@@ -4117,6 +4128,103 @@ describe("when dealing with tags", () => {
     await table.checkout("live");
     await tags.create("tag-checkout");
     expect(await tags.getVersion("tag-checkout")).toBe(2);
+  });
+
+  it("rejects non-integer tag versions", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    const tagsManager = await table.tags();
+    // Fractional versions would be silently truncated at the N-API boundary
+    // and negative ones would wrap; they must be rejected instead.
+    await expect(tagsManager.create("bad", 1.5)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(tagsManager.create("bad", -1)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(tagsManager.update("bad", 2.9)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+  });
+
+  it("keeps create without a version tagging the visible version", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+    const table = await conn.createTable("my_table", [{ id: 1 }]);
+    const tagsManager = await table.tags();
+
+    await tagsManager.create("omitted");
+    expect(await tagsManager.getVersion("omitted")).toBe(1);
+    await tagsManager.create("nullable", null);
+    expect(await tagsManager.getVersion("nullable")).toBe(1);
+  });
+});
+
+describe("query option validation", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("rejects non-integer query options", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    // Integer-contract options would be silently truncated at the N-API
+    // boundary; they must be rejected instead.
+    expect(() => table.query().limit(2.5)).toThrow(
+      "limit must be an integer between 0 and 4294967295",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).nprobes(1.5)).toThrow(
+      "nprobes must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).minimumNprobes(0.5)).toThrow(
+      "minimumNprobes must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).maximumNprobes(2.5)).toThrow(
+      "maximumNprobes must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).ef(3.5)).toThrow(
+      "ef must be a non-negative integer",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).refineFactor(1.5)).toThrow(
+      "refineFactor must be a non-negative integer",
+    );
+    // searchEffort is legitimately fractional and must keep working.
+    expect(() =>
+      table.vectorSearch([0.1, 0.2]).searchEffort(0.75),
+    ).not.toThrow();
+  });
+
+  it("checks limit against the native u32 range and preserves limit(0)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+      { id: 2n, vector: [0.3, 0.4] },
+    ]);
+    // The upper u32 boundary is accepted for plain and vector queries...
+    expect(() => table.query().limit(4294967295)).not.toThrow();
+    expect(() =>
+      table.vectorSearch([0.1, 0.2]).limit(4294967295),
+    ).not.toThrow();
+    // ...and one past it is rejected before native conversion.
+    expect(() => table.query().limit(4294967296)).toThrow(
+      "limit must be an integer between 0 and 4294967295",
+    );
+    expect(() => table.vectorSearch([0.1, 0.2]).limit(4294967296)).toThrow(
+      "limit must be an integer between 0 and 4294967295",
+    );
+    // limit(0) still returns no rows from a plain query.
+    expect(await table.query().limit(0).toArray()).toHaveLength(0);
   });
 });
 
@@ -6099,6 +6207,33 @@ describe("enableRTE / disableRTE", () => {
         numBuckets: 4,
       }),
     ).rejects.toThrow();
+  });
+
+  it("validates numBuckets only for the bucket write spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+    await table.setUnenforcedPrimaryKey("id");
+
+    // A fractional count would be silently truncated at the N-API boundary;
+    // the native range is 1-1024.
+    await expect(
+      table.enableRTE({ specType: "bucket", column: "id", numBuckets: 2.5 }),
+    ).rejects.toThrow("numBuckets must be an integer between 1 and 1024");
+    await expect(
+      table.enableRTE({ specType: "bucket", column: "id", numBuckets: 1025 }),
+    ).rejects.toThrow("numBuckets must be an integer between 1 and 1024");
+    await expect(
+      table.enableRTE({ specType: "bucket", column: "id", numBuckets: 0 }),
+    ).rejects.toThrow("numBuckets must be an integer between 1 and 1024");
+
+    // Identity and unsharded specs ignore numBuckets entirely.
+    await table.enableRTE({
+      specType: "identity",
+      column: "id",
+      numBuckets: 2.5,
+    });
+    await table.disableRTE();
+    await table.enableRTE({ specType: "unsharded", numBuckets: 2.5 });
   });
 
   it("reads back the installed spec via getRTESpec", async () => {

@@ -87,6 +87,46 @@ import {
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
+
+// `Tags` is a native napi-rs class returned directly from `Table.tags()`.
+// Its integer version parameters would be silently truncated or wrapped at
+// the N-API boundary, so validate them before crossing.
+const nativeTagsCreate = Tags.prototype.create;
+Tags.prototype.create = async function (
+  this: Tags,
+  tag: string,
+  version?: number | null,
+): Promise<void> {
+  // An omitted or null version tags the version this handle currently
+  // shows; only a provided version needs validation.
+  if (version !== undefined && version !== null) {
+    validateNonNegativeInteger(version, "version");
+  }
+  return nativeTagsCreate.call(this, tag, version);
+};
+
+const nativeTagsUpdate = Tags.prototype.update;
+Tags.prototype.update = async function (
+  this: Tags,
+  tag: string,
+  version: number,
+): Promise<void> {
+  validateNonNegativeInteger(version, "version");
+  return nativeTagsUpdate.call(this, tag, version);
+};
+
+/**
+ * Validates `numBuckets` for a bucket RTE write spec before it crosses
+ * N-API: the native side requires an integer in [1, 1024].
+ */
+function validateNumBuckets(numBuckets: number | undefined): void {
+  if (
+    numBuckets !== undefined &&
+    !(Number.isSafeInteger(numBuckets) && numBuckets >= 1 && numBuckets <= 1024)
+  ) {
+    throw new Error("numBuckets must be an integer between 1 and 1024");
+  }
+}
 import {
   AutoQuery,
   FullTextQuery,
@@ -2285,6 +2325,11 @@ export class LocalTable extends Table {
   }
 
   async enableRTE(spec: RTEWriteSpec): Promise<void> {
+    // Only the bucket write spec uses numBuckets; identity and unsharded
+    // specs ignore it.
+    if (spec.specType === "bucket") {
+      validateNumBuckets(spec.numBuckets);
+    }
     return await this.inner.enableRTE(spec);
   }
 
@@ -2345,6 +2390,7 @@ export class LocalTable extends Table {
     if (typeof version === "string") {
       return this.inner.checkoutTag(version);
     }
+    validateNonNegativeInteger(version, "version");
     return this.inner.checkout(version);
   }
 
