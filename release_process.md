@@ -188,8 +188,29 @@ pipx install "$wheel"
 lancedb profile list
 ```
 
-This workflow produces review artifacts. Publishing the first stable wheels
-to PyPI is a separate release step.
+To publish a stable CLI release, wait until its three CLI archives and
+`SHA256SUMS` are on GitHub Releases. Dispatch the workflow from `main` with
+the exact release tag and request publication:
+
+```sh
+gh workflow run cli-wheels.yml --repo lancedb/lancedb --ref main -f tag=v0.42.0 -f publish=true
+```
+
+After all three native install jobs pass, a release maintainer checks the tag
+and install results and approves the `pypi-cli` deployment in the workflow run.
+The upload job publishes the tested wheels and verifies their SHA-256 digests
+against PyPI. If an upload stops partway, rerun the failed job in the same run
+to finish uploading the original wheels. To verify the public install:
+
+```sh
+uvx --from lancedb-tools==0.42.0 lancedb --version
+```
+
+Before the first upload, a repository admin creates the `pypi-cli` Actions
+environment with a required reviewer and permits deployments only from the
+`main` branch. A PyPI maintainer registers a pending GitHub Trusted Publisher
+for the `lancedb-tools` project with owner `lancedb`, repository `lancedb`,
+workflow `cli-wheels.yml`, and environment `pypi-cli`.
 
 ### Homebrew tap updates
 
