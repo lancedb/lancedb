@@ -1126,8 +1126,12 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
                 source: None,
             })?;
         output.resize(len, 0);
-        let parts = output.chunks_mut(DIRECT_RANGE_PART_SIZE).enumerate().map(
-            |(index, destination)| async move {
+        // Materialize the futures so their output slices retain one concrete
+        // lifetime across the async trait call. Only the buffered set is polled.
+        let parts: Vec<_> = output
+            .chunks_mut(DIRECT_RANGE_PART_SIZE)
+            .enumerate()
+            .map(|(index, destination)| async move {
                 let start = range.start + index as u64 * DIRECT_RANGE_PART_SIZE as u64;
                 let part = start..start + destination.len() as u64;
                 let response = self
@@ -1137,8 +1141,8 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
                     .read_body_into(destination)
                     .await
                     .map_err(PresignedReadError::from)
-            },
-        );
+            })
+            .collect();
         // The shared semaphore also caps total requests across handles, and
         // each part holds its permit until the body has been consumed.
         futures::stream::iter(parts)
