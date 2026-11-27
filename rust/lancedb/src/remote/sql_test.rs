@@ -3900,27 +3900,16 @@ async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
 }
 #[tokio::test]
 async fn secret_description_uses_the_sql_metadata_projection() {
-    let result = RecordBatch::try_from_iter(vec![
-        (
-            "name",
-            Arc::new(StringArray::from(vec!["api-key"])) as ArrayRef,
-        ),
-        (
-            "created_at_millis",
-            Arc::new(arrow_array::Int64Array::from(vec![1])) as ArrayRef,
-        ),
-        (
-            "updated_at_millis",
-            Arc::new(arrow_array::Int64Array::from(vec![2])) as ArrayRef,
-        ),
-    ])
-    .unwrap();
+    let result = description_batch(
+        serde_json::json!({"name":"api-key", "created_at_millis":1, "updated_at_millis":2, "history":[]}),
+    );
     let service = TestSqlService {
         adaptive: true,
         defer: true,
         result,
         ..Default::default()
     };
+    let statements = service.statements.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
     let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
         panic!("unexpected REST request");
@@ -3929,6 +3918,10 @@ async fn secret_description_uses_the_sql_metadata_projection() {
     let info = db.describe_secret("api-key", &[]).await.unwrap();
     assert_eq!(info.name, "api-key");
     assert_eq!(info.updated_at_millis, 2);
+    assert_eq!(
+        *statements.lock().unwrap(),
+        ["DESCRIBE SECRET \"api-key\" FORMAT JSON"]
+    );
     shutdown.send(()).unwrap();
 }
 
