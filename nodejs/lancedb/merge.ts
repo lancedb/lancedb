@@ -80,6 +80,12 @@ export class MergeInsertBuilder {
    * patches the supplied columns, rewriting those columns for every row in each
    * fragment containing a match.
    *
+   * An indexed partial update preserves index coverage on the join keys, but indexes
+   * on the rewritten non-key columns, including vector indexes, lose coverage in the
+   * patched fragments. Newly written rows, including inserted rows and full-row
+   * replacements, are not covered by existing indexes until the indexes are
+   * optimized.
+   *
    * When `false`, the operation performs a full-scan join and rewrites matched rows
    * by deleting and appending them. This can also happen with `true`, for example
    * when a join key lacks a usable index or a partial-column update includes a
