@@ -77,6 +77,8 @@ fn validate_wand_factor(wand_factor: Option<f32>) -> PyResult<Option<f32>> {
     }
 
     Ok(wand_factor)
+}
+
 fn execute_to_reader_sync<Q>(
     py: Python<'_>,
     query: Q,
