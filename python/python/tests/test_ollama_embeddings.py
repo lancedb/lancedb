@@ -22,15 +22,14 @@ def ollama_embeddings():
         requests.append(body)
         if body["model"] == "missing-model":
             return httpx.Response(404, json={"error": "model not found"})
-        return httpx.Response(
-            200,
-            json={
-                "embeddings": [
-                    [float(index), float(len(text))]
-                    for index, text in enumerate(body["input"])
-                ]
-            },
-        )
+        embeddings = [
+            [float(index), float(len(text))] for index, text in enumerate(body["input"])
+        ]
+        if body["model"] == "short-reply":
+            embeddings = embeddings[:-1]
+        elif body["model"] == "long-reply":
+            embeddings.append([0.0, 0.0])
+        return httpx.Response(200, json={"embeddings": embeddings})
 
     function = (
         get_registry()
@@ -83,6 +82,7 @@ def test_ollama_source_embeddings_inputs(ollama_embeddings, texts):
     [
         pytest.param(np.array([["hello"], ["world"]]), id="numpy-two-dimensional"),
         pytest.param([["hello"], ["world"]], id="list-two-dimensional"),
+        pytest.param([[]], id="list-empty-list"),
         pytest.param(np.array([b"\xff"]), id="numpy-invalid-utf8"),
         pytest.param([b"\xff"], id="list-invalid-utf8"),
     ],
@@ -102,8 +102,38 @@ def test_ollama_generate_embeddings_empty_array(ollama_embeddings):
     function, requests = ollama_embeddings
 
     assert function.generate_embeddings(np.array([], dtype=str)) == []
+    assert requests == []
+
+
+def test_ollama_source_embeddings_skip_null_and_empty_texts(ollama_embeddings):
+    function, requests = ollama_embeddings
+
+    assert function.compute_source_embeddings(
+        pa.array(["hello", None, "", "世界"])
+    ) == [[0.0, 5.0], None, None, [1.0, 2.0]]
+    assert [request["input"] for request in requests] == [["hello", "世界"]]
+
+    assert function.compute_source_embeddings([None, "", b""]) == [None, None, None]
     assert len(requests) == 1
-    assert requests[0]["input"] == []
+
+
+@pytest.mark.parametrize(
+    "model, returned",
+    [
+        pytest.param("short-reply", 1, id="short"),
+        pytest.param("long-reply", 3, id="long"),
+    ],
+)
+def test_ollama_source_embeddings_rejects_wrong_vector_count(
+    ollama_embeddings, model, returned
+):
+    function, requests = ollama_embeddings
+    function.name = model
+
+    with pytest.raises(ValueError, match=f"returned {returned} embeddings for 2 texts"):
+        function.compute_source_embeddings(["a", None, "b"])
+
+    assert [request["input"] for request in requests] == [["a", "b"]]
 
 
 def test_ollama_query_embeddings(ollama_embeddings):
