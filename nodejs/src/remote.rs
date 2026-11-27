@@ -8,7 +8,7 @@ use napi_derive::*;
 
 use crate::error::NapiErrorExt;
 
-/// Timeout configuration for remote HTTP client.
+/// Timeout configuration for the Enterprise HTTP client.
 #[napi(object)]
 #[derive(Debug)]
 pub struct TimeoutConfig {
@@ -30,10 +30,11 @@ pub struct TimeoutConfig {
     /// A large or slowly produced request body (for example, when creating a
     /// table) may need a longer timeout even if data is still being uploaded.
     pub read_timeout: Option<f64>,
-    /// The timeout for keeping idle connections in the connection pool in seconds.
-    /// Default is 300 seconds (5 minutes). This can also be set via the
-    /// environment variable `LANCE_CLIENT_CONNECTION_TIMEOUT`, as an integer
-    /// number of seconds.
+    /// How long idle connections stay in the pool, in seconds. The default is
+    /// 300 seconds for Enterprise requests and 30 seconds for presigned
+    /// object-store requests. A configured value applies to both pools. The
+    /// `LANCE_CLIENT_CONNECTION_TIMEOUT` environment variable accepts a value
+    /// in whole seconds.
     pub pool_idle_timeout: Option<f64>,
 }
 

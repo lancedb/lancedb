@@ -346,6 +346,8 @@ fn object_store_connection_lost(error: &reqwest::Error) -> bool {
                     | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::BrokenPipe
                     | io::ErrorKind::NotConnected
+                    // A TLS peer can close TCP without sending close_notify.
+                    | io::ErrorKind::UnexpectedEof
             )
         }) {
             return true;
@@ -907,8 +909,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     }
 
     /// Read a physical range with a separate client that carries no Enterprise
-    /// credentials. Retry transport failures while waiting for response headers.
-    /// The caller consumes the response body outside this retry loop.
+    /// credentials. Retry an eligible timeout or disconnect once before the
+    /// complete response headers arrive. The caller consumes the response body
+    /// outside this retry loop.
     pub(crate) async fn send_object_store(
         &self,
         url: &str,
@@ -1557,10 +1560,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn object_store_replays_a_range_after_a_pooled_connection_reset() {
+    async fn object_store_reads_after_an_idle_pooled_connection_resets() {
         use super::*;
-        use tokio::io::AsyncWriteExt;
-        use tokio::net::TcpListener;
+        use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot};
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1578,7 +1580,8 @@ mod tests {
                     ..Default::default()
                 },
                 retry_config: RetryConfig {
-                    connect_retries: Some(1),
+                    connect_retries: Some(0),
+                    read_retries: Some(0),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1586,40 +1589,192 @@ mod tests {
             None,
         )
         .unwrap();
+        let (drained, body_drained) = oneshot::channel();
+        let (reset, connection_reset) = oneshot::channel();
         let server = tokio::spawn(async move {
             const RESPONSE: &[u8] = b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-8/10\r\nContent-Length: 4\r\n\r\ndata";
             let (mut pooled, _) = listener.accept().await.unwrap();
             let first = read_object_store_request(&mut pooled).await;
             pooled.write_all(RESPONSE).await.unwrap();
-            // The next request must reach the very same socket after the first
-            // response was drained. Reset it before writing any response.
-            let interrupted = read_object_store_request(&mut pooled).await;
+            let reused = read_object_store_request(&mut pooled).await;
+            pooled.write_all(RESPONSE).await.unwrap();
+            // Reset a socket that was actually pooled and reused, once its
+            // second response has been drained and before the next request.
+            body_drained.await.unwrap();
             pooled.set_zero_linger().unwrap();
             drop(pooled);
+            reset.send(()).unwrap();
             let (mut fresh, _) = listener.accept().await.unwrap();
-            let replay = read_object_store_request(&mut fresh).await;
+            let after_reset = read_object_store_request(&mut fresh).await;
             fresh.write_all(RESPONSE).await.unwrap();
-            [first, interrupted, replay]
+            [first, reused, after_reset]
         });
         let url = format!("{base}/object?signature=fixture");
         let requests = tokio::time::timeout(Duration::from_secs(5), async {
-            for _ in 0..2 {
+            let read = || async {
                 let (_, response) = client
                     .send_object_store(&url, 5..9, None, 42)
                     .await
                     .unwrap();
                 assert_eq!(response.status(), reqwest::StatusCode::PARTIAL_CONTENT);
                 assert_eq!(response.bytes().await.unwrap().as_ref(), b"data");
-            }
+            };
+            read().await;
+            read().await;
+            drained.send(()).unwrap();
+            connection_reset.await.unwrap();
+            read().await;
             server.await.unwrap()
         })
         .await
-        .expect("the retry must use a fresh connection after a reset on the reused socket");
+        .expect("an idle connection reset must leave the pool usable");
         for request in requests {
             assert_eq!(request[0], "GET /object?signature=fixture HTTP/1.1\r\n");
             assert!(request.iter().any(|line| line == "range: bytes=5-8\r\n"));
             assert!(!request.iter().any(|line| line.starts_with("x-api-key:")));
         }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ObjectStoreDisconnectPoint {
+        BeforeHead,
+        DuringHead,
+        DuringBody,
+    }
+
+    #[rstest::rstest]
+    #[case::zero_byte_fin(ObjectStoreDisconnectPoint::BeforeHead, false)]
+    #[case::zero_byte_reset(ObjectStoreDisconnectPoint::BeforeHead, true)]
+    #[case::partial_head_fin(ObjectStoreDisconnectPoint::DuringHead, false)]
+    #[case::partial_head_reset(ObjectStoreDisconnectPoint::DuringHead, true)]
+    #[case::partial_body_fin(ObjectStoreDisconnectPoint::DuringBody, false)]
+    #[tokio::test]
+    async fn object_store_retries_disconnects_before_complete_response_headers(
+        #[case] disconnect_point: ObjectStoreDisconnectPoint,
+        #[case] reset: bool,
+        #[values(0, 1)] connect_retries: u8,
+    ) {
+        use sha2::{Digest, Sha256};
+        use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot};
+
+        const CONTENT_RANGE: &str = "bytes 5-8/10";
+        const PAYLOAD: &[u8] = b"data";
+        const PARTIAL_HEAD: &[u8] =
+            b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-8/10\r\n";
+        const RESPONSE_HEAD: &[u8] = b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-8/10\r\nContent-Length: 4\r\n\r\n";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = RestfulLanceDbClient::try_new(
+            &parse_db_url("db://test").unwrap(),
+            "us-east-2",
+            Some(base.clone()),
+            HeaderMap::new(),
+            ClientConfig {
+                retry_config: RetryConfig {
+                    connect_retries: Some(connect_retries),
+                    read_retries: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let (finished, finished_read) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
+            for _ in 0..2 {
+                read_object_store_request(&mut socket).await;
+                socket.write_all(RESPONSE_HEAD).await.unwrap();
+                socket.write_all(PAYLOAD).await.unwrap();
+            }
+            let original = read_object_store_request(&mut socket).await;
+            match disconnect_point {
+                ObjectStoreDisconnectPoint::BeforeHead => {}
+                ObjectStoreDisconnectPoint::DuringHead => {
+                    socket.write_all(PARTIAL_HEAD).await.unwrap();
+                }
+                ObjectStoreDisconnectPoint::DuringBody => {
+                    socket.write_all(RESPONSE_HEAD).await.unwrap();
+                    socket.write_all(&PAYLOAD[..2]).await.unwrap();
+                }
+            }
+            if reset {
+                socket.set_zero_linger().unwrap();
+            } else {
+                socket.shutdown().await.unwrap();
+            }
+            drop(socket);
+            let replay = tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    let request = read_object_store_request(&mut socket).await;
+                    socket.write_all(RESPONSE_HEAD).await.unwrap();
+                    socket.write_all(PAYLOAD).await.unwrap();
+                    Some(request)
+                }
+                _ = finished_read => None,
+            };
+            (listener, original, replay)
+        });
+        let url = format!("{base}/object?signature=fixture");
+        let expects_replay =
+            connect_retries > 0 && disconnect_point != ObjectStoreDisconnectPoint::DuringBody;
+        let (listener, original, replay) = tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..2 {
+                let (_, response) = client
+                    .send_object_store(&url, 5..9, None, 42)
+                    .await
+                    .unwrap();
+                assert_eq!(response.bytes().await.unwrap().as_ref(), PAYLOAD);
+            }
+            let result = client.send_object_store(&url, 5..9, None, 42).await;
+            if disconnect_point == ObjectStoreDisconnectPoint::DuringBody || expects_replay {
+                let (_, response) = result.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+                assert_eq!(
+                    response.headers()[reqwest::header::CONTENT_RANGE],
+                    CONTENT_RANGE
+                );
+                let body = response.bytes().await;
+                if expects_replay {
+                    let body = body.unwrap();
+                    assert_eq!(body.len(), PAYLOAD.len());
+                    assert_eq!(Sha256::digest(&body), Sha256::digest(PAYLOAD));
+                } else {
+                    let error = body.unwrap_err();
+                    assert!(!error.is_timeout());
+                }
+            } else {
+                let PresignedReadError::Failed(Error::Http {
+                    source,
+                    status_code: None,
+                    ..
+                }) = result.unwrap_err()
+                else {
+                    panic!("expected a disconnect error before the complete response headers");
+                };
+                let error = source.downcast_ref::<reqwest::Error>().unwrap();
+                assert!(!error.is_timeout());
+                assert!(error.url().is_none());
+            }
+            let _ = finished.send(());
+            server.await.unwrap()
+        })
+        .await
+        .expect("the requests must finish within the loopback test deadline");
+        assert_eq!(original[0], "GET /object?signature=fixture HTTP/1.1\r\n");
+        assert!(
+            original
+                .iter()
+                .any(|header| header == "range: bytes=5-8\r\n")
+        );
+        assert_eq!(replay.is_some(), expects_replay);
+        if let Some(replay) = replay {
+            assert_eq!(replay, original);
+        }
+        assert!(futures::FutureExt::now_or_never(listener.accept()).is_none());
     }
 
     #[tokio::test]
@@ -1827,12 +1982,19 @@ mod tests {
 
     #[test]
     fn test_blob_request_concurrency_must_be_positive() {
-        let error = super::ClientConfig {
-            blob_request_concurrency: Some(0),
-            ..Default::default()
-        }
-        .validate()
+        let error = RestfulLanceDbClient::try_new(
+            &super::parse_db_url("db://test").unwrap(),
+            "us-east-2",
+            Some("http://localhost".into()),
+            HeaderMap::new(),
+            super::ClientConfig {
+                blob_request_concurrency: Some(0),
+                ..Default::default()
+            },
+            None,
+        )
         .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
         assert!(error.to_string().contains("blob_request_concurrency"));
         assert_eq!(
             RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(3)).unwrap(),
