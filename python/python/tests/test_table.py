@@ -963,6 +963,26 @@ async def test_add_rejects_fractions_for_integer_columns_async(
     assert await table.count_rows() == 0
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_rejects_fractions_beside_json_fields(tmp_db: DBConnection):
+    item = pa.struct([("payload", pa.json_()), ("quantity", pa.int32())])
+    table = tmp_db.create_table("orders", schema=pa.schema([("items", pa.list_(item))]))
+
+    table.add([{"items": [{"payload": '{"sku": 7}', "quantity": 4.0}]}])
+    version = table.version
+    rows = [{"items": [{"payload": '{"sku":7}', "quantity": 4}]}]
+    assert table.to_arrow().to_pylist() == rows
+
+    with pytest.raises(ValueError, match=r"2\.7"):
+        table.add([{"items": [{"payload": '{"sku": 8}', "quantity": 2.7}]}])
+
+    table = tmp_db.open_table("orders")
+    assert table.version == version
+    assert table.to_arrow().to_pylist() == rows
+    matched = table.search().where("json_extract(items[1]['payload'], '$.sku') = '7'")
+    assert matched.to_list() == rows
+
+
 @pytest.fixture
 def pydantic_model_table(mem_db: DBConnection):
     # https://github.com/lancedb/lancedb/issues/562

@@ -673,7 +673,7 @@ mod tests {
     use arrow_array::{
         Array, ArrayRef, Decimal128Array, DictionaryArray, FixedSizeListArray, Float32Array,
         Float64Array, Int32Array, Int64Array, ListArray, MapArray, RecordBatch, StringArray,
-        StructArray, UInt32Array, UInt64Array,
+        StructArray, UInt32Array, UInt64Array, new_empty_array,
     };
     use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::prelude::SessionContext;
@@ -1113,6 +1113,26 @@ mod tests {
         Arc::new(DictionaryArray::<Int32Type>::try_new(keys, values).unwrap())
     }
 
+    // Order lines: a JSON payload beside each quantity.
+    fn order_items(quantities: &[f64]) -> StructArray {
+        let payloads = StringArray::from(vec![r#"{"sku": "a-1"}"#; quantities.len()]);
+        struct_of(vec![
+            ("payload", Arc::new(payloads) as ArrayRef),
+            ("quantity", f64s(quantities)),
+        ])
+    }
+
+    // The table type for `order_items`, with a lance.json payload.
+    fn order_item_type() -> DataType {
+        DataType::Struct(
+            vec![
+                lance_arrow::json::json_field("payload", true),
+                Field::new("quantity", DataType::Int32, true),
+            ]
+            .into(),
+        )
+    }
+
     // Arrow casts a float or decimal to an integer by truncating it toward zero and reports
     // only overflow, so without a check 2.7 would be written as 2.
     #[rstest::rstest]
@@ -1171,6 +1191,29 @@ mod tests {
         DataType::new_list(DataType::Int32, true),
         "0.5"
     )]
+    // Labelling a JSON field casts its whole list or map, numbers beside it included.
+    #[case::json_sibling_in_list(
+        list_of(order_items(&[4.0, 2.7])),
+        DataType::new_list(order_item_type(), true),
+        "2.7"
+    )]
+    #[case::json_sibling_in_fixed_size_list(
+        fixed_size_list_of(order_items(&[2.7])),
+        DataType::new_fixed_size_list(order_item_type(), 1, true),
+        "2.7"
+    )]
+    #[case::json_sibling_in_map_value(
+        map_of(Arc::new(order_items(&[2.7]))),
+        map_of(new_empty_array(&order_item_type())).data_type().clone(),
+        "2.7"
+    )]
+    #[case::json_sibling_in_list_in_struct(
+        Arc::new(struct_of(vec![("items", list_of(order_items(&[2.7])))])) as ArrayRef,
+        DataType::Struct(
+            vec![Field::new("items", DataType::new_list(order_item_type(), true), true)].into()
+        ),
+        "2.7"
+    )]
     #[tokio::test]
     async fn test_cast_dropping_fraction_errors(
         #[case] input: ArrayRef,
@@ -1225,6 +1268,39 @@ mod tests {
         let table_schema = Schema::new(vec![Field::new("a", table_type, true)]);
         let result = collect(cast_to_table_schema(plan, &table_schema).unwrap()).await;
         assert_eq!(result.column(0).as_ref(), expected.as_ref());
+    }
+
+    // Checking the numbers beside a JSON field keeps the arrow.json label the cast gives it.
+    #[tokio::test]
+    async fn test_json_sibling_whole_values_keep_json_label() {
+        use arrow_array::cast::AsArray;
+        use lance_arrow::json::is_arrow_json_field;
+
+        let input = batch_of(list_of(order_items(&[4.0, 2.0])));
+        let input_field = input.schema().field(0).clone();
+        let table_field = Field::new("a", DataType::new_list(order_item_type(), true), true);
+        let table_schema = Schema::new(vec![table_field.clone()]);
+        let projected = cast_to_table_schema(plan_from_batch(input).await, &table_schema).unwrap();
+
+        let out_field = projected.schema().field(0).clone();
+        assert_eq!(
+            Some(out_field.clone()),
+            super::json_write_target(&input_field, &table_field)
+        );
+        let DataType::List(item) = out_field.data_type() else {
+            panic!("expected a list, got {}", out_field.data_type());
+        };
+        let DataType::Struct(children) = item.data_type() else {
+            panic!("expected a struct, got {}", item.data_type());
+        };
+        assert!(is_arrow_json_field(&children[0]), "{:?}", children[0]);
+
+        let result = collect(projected).await;
+        let items = result.column(0).as_list::<i32>().values().as_struct();
+        let quantities = items.column(1).as_primitive::<Int32Type>();
+        assert_eq!(quantities.values(), &[4, 2]);
+        let payloads = items.column(0).as_string::<i32>();
+        assert_eq!(payloads.value(0), r#"{"sku": "a-1"}"#);
     }
 
     #[tokio::test]
