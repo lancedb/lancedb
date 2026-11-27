@@ -107,11 +107,15 @@ pub(super) fn build_field_exprs(
             // alongside it, because DataFusion derives the projection's output schema from
             // `PhysicalExpr::return_field`.
             let target: FieldRef = Arc::new(target);
-            let expr = Arc::new(CastExpr::new_with_target_field(
-                input_expr,
+            let mut expr: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new_with_target_field(
+                input_expr.clone(),
                 target.clone(),
                 None,
             ));
+            // The cast converts a whole list or map, numbers beside the JSON fields included.
+            if may_drop_fraction(input_field.data_type(), target.data_type()) {
+                expr = reject_fractions(expr, input_expr, target.clone(), config.clone());
+            }
             result.push((expr, target));
             continue;
         }
@@ -227,7 +231,12 @@ pub(super) fn build_field_exprs(
                     None,
                 ));
                 if may_drop_fraction(input_field.data_type(), table_field.data_type()) {
-                    reject_fractions(cast_expr, input_expr, table_field, config.clone())
+                    let output_field = Field::new(
+                        table_field.name(),
+                        table_field.data_type().clone(),
+                        table_field.is_nullable(),
+                    );
+                    reject_fractions(cast_expr, input_expr, output_field.into(), config.clone())
                 } else {
                     cast_expr
                 }
@@ -362,22 +371,18 @@ fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
 }
 
 // Wraps a cast that `may_drop_fraction`, so that a fractional value fails the write the way an
-// overflowing one does instead of being stored truncated.
+// overflowing one does instead of being stored truncated. `output_field` is the cast's.
 fn reject_fractions(
     cast_expr: Arc<dyn PhysicalExpr>,
     input_expr: Arc<dyn PhysicalExpr>,
-    table_field: &Field,
+    output_field: FieldRef,
     config: Arc<ConfigOptions>,
 ) -> Arc<dyn PhysicalExpr> {
     Arc::new(ScalarFunctionExpr::new(
-        &format!("reject_fractions({})", table_field.name()),
+        &format!("reject_fractions({})", output_field.name()),
         REJECT_FRACTIONS_UDF.clone(),
         vec![cast_expr, input_expr],
-        Arc::new(Field::new(
-            table_field.name(),
-            table_field.data_type().clone(),
-            table_field.is_nullable(),
-        )),
+        output_field,
         config,
     ))
 }
