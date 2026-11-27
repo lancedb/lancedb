@@ -3247,8 +3247,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # WAL-PK-FUSION: delete both, and the `with_row_id` override below.
         # Set by `_create_query_builders` when the legs are fused on the key.
         self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
-        # `_with_row_id` is also turned on by `rerank(return_score="all")` for
-        # the reranker's own use, so it cannot answer "did the caller ask?".
+        # Whether the caller asked for `_rowid`. Distinct from the row ids
+        # `_run_hybrid` always requests on both legs for fusion/reranking.
         self._caller_requested_row_id = False
 
     def order_by(self, ordering: _OrderingInput = None) -> Self:
@@ -3305,9 +3305,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def with_row_id(self, with_row_id: bool) -> Self:  # WAL-PK-FUSION: delete.
         """Set whether to return row ids.
 
-        Recorded separately from `_with_row_id`, which `rerank(return_score=
-        "all")` also sets for its own use — on an RTE table only a caller who
-        asked is refused, and the reranker still falls back to the primary key.
+        Recorded separately from the row ids `_run_hybrid` requests on both
+        search legs for fusion and reranking — on an RTE table only a caller
+        who asked is refused, and the reranker still falls back to the primary
+        key.
         """
         self._caller_requested_row_id = with_row_id
         return super().with_row_id(with_row_id)
@@ -3604,11 +3605,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         self._norm = normalize
         self._reranker = reranker
-        if reranker.score == "all":
-            # WAL-PK-FUSION: without the fallback, `self.with_row_id(True)`.
-            # Not through `with_row_id`, which records caller intent: the
-            # reranker's need for row ids must not refuse an RTE table.
-            self._with_row_id = True
 
         return self
 
