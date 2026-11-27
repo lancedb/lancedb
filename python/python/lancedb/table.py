@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
+from itertools import chain
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -46,7 +47,7 @@ from ._blob import (
     validate_blob_mode,
 )
 from .types import BlobMode
-from lancedb.arrow import AsyncRecordBatchReader, peek_reader
+from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
@@ -6950,7 +6951,7 @@ def _handle_bad_vectors(
             pending_dims = []
             for vector_column in vector_columns:
                 dim = vector_column["expected_dim"]
-                if target_schema is not None and dim is None:
+                if dim is None:
                     dim = _infer_vector_dim(batch[vector_column["name"]])
                     pending_dims.append(vector_column)
                 batch = _handle_bad_vector_column(
@@ -6960,6 +6961,7 @@ def _handle_bad_vectors(
                     fill_value=fill_value,
                     expected_dim=dim,
                     expected_value_type=vector_column["expected_value_type"],
+                    preserve_parent_nulls=vector_column["preserve_parent_nulls"],
                 )
             for vector_column in pending_dims:
                 if vector_column["expected_dim"] is None:
@@ -7006,6 +7008,7 @@ def _find_vector_columns(
                         "name": field.name,
                         "expected_dim": None,
                         "expected_value_type": None,
+                        "preserve_parent_nulls": False,
                     }
                 )
         return vector_columns
@@ -7049,6 +7052,9 @@ def _find_vector_columns(
                         else None
                     ),
                     "expected_value_type": field.type.value_type,
+                    "preserve_parent_nulls": (
+                        field.nullable and pa.types.is_fixed_size_list(field.type)
+                    ),
                 }
             )
 
@@ -7099,6 +7105,7 @@ def _handle_bad_vector_column(
     fill_value: float = 0.0,
     expected_dim: Optional[int] = None,
     expected_value_type: Optional[pa.DataType] = None,
+    preserve_parent_nulls: bool = False,
 ) -> pa.RecordBatch:
     """
     Ensure that the vector column exists and has type fixed_size_list(float)
@@ -7151,13 +7158,12 @@ def _handle_bad_vector_column(
             return data
 
     is_null = pc.is_null(vec_arr)
-    # pc.list_value_length returns null for null list entries, so
-    # pc.not_equal(null, dim) also returns null. Use or_kleene so that
-    # True OR null = True (Kleene three-valued logic), ensuring null vectors
-    # are counted as wrong-dim.
-    has_wrong_dim = pc.or_kleene(
-        is_null,
+    # Null parent lists are valid in a declared nullable fixed-size column.
+    # Null child elements and incorrect dimensions still follow the bad-vector
+    # policy. For other vector columns retain the existing parent-null behavior.
+    has_wrong_dim = pc.fill_null(
         pc.not_equal(pc.list_value_length(vec_arr), dim),
+        not preserve_parent_nulls,
     )
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
@@ -7194,6 +7200,10 @@ def _handle_bad_vector_column(
                     "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
                 )
             vec_arr = _fill_bad_vector_values(vec_arr, dim, fill_value)
+            if preserve_parent_nulls:
+                vec_arr = pc.if_else(
+                    is_null, pa.scalar(None, type=vec_arr.type), vec_arr
+                )
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
@@ -7294,7 +7304,14 @@ def _infer_target_schema(
 
         if _name_suggests_vector_column(field.name) and is_list_type:
             if peeked is None:
-                peeked, reader = peek_reader(reader)
+                # Sanitization can remove every row in an earlier batch. Peek
+                # at the first surviving batch rather than inferring from no rows.
+                peeked = next((batch for batch in reader if batch.num_rows), None)
+                if peeked is None:
+                    return schema, pa.RecordBatchReader.from_batches(schema, [])
+                reader = pa.RecordBatchReader.from_batches(
+                    schema, chain([peeked], reader)
+                )
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
 
