@@ -3,6 +3,7 @@
 
 import copy
 import json
+import operator
 import os
 
 from deprecation import deprecated
@@ -1470,9 +1471,11 @@ class Permutation:
         returned dict is not merged into the row: return every column to keep.
 
         A mapped permutation always yields a list of dicts (one per row) for each
-        batch, which is the same shape as the default "python" format.  ``batched``
-        only controls what ``fn`` receives.  Rows keep their position, so a callback
-        cannot add, drop, or reorder rows.
+        batch, which is the same shape as the default "python" format.  An integer
+        index unwraps that list and returns the one dict.  ``take_offsets`` and
+        ``__getitems__`` still return the list.  ``batched`` only controls what
+        ``fn`` receives.  Rows keep their position, so a callback cannot add, drop,
+        or reorder rows.
 
         Since ``map`` decides the output format it cannot be combined with
         [with_format][lancedb.permutation.Permutation.with_format] or
@@ -1548,7 +1551,12 @@ class Permutation:
 
         The returned value is passed through the permutation's current transform,
         so `with_format`, `with_transform`, and `map` affect this method in the
-        same way they affect iteration.
+        same way they affect iteration. Offsets are positions in the current
+        permutation, including any `with_skip` or `with_take` window, for both an
+        identity permutation and one backed by a permutation table. An offset
+        outside that window raises an error. The batch is returned as-is,
+        including a one-element list. For a single row, use
+        [__getitem__][lancedb.permutation.Permutation.__getitem__].
         """
         self._ensure_open()
 
@@ -1560,13 +1568,57 @@ class Permutation:
 
     def __getitem__(self, index: int) -> Any:
         """
-        Returns a single row from the permutation by offset
+        Return the row at `index`.
+
+        `index` follows Python sequence indexing. `0` is the first row and a
+        negative value counts from the end. An index past either end raises
+        `IndexError`. A non-integer, such as a slice or a list, raises
+        `TypeError`.
+
+        The row is read with
+        [take_offsets][lancedb.permutation.Permutation.take_offsets] and passed
+        through the current transform
+        ([with_format][lancedb.permutation.Permutation.with_format],
+        [with_transform][lancedb.permutation.Permutation.with_transform], or
+        [map][lancedb.permutation.Permutation.map]).
+
+        A transform that returns a `list` is treated as one item per row, and
+        this method returns that single item. The default `"python"` format and
+        [map][lancedb.permutation.Permutation.map] therefore return one `dict`.
+        `"torch"` returns one per-row dict of tensors and `"torch_row"` returns
+        one tensor. If the list length is not one, the list is returned
+        unchanged. That keeps a custom transform which does not emit one value
+        per row intact.
+
+        Every other return type is returned as the transform produced it, for
+        the one requested row. `"arrow"` stays a one-row RecordBatch.
+        `"pandas"` and `"polars"` stay one-row frames. `"numpy"` stays a
+        one-row ndarray. `"python_col"`, `"torch_dict"`, and `"torch_col"`
+        stay a dict or tensor covering that single row.
+
+        [__getitems__][lancedb.permutation.Permutation.__getitems__] and
+        `take_offsets` still return the transformed batch. A list-producing
+        transform stays a list there, including when only one offset is
+        requested, and negative offsets are not accepted.
         """
-        return self.take_offsets([index])
+        resolved = operator.index(index)
+        length = len(self)
+        if resolved < 0:
+            resolved += length
+        if resolved < 0 or resolved >= length:
+            raise IndexError(f"permutation index {index} is out of range")
+
+        result = self.take_offsets([resolved])
+        if isinstance(result, list) and len(result) == 1:
+            return result[0]
+        return result
 
     def __getitems__(self, indices: list[int]) -> Any:
         """
-        Returns rows from the permutation by offset
+        Return rows for `indices` as one transformed batch.
+
+        Unlike [__getitem__][lancedb.permutation.Permutation.__getitem__], this
+        does not unwrap a one-element list into a single row.
         """
         return self.take_offsets(indices)
 
