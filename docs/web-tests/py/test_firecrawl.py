@@ -27,7 +27,7 @@ def test_firecrawl_crawl_and_search() -> None:
     firecrawl = Firecrawl(api_key=os.environ["FIRECRAWL_API_KEY"])
 
     crawl = firecrawl.crawl(
-        "https://docs.lancedb.com/integrations",
+        "https://docs.lancedb.com/enterprise/v1-14-0/integrations",
         limit=10,
         scrape_options={"formats": ["markdown"], "only_main_content": True},
         integration="_lancedb",
