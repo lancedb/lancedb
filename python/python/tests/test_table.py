@@ -612,6 +612,21 @@ def test_add_keeps_columns_first_seen_in_later_rows(mem_db: DBConnection):
     ]
 
 
+def test_create_table_keeps_declared_non_nullable_field(tmp_path):
+    schema = pa.schema(
+        [pa.field("id", pa.int64()), pa.field("note", pa.string(), nullable=False)]
+    )
+    db = lancedb.connect(tmp_path)
+    with pytest.raises(RuntimeError, match="'note' with null values to non-nullable"):
+        db.create_table(
+            "test", data=[{"id": 1}, {"id": 2, "note": "new"}], schema=schema
+        )
+
+    db.create_table("test", data=[{"id": 1, "note": "new"}], schema=schema)
+    reopened = lancedb.connect(tmp_path).open_table("test")
+    assert not reopened.schema.field("note").nullable
+
+
 def test_add_dictionary(mem_db: DBConnection):
     schema = pa.schema(
         [

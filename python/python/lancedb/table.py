@@ -1156,6 +1156,9 @@ def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
 
 
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
+    # Inferred input fields are always nullable. They must not relax a field the
+    # target declares as non-nullable; the cast then rejects any null values.
+    nullable = field.nullable and target_field.nullable
     if is_blob_v2_field(target_field):
         source_type = field.type
         if pa.types.is_struct(source_type):
@@ -1210,7 +1213,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             # that pyarrow records for a ``pa.json_()`` column.
             metadata = dict(target_field.metadata or {})
             metadata[b"ARROW:extension:name"] = b"arrow.json"
-            return pa.field(field.name, json_storage, field.nullable, metadata)
+            return pa.field(field.name, json_storage, nullable, metadata)
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
@@ -1266,7 +1269,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             new_type = target_field.type
     else:
         new_type = target_field.type
-    return pa.field(field.name, new_type, field.nullable, target_field.metadata)
+    return pa.field(field.name, new_type, nullable, target_field.metadata)
 
 
 def _infer_subschema(
