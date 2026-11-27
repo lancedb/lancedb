@@ -345,7 +345,7 @@ impl ScalarUDFImpl for RestoreValidityUdf {
 /// integer by truncating it toward zero and reports only overflow, so 2.7 would become 2. The walk
 /// follows Arrow's casts: list items, struct fields by name, map keys and values by position, and
 /// dictionary values.
-fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
+pub(super) fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
     match (from, to) {
         (DataType::Dictionary(_, from), to) => may_drop_fraction(from, to),
         (from, DataType::Dictionary(_, to)) => may_drop_fraction(from, to),
@@ -372,7 +372,7 @@ fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
 
 // Wraps a cast that `may_drop_fraction`, so that a fractional value fails the write the way an
 // overflowing one does instead of being stored truncated. `output_field` is the cast's.
-fn reject_fractions(
+pub(super) fn reject_fractions(
     cast_expr: Arc<dyn PhysicalExpr>,
     input_expr: Arc<dyn PhysicalExpr>,
     output_field: FieldRef,

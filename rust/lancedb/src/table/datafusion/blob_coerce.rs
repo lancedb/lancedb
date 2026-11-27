@@ -26,6 +26,7 @@ use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::PhysicalExpr;
 use datafusion_physical_plan::expressions::Column;
 
+use super::cast::{may_drop_fraction, reject_fractions};
 use crate::error::{Error, Result};
 
 /// Build a projection expression coercing `input_expr` into the blob struct
@@ -158,11 +159,17 @@ pub(super) fn coerce_blob_expr(
                         if child.data_type() == declared.data_type() {
                             field_expr
                         } else {
-                            Arc::new(CastExpr::new(
-                                field_expr,
+                            let cast: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+                                field_expr.clone(),
                                 declared.data_type().clone(),
                                 None,
-                            ))
+                            ));
+                            // A byte range given as floats has to be whole.
+                            if may_drop_fraction(child.data_type(), declared.data_type()) {
+                                reject_fractions(cast, field_expr, declared.clone(), config.clone())
+                            } else {
+                                cast
+                            }
                         }
                     }
                     None => typed_null(declared.data_type())?,
@@ -610,9 +617,9 @@ mod tests {
     use super::super::cast::cast_to_table_schema;
     use super::*;
     use arrow_array::{
-        Array, ArrayRef, BinaryArray, BinaryViewArray, FixedSizeListArray, Int32Array, Int64Array,
-        LargeBinaryArray, LargeListArray, ListArray, NullArray, RecordBatch, StringArray,
-        StringViewArray, StructArray, UInt8Array, UInt64Array,
+        Array, ArrayRef, BinaryArray, BinaryViewArray, FixedSizeListArray, Float64Array,
+        Int32Array, Int64Array, LargeBinaryArray, LargeListArray, ListArray, NullArray,
+        RecordBatch, StringArray, StringViewArray, StructArray, UInt8Array, UInt64Array,
     };
     use arrow_buffer::{NullBuffer, OffsetBuffer};
     use arrow_schema::Schema;
@@ -1104,6 +1111,51 @@ mod tests {
             .unwrap();
         assert_eq!(size.value(0), 6);
         assert!(image.column_by_name("data").unwrap().is_null(0));
+    }
+
+    // Floats for a byte range are cast like any integer column: a fraction fails the write.
+    #[tokio::test]
+    async fn fractional_byte_range_is_rejected() {
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            wide_blob_field("image"),
+        ]);
+        let batch = |position: f64| {
+            let reference = StructArray::from(vec![
+                (
+                    Arc::new(Field::new("uri", DataType::Utf8, true)),
+                    Arc::new(StringArray::from(vec!["s3://bucket/blob.bin"])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("position", DataType::Float64, true)),
+                    Arc::new(Float64Array::from(vec![position])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("size", DataType::Float64, true)),
+                    Arc::new(Float64Array::from(vec![6.0])) as ArrayRef,
+                ),
+            ]);
+            let field = Field::new("image", reference.data_type().clone(), true);
+            batch_with_image(field, Arc::new(reference))
+        };
+
+        let coerced = coerce(batch(7.0), &table_schema).await;
+        let position: &UInt64Array = image_struct(&coerced)
+            .column_by_name("position")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(position.value(0), 7);
+
+        let plan = cast_to_table_schema(plan_from_batch(batch(7.5)).await, &table_schema).unwrap();
+        let error = plan
+            .execute(0, SessionContext::new().task_ctx())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("7.5"), "{error}");
     }
 
     #[tokio::test]
