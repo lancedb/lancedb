@@ -4,7 +4,9 @@
 use std::sync::Mutex;
 
 use lancedb::index::Index as LanceDbIndex;
-use lancedb::index::scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder};
+use lancedb::index::scalar::{
+    BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder, PluginIndexBuilder, RTreeIndexBuilder,
+};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
     IvfRqIndexBuilder,
@@ -224,6 +226,29 @@ impl Index {
         Self {
             inner: Mutex::new(Some(LanceDbIndex::Fm(FmIndexBuilder::default()))),
         }
+    }
+
+    /// `params_json`, if set, must be a string holding a JSON object.
+    #[napi(factory)]
+    pub fn plugin(index_type: String, params_json: Option<String>) -> napi::Result<Self> {
+        let mut builder = PluginIndexBuilder::new(index_type).default_error()?;
+        if let Some(params_json) = params_json {
+            builder = builder.params_json(params_json).default_error()?;
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::Plugin(builder))),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn rtree(page_size: Option<u32>) -> napi::Result<Self> {
+        let mut builder = RTreeIndexBuilder::default();
+        if let Some(page_size) = page_size {
+            builder = builder.page_size(page_size).default_error()?;
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::RTree(builder))),
+        })
     }
 
     #[napi(factory)]

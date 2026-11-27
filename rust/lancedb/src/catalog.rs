@@ -349,6 +349,18 @@ impl ConnectCatalogBuilder {
         self.options.client_config = config;
         self
     }
+    /// Set storage options inherited by the catalog's remote database connections.
+    pub fn storage_options(
+        mut self,
+        options: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.options.storage_options.extend(
+            options
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        );
+        self
+    }
     /// Set the SQL service endpoint inherited by database connections.
     ///
     /// Required to execute SQL when the catalog endpoint uses HTTPS. The SQL

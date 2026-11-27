@@ -10,7 +10,7 @@
     "node": ">=22.6.0"
   },
   "dependencies": {
-    "@lancedb/lancedb": "0.41.0-beta.8",
+    "@lancedb/lancedb": "0.42.0-beta.20",
     "apache-arrow": "21.2.0"
   }
 }

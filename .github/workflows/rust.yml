@@ -14,6 +14,9 @@ on:
       - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
+      - python/src/**
+      - python/python/lancedb/exceptions.py
+      - python/python/lancedb/remote/errors.py
       - ci/build_no_lock.py
       - ci/tests/test_build_no_lock.py
       - .github/actions/setup-protoc/**
@@ -39,7 +42,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       - name: Read the pinned Lance tag
         id: lance
         run: |
@@ -105,10 +108,10 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -132,7 +135,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
 
@@ -148,14 +151,16 @@ jobs:
       - uses: actions/checkout@v6
       # Building without a lock file often requires the latest Rust version since downstream
       # dependencies may have updated their minimum Rust version.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: "stable"
+          # The explicit cache below runs after lock removal and only saves on main.
+          cache: false
       # Remove cargo.lock to force a fresh build
       - name: Remove Cargo.lock
         run: rm -f Cargo.lock
-      - uses: rui314/setup-mold@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -203,7 +208,7 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -213,7 +218,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
-      - uses: rui314/setup-mold@v1
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
       - name: Make Swap
         run: |
           swapfile=/swapfile
@@ -237,11 +242,11 @@ jobs:
           sudo mkswap "$swapfile"
           sudo swapon "$swapfile"
       - name: Build
-        run: cargo build --profile ci --all-features --tests --locked --examples
+        run: cargo build --profile ci -p lancedb --all-features --tests --locked --examples
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --profile ci --all-features --example simple --locked
+        run: cargo run --profile ci -p lancedb --all-features --example simple --locked
       - name: Run blob v2 docs example
         # Python and TypeScript blob docs tests install preview packages.
         # Those builds are not guaranteed to remain available for more than
@@ -275,7 +280,7 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Remote tests use a different feature graph from the main Linux
           # job. Cache downloads, but build into a fresh target directory.
@@ -285,17 +290,17 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
-      - uses: rui314/setup-mold@v1
-      - name: Test the default local Functions gate
-        run: cargo test --profile ci -p lancedb --features remote --test experimental_functions --locked
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
       - name: Run remote tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
+    name: ${{ matrix.phase == 'tests' && format('macos ({0})', matrix.mac-runner) || format('macos-doc ({0})', matrix.mac-runner) }}
     timeout-minutes: 60
     strategy:
       matrix:
         mac-runner: ["macos-15", "macos-26"]
+        phase: [tests, doc]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -306,10 +311,16 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: actions/setup-python@v6
+        id: python
+        with:
+          python-version: "3.13"
       - name: CPU features
         run: sysctl -a | grep cpu
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # PyO3 caches the interpreter library path; runner images can differ.
+          key: ${{ matrix.mac-runner }}-python-${{ steps.python.outputs.python-version }}
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
@@ -317,16 +328,18 @@ jobs:
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
+        env:
+          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+          CARGO_TEST_TARGETS: ${{ matrix.phase == 'doc' && '--doc' || '--lib --tests' }}
         run: |
           # Don't run the s3 integration tests since docker isn't available
           # on this image.
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          # Run doctests before test binaries fill the runner disk. Examples are
-          # already built by the Linux job, so avoid retaining them here.
-          cargo test --profile ci --features $ALL_FEATURES --locked --doc
-          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
+          # Separate jobs give each phase its own time and disk budget. Examples
+          # are already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked $CARGO_TEST_TARGETS
 
   windows:
     strategy:
@@ -341,9 +354,11 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -378,9 +393,11 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v6
+      - name: Enable long paths for Lance dependencies
+        run: git config --global core.longpaths true
       - name: Set target
         run: rustup target add aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes
@@ -406,7 +423,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.95.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.98.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18
@@ -420,10 +437,10 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
       - name: Install ${{ matrix.msrv }}
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ matrix.msrv }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Restore everywhere, but only save from main. Per-PR saves are
           # unreadable outside their own branch anyway, since GitHub scopes

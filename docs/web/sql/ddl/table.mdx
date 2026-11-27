@@ -1,9 +1,9 @@
 ---
 title: "Table"
 sidebarTitle: "Table"
-description: "CREATE, DESCRIBE, ALTER, CLONE and DROP TABLE."
+description: "CREATE, DESCRIBE, ALTER, OPTIMIZE, CLONE and DROP TABLE."
 icon: table
-keywords: ["create table", "alter table", "drop table", "describe", "clone", "ddl"]
+keywords: ["create table", "alter table", "drop table", "describe", "clone", "optimize", "ddl"]
 availability:
   embedded: unavailable
   enterprise: available
@@ -176,7 +176,7 @@ ALTER TABLE t UNSET RTE
 ```
 </CodeGroup>
 
-The [real time engine](/tables/realtime-engine) puts a write-ahead log in front
+The [Realtime Engine](/tables/realtime-engine) puts a write-ahead log in front
 of the table, making small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
 not contend on one place; `bucket` sharding names its `column`, which must be
@@ -204,6 +204,16 @@ Dropping, renaming, or retyping a column is an SDK operation
 [`alter_columns`](/management/table#schema)), not a SQL statement.
 
 ## CLONE {#clone}
+
+{/* Draft for the table-clone exist_ok release.
+
+Use `CREATE TABLE IF NOT EXISTS target CLONE source` to preserve an existing
+target unchanged. The Python equivalent is
+`db.clone_table("target", source_uri, exist_ok=True)`. Omitting the option reports
+an error for an existing target. A skipped clone does not copy rows or change
+the target's version history.
+
+*/}
 
 <CodeGroup>
 ```sql SQL icon="database"
@@ -248,6 +258,56 @@ deployment stores its catalog. See
 [Object teardown](/basics/jobs#teardown).
 </Note>
 
+## OPTIMIZE REWRITE DATA {#optimize}
+
+Submit a durable manual compaction job on a compatible Enterprise deployment:
+
+```sql
+OPTIMIZE events REWRITE DATA WITH (
+  target_rows_per_fragment = 100000,
+  max_source_rows = 1000000,
+  io_buffer_size = 67108864,
+  batch_size = 1024
+);
+```
+
+Write the table name immediately after `OPTIMIZE`, without a `TABLE` keyword.
+All four settings are optional. Add `branch = 'exp'` in the same `WITH (...)`
+clause to select a branch; an omitted branch targets main. Row targets,
+source-row budgets, and scanner batch sizes must be positive integers. The I/O
+budget is in bytes and accepts zero to disable byte-based I/O backpressure.
+Unknown or duplicate options and invalid numbers are rejected before submission.
+
+Each field uses its invocation value, then that branch's table tuning, then
+deployment/built-in defaults. The automatic-compaction `enabled` flags do not
+block an explicit manual job. Tuning is captured in the durable specification;
+later table changes affect future jobs.
+
+The statement returns a `job_id` after submission, before worker completion.
+It runs atomic compaction on one worker with inline index remapping, without
+pruning versions or optimizing indexes. The source-row budget admits whole
+tasks; if the first useful task exceeds it, worker planning fails with the
+required live rows and source fragment count. The table and branch are validated
+through the service catalog before creating a job.
+
+See [manual compaction](/maintenance/compaction#enterprise-manual-compaction)
+for the option meanings, supported deployment and version requirements,
+authorization, job inspection, table defaults, and equivalent CLI/SDK examples.
+
+
+### Preview manual compaction
+
+```sql
+EXPLAIN OPTIMIZE events REWRITE DATA WITH (max_source_rows = 1000000);
+DESCRIBE JOB '<job_id>' FORMAT JSON;
+```
+
+The preview reports the selected source version, effective options, planned
+work and continuation using the worker's planner without submitting a job.
+`EXPLAIN ANALYZE` is unsupported. The JSON diagnostic includes reported progress
+and a successful job's committed result. See [Compaction](/maintenance/compaction#compaction-jobs)
+for durable SDK handles and CLI waiting.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>
@@ -258,3 +318,23 @@ deployment stores its catalog. See
     Renaming, retyping and dropping columns from the SDK.
   </Card>
 </CardGroup>
+
+## SHOW TABLES {#show}
+
+```sql
+SHOW TABLES IN analytics.`team$ml` LIMIT 100;
+SHOW TABLES IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
+```
+
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).

@@ -168,6 +168,28 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
                     Err(PyErr::from_value(err))
                 }),
+                LanceError::ResponseInterrupted {
+                    request_id,
+                    batches,
+                    rows,
+                    table_version,
+                    source,
+                } => Python::attach(|py| {
+                    let error = py
+                        .import(intern!(py, "lancedb.remote.errors"))?
+                        .getattr(intern!(py, "ResponseInterruptedError"))?
+                        .call1((
+                            err.to_string(),
+                            request_id,
+                            *batches,
+                            *rows,
+                            *table_version,
+                            is_transport_error(&**source),
+                        ))?;
+                    let cause = http_from_rust_error(py, &**source, request_id, None)?;
+                    error.setattr(intern!(py, "__cause__"), cause)?;
+                    Err(PyErr::from_value(error))
+                }),
                 LanceError::Sql {
                     message,
                     request_id,
@@ -310,6 +332,9 @@ fn new_py_sql_error<'py>(
     grpc_code: i32,
     metadata: &RemoteErrorMetadata,
 ) -> PyResult<Bound<'py, PyAny>> {
+    if sql_has_resource_error(metadata, grpc_code) {
+        return new_py_sql_resource_error(py, message, request_id, grpc_code, metadata);
+    }
     py.import("lancedb.remote.errors")?
         .getattr("SqlError")?
         .call1((
@@ -320,6 +345,51 @@ fn new_py_sql_error<'py>(
             metadata.job_id.as_deref(),
             metadata.job_request_id.as_deref(),
         ))
+}
+
+fn new_py_sql_resource_error<'py>(
+    py: Python<'py>,
+    message: &str,
+    request_id: &str,
+    grpc_code: i32,
+    metadata: &RemoteErrorMetadata,
+) -> PyResult<Bound<'py, PyAny>> {
+    let resource = metadata.resource.as_ref().unwrap();
+    py.import("lancedb.remote.errors")?
+        .getattr("HttpError")?
+        .call1((
+            message,
+            request_id,
+            grpc_code_to_http_status(grpc_code),
+            metadata.error_code.as_deref(),
+            resource.kind.as_str(),
+            resource.name.as_str(),
+            resource.namespace_path.clone(),
+            false,
+            metadata.job_id.as_deref(),
+            metadata.job_request_id.as_deref(),
+        ))
+}
+
+fn sql_has_resource_error(metadata: &RemoteErrorMetadata, grpc_code: i32) -> bool {
+    metadata.resource.is_some()
+        && matches!(
+            (metadata.error_code.as_deref(), grpc_code),
+            // These are gRPC status codes, not HTTP status codes.
+            (Some("not_found"), 5) | (Some("already_exists"), 6)
+        )
+}
+
+fn grpc_code_to_http_status(grpc_code: i32) -> Option<u16> {
+    match grpc_code {
+        3 => Some(400),
+        5 => Some(404),
+        6 => Some(409),
+        7 => Some(403),
+        9 => Some(400),
+        12 => Some(501),
+        _ => None,
+    }
 }
 
 // Preserve the typed transport classification across the Python boundary.
@@ -334,4 +404,244 @@ fn is_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
             || error.is_decode();
     }
     err.source().is_some_and(is_transport_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+    use std::sync::{Arc, Once};
+
+    use lancedb::error::{JobFailure, RemoteResourceIdentity};
+    use pyo3::types::{PyAnyMethods, PyModule};
+
+    use super::*;
+
+    static INSTALL_PYTHON_ERROR_MODULES: Once = Once::new();
+
+    fn install_python_error_modules(py: Python<'_>) -> PyResult<()> {
+        // Load the checked-in error classes without requiring an installed wheel.
+        // The namespace exception is only a base for an unrelated remote class.
+        PyModule::from_code(
+            py,
+            c"import sys\n\nimport types\n\n\
+              lancedb = types.ModuleType('lancedb')\n\
+              lancedb.__path__ = []\n\
+              lancedb_remote = types.ModuleType('lancedb.remote')\n\
+              lancedb_remote.__path__ = []\n\
+              lancedb.remote = lancedb_remote\n\
+              namespace = types.ModuleType('lance_namespace')\n\
+              namespace_errors = types.ModuleType('lance_namespace.errors')\n\
+              namespace_errors.TableNotFoundError = RuntimeError\n\
+              namespace.errors = namespace_errors\n\
+              sys.modules['lancedb'] = lancedb\n\
+              sys.modules['lancedb.remote'] = lancedb_remote\n\
+              sys.modules['lance_namespace'] = namespace\n\
+              sys.modules['lance_namespace.errors'] = namespace_errors",
+            c"error_test_bootstrap.py",
+            c"lancedb_error_test_bootstrap",
+        )?;
+
+        let exceptions_code =
+            CString::new(include_str!("../../python/python/lancedb/exceptions.py")).unwrap();
+        let exceptions = PyModule::from_code(
+            py,
+            &exceptions_code,
+            c"exceptions.py",
+            c"lancedb.exceptions",
+        )?;
+        let lancedb = py.import("lancedb")?;
+        lancedb.setattr("exceptions", &exceptions)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("lancedb.exceptions", &exceptions)?;
+
+        let remote_errors_code =
+            CString::new(include_str!("../../python/python/lancedb/remote/errors.py")).unwrap();
+        let remote_errors = PyModule::from_code(
+            py,
+            &remote_errors_code,
+            c"remote/errors.py",
+            c"lancedb.remote.errors",
+        )?;
+        lancedb
+            .getattr("remote")?
+            .setattr("errors", &remote_errors)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("lancedb.remote.errors", &remote_errors)?;
+        Ok(())
+    }
+
+    fn ensure_python_error_modules() {
+        Python::initialize();
+        // Once waits without holding the GIL; only its one-time closure attaches.
+        INSTALL_PYTHON_ERROR_MODULES.call_once(|| {
+            Python::attach(install_python_error_modules).unwrap();
+        });
+    }
+
+    #[test]
+    fn generic_job_failure_retains_the_named_resource_as_its_cause() {
+        ensure_python_error_modules();
+        let source = LanceError::Sql {
+            message: "Function 'missing' was not found".into(),
+            request_id: "current-request".into(),
+            grpc_code: 5,
+            metadata: Box::new({
+                let mut metadata = RemoteErrorMetadata::default();
+                metadata.error_code = Some("not_found".into());
+                metadata.job_id = Some("outer-job".into());
+                metadata.job_request_id = Some("worker-request".into());
+                metadata.resource = Some(RemoteResourceIdentity::new(
+                    "function",
+                    "missing",
+                    vec!["ns".into()],
+                ));
+                metadata
+            }),
+        };
+        let error = LanceError::JobFailed {
+            job_id: Some("outer-job".into()),
+            failure: Box::new(JobFailure {
+                message: Some("Function 'missing' was not found".into()),
+                traceback: None,
+                sql_job_id: Some("outer-job".into()),
+                source: Some(Arc::new(source)),
+                ..Default::default()
+            }),
+        };
+
+        let py_err = Python::attach(|_| {
+            let result: std::result::Result<(), LanceError> = Err(error);
+            result.infer_error().unwrap_err()
+        });
+        Python::attach(|py| {
+            let value = py_err.value(py);
+            let job_failed = py
+                .import("lancedb.exceptions")
+                .unwrap()
+                .getattr("JobFailedError")
+                .unwrap();
+            assert!(value.is_instance(&job_failed).unwrap(), "{py_err:?}");
+            let cause = value.getattr("__cause__").unwrap();
+            let function_not_found = py
+                .import("lancedb.remote.errors")
+                .unwrap()
+                .getattr("FunctionNotFoundError")
+                .unwrap();
+            assert!(
+                cause.is_instance(&function_not_found).unwrap(),
+                "{py_err:?}"
+            );
+            assert_eq!(
+                cause
+                    .getattr("error_code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "not_found"
+            );
+            assert_eq!(
+                cause
+                    .getattr("resource_kind")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "function"
+            );
+            assert_eq!(
+                cause
+                    .getattr("resource_name")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "missing"
+            );
+            assert_eq!(
+                cause
+                    .getattr("namespace_path")
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap(),
+                ["ns"]
+            );
+            assert_eq!(
+                cause
+                    .getattr("status_code")
+                    .unwrap()
+                    .extract::<u16>()
+                    .unwrap(),
+                404
+            );
+            assert_eq!(
+                cause
+                    .getattr("request_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "current-request"
+            );
+            assert_eq!(
+                cause
+                    .getattr("job_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "outer-job"
+            );
+            assert_eq!(
+                cause
+                    .getattr("job_request_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "worker-request"
+            );
+        });
+    }
+
+    #[test]
+    fn direct_catalog_lookup_is_raised_as_the_named_resource_error() {
+        ensure_python_error_modules();
+        for (kind, name, namespace_path, exception) in [
+            (
+                "function",
+                "missing",
+                vec!["ns".into()],
+                "FunctionNotFoundError",
+            ),
+            ("namespace", "ns", Vec::new(), "NamespaceNotFoundError"),
+        ] {
+            let mut metadata = RemoteErrorMetadata::default();
+            metadata.error_code = Some("not_found".into());
+            metadata.resource = Some(RemoteResourceIdentity::new(kind, name, namespace_path));
+            let error = LanceError::Sql {
+                message: format!("{kind} '{name}' was not found"),
+                request_id: "current-request".into(),
+                grpc_code: 5,
+                metadata: Box::new(metadata),
+            };
+            let py_err = Python::attach(|_| {
+                let result: std::result::Result<(), LanceError> = Err(error);
+                result.infer_error().unwrap_err()
+            });
+            Python::attach(|py| {
+                let value = py_err.value(py);
+                let class = py
+                    .import("lancedb.remote.errors")
+                    .unwrap()
+                    .getattr(exception)
+                    .unwrap();
+                assert!(value.is_instance(&class).unwrap(), "{py_err:?}");
+                assert_eq!(
+                    value
+                        .getattr("resource_name")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    name
+                );
+            });
+        }
+    }
 }

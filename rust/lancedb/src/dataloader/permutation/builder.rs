@@ -15,7 +15,7 @@ use crate::{
     Error, Result, Table,
     arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
     connect,
-    database::{CreateTableRequest, Database},
+    database::{CreateTableMode, CreateTableRequest, Database},
     dataloader::permutation::{
         shuffle::{Shuffler, ShufflerConfig},
         split::{SPLIT_ID_COLUMN, SplitStrategy, Splitter},
@@ -43,7 +43,34 @@ enum PermutationDestination {
     #[default]
     Temporary,
     /// The permutation table is a permanent table in a database
-    Permanent(Arc<dyn Database>, String),
+    Permanent {
+        database: Arc<dyn Database>,
+        table_name: String,
+        namespace_path: Vec<String>,
+        mode: PermutationPersistMode,
+    },
+}
+
+/// How a persisted permutation table handles an existing table of the same name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PermutationPersistMode {
+    /// Fail if the destination table already exists.
+    #[default]
+    Create,
+    /// Replace the destination table with the new plan.
+    ///
+    /// The previous table version remains readable by handles that were already
+    /// opened against it.
+    Overwrite,
+}
+
+/// Options for storing a permutation table in a database.
+#[derive(Debug, Clone, Default)]
+pub struct PermutationPersistOptions {
+    /// The namespace path to create the table in. Empty means the root namespace.
+    pub namespace_path: Vec<String>,
+    /// Whether an existing table may be replaced.
+    pub mode: PermutationPersistMode,
 }
 
 /// Configuration for creating a permutation table
@@ -161,9 +188,29 @@ impl PermutationBuilder {
     /// Stores the permutation as a table in a database
     ///
     /// By default, the permutation is stored in memory.  If this method is called then
-    /// the permutation will be stored as a table in the given database.
-    pub fn persist(mut self, database: Arc<dyn Database>, table_name: String) -> Self {
-        self.config.destination = PermutationDestination::Permanent(database, table_name);
+    /// the permutation will be stored as a table in the given database. The table is
+    /// created in the root namespace and an existing table is not replaced; use
+    /// [`Self::persist_with_options`] to choose a namespace or overwrite mode.
+    pub fn persist(self, database: Arc<dyn Database>, table_name: String) -> Self {
+        self.persist_with_options(database, table_name, PermutationPersistOptions::default())
+    }
+
+    /// Stores the permutation as a table in a database with explicit options.
+    ///
+    /// This is the same as [`Self::persist`] but lets the caller select the target
+    /// namespace and whether an existing table may be overwritten.
+    pub fn persist_with_options(
+        mut self,
+        database: Arc<dyn Database>,
+        table_name: String,
+        options: PermutationPersistOptions,
+    ) -> Self {
+        self.config.destination = PermutationDestination::Permanent {
+            database,
+            table_name,
+            namespace_path: options.namespace_path,
+            mode: options.mode,
+        };
         self
     }
 
@@ -249,10 +296,10 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(mut self) -> Result<Table> {
-        // Remote tables resolve latest independently for each request. Use a
-        // separate pinned handle so count, projection, and scan all refer to one
-        // snapshot without changing the caller's table checkout state. Native
-        // tables return `None` here and retain their existing behavior.
+        // Remote tables resolve latest independently for each request, and a
+        // native handle can refresh or answer a query from a namespace server.
+        // Use a separate pinned handle so count, projection, and scan all refer
+        // to one snapshot without changing the caller's table checkout state.
         if let Some(snapshot) = self
             .base_table
             .base_table()
@@ -369,17 +416,31 @@ impl PermutationBuilder {
         let streaming_data = Self::add_config_metadata(renamed, metadata)?;
 
         let (name, database) = match &self.config.destination {
-            PermutationDestination::Permanent(database, table_name) => {
-                (table_name.as_str(), database.clone())
-            }
+            PermutationDestination::Permanent {
+                database,
+                table_name,
+                ..
+            } => (table_name.as_str(), database.clone()),
             PermutationDestination::Temporary => {
                 let conn = connect("memory:///").execute().await?;
                 ("permutation", conn.database().clone())
             }
         };
 
-        let create_table_request =
+        let mut create_table_request =
             CreateTableRequest::new(name.to_string(), Box::new(streaming_data));
+        if let PermutationDestination::Permanent {
+            namespace_path,
+            mode,
+            ..
+        } = &self.config.destination
+        {
+            create_table_request.namespace_path = namespace_path.clone();
+            create_table_request.mode = match mode {
+                PermutationPersistMode::Create => CreateTableMode::Create,
+                PermutationPersistMode::Overwrite => CreateTableMode::Overwrite,
+            };
+        }
 
         let table = database.create_table(create_table_request).await?;
 
@@ -395,6 +456,51 @@ mod tests {
     use crate::{arrow::LanceDbDatagenExt, connect, dataloader::permutation::split::SplitSizes};
 
     use super::*;
+
+    /// Stands in for a namespace server whose table has advanced past the local
+    /// dataset. A pushed-down query reads this newer row instead of the local
+    /// snapshot.
+    #[derive(Debug, Default)]
+    struct ServerLatestNamespace {
+        query_table_calls: std::sync::atomic::AtomicUsize,
+        latest_row_id: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl lance_namespace::LanceNamespace for ServerLatestNamespace {
+        fn namespace_id(&self) -> String {
+            "server-latest".to_string()
+        }
+
+        async fn query_table(
+            &self,
+            _request: lance_namespace::models::QueryTableRequest,
+        ) -> lance::Result<bytes::Bytes> {
+            self.query_table_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            use arrow_array::UInt64Array;
+            use arrow_schema::{DataType, Field, Schema};
+
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                ROW_ID,
+                DataType::UInt64,
+                false,
+            )]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(UInt64Array::from(vec![self.latest_row_id]))],
+            )
+            .unwrap();
+            let mut body = Vec::new();
+            {
+                let mut writer =
+                    arrow_ipc::writer::FileWriter::try_new(&mut body, &schema).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+            }
+            Ok(bytes::Bytes::from(body))
+        }
+    }
 
     #[tokio::test]
     async fn test_permutation_table_only_stores_row_id_and_split_id() {
@@ -451,6 +557,140 @@ mod tests {
 
         // Native tables skip the canonicalizing sort; remote does not.
         assert!(table.base_table().scan_order_is_deterministic());
+
+        // A main/latest handle may answer from a namespace server, and its
+        // QueryTable request carries no order. The local native scan guarantee
+        // does not extend to that path.
+        let mut pushed_down = table.as_native().unwrap().clone();
+        pushed_down.namespace_client = Some(Arc::new(ServerLatestNamespace::default()));
+        pushed_down
+            .pushdown_operations
+            .insert(crate::connection::NamespaceClientPushdownOperation::QueryTable);
+        let pushed_down: Arc<dyn crate::table::BaseTable> = Arc::new(pushed_down);
+        let pushed_down = Table::from(pushed_down);
+        assert!(!pushed_down.base_table().scan_order_is_deterministic());
+    }
+
+    /// The builder must pin one native snapshot before it counts or scans. A
+    /// namespace-backed latest handle can otherwise count local rows, scan
+    /// server-latest rows, and record the local version as if they agreed.
+    #[tokio::test]
+    async fn test_native_permutation_builder_pins_namespace_pushdown() {
+        use std::sync::atomic::Ordering;
+
+        use arrow_array::{cast::AsArray, types::UInt64Type};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(10), BatchCount::from(1));
+        let table = db.create_table("base_tbl", data).execute().await.unwrap();
+
+        let namespace = Arc::new(ServerLatestNamespace {
+            latest_row_id: 10,
+            ..Default::default()
+        });
+        let mut native = table.as_native().unwrap().clone();
+        native.namespace_client = Some(namespace.clone());
+        native
+            .pushdown_operations
+            .insert(crate::connection::NamespaceClientPushdownOperation::QueryTable);
+        let native: Arc<dyn crate::table::BaseTable> = Arc::new(native);
+        let table = Table::from(native);
+
+        let permutation = PermutationBuilder::new(table.clone())
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            namespace.query_table_calls.load(Ordering::SeqCst),
+            0,
+            "the builder must read its pinned local snapshot, not server-latest rows"
+        );
+        assert_eq!(permutation.count_rows(None).await.unwrap(), 10);
+
+        let batches: Vec<RecordBatch> = permutation
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let ids: Vec<u64> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch[SRC_ROW_ID_COL]
+                    .as_primitive::<UInt64Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(ids, (0..10).collect::<Vec<_>>());
+
+        let recorded = permutation
+            .schema()
+            .await
+            .unwrap()
+            .metadata
+            .get(BASE_VERSION_CONFIG_KEY)
+            .expect("permutation should record its base version")
+            .parse::<u64>()
+            .unwrap();
+        assert_eq!(recorded, table.version().await.unwrap());
+    }
+
+    /// `snapshot_at_current_version` is the builder's one-snapshot hook. With
+    /// read refresh enabled, the caller can advance while the pin stays put.
+    #[tokio::test]
+    async fn test_native_snapshot_pins_count_scan_and_version() {
+        use std::time::Duration;
+
+        use crate::connection::ConnectBuilder;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = ConnectBuilder::new(temp_dir.path().to_str().unwrap())
+            .read_consistency_interval(Duration::ZERO)
+            .execute()
+            .await
+            .unwrap();
+        let data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(10), BatchCount::from(1));
+        let table = db.create_table("base_tbl", data).execute().await.unwrap();
+
+        let snapshot = table
+            .base_table()
+            .snapshot_at_current_version()
+            .await
+            .unwrap()
+            .expect("native tables should provide an independent pinned handle");
+        let version = snapshot.version().await.unwrap();
+        assert_eq!(snapshot.count_rows(None).await.unwrap(), 10);
+
+        let more_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(5), BatchCount::from(1));
+        table.add(more_data).execute().await.unwrap();
+        assert!(table.version().await.unwrap() > version);
+
+        assert_eq!(snapshot.version().await.unwrap(), version);
+        assert_eq!(snapshot.count_rows(None).await.unwrap(), 10);
+        let batches: Vec<RecordBatch> = Table::from(snapshot)
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 10);
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
     }
 
     #[cfg(feature = "remote")]
@@ -854,5 +1094,90 @@ mod tests {
             Some(r#"["train","test"]"#)
         );
         assert!(metadata.contains_key(BASE_VERSION_CONFIG_KEY));
+    }
+
+    #[tokio::test]
+    async fn test_permutation_persist_create_overwrite_and_namespace() {
+        use lance_namespace::models::CreateNamespaceRequest;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let initial_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(100), BatchCount::from(1));
+        let data_table = db
+            .create_table("base_tbl", initial_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let namespace_path = vec!["plans".to_string()];
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let persist = |mode| PermutationPersistOptions {
+            namespace_path: namespace_path.clone(),
+            mode,
+        };
+        let first_plan = PermutationBuilder::new(data_table.clone())
+            .persist_with_options(
+                db.database().clone(),
+                "splits".to_string(),
+                persist(PermutationPersistMode::Create),
+            )
+            .build()
+            .await
+            .unwrap();
+        let first_version = first_plan.version().await.unwrap();
+        assert_eq!(first_plan.count_rows(None).await.unwrap(), 100);
+
+        let opened = db
+            .open_table("splits")
+            .namespace(namespace_path.clone())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(opened.count_rows(None).await.unwrap(), 100);
+
+        let err = PermutationBuilder::new(data_table.clone())
+            .persist_with_options(
+                db.database().clone(),
+                "splits".to_string(),
+                persist(PermutationPersistMode::Create),
+            )
+            .build()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::TableAlreadyExists { .. }),
+            "expected TableAlreadyExists, got: {err:?}"
+        );
+
+        let more_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(50), BatchCount::from(1));
+        data_table.add(more_data).execute().await.unwrap();
+
+        let second_plan = PermutationBuilder::new(data_table)
+            .persist_with_options(
+                db.database().clone(),
+                "splits".to_string(),
+                persist(PermutationPersistMode::Overwrite),
+            )
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(second_plan.count_rows(None).await.unwrap(), 150);
+
+        // Overwrite creates a new table version; the old handle stays on its snapshot.
+        assert_eq!(first_plan.count_rows(None).await.unwrap(), 100);
+        assert_eq!(first_plan.version().await.unwrap(), first_version);
     }
 }

@@ -1,12 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as path from "node:path";
 import { RecordBatch } from "apache-arrow";
 import * as tmp from "tmp";
 import { Connection, Index, Table, connect, makeArrowTable } from "../lancedb";
 import { RRFReranker } from "../lancedb/rerankers";
+
+it("reranks record batches created by an ESM Arrow import", () => {
+  const script = `
+import assert from "node:assert/strict";
+import { tableFromArrays } from "apache-arrow";
+import { rerankers } from "./dist/index.js";
+
+const ids = [1n, 9007199254740993n];
+const batch = tableFromArrays({ _rowid: new BigUint64Array(ids) }).batches[0];
+const reranker = await rerankers.RRFReranker.create();
+const result = await reranker.rerankHybrid("", batch, batch);
+
+assert.equal(result.numRows, 2);
+assert.deepEqual(Array.from(result.getChild("_rowid").toArray()), ids);
+const scores = result.getChild("_relevance_score").toArray();
+assert.ok(Math.abs(scores[0] - 2 / 61) < 1e-8);
+assert.ok(Math.abs(scores[1] - 2 / 62) < 1e-8);
+
+const oneSide = await reranker.rerankHybrid("", batch, batch.slice(0, 0));
+assert.deepEqual(Array.from(oneSide.getChild("_rowid").toArray()), ids);
+const oneSideScores = oneSide.getChild("_relevance_score").toArray();
+assert.ok(Math.abs(oneSideScores[0] - 1 / 61) < 1e-8);
+assert.ok(Math.abs(oneSideScores[1] - 1 / 62) < 1e-8);
+`;
+  execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: path.resolve(__dirname, ".."),
+    timeout: 10_000,
+  });
+});
 
 describe("rerankers", function () {
   let tmpDir: tmp.DirResult;

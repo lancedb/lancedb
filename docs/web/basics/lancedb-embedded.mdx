@@ -1,0 +1,46 @@
+---
+title: "LanceDB Embedded"
+sidebarTitle: "LanceDB Embedded"
+description: "The open-source, embedded retrieval library that runs inside your application process."
+icon: cube
+keywords: ["embedded", "open source", "oss", "local", "sdk", "lancedb embedded"]
+---
+
+**LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
+Rust -- the application itself plans queries, builds indexes, and runs background work, with no separate database
+server to deploy. It reads and writes tables on local disk or in object storage from inside your application
+process, on the same [Lance](/basics/lance) format and table model that [LanceDB Enterprise](/enterprise/index)
+builds on.
+
+<Frame caption="LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.">
+  <img src="/static/assets/images/overview/lancedb-embedded.png" alt="LanceDB Embedded architecture" width="440" />
+</Frame>
+
+## Why use LanceDB Embedded? {#why-use-lancedb-embedded}
+
+LanceDB Embedded fits local retrieval applications, notebooks, development, and single-node data pipelines, where
+your application controls its own compute resources and [table maintenance](/maintenance/compaction).
+
+- **No infrastructure to run** -- the library runs inside your process. There is no server to deploy, configure,
+  or keep available.
+- **Free and open source** -- `pip install lancedb` (or the TypeScript or Rust equivalent) and start reading and
+  writing tables, with no account or service to set up first.
+- **Full local control** -- your application decides where table data lives, when maintenance such as compaction
+  and indexing runs, and how much compute each operation gets.
+- **The same table format as Enterprise** -- Embedded and [Enterprise](/enterprise/index) share the same Lance
+  format and table model, so moving to a distributed deployment later does not require a data conversion step.
+
+## Get started {#get-started}
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Create a table, add data, and run your first search in a few lines of code.
+  </Card>
+  <Card title="Choose an SDK" icon="code-compare" href="/basics/sdk">
+    Pick between the Python, TypeScript, and Rust SDKs.
+  </Card>
+</CardGroup>
+
+When your data or traffic outgrows a single machine, or you need managed infrastructure, private deployment, or
+platform support, see [LanceDB Enterprise](/enterprise/index) and the
+[feature-by-feature comparison](/basics/embedded-vs-enterprise).

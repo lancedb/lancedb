@@ -7,7 +7,10 @@
   "plugins": [
     {
       "name": "lancedb",
-      "source": "./plugins/lancedb",
+      "source": {
+        "source": "github",
+        "repo": "lancedb/lancedb-agent-plugins"
+      },
       "description": "Write, review, debug, and document LanceDB pipelines in Python and TypeScript that work with both LanceDB Embedded and LanceDB Enterprise.",
       "version": "0.1.0",
       "author": {
