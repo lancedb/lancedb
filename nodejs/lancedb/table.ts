@@ -2895,26 +2895,22 @@ class TableDeltaReaderImpl implements TableDeltaReader {
 /**
  * Contents of a table branch.
  *
- * `createAt` and `metadata` are optional on this type so that values written
- * against releases that did not expose them remain assignable. Both are
- * always set on the instances returned by {@link Branches.list}.
+ * This is the shape released in 0.41.0. Newer fields exposed by
+ * {@link Branches.list} are declared on {@link ListedBranchContents} so that
+ * values and interfaces written against the released shape remain assignable.
  */
 export interface BranchContents {
   /** Branch this branch was forked from. Absent for direct forks of `main`. */
   parentBranch?: string;
   /** Version on the parent branch this branch was forked from. */
   parentVersion: number;
-  /** Branch creation time in Unix seconds. */
-  createAt?: number;
   /** Size in bytes of the branch's manifest file. */
   manifestSize: number;
-  /** Application-defined string metadata. */
-  metadata?: Record<string, string>;
 }
 
 /**
- * Branch contents as returned by {@link Branches.list}, with `createAt` and
- * `metadata` guaranteed to be present.
+ * Branch contents as returned by {@link Branches.list}, with the newer
+ * `createAt` and `metadata` fields guaranteed to be present.
  */
 export interface ListedBranchContents extends BranchContents {
   /** Branch creation time in Unix seconds. */
@@ -2927,7 +2923,9 @@ export interface ListedBranchContents extends BranchContents {
  * Runtime class of the branch contents returned by {@link Branches.list}.
  * Returned instances pass `instanceof BranchContents` checks.
  */
-export const BranchContents: new () => BranchContents = NativeBranchContents;
+export const BranchContents: (new () => BranchContents) & {
+  prototype: BranchContents;
+} = NativeBranchContents;
 
 /**
  * Branch manager for a {@link Table}.

@@ -8,25 +8,15 @@
 
 Contents of a table branch.
 
-`createAt` and `metadata` are optional on this type so that values written
-against releases that did not expose them remain assignable. Both are
-always set on the instances returned by [Branches.list](../classes/Branches.md#list).
+This is the shape released in 0.41.0. Newer fields exposed by
+[Branches.list](../classes/Branches.md#list) are declared on [ListedBranchContents](ListedBranchContents.md) so that
+values and interfaces written against the released shape remain assignable.
 
 ## Extended by
 
 - [`ListedBranchContents`](ListedBranchContents.md)
 
 ## Properties
-
-### createAt?
-
-```ts
-optional createAt: number;
-```
-
-Branch creation time in Unix seconds.
-
-***
 
 ### manifestSize
 
@@ -35,16 +25,6 @@ manifestSize: number;
 ```
 
 Size in bytes of the branch's manifest file.
-
-***
-
-### metadata?
-
-```ts
-optional metadata: Record<string, string>;
-```
-
-Application-defined string metadata.
 
 ***
 

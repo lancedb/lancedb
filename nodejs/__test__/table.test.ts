@@ -4204,6 +4204,26 @@ describe("when dealing with branches", () => {
     expect(legacy.parentVersion).toBe(3);
     expect(legacy.parentBranch).toBeUndefined();
 
+    // Callers may carry extra fields of any type: the released shape has no
+    // createAt/metadata, so nothing constrains them.
+    const view = { parentVersion: 1, manifestSize: 512, createAt: new Date() };
+    const branch: BranchContents = view;
+    expect(branch.manifestSize).toBe(512);
+
+    interface AnnotatedBranch extends BranchContents {
+      metadata: { priority: number };
+    }
+    const annotated: AnnotatedBranch = {
+      parentVersion: 2,
+      manifestSize: 64,
+      metadata: { priority: 1 },
+    };
+    expect(annotated.metadata.priority).toBe(1);
+
+    // The exported constructor's prototype stays typed as BranchContents.
+    const proto: BranchContents = BranchContents.prototype;
+    expect(typeof proto).toBe("object");
+
     // branches.list() still guarantees both newer fields, in its return type
     // and at runtime.
     const conn = await connect(tmpDir.name);

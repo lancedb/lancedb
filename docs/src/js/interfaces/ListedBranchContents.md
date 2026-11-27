@@ -6,8 +6,8 @@
 
 # Interface: ListedBranchContents
 
-Branch contents as returned by [Branches.list](../classes/Branches.md#list), with `createAt` and
-`metadata` guaranteed to be present.
+Branch contents as returned by [Branches.list](../classes/Branches.md#list), with the newer
+`createAt` and `metadata` fields guaranteed to be present.
 
 ## Extends
 
@@ -22,10 +22,6 @@ createAt: number;
 ```
 
 Branch creation time in Unix seconds.
-
-#### Overrides
-
-[`BranchContents`](BranchContents.md).[`createAt`](BranchContents.md#createat)
 
 ***
 
@@ -50,10 +46,6 @@ metadata: Record<string, string>;
 ```
 
 Application-defined string metadata.
-
-#### Overrides
-
-[`BranchContents`](BranchContents.md).[`metadata`](BranchContents.md#metadata)
 
 ***
 

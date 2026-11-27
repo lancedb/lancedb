@@ -4,15 +4,19 @@
 
 [@lancedb/lancedb](../globals.md) / BranchContents
 
-# Variable: BranchContents()
+# Variable: BranchContents
 
 ```ts
-BranchContents: () => BranchContents;
+BranchContents: () => BranchContents & object;
 ```
 
 Runtime class of the branch contents returned by [Branches.list](../classes/Branches.md#list).
 Returned instances pass `instanceof BranchContents` checks.
 
-## Returns
+## Type declaration
 
-[`BranchContents`](../interfaces/BranchContents.md)
+### prototype
+
+```ts
+prototype: BranchContents;
+```
