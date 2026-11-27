@@ -30,7 +30,7 @@ use crate::Error;
 use crate::blob::{BlobDescriptor, BlobDescriptorSource, BlobFile, BlobRangeRequest};
 use crate::error::Result;
 use crate::query::{QueryFilter, QueryRequest, Select};
-use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
+use crate::remote::client::{HttpSend, PresignedReadError, RequestResultExt, RestfulLanceDbClient};
 use crate::table::{AnyQuery, BaseTable};
 
 use super::{
@@ -844,11 +844,6 @@ enum PresignedBlobState {
     Proxy,
 }
 
-enum PresignedReadError {
-    Expired,
-    Failed(Error),
-}
-
 struct PresignedBlobRangeRequester<S: HttpSend> {
     context: BlobLocationsContext<S>,
     row_id: u64,
@@ -981,6 +976,7 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
     async fn direct_read(
         &self,
         url: &str,
+        expires_at_unix_secs: Option<u64>,
         base_offset: u64,
         range: Range<u64>,
     ) -> std::result::Result<BlobRangeResponse, PresignedReadError> {
@@ -1002,17 +998,11 @@ impl<S: HttpSend> PresignedBlobRangeRequester<S> {
                 message: "presigned physical range end overflows u64".into(),
             })
         })?;
-        let request = self
-            .context
-            .client
-            .object_store_get(url)
-            .header(header::RANGE, format!("bytes={start}-{}", end - 1));
         let (request_id, response) = self
             .context
             .client
-            .send_object_store(request)
-            .await
-            .map_err(PresignedReadError::Failed)?;
+            .send_object_store(url, start..end, expires_at_unix_secs, self.row_id)
+            .await?;
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -1105,7 +1095,10 @@ impl<S: HttpSend> BlobRangeRequester for PresignedBlobRangeRequester<S> {
                         refreshed = true;
                         continue;
                     }
-                    match self.direct_read(&url, base_offset, range.clone()).await {
+                    match self
+                        .direct_read(&url, expires, base_offset, range.clone())
+                        .await
+                    {
                         Ok(response) => return Ok(response),
                         Err(PresignedReadError::Expired) if !refreshed => {
                             log::debug!("blob_direct refresh row={} reason=reactive", self.row_id);

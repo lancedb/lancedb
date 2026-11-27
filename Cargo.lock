@@ -6072,6 +6072,7 @@ dependencies = [
  "hf-hub",
  "http",
  "http-body",
+ "hyper",
  "lance",
  "lance-arrow",
  "lance-core",
