@@ -7,16 +7,28 @@ use reqwest::{
     Body, Request, RequestBuilder, Response,
     header::{HeaderMap, HeaderValue},
 };
-use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    error::Error as _,
+    future::Future,
+    io,
+    ops::Range,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::Semaphore;
 
 use crate::error::{Error, HttpErrorSource, RemoteErrorMetadata, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
+use crate::remote::table::blobs::BlobLocationCache;
 use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
+const OBJECT_STORE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const OBJECT_STORE_MAX_ATTEMPTS: u8 = 2;
 /// M1 prototype routing threshold for direct Blob reads. It stays internal
 /// until the acceptance benchmark establishes the right default.
 const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
@@ -242,7 +254,8 @@ pub struct TimeoutConfig {
     /// You can also set the `LANCE_CLIENT_CONNECTION_TIMEOUT` environment variable
     /// to set this value. Use an integer value in seconds.
     ///
-    /// The default is 300 seconds (5 minutes).
+    /// Defaults to 300 seconds for Enterprise requests and 30 seconds for
+    /// presigned object-store requests.
     pub pool_idle_timeout: Option<Duration>,
 }
 
@@ -309,6 +322,41 @@ pub struct RetryConfig {
     // TODO: should we allow customizing methods?
 }
 
+#[derive(Debug)]
+pub(crate) enum PresignedReadError {
+    Expired,
+    Failed(Error),
+}
+
+impl From<Error> for PresignedReadError {
+    fn from(error: Error) -> Self {
+        Self::Failed(error)
+    }
+}
+
+fn object_store_connection_lost(error: &reqwest::Error) -> bool {
+    let mut cause = error.source();
+    while let Some(source) = cause {
+        if source.downcast_ref::<hyper::Error>().is_some_and(|error| {
+            error.is_closed() || error.is_canceled() || error.is_incomplete_message()
+        }) || source.downcast_ref::<io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::NotConnected
+                    // A TLS peer can close TCP without sending close_notify.
+                    | io::ErrorKind::UnexpectedEof
+            )
+        }) {
+            return true;
+        }
+        cause = source.source();
+    }
+    false
+}
+
 // We use the `HttpSend` trait to abstract over the `reqwest::Client` so that
 // we can mock responses in tests. Based on the patterns from this blog post:
 // https://write.as/balrogboogie/testing-reqwest-based-clients
@@ -322,6 +370,8 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) blob_request_semaphore: Arc<Semaphore>,
+    pub(crate) object_store_read_parallelism: usize,
+    pub(crate) blob_location_cache: BlobLocationCache,
     /// Logical blob/range size at which a handle prefers a presigned direct
     /// read over the existing proxy byte-range route.
     pub(crate) blob_presign_threshold_bytes: u64,
@@ -554,13 +604,12 @@ impl RestfulLanceDbClient<Sender> {
             // Though it's confusing with the connect_timeout name, this is the
             // legacy name for this in the Python sync client. So we keep as-is.
             "LANCE_CLIENT_CONNECTION_TIMEOUT",
-        )?
-        .unwrap_or_else(|| Duration::from_secs(300));
+        )?;
 
         let mut client_builder = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(read_timeout)
-            .pool_idle_timeout(pool_idle_timeout);
+            .pool_idle_timeout(pool_idle_timeout.unwrap_or(Duration::from_secs(300)));
         if let Some(timeout) = timeout {
             client_builder = client_builder.timeout(timeout);
         }
@@ -634,7 +683,8 @@ impl RestfulLanceDbClient<Sender> {
         let mut object_store_builder = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(read_timeout)
-            .pool_idle_timeout(pool_idle_timeout);
+            .pool_idle_timeout(pool_idle_timeout.unwrap_or(OBJECT_STORE_POOL_IDLE_TIMEOUT))
+            .retry(reqwest::retry::never());
         if let Some(timeout) = timeout {
             object_store_builder = object_store_builder.timeout(timeout);
         }
@@ -652,6 +702,12 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             blob_request_semaphore: Arc::new(Semaphore::new(blob_request_concurrency)),
+            object_store_read_parallelism: std::env::var("LANCE_IO_THREADS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(lance_io::object_store::DEFAULT_CLOUD_IO_PARALLELISM)
+                .clamp(1, blob_request_concurrency),
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: client_config.header_provider,
@@ -852,32 +908,79 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
-    /// Start a presigned object-store request. This client has no Enterprise
-    /// default headers and no dynamic header provider.
-    pub(crate) fn object_store_get(&self, url: &str) -> RequestBuilder {
-        self.object_store_client.get(url)
-    }
-
-    /// Send presigned object-store traffic without request logging, request
-    /// ids, service headers, or signed URLs in returned errors.
+    /// Read a physical range with a separate client that carries no Enterprise
+    /// credentials. Retry an eligible timeout or disconnect once before the
+    /// complete response headers arrive. The caller consumes the response body
+    /// outside this retry loop.
     pub(crate) async fn send_object_store(
         &self,
-        req: RequestBuilder,
-    ) -> Result<(String, Response)> {
+        url: &str,
+        range: Range<u64>,
+        expires_at_unix_secs: Option<u64>,
+        row_id: u64,
+    ) -> std::result::Result<(String, Response), PresignedReadError> {
         let request_id = "blob-direct".to_string();
-        let (client, request) = req.build_split();
-        let request = request.map_err(|err| Error::Http {
-            source: Box::new(err.without_url()),
-            request_id: request_id.clone(),
-            status_code: None,
-        })?;
-        let response = self
-            .sender
-            .send(&client, request)
-            .await
-            .map_err(|err| err.without_url())
-            .err_to_http(request_id.clone())?;
-        Ok((request_id, response))
+        let start = range.start;
+        let end = range.end;
+        let range_header = format!("bytes={start}-{}", end - 1);
+        let unix_now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+        };
+        let expired = || expires_at_unix_secs.is_some_and(|expiry| expiry <= unix_now().as_secs());
+        let mut attempt = 1;
+        loop {
+            if expired() {
+                return Err(PresignedReadError::Expired);
+            }
+            let request = self
+                .object_store_client
+                .get(url)
+                .header(reqwest::header::RANGE, &range_header)
+                .build()
+                .map_err(|error| Error::Http {
+                    source: Box::new(error.without_url()),
+                    request_id: request_id.clone(),
+                    status_code: None,
+                })?;
+            debug!(
+                "blob_direct_attempt row={row_id} event=send at_ms={} attempt={attempt} range_start={start} range_end_exclusive={end}",
+                unix_now().as_millis()
+            );
+            let error = match self.sender.send(&self.object_store_client, request).await {
+                Ok(response) => {
+                    debug!(
+                        "blob_direct_attempt row={row_id} event=response status={} at_ms={} attempt={attempt} range_start={start} range_end_exclusive={end}",
+                        response.status().as_u16(),
+                        unix_now().as_millis()
+                    );
+                    return Ok((request_id, response));
+                }
+                Err(error) => error,
+            };
+            debug!(
+                "blob_direct_attempt row={row_id} event=no_response at_ms={} attempt={attempt} range_start={start} range_end_exclusive={end}",
+                unix_now().as_millis()
+            );
+            let retryable = if error.is_timeout() {
+                self.retry_config.read_retries > 0
+            } else {
+                self.retry_config.connect_retries > 0 && object_store_connection_lost(&error)
+            };
+            if retryable && expired() {
+                return Err(PresignedReadError::Expired);
+            }
+            if !retryable || attempt == OBJECT_STORE_MAX_ATTEMPTS {
+                return Err(Error::Http {
+                    source: Box::new(error.without_url()),
+                    request_id,
+                    status_code: None,
+                }
+                .into());
+            }
+            attempt += 1;
+        }
     }
 
     pub fn put(&self, uri: &str) -> RequestBuilder {
@@ -885,29 +988,44 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.put(full_uri)
     }
 
-    /// Apply dynamic headers from the header provider if configured
-    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+    pub(crate) async fn dynamic_headers(&self) -> Result<HeaderMap> {
+        let mut result = HeaderMap::new();
         if let Some(ref provider) = self.header_provider {
             let headers = provider.get_headers().await?;
-            let request_headers = request.headers_mut();
             for (key, value) in headers {
                 if let Ok(header_name) = HeaderName::from_str(&key) {
                     if let Ok(header_value) = HeaderValue::from_str(&value) {
-                        request_headers.insert(header_name, header_value);
+                        result.insert(header_name, header_value);
                     } else {
                         debug!("Invalid header value for key {}", key);
                     }
                 } else {
-                    debug!("Invalid header name: {}", key);
+                    debug!("Invalid header name for key {}", key);
                 }
             }
         }
+        Ok(result)
+    }
+
+    /// Apply dynamic headers from the header provider if configured.
+    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+        request.headers_mut().extend(self.dynamic_headers().await?);
         redact_sensitive_headers(request.headers_mut());
         Ok(request)
     }
 
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
-        self.send_logging(req, BodyLogging::Allowed).await
+        self.send_logging(req, BodyLogging::Allowed, None).await
+    }
+
+    /// Send using the same header values that the caller used for its cache lookup.
+    pub(crate) async fn send_with_resolved_headers(
+        &self,
+        req: RequestBuilder,
+        headers: HeaderMap,
+    ) -> Result<(String, Response)> {
+        self.send_logging(req, BodyLogging::Allowed, Some(headers))
+            .await
     }
 
     /// Send a request whose body must never reach a debug log.
@@ -915,20 +1033,25 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     /// The body is built by the caller, so only the caller knows it holds a
     /// credential; `log_request` sees serialized bytes and cannot tell.
     pub async fn send_suppressing_body(&self, req: RequestBuilder) -> Result<(String, Response)> {
-        self.send_logging(req, BodyLogging::Suppressed).await
+        self.send_logging(req, BodyLogging::Suppressed, None).await
     }
 
     async fn send_logging(
         &self,
         req: RequestBuilder,
         body_logging: BodyLogging,
+        resolved_headers: Option<HeaderMap>,
     ) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
         let request_id = self.extract_request_id(&mut request);
 
-        // Apply dynamic headers before sending
-        request = self.apply_dynamic_headers(request).await?;
+        if let Some(headers) = resolved_headers {
+            request.headers_mut().extend(headers);
+            redact_sensitive_headers(request.headers_mut());
+        } else {
+            request = self.apply_dynamic_headers(request).await?;
+        }
 
         self.log_request(&request, &request_id, body_logging);
 
@@ -1250,6 +1373,8 @@ pub mod test_utils {
             host: "http://localhost".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
@@ -1283,6 +1408,10 @@ pub mod test_utils {
                     .blob_request_concurrency
                     .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
             )),
+            object_store_read_parallelism: config
+                .blob_request_concurrency
+                .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: MockSender {
                 f: Arc::new(wrapper),
@@ -1413,6 +1542,297 @@ mod tests {
             .expect("structured HTTP error details");
         assert_eq!(details.error_code, "already_exists");
         assert_eq!(details.resource_kind, "namespace");
+    }
+
+    async fn read_object_store_request(socket: &mut tokio::net::TcpStream) -> Vec<String> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let mut reader = BufReader::new(socket);
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+            if line == "\r\n" {
+                return headers;
+            }
+            headers.push(line);
+        }
+    }
+
+    #[tokio::test]
+    async fn object_store_reads_after_an_idle_pooled_connection_resets() {
+        use super::*;
+        use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = RestfulLanceDbClient::try_new(
+            &parse_db_url("db://test").unwrap(),
+            "us-east-2",
+            Some(base.clone()),
+            HeaderMap::from_iter([(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_static("qn-only"),
+            )]),
+            ClientConfig {
+                timeout_config: TimeoutConfig {
+                    pool_idle_timeout: Some(Duration::from_secs(30)),
+                    ..Default::default()
+                },
+                retry_config: RetryConfig {
+                    connect_retries: Some(0),
+                    read_retries: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let (drained, body_drained) = oneshot::channel();
+        let (reset, connection_reset) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            const RESPONSE: &[u8] = b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-8/10\r\nContent-Length: 4\r\n\r\ndata";
+            let (mut pooled, _) = listener.accept().await.unwrap();
+            let first = read_object_store_request(&mut pooled).await;
+            pooled.write_all(RESPONSE).await.unwrap();
+            let reused = read_object_store_request(&mut pooled).await;
+            pooled.write_all(RESPONSE).await.unwrap();
+            // Reset a socket that was actually pooled and reused, once its
+            // second response has been drained and before the next request.
+            body_drained.await.unwrap();
+            pooled.set_zero_linger().unwrap();
+            drop(pooled);
+            reset.send(()).unwrap();
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            let after_reset = read_object_store_request(&mut fresh).await;
+            fresh.write_all(RESPONSE).await.unwrap();
+            [first, reused, after_reset]
+        });
+        let url = format!("{base}/object?signature=fixture");
+        let requests = tokio::time::timeout(Duration::from_secs(5), async {
+            let read = || async {
+                let (_, response) = client
+                    .send_object_store(&url, 5..9, None, 42)
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+                assert_eq!(response.bytes().await.unwrap().as_ref(), b"data");
+            };
+            read().await;
+            read().await;
+            drained.send(()).unwrap();
+            connection_reset.await.unwrap();
+            read().await;
+            server.await.unwrap()
+        })
+        .await
+        .expect("an idle connection reset must leave the pool usable");
+        for request in requests {
+            assert_eq!(request[0], "GET /object?signature=fixture HTTP/1.1\r\n");
+            assert!(request.iter().any(|line| line == "range: bytes=5-8\r\n"));
+            assert!(!request.iter().any(|line| line.starts_with("x-api-key:")));
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ObjectStoreDisconnectPoint {
+        BeforeHead,
+        DuringHead,
+        DuringBody,
+    }
+
+    #[rstest::rstest]
+    #[case::zero_byte_fin(ObjectStoreDisconnectPoint::BeforeHead, false)]
+    #[case::zero_byte_reset(ObjectStoreDisconnectPoint::BeforeHead, true)]
+    #[case::partial_head_fin(ObjectStoreDisconnectPoint::DuringHead, false)]
+    #[case::partial_head_reset(ObjectStoreDisconnectPoint::DuringHead, true)]
+    #[case::partial_body_fin(ObjectStoreDisconnectPoint::DuringBody, false)]
+    #[tokio::test]
+    async fn object_store_retries_disconnects_before_complete_response_headers(
+        #[case] disconnect_point: ObjectStoreDisconnectPoint,
+        #[case] reset: bool,
+        #[values(0, 1)] connect_retries: u8,
+    ) {
+        use sha2::{Digest, Sha256};
+        use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot};
+
+        const CONTENT_RANGE: &str = "bytes 5-8/10";
+        const PAYLOAD: &[u8] = b"data";
+        const PARTIAL_HEAD: &[u8] =
+            b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-8/10\r\n";
+        const RESPONSE_HEAD: &[u8] = b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-8/10\r\nContent-Length: 4\r\n\r\n";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = RestfulLanceDbClient::try_new(
+            &parse_db_url("db://test").unwrap(),
+            "us-east-2",
+            Some(base.clone()),
+            HeaderMap::new(),
+            ClientConfig {
+                retry_config: RetryConfig {
+                    connect_retries: Some(connect_retries),
+                    read_retries: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let (finished, finished_read) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
+            for _ in 0..2 {
+                read_object_store_request(&mut socket).await;
+                socket.write_all(RESPONSE_HEAD).await.unwrap();
+                socket.write_all(PAYLOAD).await.unwrap();
+            }
+            let original = read_object_store_request(&mut socket).await;
+            match disconnect_point {
+                ObjectStoreDisconnectPoint::BeforeHead => {}
+                ObjectStoreDisconnectPoint::DuringHead => {
+                    socket.write_all(PARTIAL_HEAD).await.unwrap();
+                }
+                ObjectStoreDisconnectPoint::DuringBody => {
+                    socket.write_all(RESPONSE_HEAD).await.unwrap();
+                    socket.write_all(&PAYLOAD[..2]).await.unwrap();
+                }
+            }
+            if reset {
+                socket.set_zero_linger().unwrap();
+            } else {
+                socket.shutdown().await.unwrap();
+            }
+            drop(socket);
+            let replay = tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    let request = read_object_store_request(&mut socket).await;
+                    socket.write_all(RESPONSE_HEAD).await.unwrap();
+                    socket.write_all(PAYLOAD).await.unwrap();
+                    Some(request)
+                }
+                _ = finished_read => None,
+            };
+            (listener, original, replay)
+        });
+        let url = format!("{base}/object?signature=fixture");
+        let expects_replay =
+            connect_retries > 0 && disconnect_point != ObjectStoreDisconnectPoint::DuringBody;
+        let (listener, original, replay) = tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..2 {
+                let (_, response) = client
+                    .send_object_store(&url, 5..9, None, 42)
+                    .await
+                    .unwrap();
+                assert_eq!(response.bytes().await.unwrap().as_ref(), PAYLOAD);
+            }
+            let result = client.send_object_store(&url, 5..9, None, 42).await;
+            if disconnect_point == ObjectStoreDisconnectPoint::DuringBody || expects_replay {
+                let (_, response) = result.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+                assert_eq!(
+                    response.headers()[reqwest::header::CONTENT_RANGE],
+                    CONTENT_RANGE
+                );
+                let body = response.bytes().await;
+                if expects_replay {
+                    let body = body.unwrap();
+                    assert_eq!(body.len(), PAYLOAD.len());
+                    assert_eq!(Sha256::digest(&body), Sha256::digest(PAYLOAD));
+                } else {
+                    let error = body.unwrap_err();
+                    assert!(!error.is_timeout());
+                }
+            } else {
+                let PresignedReadError::Failed(Error::Http {
+                    source,
+                    status_code: None,
+                    ..
+                }) = result.unwrap_err()
+                else {
+                    panic!("expected a disconnect error before the complete response headers");
+                };
+                let error = source.downcast_ref::<reqwest::Error>().unwrap();
+                assert!(!error.is_timeout());
+                assert!(error.url().is_none());
+            }
+            let _ = finished.send(());
+            server.await.unwrap()
+        })
+        .await
+        .expect("the requests must finish within the loopback test deadline");
+        assert_eq!(original[0], "GET /object?signature=fixture HTTP/1.1\r\n");
+        assert!(
+            original
+                .iter()
+                .any(|header| header == "range: bytes=5-8\r\n")
+        );
+        assert_eq!(replay.is_some(), expects_replay);
+        if let Some(replay) = replay {
+            assert_eq!(replay, original);
+        }
+        assert!(futures::FutureExt::now_or_never(listener.accept()).is_none());
+    }
+
+    #[tokio::test]
+    async fn object_store_retries_a_header_timeout_once() {
+        use super::*;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = RestfulLanceDbClient::try_new(
+            &parse_db_url("db://test").unwrap(),
+            "us-east-2",
+            Some(base.clone()),
+            HeaderMap::new(),
+            ClientConfig {
+                timeout_config: TimeoutConfig {
+                    read_timeout: Some(Duration::from_millis(100)),
+                    ..Default::default()
+                },
+                retry_config: RetryConfig {
+                    read_retries: Some(5),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let original = read_object_store_request(&mut first).await;
+            let (mut second, _) = listener.accept().await.unwrap();
+            let replay = read_object_store_request(&mut second).await;
+            // Keep both sockets open until the caller exhausts its retry.
+            (listener, first, second, original, replay)
+        });
+        let url = format!("{base}/object?signature=fixture");
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.send_object_store(&url, 5..9, None, 42),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let (listener, _, _, original, replay) = server.await.unwrap();
+        assert_eq!(original, replay);
+        assert!(futures::FutureExt::now_or_never(listener.accept()).is_none());
+        let PresignedReadError::Failed(Error::Http {
+            source,
+            status_code: None,
+            ..
+        }) = error
+        else {
+            panic!("expected a pre-response client timeout: {error:?}");
+        };
+        let source = source.downcast_ref::<reqwest::Error>().unwrap();
+        assert!(source.is_timeout());
+        assert!(source.url().is_none());
     }
 
     #[tokio::test]
@@ -1562,12 +1982,19 @@ mod tests {
 
     #[test]
     fn test_blob_request_concurrency_must_be_positive() {
-        let error = super::ClientConfig {
-            blob_request_concurrency: Some(0),
-            ..Default::default()
-        }
-        .validate()
+        let error = RestfulLanceDbClient::try_new(
+            &super::parse_db_url("db://test").unwrap(),
+            "us-east-2",
+            Some("http://localhost".into()),
+            HeaderMap::new(),
+            super::ClientConfig {
+                blob_request_concurrency: Some(0),
+                ..Default::default()
+            },
+            None,
+        )
         .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
         assert!(error.to_string().contains("blob_request_concurrency"));
         assert_eq!(
             RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(3)).unwrap(),
@@ -1932,6 +2359,8 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -1973,6 +2402,8 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -2040,6 +2471,8 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            object_store_read_parallelism: DEFAULT_BLOB_REQUEST_CONCURRENCY,
+            blob_location_cache: BlobLocationCache::default(),
             blob_presign_threshold_bytes: DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES,
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),

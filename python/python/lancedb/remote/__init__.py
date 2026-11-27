@@ -36,7 +36,7 @@ __all__ = [
 
 @dataclass
 class TimeoutConfig:
-    """Timeout configuration for remote HTTP client.
+    """Timeout configuration for the Enterprise HTTP client.
 
     Attributes
     ----------
@@ -58,9 +58,11 @@ class TimeoutConfig:
         set via the environment variable
         `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
     pool_idle_timeout: Optional[timedelta]
-        The timeout for keeping idle connections in the connection pool. Default
-        is 300 seconds (5 minutes). This can also be set via the environment variable
-        `LANCE_CLIENT_CONNECTION_TIMEOUT`, as an integer number of seconds.
+        How long idle connections stay in the pool. The default is 300 seconds
+        for Enterprise requests and 30 seconds for presigned object-store requests.
+        A configured value applies to both pools. The
+        `LANCE_CLIENT_CONNECTION_TIMEOUT` environment variable accepts a value
+        in whole seconds.
     """
 
     timeout: Optional[timedelta] = None
