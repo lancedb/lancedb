@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -71,6 +72,73 @@ async def test_function_exist_ok_forwards_sql_and_keeps_stored_version(entry, ex
     assert f'{prefix} "{stored["name"]}" FROM '.encode() in request
     assert b'"exist_ok"' not in request
     assert json.loads(version.to_canonical_json()) == stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("gpu_options", "expected_gpu"),
+    [
+        pytest.param({}, {}, id="cpu"),
+        pytest.param({"gpu": True}, {"gpu": True}, id="implicit"),
+        pytest.param(
+            {"gpu": True, "gpu_count": 1}, {"gpu": True, "gpus_per_worker": 1}, id="one"
+        ),
+        pytest.param(
+            {"gpu": True, "gpu_count": 2}, {"gpu": True, "gpus_per_worker": 2}, id="two"
+        ),
+    ],
+)
+async def test_function_registration_gpu_count_and_runtime_digest(
+    gpu_options, expected_gpu
+):
+    flight = pytest.importorskip("pyarrow.flight")
+    stored = _stored_function_version()
+
+    @lancedb.function(
+        name=stored["name"],
+        python_version="3.12",
+        input_schema=pa.schema([pa.field("value", pa.int64())]),
+        output_schema=pa.int64(),
+        **gpu_options,
+    )
+    def identity(value: pa.Array) -> pa.Array:
+        return value
+
+    class FunctionServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.requests = []
+
+        def do_get(self, context, ticket):
+            self.requests.append(ticket.ticket)
+            return flight.RecordBatchStream(
+                pa.table({"definition": [json.dumps(stored)]})
+            )
+
+    with FunctionServer() as server:
+        db = await lancedb.connect_async(
+            "db://test",
+            api_key="test-key",
+            host_override="http://localhost:10024",
+            sql_host_override=f"grpc://127.0.0.1:{server.port}",
+        )
+        await db.create_function_async(identity)
+        (request,) = server.requests
+
+    assert b"CREATE FUNCTION" in request
+    _, marker, body = request.partition(b" FROM '{")
+    assert marker
+    submitted, _ = json.JSONDecoder().raw_decode("{" + body.decode())
+    expected_runtime = {
+        "kind": "python_v2" if expected_gpu else "python",
+        "python_version": "3.12",
+        "environment": {"kind": "pip"},
+        **expected_gpu,
+    }
+    assert submitted["runtime"] == expected_runtime
+    canonical = json.dumps(expected_runtime, sort_keys=True, separators=(",", ":"))
+    expected_digest = hashlib.sha256(canonical.encode()).hexdigest()
+    assert identity.registration_request.runtime.digest == f"sha256:{expected_digest}"
 
 
 @pytest.mark.asyncio
