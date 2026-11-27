@@ -395,10 +395,13 @@ impl Database for LanceNamespaceDatabase {
                     .map_err(|e| Error::Schema {
                         message: e.to_string(),
                     })?;
-                    if !table_lance_schema.compare_with_options(
-                        &request_lance_schema,
-                        &lance_core::datatypes::SchemaCompareOptions::default(),
-                    ) {
+                    let compare_options = lance_core::datatypes::SchemaCompareOptions {
+                        compare_metadata: true,
+                        ..Default::default()
+                    };
+                    if !table_lance_schema
+                        .compare_with_options(&request_lance_schema, &compare_options)
+                    {
                         return Err(Error::Schema {
                             message: "Provided schema does not match existing table schema"
                                 .to_string(),
@@ -1667,6 +1670,92 @@ mod tests {
 
         let err = conn
             .create_table("fsl_table", f64_batch)
+            .namespace(vec!["test_ns".into()])
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Schema { ref message } if message == "Provided schema does not match existing table schema"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_exist_ok_embedding_metadata_mismatch() {
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create child namespace");
+
+        let make_batch = |id_val: i32, axis: i32| {
+            let embedding_meta = serde_json::json!([{
+                "source_column": "name",
+                "vector_column": "vector",
+                "name": "test_embedder",
+                "model": { "axis": axis }
+            }]);
+            let schema = Arc::new(
+                Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("name", DataType::Utf8, false),
+                ])
+                .with_metadata(HashMap::from([(
+                    "embedding_functions".to_string(),
+                    embedding_meta.to_string(),
+                )])),
+            );
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int32Array::from(vec![id_val])),
+                    Arc::new(StringArray::from(vec!["Alice"])),
+                ],
+            )
+            .unwrap()
+        };
+
+        let created = conn
+            .create_table("embed_table", make_batch(1, 0))
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table with embedding metadata");
+        let expected_uri = created.uri().await.unwrap();
+        let expected_version = created.version().await.unwrap();
+
+        // Retrying exist_ok with the original embedding configuration should reopen the selected table.
+        let reopened = conn
+            .create_table("embed_table", make_batch(2, 0))
+            .namespace(vec!["test_ns".into()])
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .expect("Expected exist_ok retry with matching embedding metadata to succeed");
+        assert_eq!(reopened.uri().await.unwrap(), expected_uri);
+        assert_eq!(reopened.version().await.unwrap(), expected_version);
+        assert_eq!(reopened.count_rows(None).await.unwrap(), 1);
+
+        // Changing only the embedding configuration must be rejected as a schema mismatch.
+        let err = conn
+            .create_table("embed_table", make_batch(2, 1))
             .namespace(vec!["test_ns".into()])
             .mode(CreateTableMode::exist_ok(|req| req))
             .execute()
