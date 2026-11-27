@@ -765,6 +765,17 @@ impl FlightService for TestSqlService {
     }
 }
 
+fn description_batch(document: serde_json::Value) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("description", DataType::Utf8, false)]).with_metadata(
+        HashMap::from([("lancedb.describe.format".into(), "json".into())]),
+    );
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringArray::from(vec![document.to_string()]))],
+    )
+    .unwrap()
+}
+
 fn parameter_row() -> RecordBatch {
     let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
         [Some([0.1_f32, 1e-45, -0.0].map(Some))],
@@ -4220,6 +4231,12 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             adaptive: true,
             defer,
             result,
+            result_overrides: Arc::new(std::sync::Mutex::new(HashMap::from([(
+                "DESCRIBE VIEW \"adults\" FORMAT JSON".into(),
+                description_batch(
+                    serde_json::json!({"name":"adults", "query":"SELECT name FROM people", "schema":serde_json::from_str::<serde_json::Value>(schema).unwrap()}),
+                ),
+            )]))),
             ..Default::default()
         };
         let statements = service.statements.clone();
@@ -4256,7 +4273,7 @@ async fn view_create_and_describe_return_metadata_through_sql() {
             [
                 "CREATE VIEW \"adults\" AS SELECT name FROM people",
                 "CREATE VIEW IF NOT EXISTS \"adults\" AS SELECT replacement FROM other_people",
-                "DESCRIBE VIEW \"adults\""
+                "DESCRIBE VIEW \"adults\" FORMAT JSON"
             ]
         );
         assert!(
