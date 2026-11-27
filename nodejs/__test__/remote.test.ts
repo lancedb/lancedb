@@ -10,8 +10,10 @@ import {
   ClientConfig,
   Connection,
   ConnectionOptions,
+  HttpError,
   OAuthConfig,
   OAuthFlowType,
+  RetryError,
   TlsConfig,
   blob,
   connect,
@@ -792,17 +794,55 @@ describe("remote connection", () => {
         try {
           await db.tableNames();
           fail("expected an error");
-          // biome-ignore lint/suspicious/noExplicitAny: skip
-        } catch (e: any) {
+        } catch (e: unknown) {
+          expect(e).toBeInstanceOf(RetryError);
+          if (!(e instanceof RetryError)) {
+            throw e;
+          }
+          expect(e.code).toBe("Retry");
           expect(e.message).toContain("Hit retry limit for request_id=");
-          expect(e.message).toContain("Caused by: Http error");
-          expect(e.message).toContain("500 Internal Server Error");
+          expect(e.message).not.toContain("Caused by:");
+          expect(e.requestId).toEqual(expect.any(String));
+          expect(e.cause).toBeInstanceOf(HttpError);
+          if (!(e.cause instanceof HttpError)) {
+            throw e.cause;
+          }
+          expect(e.cause.message).toContain("Http error");
+          expect(`${e.message}\n${e.cause.message}`).toContain("500");
         }
       },
       {
         clientConfig: {
           retryConfig: { retries: 2 },
         },
+      },
+    );
+  });
+
+  it("reports resource identity supplied only by x-lancedb-resource", async () => {
+    const resource = Buffer.from(
+      // biome-ignore lint/style/useNamingConvention: Flight resource wire format
+      JSON.stringify({ kind: "table", name: "docs", namespace_path: ["ns"] }),
+    ).toString("base64url");
+    await withMockDatabase(
+      (_req, res) => {
+        res
+          .writeHead(400, { "x-lancedb-resource": resource })
+          .end("bad request");
+      },
+      async (db) => {
+        const error = await db.tableNames().then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(error).toBeInstanceOf(HttpError);
+        if (!(error instanceof HttpError)) {
+          throw error;
+        }
+        expect(error.statusCode).toBe(400);
+        expect(error.resourceKind).toBe("table");
+        expect(error.resourceName).toBe("docs");
+        expect(error.namespacePath).toEqual(["ns"]);
       },
     );
   });

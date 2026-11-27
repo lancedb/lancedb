@@ -43,6 +43,7 @@ import {
   toNativeBlobDescriptor,
 } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { bindErrorTranslator } from "./errors";
 import {
   type FunctionErrorRowsOptions,
   type FunctionFailedRow,
@@ -1703,7 +1704,7 @@ export class LocalTable extends Table {
 
   constructor(inner: _NativeTable) {
     super();
-    this.inner = inner;
+    this.inner = bindErrorTranslator(inner);
   }
   get name(): string {
     return this.inner.name;
@@ -2878,7 +2879,7 @@ export class Branches {
    * @hidden
    */
   constructor(inner: NativeBranches) {
-    this.#inner = inner;
+    this.#inner = bindErrorTranslator(inner);
   }
 
   /** List all branches, mapping name to branch metadata. */

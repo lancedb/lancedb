@@ -18,6 +18,7 @@ import {
   vectorFromArray,
 } from "./arrow";
 import { isBlobDescriptorField, isBlobField } from "./blob";
+import { bindErrorTranslator } from "./errors";
 import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
@@ -374,7 +375,8 @@ export class QueryBase<
     blobContext?: QueryBlobContext,
   ) {
     if (inner !== undefined) {
-      this.inner = inner;
+      this.inner =
+        inner instanceof Promise ? inner : bindErrorTranslator(inner);
     }
     this.blobContext = blobContext;
   }
@@ -386,8 +388,9 @@ export class QueryBase<
   protected doCall(fn: (inner: NativeQueryType) => void) {
     if (this.inner instanceof Promise) {
       this.inner = this.inner.then((inner) => {
-        fn(inner);
-        return inner;
+        const bound = bindErrorTranslator(inner);
+        fn(bound);
+        return bound;
       });
     } else {
       fn(this.inner);

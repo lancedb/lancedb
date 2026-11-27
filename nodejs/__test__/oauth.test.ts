@@ -6,7 +6,12 @@ import * as http from "http";
 import { execFileSync } from "node:child_process";
 import * as os from "os";
 import * as path from "path";
-import { OAuthConfig, OAuthFlowType, OAuthSession } from "../lancedb/oauth";
+import {
+  InvalidInputError,
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+} from "../lancedb";
 
 function tempCacheDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "lancedb-oauth-cache-"));
@@ -60,7 +65,20 @@ describe("OAuthSession", () => {
       scopes: ["openid"],
       flow: OAuthFlowType.DeviceCode,
     };
-    expect(() => new OAuthSession(config)).toThrow(/token/);
+    let thrown: unknown;
+    try {
+      new OAuthSession(config);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(InvalidInputError);
+    if (!(thrown instanceof InvalidInputError)) {
+      throw thrown;
+    }
+    expect(thrown.code).toBe("InvalidInput");
+    expect(thrown.message).toBe(
+      "Invalid input, OAuthSession requires OAuthConfig.token_cache to be set",
+    );
   });
 
   it("rejects azure managed identity persistence", () => {
