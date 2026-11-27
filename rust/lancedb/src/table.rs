@@ -2753,7 +2753,11 @@ impl Table {
         self.inner.list_versions().await
     }
 
-    /// List all indices that have been created with [`Self::create_index`]
+    /// List all indices that have been created with [`Self::create_index`].
+    ///
+    /// On older remote servers, indices named `.`, `..` or the empty string are
+    /// omitted because their statistics cannot be requested safely. Enriched
+    /// listings include these entries without requesting their statistics.
     pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         self.inner.list_indices().await
     }
@@ -2938,8 +2942,7 @@ impl Table {
     /// Legacy indices named `.` or `..` can still be dropped through a native
     /// connection with direct access to the dataset. On managed remote tables,
     /// these indices require server-side cleanup. Other existing and generated
-    /// names remain addressable, even when they do not meet the custom-name
-    /// rules in [`IndexBuilder::name`].
+    /// names remain addressable.
     ///
     /// This does not delete the index from disk, it just removes it from the table.
     /// To delete the index, run [`Self::optimize()`] after dropping the index.

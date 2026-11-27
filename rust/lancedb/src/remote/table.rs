@@ -52,7 +52,7 @@ use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
     resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
-    validate_fts_field, validate_index_name,
+    validate_fts_field,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -99,7 +99,7 @@ const MIN_READ_VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-m
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-lancedb-version");
 const QUERY_SNAPSHOT_HEADER: &str = "x-lancedb-query-snapshot";
 
-/// Encode an existing or server-generated name without applying custom creation rules.
+/// Encode an index name as one safe path segment.
 fn encode_index_name(name: &str) -> Result<Cow<'_, str>> {
     // Percent-encoding preserves dot segments, which URL parsing would normalize
     // into another route. All other name characters are safe after encoding.
@@ -713,9 +713,6 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
-        if let Some(name) = &index.name {
-            validate_index_name(name)?;
-        }
         self.check_mutable().await?;
         let mut request = self
             .client
@@ -2488,7 +2485,8 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     /// When the server returns `index_type` inline, all enriched fields are
     /// used directly and no further requests are made. When `index_type` is
     /// absent (legacy servers), a `/index/{name}/stats/` call is made for each
-    /// index to retrieve the type.
+    /// addressable index to retrieve the type. Unsafe legacy names are omitted
+    /// because their type cannot be retrieved without changing the URL route.
     async fn parse_index_list_response(
         &self,
         body: &str,
@@ -2535,6 +2533,11 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
         let mut futures = Vec::with_capacity(response.indexes.len());
         for entry in response.indexes {
+            if entry.index_type.is_none() && encode_index_name(&entry.index_name).is_err() {
+                // Legacy entries need a stats request to determine their type.
+                // Skip unaddressable names without failing the entire listing.
+                continue;
+            }
             let columns = entry
                 .columns
                 .iter()
@@ -13168,6 +13171,15 @@ mod tests {
             .unwrap();
         let generated_name = native.list_indices().await.unwrap()[0].name.clone();
         assert_eq!(generated_name, "café_idx");
+        let version = native.version().await.unwrap();
+        native
+            .create_index(&["café"], Index::Auto)
+            .name(generated_name.clone())
+            .exist_ok(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(native.version().await.unwrap(), version);
 
         for enriched in [true, false] {
             let schema = schema.clone();
@@ -13237,76 +13249,126 @@ mod tests {
     }
 
     #[rstest]
-    #[case(false)]
-    #[case(true)]
+    #[case("..", false)]
+    #[case(".", false)]
+    #[case("", false)]
+    #[case("..", true)]
+    #[case(".", true)]
+    #[case("", true)]
     #[tokio::test]
-    async fn test_invalid_custom_index_names_never_send_requests(#[case] exist_ok: bool) {
-        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
-            panic!("Invalid index name sent a request to {}", request.url());
-        });
-
-        for name in [
-            "..",
-            ".",
-            "",
-            "my/index",
-            "my\\index",
-            "%2e%2e",
-            "my/index?a#b c",
-            "café_idx",
-        ] {
-            for result in [
-                table
-                    .create_index(&["a"], Index::BTree(Default::default()))
-                    .name(name.to_string())
-                    .exist_ok(exist_ok)
-                    .execute()
-                    .await,
-                table
-                    .create_index(&["a"], Index::BTree(Default::default()))
-                    .name(name.to_string())
-                    .exist_ok(exist_ok)
-                    .execute_async()
-                    .await
-                    .map(|_| ()),
-            ] {
-                assert!(
-                    matches!(result, Err(Error::InvalidInput { .. })),
-                    "Expected invalid input for {name:?}, got {result:?}"
-                );
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_list_indices_with_legacy_index_name() {
-        for enriched in [false, true] {
-            let table = Table::new_with_handler("my_table", move |request| {
-                let body = match request.url().path() {
-                    "/v1/table/my_table/describe/" => {
-                        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-                        describe_response(&schema)
-                    }
-                    "/v1/table/my_table/index/list/" => {
-                        let mut entry = json!({"index_name": "..", "columns": ["a"]});
-                        if enriched {
+    async fn test_list_indices_with_legacy_index_name(
+        #[case] legacy_name: &'static str,
+        #[case] enriched: bool,
+    ) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    describe_response(&schema)
+                }
+                "/v1/table/my_table/index/list/" => {
+                    let mut entries = vec![
+                        json!({"index_name": legacy_name, "columns": ["a"]}),
+                        json!({"index_name": "Customer lookup", "columns": ["a"]}),
+                        json!({"index_name": "café_idx", "columns": ["a"]}),
+                    ];
+                    if enriched {
+                        for entry in &mut entries {
                             entry["index_type"] = json!("BTREE");
                         }
-                        json!({"indexes": [entry]}).to_string()
                     }
-                    path => panic!("Legacy index name caused an unexpected request to {path}"),
-                };
-                http::Response::builder().status(200).body(body).unwrap()
-            });
-            let result = table.list_indices().await;
-            if enriched {
-                // Names from the server remain discoverable when no per-index
-                // stats request is needed.
-                assert_eq!(result.unwrap()[0].name, "..");
+                    json!({"indexes": entries}).to_string()
+                }
+                "/v1/table/my_table/index/Customer%20lookup/stats/"
+                | "/v1/table/my_table/index/caf%C3%A9_idx/stats/" => json!({
+                    "num_indexed_rows": 1,
+                    "num_unindexed_rows": 0,
+                    "index_type": "BTREE"
+                })
+                .to_string(),
+                path => panic!("Legacy index name caused an unexpected request to {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        let indices = table.list_indices().await.unwrap();
+        let expected = if enriched {
+            vec![legacy_name, "Customer lookup", "café_idx"]
+        } else {
+            vec!["Customer lookup", "café_idx"]
+        };
+        assert_eq!(
+            indices
+                .iter()
+                .map(|index| index.name.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        table
+            .wait_for_index(&["Customer lookup", "café_idx"], Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+
+    #[rstest]
+    #[case("Customer lookup", "Customer%20lookup", false)]
+    #[case("Customer lookup", "Customer%20lookup", true)]
+    #[case("café_idx", "caf%C3%A9_idx", false)] // spellchecker:disable-line
+    #[case("café_idx", "caf%C3%A9_idx", true)] // spellchecker:disable-line
+    #[tokio::test]
+    async fn test_custom_index_names_remote_lifecycle(
+        #[case] name: &'static str,
+        #[case] encoded_name: &str,
+        #[case] background: bool,
+    ) {
+        let prefix = format!("/v1/table/my_table/index/{encoded_name}");
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    describe_response(&Schema::new(vec![Field::new("a", DataType::Int32, false)]))
+                }
+                "/v1/table/my_table/create_index/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["name"], name);
+                    assert_eq!(body["replace"], false);
+                    assert_eq!(request.url().query(), Some("exist_ok=true"));
+                    "{}".to_string()
+                }
+                "/v1/table/my_table/index/list/" => json!({"indexes": [{
+                    "index_name": name, "columns": ["a"], "index_type": "BTREE"
+                }]})
+                .to_string(),
+                path if path == format!("{prefix}/stats/") => json!({
+                    "num_indexed_rows": 1, "num_unindexed_rows": 0, "index_type": "BTREE"
+                })
+                .to_string(),
+                path if path == format!("{prefix}/drop/")
+                    || path == format!("{prefix}/prewarm/") =>
+                {
+                    "{}".to_string()
+                }
+                path => panic!("Unexpected index route: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        for _ in 0..2 {
+            let builder = table
+                .create_index(&["a"], Index::Auto)
+                .name(name.to_string())
+                .exist_ok(true);
+            if background {
+                builder.execute_async().await.unwrap().wait().await.unwrap();
             } else {
-                assert!(matches!(result, Err(Error::InvalidInput { .. })));
+                builder.execute().await.unwrap();
             }
         }
+        assert_eq!(table.list_indices().await.unwrap()[0].name, name);
+        assert!(table.index_stats(name).await.unwrap().is_some());
+        table.prewarm_index(name).await.unwrap();
+        table
+            .wait_for_index(&[name], Duration::from_secs(1))
+            .await
+            .unwrap();
+        table.drop_index(name).await.unwrap();
     }
 
     #[rstest]

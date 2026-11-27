@@ -1953,9 +1953,7 @@ class Table(ABC):
             LanceDB Enterprise only: how long to wait for the index build to finish.
             If not set, the call returns once the build is scheduled.
         name : str, optional
-            Custom name for the index: 1–128 ASCII letters, digits, dashes,
-            underscores, or periods, excluding ``.`` and ``..``. If omitted,
-            a default name is generated from the column name.
+            Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
 
@@ -2121,8 +2119,6 @@ class Table(ABC):
             The timeout to wait if indexing is asynchronous.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
-            Custom names must contain 1–128 ASCII letters, digits, dashes,
-            underscores, or periods, excluding ``.`` and ``..``.
         Examples
         --------
 
@@ -2282,8 +2278,6 @@ class Table(ABC):
             The timeout to wait if indexing is asynchronous.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
-            Custom names must contain 1–128 ASCII letters, digits, dashes,
-            underscores, or periods, excluding ``.`` and ``..``.
 
         Notes
         -----
@@ -3095,6 +3089,10 @@ class Table(ABC):
         """
         List all indices that have been created with
         [Table.create_index][lancedb.table.Table.create_index]
+
+        On older Enterprise servers, this method omits indices named ``.``,
+        ``..`` or the empty string because their statistics cannot be requested
+        safely.
 
         On LanceDB Enterprise tables, an index whose build hasn't finished may
         be missing (vector indices) or listed with 0 indexed rows (scalar and
@@ -4456,9 +4454,7 @@ class LanceTable(Table):
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
         name : str, optional
-            Custom name for the index: 1–128 ASCII letters, digits, dashes,
-            underscores, or periods, excluding ``.`` and ``..``. If omitted,
-            a default name is generated from the column name.
+            Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
 
@@ -6906,8 +6902,6 @@ class AsyncTable:
             If not set, the call returns once the build is scheduled.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
-            Custom names must contain 1–128 ASCII letters, digits, dashes,
-            underscores, or periods, excluding ``.`` and ``..``.
         exist_ok: bool, default False
             Preserve an existing index with the requested or derived name. This
             takes precedence over replace and keeps its definition and build.
@@ -8925,6 +8919,10 @@ class AsyncTable:
     async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
+
+        On older Enterprise servers, this method omits indices named ``.``,
+        ``..`` or the empty string because their statistics cannot be requested
+        safely.
 
         On LanceDB Enterprise tables, an index whose build hasn't finished may
         be missing (vector indices) or listed with 0 indexed rows (scalar and

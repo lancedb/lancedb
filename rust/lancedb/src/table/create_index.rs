@@ -30,7 +30,7 @@ use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
     resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
     supported_fm_data_type, supported_label_list_data_type, supported_vector_data_type,
-    supported_zonemap_data_type, validate_fts_field, validate_index_name,
+    supported_zonemap_data_type, validate_fts_field,
 };
 
 use super::NativeTable;
@@ -116,9 +116,6 @@ impl NativeTable {
         &self,
         opts: &crate::index::IndexBuilder,
     ) -> Result<Option<PreparedIndex>> {
-        if let Some(name) = &opts.name {
-            validate_index_name(name)?;
-        }
         self.dataset.ensure_mutable()?;
         let dataset = self.dataset.get().await?;
         if opts.exist_ok
@@ -1432,10 +1429,15 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case(false)]
-    #[case(true)]
+    #[case("Customer lookup", false)]
+    #[case("Customer lookup", true)]
+    #[case("café_idx", false)]
+    #[case("café_idx", true)]
     #[tokio::test]
-    async fn test_create_index_rejects_invalid_index_names(#[case] exist_ok: bool) {
+    async fn test_custom_index_names_preserve_exist_ok(
+        #[case] name: &str,
+        #[case] background: bool,
+    ) {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("i", Int32, [1])).unwrap();
         let table = conn
@@ -1444,40 +1446,38 @@ mod tests {
             .await
             .unwrap();
 
-        for name in ["..", ".", "", "my/index", "my\\index", "%2e%2e"] {
-            let result = table
-                .create_index(&["i"], Index::Auto)
-                .name(name.to_string())
-                .exist_ok(exist_ok)
-                .execute()
-                .await;
-            assert!(
-                matches!(result, Err(crate::Error::InvalidInput { .. })),
-                "Expected invalid input for {name:?}, got {result:?}"
-            );
-            let result = table
-                .create_index(&["i"], Index::Auto)
-                .name(name.to_string())
-                .exist_ok(exist_ok)
-                .execute_async()
-                .await;
-            assert!(
-                matches!(result, Err(crate::Error::InvalidInput { .. })),
-                "Expected invalid input for {name:?}, got {result:?}"
-            );
+        let builder = table
+            .create_index(&["i"], Index::Auto)
+            .name(name.to_string())
+            .exist_ok(true);
+        if background {
+            builder.execute_async().await.unwrap().wait().await.unwrap();
+        } else {
+            builder.execute().await.unwrap();
         }
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].name, name);
+        let version = table.version().await.unwrap();
+        let identity = indices[0].index_uuid.clone();
+        // A second call with a different definition must preserve the index.
+        let builder = table
+            .create_index(&["i"], Index::Bitmap(Default::default()))
+            .name(name.to_string())
+            .exist_ok(true);
+        if background {
+            builder.execute_async().await.unwrap().wait().await.unwrap();
+        } else {
+            builder.execute().await.unwrap();
+        }
+        assert_eq!(table.version().await.unwrap(), version);
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices[0].index_uuid, identity);
+        assert_eq!(indices[0].index_type, crate::index::IndexType::BTree);
+        assert!(table.index_stats(name).await.unwrap().is_some());
+        table.drop_index(name).await.unwrap();
         assert!(table.list_indices().await.unwrap().is_empty());
-
-        for name in ["i_idx-1..v2", "..."] {
-            table
-                .create_index(&["i"], Index::Auto)
-                .name(name.to_string())
-                .execute()
-                .await
-                .unwrap();
-            assert_eq!(table.list_indices().await.unwrap()[0].name, name);
-            table.drop_index(name).await.unwrap();
-        }
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 
     #[tokio::test]

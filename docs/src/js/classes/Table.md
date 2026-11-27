@@ -355,8 +355,7 @@ Indices on scalar columns will speed up filtering (in both
 vector and non-vector searches)
 
 The index name defaults to `${column}_idx`. Set [IndexOptions.name](../interfaces/IndexOptions.md#name)
-to use a custom name containing 1–128 ASCII letters, digits, dashes,
-underscores, or periods, excluding `.` and `..`.
+to use a custom name.
 See [IndexOptions.name](../interfaces/IndexOptions.md#name) for legacy-name cleanup guidance.
 
 On LanceDB Embedded tables the index is built before the returned promise
@@ -956,6 +955,9 @@ abstract listIndices(): Promise<IndexConfig[]>
 ```
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
+
+On older Enterprise servers, this method omits indices named `.`, `..` or
+the empty string because their statistics cannot be requested safely.
 
 On LanceDB Enterprise tables, an index whose build hasn't finished may be
 missing (vector indices) or listed with 0 indexed rows (scalar and FTS

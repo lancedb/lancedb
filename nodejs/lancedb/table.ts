@@ -471,8 +471,7 @@ export abstract class Table {
    * vector and non-vector searches)
    *
    * The index name defaults to `${column}_idx`. Set {@link IndexOptions.name}
-   * to use a custom name containing 1–128 ASCII letters, digits, dashes,
-   * underscores, or periods, excluding `.` and `..`.
+   * to use a custom name.
    * See {@link IndexOptions.name} for legacy-name cleanup guidance.
    *
    * On LanceDB Embedded tables the index is built before the returned promise
@@ -1235,6 +1234,9 @@ export abstract class Table {
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /**
    * List all indices that have been created with {@link Table.createIndex}
+   *
+   * On older Enterprise servers, this method omits indices named `.`, `..` or
+   * the empty string because their statistics cannot be requested safely.
    *
    * On LanceDB Enterprise tables, an index whose build hasn't finished may be
    * missing (vector indices) or listed with 0 indexed rows (scalar and FTS
