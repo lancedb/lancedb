@@ -917,6 +917,23 @@ def test_infer_target_schema():
     assert output == expected
 
 
+@pytest.mark.parametrize(
+    ("name", "data_type"),
+    [
+        ("vector", pa.list_(pa.float32())),
+        ("embedding", pa.large_list(pa.float64())),
+        ("vector", pa.list_(pa.int32())),
+    ],
+)
+def test_infer_target_schema_empty_reader(name, data_type):
+    data = pa.table({name: pa.array([], type=data_type)})
+
+    schema, reader = _infer_target_schema(data.to_reader())
+
+    assert schema == data.schema
+    assert sum(batch.num_rows for batch in reader) == 0
+
+
 def test_infer_target_schema_with_vector_embedding_names():
     """Test that _infer_target_schema detects vector columns with 'vector'/'embedding'.
 

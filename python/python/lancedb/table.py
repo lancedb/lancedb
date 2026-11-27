@@ -7297,7 +7297,10 @@ def _infer_target_schema(
 
         if _name_suggests_vector_column(field.name) and is_list_type:
             if peeked is None:
-                peeked, reader = peek_reader(reader)
+                try:
+                    peeked, reader = peek_reader(reader)
+                except StopIteration:
+                    return schema, reader
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
 
