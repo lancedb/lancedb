@@ -383,7 +383,22 @@ impl Database for LanceNamespaceDatabase {
                     let req = (callback)(req);
                     let table = self.open_table(req).await?;
                     let table_schema = table.schema().await?;
-                    if table_schema.as_ref() != request.data.arrow_schema().as_ref() {
+                    let table_lance_schema = lance_core::datatypes::Schema::try_from(
+                        table_schema.as_ref(),
+                    )
+                    .map_err(|e| Error::Schema {
+                        message: e.to_string(),
+                    })?;
+                    let request_lance_schema = lance_core::datatypes::Schema::try_from(
+                        request.data.arrow_schema().as_ref(),
+                    )
+                    .map_err(|e| Error::Schema {
+                        message: e.to_string(),
+                    })?;
+                    if !table_lance_schema.compare_with_options(
+                        &request_lance_schema,
+                        &lance_core::datatypes::SchemaCompareOptions::default(),
+                    ) {
                         return Err(Error::Schema {
                             message: "Provided schema does not match existing table schema"
                                 .to_string(),
@@ -1432,20 +1447,70 @@ mod tests {
             .await
             .expect("Failed to create table");
 
-        // Matching schema should succeed and invoke the OpenTableRequest callback
+        // Create a second table with the same schema and a distinct row so we verify
+        // that the handle returned by the ExistOk callback is actually used.
+        let alt_schema = create_test_data().schema();
+        let alt_batch = RecordBatch::try_new(
+            alt_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![99])),
+                Arc::new(StringArray::from(vec!["Alt"])),
+            ],
+        )
+        .unwrap();
+        let alt_table = conn
+            .create_table("exist_ok_alt_table", alt_batch)
+            .execute()
+            .await
+            .expect("Failed to create alt table");
+        let alt_uri = conn
+            .open_table("exist_ok_alt_table")
+            .execute()
+            .await
+            .unwrap()
+            .uri()
+            .await
+            .unwrap();
+        assert_eq!(
+            alt_table.uri().await.unwrap().trim_start_matches("file://"),
+            alt_uri.trim_start_matches("file://")
+        );
+
+        // Matching schema should succeed and return the callback-selected table
         let callback_called = Arc::new(AtomicBool::new(false));
         let callback_flag = callback_called.clone();
         let table = conn
             .create_table("exist_ok_schema_test", create_test_data())
-            .mode(CreateTableMode::exist_ok(move |req| {
+            .mode(CreateTableMode::exist_ok(move |mut req| {
                 callback_flag.store(true, Ordering::SeqCst);
+                req.name = "exist_ok_alt_table".to_string();
                 req
             }))
             .execute()
             .await
             .expect("Expected matching schema exist_ok to succeed");
         assert!(callback_called.load(Ordering::SeqCst));
-        assert_eq!(table.schema().await.unwrap(), create_test_data().schema());
+        assert_eq!(table.name(), "exist_ok_alt_table");
+        assert_eq!(table.uri().await.unwrap(), alt_uri);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+        assert_eq!(table.version().await.unwrap(), 1);
+        let rows = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            rows[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .values(),
+            &[99]
+        );
 
         // Mismatched schema via create_table should return Error::Schema
         let mismatched_schema = Arc::new(Schema::new(vec![
@@ -1487,6 +1552,132 @@ mod tests {
                 Error::Schema { ref message } if message == "Provided schema does not match existing table schema"
             ),
             "unexpected error: {err_empty:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_exist_ok_fixed_size_list_persistence_rules() {
+        use arrow_array::{FixedSizeListArray, Float32Array, Float64Array};
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create child namespace");
+
+        let make_f32_batch = |id_val: i32, coords: [f32; 2]| {
+            let coord_field = Arc::new(Field::new("coordinate", DataType::Float32, false));
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(coord_field.clone(), 2),
+                    false,
+                ),
+            ]));
+            let values = Float32Array::from(coords.to_vec());
+            let vec_array =
+                FixedSizeListArray::try_new(coord_field, 2, Arc::new(values), None).unwrap();
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int32Array::from(vec![id_val])),
+                    Arc::new(vec_array),
+                ],
+            )
+            .unwrap()
+        };
+
+        let created = conn
+            .create_table("fsl_table", make_f32_batch(1, [1.0, 2.0]))
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create initial fixed-size-list table");
+        let expected_uri = created.uri().await.unwrap();
+        let expected_version = created.version().await.unwrap();
+
+        // Confirm Lance reopened the FixedSizeList child with normalized name/nullability.
+        let reopened_schema = created.schema().await.unwrap();
+        let DataType::FixedSizeList(reopened_child, 2) =
+            reopened_schema.field_with_name("vec").unwrap().data_type()
+        else {
+            panic!("expected FixedSizeList");
+        };
+        assert_eq!(reopened_child.name(), "item");
+        assert!(reopened_child.is_nullable());
+
+        // Retrying exist_ok with the original non-nullable "coordinate" declaration must succeed
+        // and preserve the selected handle's URI, rows, and version.
+        let retried = conn
+            .create_table("fsl_table", make_f32_batch(2, [3.0, 4.0]))
+            .namespace(vec!["test_ns".into()])
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .expect("Expected exist_ok retry with original FixedSizeList declaration to succeed");
+        assert_eq!(retried.uri().await.unwrap(), expected_uri);
+        assert_eq!(retried.version().await.unwrap(), expected_version);
+        assert_eq!(retried.count_rows(None).await.unwrap(), 1);
+        let rows = retried
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            rows[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .values(),
+            &[1]
+        );
+
+        // Materially different element type (Float64 vs Float32) must still be rejected.
+        let coord_f64 = Arc::new(Field::new("coordinate", DataType::Float64, false));
+        let f64_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vec", DataType::FixedSizeList(coord_f64.clone(), 2), false),
+        ]));
+        let f64_values = Float64Array::from(vec![1.0, 2.0]);
+        let f64_vec =
+            FixedSizeListArray::try_new(coord_f64, 2, Arc::new(f64_values), None).unwrap();
+        let f64_batch = RecordBatch::try_new(
+            f64_schema,
+            vec![Arc::new(Int32Array::from(vec![2])), Arc::new(f64_vec)],
+        )
+        .unwrap();
+
+        let err = conn
+            .create_table("fsl_table", f64_batch)
+            .namespace(vec!["test_ns".into()])
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Schema { ref message } if message == "Provided schema does not match existing table schema"
+            ),
+            "unexpected error: {err:?}"
         );
     }
 
