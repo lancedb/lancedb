@@ -26,8 +26,9 @@ How to return blob v2 columns. Applies to `toArrow()` and `toArray()`.
   called. All the bytes are held in memory.
 
 Selecting a parent struct or directly aliasing a blob or struct also returns
-bytes. Blobs inside lists keep their descriptors. Arbitrary projection
-expressions are not materialized as bytes.
+bytes, including through an `Expr` that only references a column, such as
+`col("image")`. Blobs inside lists keep their descriptors. Arbitrary
+projection expressions are not materialized as bytes.
 
 The rows and bytes come from the same snapshot. Remote queries require
 authoritative query version and snapshot identity headers, verified again
