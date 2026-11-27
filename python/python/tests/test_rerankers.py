@@ -1195,6 +1195,35 @@ def test_linear_combination_empty_side_keeps_weighted_scores(empty_side):
     assert result[missing_column].to_pylist() == [None]
 
 
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_linear_combination_fts_only_preserves_null_scores(return_score):
+    reranker = LinearCombinationReranker(
+        weight=0.25, fill=0.4, return_score=return_score
+    )
+    vector_results = pa.table(
+        {"_rowid": pa.array([], pa.uint64()), "_distance": pa.array([], pa.float32())}
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([22, 23], pa.uint64()),
+            "_score": pa.array([0.0, None], pa.float32()),
+        }
+    )
+
+    result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+    assert result["_rowid"].to_pylist() == [22, 23]
+    relevance = result["_relevance_score"]
+    assert relevance.type == pa.float32()
+    assert relevance[0].as_py() == pytest.approx(0.15)
+    assert relevance[1].as_py() is None
+    if return_score == "all":
+        assert result["_score"].equals(fts_results["_score"])
+        assert result["_distance"].equals(pa.chunked_array([pa.nulls(2, pa.float32())]))
+    else:
+        assert result.column_names == ["_rowid", "_relevance_score"]
+
+
 @pytest.mark.parametrize("empty_side", ["vector", "fts"])
 def test_linear_combination_empty_side_scores_are_null(empty_side):
     """With return_score="all", the missing side's score column is null, not NaN."""

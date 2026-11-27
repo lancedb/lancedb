@@ -63,7 +63,9 @@ class LinearCombinationReranker(Reranker):
                 "_relevance_score",
                 pa.array(
                     [
-                        self._combine_score(missing_vector_score, score)
+                        None
+                        if score is None
+                        else self._combine_score(missing_vector_score, score)
                         for score in fts_results["_score"].to_pylist()
                     ],
                     type=pa.float32(),
