@@ -7,6 +7,7 @@ from unittest import mock
 import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
+from lancedb.rerankers.base import Reranker
 from lancedb.rerankers.rrf import RRFReranker
 import numpy as np
 import pyarrow as pa
@@ -670,3 +671,151 @@ def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
         "or set `vector()` and `text()` explicitly for hybrid search. "
         "But not both."
     )
+
+
+class _RecordingReranker(Reranker):
+    """Records how many candidates each side of a hybrid query hands over."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def rerank_hybrid(self, query, vector_results, fts_results):
+        self.calls.append((len(vector_results), len(fts_results)))
+        combined = self.merge_results(vector_results, fts_results)
+        scores = pa.array([1.0] * len(combined), type=pa.float32())
+        return combined.append_column("_relevance_score", scores)
+
+
+def _candidate_rows():
+    rng = np.random.default_rng(0)
+    return pa.table(
+        {
+            "id": pa.array(range(100), type=pa.int64()),
+            "text": pa.array(["match"] * 100),
+            "vector": pa.array(
+                rng.random((100, 2)).astype("float32").tolist(),
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+
+
+def test_hybrid_query_custom_reranker_keeps_candidate_budget(tmpdir_factory):
+    # The #4758 candidate floor only applies to the default RRF reranker.
+    # Custom and model rerankers get every candidate, so they must keep
+    # receiving `limit + offset` rows per side.
+    db = lancedb.connect(str(tmpdir_factory.mktemp("data")))
+    table = db.create_table("t", _candidate_rows())
+    table.create_fts_index("text", with_position=False)
+
+    reranker = _RecordingReranker()
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.5, 0.5])
+        .text("match")
+        .rerank(reranker)
+        .limit(1)
+        .to_list()
+    )
+    assert len(result) == 1
+    assert reranker.calls == [(1, 1)]
+
+    reranker = _RecordingReranker()
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.5, 0.5])
+        .text("match")
+        .rerank(reranker)
+        .offset(2)
+        .limit(3)
+        .to_list()
+    )
+    assert len(result) == 3
+    assert reranker.calls == [(5, 5)]
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_custom_reranker_keeps_candidate_budget(
+    tmpdir_factory,
+):
+    # Async mirror of test_hybrid_query_custom_reranker_keeps_candidate_budget.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    result = await (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .limit(1)
+        .to_arrow()
+    )
+    assert len(result) == 1
+    assert reranker.calls == [(1, 1)]
+
+    reranker = _RecordingReranker()
+    result = await (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .offset(2)
+        .limit(3)
+        .to_arrow()
+    )
+    assert len(result) == 3
+    assert reranker.calls == [(5, 5)]
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_empty_page_does_not_fetch_candidates(
+    tmpdir_factory,
+):
+    # An empty page must not get the #4758 candidate floor: limit(0) should
+    # not retrieve and score 50 rows per side just to return nothing.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    reranker = _RecordingReranker()
+    query = (
+        table.query()
+        .nearest_to([0.5, 0.5])
+        .nearest_to_text("match")
+        .rerank(reranker)
+        .limit(0)
+    )
+    # Same as before the floor: the empty window is rejected up front.
+    with pytest.raises(ValueError, match="k must be positive"):
+        await query.to_arrow()
+    assert reranker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_default_rrf_candidate_window(tmpdir_factory):
+    # The default RRF reranker gets the #4758 floor: 50 candidates per side
+    # even when a single row is requested.
+    db = await lancedb.connect_async(str(tmpdir_factory.mktemp("data")))
+    table = await db.create_table("t", _candidate_rows())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    seen = []
+    original = RRFReranker.rerank_hybrid
+
+    def recording_rerank_hybrid(self, query, vector_results, fts_results, *a, **kw):
+        seen.append((len(vector_results), len(fts_results)))
+        return original(self, query, vector_results, fts_results, *a, **kw)
+
+    with mock.patch.object(RRFReranker, "rerank_hybrid", recording_rerank_hybrid):
+        result = await (
+            table.query()
+            .nearest_to([0.5, 0.5])
+            .nearest_to_text("match")
+            .limit(1)
+            .to_arrow()
+        )
+    assert len(result) == 1
+    assert seen == [(50, 50)]

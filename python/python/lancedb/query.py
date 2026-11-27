@@ -95,6 +95,23 @@ DEFAULT_HYBRID_LIMIT = 10
 DEFAULT_HYBRID_RANK_WINDOW = 50
 
 
+def _hybrid_sub_query_limit(
+    limit: int, offset: int, reranker: Optional[Reranker]
+) -> int:
+    """Number of rows each side of a hybrid query fetches before reranking.
+
+    Each side always fetches the skipped prefix plus the page itself. For the
+    default RRF reranker the window is raised to DEFAULT_HYBRID_RANK_WINDOW so
+    that a smaller page does not change the fused ranking (#4758). Custom and
+    model rerankers keep the caller's `limit + offset` budget, since every
+    candidate is sent to them, and an empty page never gets the floor.
+    """
+    window = limit + offset
+    if limit > 0 and (reranker is None or type(reranker) is RRFReranker):
+        return max(window, DEFAULT_HYBRID_RANK_WINDOW)
+    return window
+
+
 @runtime_checkable
 class _LanceScanner(Protocol):
     projected_schema: pa.Schema | None
@@ -3181,12 +3198,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # Apply common configurations
         # The final offset/limit window is sliced out of the combined,
         # reranked results, so each sub-query must fetch enough rows to
-        # cover the skipped prefix as well as the window itself. Rank fusion
-        # additionally needs a candidate window larger than the returned page
-        # (#4758): with only `limit + offset` rows per side, a smaller limit
-        # can return a different top result instead of just a shorter list.
+        # cover the skipped prefix as well as the window itself. Default RRF
+        # fusion additionally needs a candidate window larger than the
+        # returned page (#4758): with only `limit + offset` rows per side, a
+        # smaller limit can return a different top result instead of just a
+        # shorter list.
         limit = self._limit or DEFAULT_HYBRID_LIMIT
-        sub_query_limit = max(limit + (self._offset or 0), DEFAULT_HYBRID_RANK_WINDOW)
+        sub_query_limit = _hybrid_sub_query_limit(
+            limit, self._offset or 0, self._reranker
+        )
         self._vector_query.limit(sub_query_limit)
         self._fts_query.limit(sub_query_limit)
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
@@ -4619,11 +4639,11 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         # offset() pushes the offset down into both sub-queries, which would make
         # each of them skip its own first `offset` rows. The window has to be
         # taken out of the combined, reranked results instead, so fetch the
-        # skipped prefix here too and slice it off afterwards. Rank fusion
-        # additionally needs a candidate window larger than the returned page
-        # (#4758), so never fetch fewer than DEFAULT_HYBRID_RANK_WINDOW rows
-        # per side.
-        sub_query_limit = max(limit + offset, DEFAULT_HYBRID_RANK_WINDOW)
+        # skipped prefix here too and slice it off afterwards. Default RRF
+        # fusion additionally needs a candidate window larger than the
+        # returned page (#4758), so with that reranker never fetch fewer than
+        # DEFAULT_HYBRID_RANK_WINDOW rows per side.
+        sub_query_limit = _hybrid_sub_query_limit(limit, offset, self._reranker)
         fts_query.limit(sub_query_limit)
         vec_query.limit(sub_query_limit)
         fts_query.offset(0)

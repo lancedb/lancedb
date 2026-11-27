@@ -3030,6 +3030,9 @@ def test_query_sync_fts_document_granularity():
 
 
 def test_query_sync_hybrid():
+    # With the default RRF reranker each side fetches at least
+    # DEFAULT_HYBRID_RANK_WINDOW (50) rows before fusion (#4758), so a
+    # limit of 42 sends k=50 on both requests.
     def handler(body):
         if "full_text_query" in body:
             # FTS query
@@ -3038,7 +3041,7 @@ def test_query_sync_hybrid():
                     "query": "puppy",
                     "columns": [],
                 },
-                "k": 42,
+                "k": 50,
                 "vector": [],
                 "prefilter": True,
                 "with_row_id": True,
@@ -3048,7 +3051,7 @@ def test_query_sync_hybrid():
         else:
             # Vector query
             assert body == {
-                "k": 42,
+                "k": 50,
                 "prefilter": True,
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
