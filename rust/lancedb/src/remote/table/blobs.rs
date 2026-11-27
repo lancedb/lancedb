@@ -5653,7 +5653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_blob_file_translates_physical_offsets_and_preserves_nulls() {
+    async fn direct_blob_file_honors_internal_threshold_and_translates_physical_offsets() {
         let object_requests = Arc::new(StdMutex::new(Vec::new()));
         let captured = object_requests.clone();
         let table =

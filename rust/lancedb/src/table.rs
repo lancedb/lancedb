@@ -1552,12 +1552,11 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
-    /// values and individual ranges may be fetched from short-lived object-store
-    /// URLs instead of the LanceDB proxy. Clients then need network access to
-    /// the object-store endpoint, including private endpoint routing, DNS, TLS
-    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
-    /// stay on the LanceDB proxy.
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, eligible
+    /// Blob V2 values of at least 32 MiB may use short-lived object-store URLs.
+    /// Smaller values go through LanceDB. Direct reads also require
+    /// network access to the object store, including endpoint routing, DNS,
+    /// TLS trust, and egress rules.
     /// Blobs inside lists cannot be fetched by row id. Returns
     /// [`Error::InvalidInput`] for those paths, when the column does not exist,
     /// or when it is not a blob column. Returns [`Error::NotSupported`] on
@@ -1609,12 +1608,11 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
-    /// values and individual ranges may be fetched from short-lived object-store
-    /// URLs instead of the LanceDB proxy. Clients then need network access to
-    /// the object-store endpoint, including private endpoint routing, DNS, TLS
-    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
-    /// stay on the LanceDB proxy.
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, eligible
+    /// Blob V2 ranges of at least 32 MiB may use short-lived object-store URLs.
+    /// Smaller ranges go through LanceDB. Direct reads also require
+    /// network access to the object store, including endpoint routing, DNS,
+    /// TLS trust, and egress rules.
     /// Returns an error when a range is invalid, a requested row id does not
     /// exist, or the column is not a blob column. Returns
     /// [`Error::NotSupported`] on table types without blob support.
@@ -1642,12 +1640,11 @@ impl Table {
     /// `ClientConfig::blob_request_concurrency` or the
     /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` environment variable to tune it.
     ///
-    /// On LanceDB Enterprise clusters that enable direct Blob reads, large
-    /// values and individual ranges may be fetched from short-lived object-store
-    /// URLs instead of the LanceDB proxy. Clients then need network access to
-    /// the object-store endpoint, including private endpoint routing, DNS, TLS
-    /// trust and egress rules, in addition to the LanceDB endpoint. Small reads
-    /// stay on the LanceDB proxy.
+    /// On LanceDB Enterprise clusters that enable direct Blob reads, eligible
+    /// Blob V2 reads of at least 32 MiB may use short-lived object-store URLs.
+    /// Smaller reads go through LanceDB. Direct reads also require
+    /// network access to the object store, including endpoint routing, DNS,
+    /// TLS trust, and egress rules.
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no
     /// partial handles are returned.
@@ -1675,10 +1672,10 @@ impl Table {
     ///
     /// The descriptor carries its table version, branch, column and row identity.
     /// Opening does not materialize the payload or change this table's checkout.
-    /// On Enterprise clusters that enable direct Blob reads, large range reads
-    /// may use a short-lived object-store URL; the client needs network access
-    /// to that endpoint in addition to the LanceDB endpoint. Small reads stay
-    /// on the authenticated LanceDB byte-range endpoint.
+    /// On Enterprise clusters that enable direct Blob reads, eligible Blob V2
+    /// ranges of at least 32 MiB may use a short-lived object-store URL.
+    /// Direct reads require network access to the object-store endpoint.
+    /// Smaller ranges go through the authenticated LanceDB byte-range endpoint.
     ///
     /// ```
     /// use lancedb::{Table, blob::BlobDescriptor};

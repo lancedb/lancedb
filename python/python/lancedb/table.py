@@ -2887,11 +2887,11 @@ class Table(ABC):
         ``table.take_offsets(offsets, with_row_id=True)`` first and pass the
         resulting ``_rowid`` values.
 
-        On Enterprise clusters that enable direct Blob reads, large values and
-        ranges may be fetched from short-lived object-store URLs. The client then
-        needs network access to the object-store endpoint, including private
-        endpoint routing, DNS, TLS trust and egress rules, in addition to the
-        LanceDB endpoint. Small reads stay on the LanceDB proxy.
+        On Enterprise clusters that enable direct Blob reads, eligible Blob V2
+        values of at least 32 MiB may use short-lived object-store URLs.
+        Smaller values go through LanceDB. Direct reads also require
+        network access to the object store, including endpoint routing, DNS,
+        TLS trust, and egress rules.
         Blobs inside lists cannot be fetched by row id yet.
 
         LanceDB Enterprise limits each request to 1024 row IDs and 64 MiB of blob
@@ -2926,11 +2926,11 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         results are returned.
 
-        On Enterprise clusters that enable direct Blob reads, large values and
-        ranges may be fetched from short-lived object-store URLs. The client then
-        needs network access to the object-store endpoint, including private
-        endpoint routing, DNS, TLS trust and egress rules, in addition to the
-        LanceDB endpoint. Small reads stay on the LanceDB proxy.
+        On Enterprise clusters that enable direct Blob reads, eligible Blob V2
+        ranges of at least 32 MiB may use short-lived object-store URLs.
+        Smaller ranges go through LanceDB. Direct reads also require
+        network access to the object store, including endpoint routing, DNS,
+        TLS trust, and egress rules.
         Row IDs can be obtained from a query with ``with_row_id(True)``.
         LanceDB Enterprise uses the batched endpoint when the server advertises
         support, partitioning at 1024 ranges and 64 MiB, including individual
@@ -2959,11 +2959,11 @@ class Table(ABC):
         ``buffer_size`` controls sequential read-ahead in bytes (default 512 KiB).
         Set it to 0 for sparse reads. Explicit range reads bypass this buffer.
 
-        On Enterprise clusters that enable direct Blob reads, large values and
-        ranges may be fetched from short-lived object-store URLs. The client then
-        needs network access to the object-store endpoint, including private
-        endpoint routing, DNS, TLS trust and egress rules, in addition to the
-        LanceDB endpoint. Small reads stay on the LanceDB proxy.
+        On Enterprise clusters that enable direct Blob reads, eligible Blob V2
+        reads of at least 32 MiB may use short-lived object-store URLs.
+        Smaller reads go through LanceDB. Direct reads also require
+        network access to the object store, including endpoint routing, DNS,
+        TLS trust, and egress rules.
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
         One missing or deleted row ID rejects the entire batch; no partial

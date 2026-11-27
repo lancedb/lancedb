@@ -29,9 +29,8 @@ const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
 const OBJECT_STORE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const OBJECT_STORE_MAX_ATTEMPTS: u8 = 2;
-/// M1 prototype routing threshold for direct Blob reads. It stays internal
-/// until the acceptance benchmark establishes the right default.
-const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
+/// Minimum logical read size for presigned Blob V2 reads by default.
+const DEFAULT_BLOB_PRESIGN_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
 
 pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
     const SENSITIVE_HEADERS: [&str; 5] = [
