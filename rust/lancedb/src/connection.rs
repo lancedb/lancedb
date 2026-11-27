@@ -1783,6 +1783,10 @@ impl ConnectBuilder {
     /// This option is only used for `db://` URIs
     /// and will be ignored for other URIs.
     ///
+    /// If omitted, `db://` connections read `LANCEDB_API_KEY`. An explicit key
+    /// takes precedence. An empty variable is present and sends no `x-api-key`
+    /// header. The variable is not read when [`Self::oauth_config`] is set.
+    ///
     /// # Arguments
     ///
     /// * `api_key` - The API key to use for the connection
@@ -2056,6 +2060,8 @@ impl ConnectBuilder {
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDB Cloud".to_string(),
         })?;
+        // Match the Python client: an omitted key falls back to LANCEDB_API_KEY.
+        // Leave OAuth alone so an ambient key cannot collide with oauth_config.
         let api_key = match (&self.oauth_config, &options.api_key) {
             (Some(_), None) => String::new(),
             (Some(_), Some(_)) => {
@@ -2066,13 +2072,16 @@ impl ConnectBuilder {
                 });
             }
             (None, Some(key)) => key.clone(),
-            (None, None) => {
-                return Err(Error::InvalidInput {
-                    message:
-                        "An api_key or oauth_config is required when connecting to LanceDB Enterprise or LanceDB Cloud"
-                            .to_string(),
-                });
-            }
+            (None, None) => match std::env::var("LANCEDB_API_KEY") {
+                Ok(key) => key,
+                Err(_) => {
+                    return Err(Error::InvalidInput {
+                        message:
+                            "An api_key or oauth_config is required when connecting to LanceDB Enterprise or LanceDB Cloud"
+                                .to_string(),
+                    });
+                }
+            },
         };
 
         if self.oauth_config.is_some() && self.request.client_config.header_provider.is_some() {
@@ -2417,6 +2426,191 @@ mod tests {
             Err(Error::NotSupported { .. })
         ));
     }
+
+    /// Marker for a re-exec of this test binary. The value is the libtest name.
+    #[cfg(feature = "remote")]
+    const LANCEDB_API_KEY_TEST_CHILD: &str = "LANCEDB_API_KEY_TEST_CHILD";
+
+    #[cfg(feature = "remote")]
+    fn lancedb_api_key_libtest_name(function: &str) -> String {
+        let module_path = module_path!();
+        let prefix = concat!(env!("CARGO_PKG_NAME"), "::");
+        let relative = module_path.strip_prefix(prefix).unwrap_or(module_path);
+        format!("{relative}::{function}")
+    }
+
+    /// Applies `LANCEDB_API_KEY` on a child process, then runs one test case.
+    ///
+    /// `std::env::set_var` and `remove_var` are unsound once other threads in
+    /// this process exist. A `serial_test` lock does not cover those threads,
+    /// and restoring the variable from `Drop` has the same race. The child is
+    /// this test binary filtered to the one case, with the variable set or
+    /// removed before spawn.
+    #[cfg(feature = "remote")]
+    fn run_lancedb_api_key_child(test_name: &str, api_key: Option<&str>) {
+        let executable = std::env::current_exe().expect("current test executable");
+        let mut command = std::process::Command::new(executable);
+        command
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env(LANCEDB_API_KEY_TEST_CHILD, test_name)
+            .env("CARGO_TERM_COLOR", "never");
+        match api_key {
+            Some(api_key) => {
+                command.env("LANCEDB_API_KEY", api_key);
+            }
+            None => {
+                command.env_remove("LANCEDB_API_KEY");
+            }
+        }
+        let output = command
+            .output()
+            .unwrap_or_else(|error| panic!("failed to spawn {test_name}: {error}"));
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let completed = format!("LANCEDB_API_KEY_CASE_OK {test_name}");
+        assert!(
+            output.status.success()
+                && combined.contains("test result: ok. 1 passed;")
+                && combined.contains(&completed),
+            "child {test_name} failed ({})\n{combined}",
+            output.status,
+        );
+    }
+
+    #[cfg(feature = "remote")]
+    fn lancedb_api_key_case_entered(function: &str, api_key: Option<&str>) -> bool {
+        let test_name = lancedb_api_key_libtest_name(function);
+        if std::env::var(LANCEDB_API_KEY_TEST_CHILD).ok().as_deref() == Some(test_name.as_str()) {
+            true
+        } else {
+            run_lancedb_api_key_child(&test_name, api_key);
+            false
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    fn lancedb_api_key_case_ok(function: &str) {
+        use std::io::Write;
+
+        let test_name = lancedb_api_key_libtest_name(function);
+        let mut stderr = std::io::stderr().lock();
+        writeln!(stderr, "LANCEDB_API_KEY_CASE_OK {test_name}")
+            .expect("write LANCEDB_API_KEY case marker");
+        stderr.flush().expect("flush LANCEDB_API_KEY case marker");
+    }
+
+    #[cfg(feature = "remote")]
+    macro_rules! lancedb_api_key_test {
+        ($name:ident, $api_key:expr, $body:block) => {
+            #[tokio::test]
+            async fn $name() {
+                const CASE: &str = stringify!($name);
+                if !lancedb_api_key_case_entered(CASE, $api_key) {
+                    return;
+                }
+                $body
+                lancedb_api_key_case_ok(CASE);
+            }
+        };
+    }
+
+    #[cfg(feature = "remote")]
+    async fn remote_api_key_header(api_key: Option<&str>) -> Result<Option<String>> {
+        let mut builder = connect("db://my-db")
+            .region("us-east-1")
+            .host_override("https://example.com");
+        if let Some(api_key) = api_key {
+            builder = builder.api_key(api_key);
+        }
+        let connection = builder.execute().await?;
+        let (_namespace, properties) = connection.namespace_client_config().await?;
+        Ok(properties.get("header.x-api-key").cloned())
+    }
+
+    #[cfg(feature = "remote")]
+    lancedb_api_key_test!(
+        test_connect_remote_lancedb_api_key_from_env,
+        Some("env-api-key"),
+        {
+            let header = remote_api_key_header(None)
+                .await
+                .expect("LANCEDB_API_KEY should satisfy a remote connection");
+            assert_eq!(header.as_deref(), Some("env-api-key"));
+        }
+    );
+
+    #[cfg(feature = "remote")]
+    lancedb_api_key_test!(
+        test_connect_remote_lancedb_api_key_explicit_wins,
+        Some("env-api-key"),
+        {
+            let header = remote_api_key_header(Some("explicit-api-key"))
+                .await
+                .expect("explicit api_key should still connect");
+            assert_eq!(header.as_deref(), Some("explicit-api-key"));
+        }
+    );
+
+    #[cfg(feature = "remote")]
+    lancedb_api_key_test!(
+        test_connect_remote_empty_lancedb_api_key_sends_no_header,
+        Some(""),
+        {
+            // Python uses `api_key is None`, so an empty LANCEDB_API_KEY is present.
+            let header = remote_api_key_header(None)
+                .await
+                .expect("an empty LANCEDB_API_KEY should still connect");
+            assert_eq!(header, None);
+        }
+    );
+
+    #[cfg(feature = "remote")]
+    lancedb_api_key_test!(
+        test_connect_remote_lancedb_api_key_required_when_unset,
+        None,
+        {
+            let result = connect("db://my-db").region("us-east-1").execute().await;
+            match result {
+                Err(Error::InvalidInput { message })
+                    if message
+                        == "An api_key or oauth_config is required when connecting to LanceDB Enterprise or LanceDB Cloud" =>
+                    {}
+                Err(err) => panic!("expected missing api key error, got {err:?}"),
+                Ok(_) => panic!("expected missing api key error, got a connection"),
+            }
+        }
+    );
+
+    #[cfg(feature = "remote")]
+    lancedb_api_key_test!(
+        test_connect_remote_lancedb_api_key_ignored_for_oauth,
+        Some("env-api-key"),
+        {
+            let oauth_config = crate::remote::OAuthConfig {
+                issuer_url: "https://issuer.example.com".to_string(),
+                client_id: "client-id".to_string(),
+                client_secret: Some("secret".to_string()),
+                scopes: vec!["scope".to_string()],
+                flow: crate::remote::OAuthFlow::ClientCredentials,
+                client_auth_method: None,
+                refresh_buffer_secs: None,
+                resource: None,
+                audience: None,
+                token_cache: None,
+            };
+
+            connect("db://my-db")
+                .region("us-east-1")
+                .host_override("https://example.com")
+                .oauth_config(oauth_config)
+                .execute()
+                .await
+                .expect("oauth_config should connect without consuming LANCEDB_API_KEY");
+        }
+    );
 
     #[cfg(feature = "remote")]
     #[test]

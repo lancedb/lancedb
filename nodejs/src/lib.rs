@@ -74,6 +74,8 @@ pub struct ConnectionOptions {
     /// (For LanceDB Enterprise or LanceDB Cloud only): the API key to use.
     ///
     /// Can also be set via the environment variable `LANCEDB_API_KEY`.
+    /// An explicit `apiKey` takes precedence. The variable is not read when
+    /// `oauthConfig` is set.
     pub api_key: Option<String>,
     /// (For LanceDB Cloud only): the region to use for LanceDB Cloud (legacy).
     /// Defaults to 'us-east-1'.
