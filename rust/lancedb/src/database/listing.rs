@@ -876,6 +876,7 @@ impl ListingDatabase {
         &self,
         table_name: &str,
         namespace_path: Vec<String>,
+        location: Option<String>,
         mode: CreateTableMode,
         data_schema: &arrow_schema::Schema,
     ) -> Result<Arc<dyn BaseTable>> {
@@ -889,7 +890,7 @@ impl ListingDatabase {
                     namespace_path: namespace_path.clone(),
                     index_cache_size: None,
                     lance_read_params: None,
-                    location: None,
+                    location,
                     namespace_client: None,
                     managed_versioning: None,
                 };
@@ -1098,6 +1099,7 @@ impl Database for ListingDatabase {
                 self.handle_table_exists(
                     &request.name,
                     request.namespace_path.clone(),
+                    request.location,
                     request.mode,
                     &data_schema,
                 )
