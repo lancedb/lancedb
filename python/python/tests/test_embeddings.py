@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import inspect
+import json
 import os
 import pickle
+import threading
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -1283,3 +1286,74 @@ def test_cohere_default_model_is_not_a_retired_v2_model():
     assert cohere.name == "embed-multilingual-v3.0"
     assert "v2.0" not in cohere.name
     assert cohere.ndims() == 1024
+
+
+def test_cohere_embeds_in_batches_of_at_most_96_texts():
+    # Cohere's embed endpoint rejects requests with more than 96 texts.
+    from lancedb.embeddings.cohere import CohereEmbeddingFunction
+
+    calls = []
+
+    def fake_embed(texts, model, **kwargs):
+        assert len(texts) <= 96
+        calls.append(list(texts))
+        return MagicMock(embeddings=[[float(t)] for t in texts])
+
+    func = get_registry().get("cohere").create()
+    texts = [str(i) for i in range(200)]
+    # A client without batching of its own, as in cohere 5.0 to 5.1.2
+    client = MagicMock(spec=["embed"])
+    client.embed.side_effect = fake_embed
+    with (
+        patch.object(CohereEmbeddingFunction, "client", client),
+        patch.object(CohereEmbeddingFunction, "_init_client"),
+    ):
+        result = func.generate_embeddings(texts)
+
+    assert [len(c) for c in calls] == [96, 96, 8]
+    assert [r[0] for r in result] == [float(i) for i in range(200)]
+
+
+def test_cohere_batches_with_the_installed_sdk():
+    cohere = pytest.importorskip("cohere")
+    httpx = pytest.importorskip("httpx")
+    from lancedb.embeddings.cohere import CohereEmbeddingFunction
+
+    if "httpx_client" not in inspect.signature(cohere.Client).parameters:
+        pytest.skip("needs a cohere client that accepts a local transport")
+
+    sizes = []
+    # Releases that batch on their own send the three requests concurrently
+    concurrent = "batching" in inspect.signature(cohere.Client.embed).parameters
+    barrier = threading.Barrier(3 if concurrent else 1)
+
+    def handle(request):
+        texts = json.loads(request.content)["texts"]
+        sizes.append(len(texts))
+        barrier.wait(timeout=10)
+        return httpx.Response(
+            200,
+            json={
+                "id": "mock",
+                "response_type": "embeddings_floats",
+                # the SDK's response merging in 5.1.3/5.1.4 requires meta
+                "meta": {
+                    "api_version": {"version": "1"},
+                    "billed_units": {"input_tokens": len(texts)},
+                },
+                "texts": texts,
+                "embeddings": [[float(t)] for t in texts],
+            },
+        )
+
+    func = get_registry().get("cohere").create()
+    with httpx.Client(transport=httpx.MockTransport(handle)) as transport:
+        client = cohere.Client(api_key="offline-test-key", httpx_client=transport)
+        with (
+            patch.object(CohereEmbeddingFunction, "client", client),
+            patch.object(CohereEmbeddingFunction, "_init_client"),
+        ):
+            result = func.generate_embeddings([str(i) for i in range(200)])
+
+    assert sorted(sizes) == [8, 96, 96]
+    assert result == [[float(i)] for i in range(200)]

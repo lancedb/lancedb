@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import inspect
 import os
 from functools import cached_property
 from importlib.metadata import version
@@ -30,6 +31,21 @@ _COHERE_V2_MAX_TEXTS = 96
 def _is_redirect_error(error: Exception) -> bool:
     status = _get_http_status(error)
     return status is not None and 300 <= status < 400
+
+
+MAX_BATCH_SIZE = 96
+
+
+def _sdk_batches_embed(client) -> bool:
+    """Whether ``client.embed`` already splits its input into batches.
+
+    cohere 4.x clients do so using ``batch_size``; later releases that can batch
+    take a ``batching`` argument. Some 5.x releases do neither.
+    """
+    return (
+        hasattr(client, "batch_size")
+        or "batching" in inspect.signature(client.embed).parameters
+    )
 
 
 @register("cohere")
@@ -231,11 +247,22 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
         if self.base_url is not None:
             return self._embed_v2(texts, "search_document")
         self._init_client()
-        rs = CohereEmbeddingFunction.client.embed(
-            texts=texts, model=self.name, **kwargs
-        )
+        client = CohereEmbeddingFunction.client
+        texts = list(texts)
+        # Releases that batch on their own get the full input, which keeps their
+        # concurrent requests. For the others, send one chunk per call.
+        batch_size = MAX_BATCH_SIZE
+        if _sdk_batches_embed(client):
+            batch_size = max(len(texts), 1)
 
-        return [emb for emb in rs.embeddings]
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            rs = client.embed(
+                texts=texts[i : i + batch_size], model=self.name, **kwargs
+            )
+            embeddings.extend(rs.embeddings)
+
+        return embeddings
 
     def compute_source_embeddings_with_retry(self, texts: TEXT, *args, **kwargs):
         if self.base_url is None:
