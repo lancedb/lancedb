@@ -1241,6 +1241,67 @@ def test_literal_with_mixed_value_types_raises_type_error(annotation):
         pydantic_to_schema(TestModel)
 
 
+def test_literal_with_none_is_nullable():
+    # Literal["a", None] is the same type as Optional[Literal["a"]] (PEP 586)
+    class TestModel(pydantic.BaseModel):
+        status: Literal["todo", "done", None] = None
+        opt_status: Optional[Literal["todo", None]] = None
+        tags: List[Literal["a", "b", None]]
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("status").type == pa.utf8()
+    assert schema.field("status").nullable
+    assert schema.field("opt_status").type == pa.utf8()
+    assert schema.field("opt_status").nullable
+    assert schema.field("tags").type == pa.list_(pa.field("item", pa.utf8(), True))
+
+
+def test_literal_with_none_round_trip(mem_db):
+    class TestModel(LanceModel):
+        status: Literal["todo", "done", None] = None
+        vector: Vector(2)
+
+    rows = [
+        TestModel(status="done", vector=[1.0, 2.0]),
+        TestModel(status=None, vector=[3.0, 4.0]),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.search().to_pydantic(TestModel) == rows
+
+
+def test_literal_of_plain_enum_with_none_raises_type_error():
+    # The stored value "red" would not validate against Color.RED on read.
+    class Color(Enum):
+        RED = "red"
+
+    for annotation in (Literal[Color.RED, None], Optional[Literal[Color.RED, None]]):
+        TestModel = pydantic.create_model("TestModel", color=(annotation, None))
+
+        with pytest.raises(TypeError, match="same type"):
+            pydantic_to_schema(TestModel)
+
+
+def test_literal_of_str_enum_with_none_round_trip(mem_db):
+    class Color(str, Enum):
+        RED = "red"
+
+    class TestModel(LanceModel):
+        color: Literal[Color.RED, None] = None
+        vector: Vector(2)
+
+    rows = [
+        TestModel(color=Color.RED, vector=[1.0, 2.0]),
+        TestModel(color=None, vector=[3.0, 4.0]),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.search().to_pydantic(TestModel) == rows
+
+
 def test_literal_time_and_timedelta_round_trip(mem_db):
     class TestModel(LanceModel):
         status: Literal["todo", "done"]
