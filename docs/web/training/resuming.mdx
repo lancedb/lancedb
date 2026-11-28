@@ -8,7 +8,7 @@ availability:
   enterprise: available
 ---
 
-Resuming loads a `StreamingDataset` checkpoint saved by [Checkpointing](/training/checkpointing) back into a fresh dataset and `DataLoader`, so a failed or restarted run picks up where it left off rather than rereading from the start.
+Resuming loads a `StreamingDataset` checkpoint saved by [Checkpointing](/training/checkpointing) back into a fresh dataset and loader, so a failed or restarted run picks up where it left off rather than rereading from the start.
 
 This page assumes the `rank`, `world_size`, `num_splits` and `shuffle_seed`
 terminology from [Distributed Training](/training/distributed-training#parallelism-and-elasticity).
@@ -18,7 +18,7 @@ terminology from [Distributed Training](/training/distributed-training#paralleli
 <CodeGroup>
 ```py Python icon=Python
 import torch
-from lancedb.streaming import StreamingDataset
+from lancedb.streaming import StreamingDataLoader, StreamingDataset
 
 checkpoint = torch.load(f"checkpoint_100_rank_{rank}.pt")
 model.load_state_dict(checkpoint["model"])
@@ -34,25 +34,49 @@ dataset = StreamingDataset(
 )
 dataset.load_state_dict(dataset_state)
 
-# The combined batch size across every rank, the same value used when the
-# checkpoint was saved; each rank's DataLoader gets its world_size share of it.
+# Use the same global batch size as the run that saved the checkpoint.
 global_batch_size = 48
+batch_size = global_batch_size // world_size
+```
+</CodeGroup>
+
+Choose the loader that matches the one used to save the checkpoint:
+
+<CodeGroup>
+```py "Single-process loader" icon=Python
 dataloader = torch.utils.data.DataLoader(
     dataset,
-    batch_size=global_batch_size // world_size,
+    batch_size=batch_size,
     num_workers=0,
 )
+```
 
+```py "Multi-worker loader" icon=Python
+dataloader = StreamingDataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=4,
+)
+```
+</CodeGroup>
+
+Continue training with the selected loader:
+
+<CodeGroup>
+```py Python icon=Python
 for batch in dataloader:
     train_step(batch)
 ```
 </CodeGroup>
 
-`load_state_dict()` rejects a checkpoint whose `num_splits` or `shuffle_seed` differs from the new dataset. For an
-exact resume, also use the same table snapshot, `epoch`, `shuffle`, `filter`, and other data-selection settings, and
-keep `world_size` the same -- changing it is a topology change, covered next. The number of DataLoader workers may
-still change as long as the batch-size divisibility constraints from
-[Distributed Training](/training/distributed-training#parallelism-and-elasticity) hold.
+`load_state_dict()` rejects a checkpoint whose `num_splits` or `shuffle_seed` differs from the new dataset.
+To reproduce the same ordered batches on each rank, use the same table snapshot, `epoch`, `shuffle`,
+`filter`, and other data-selection settings. Keep `world_size`, the loader type, `num_workers`, the batch
+size, and collation the same as in the run that saved the checkpoint.
+
+Changing `num_workers` changes how splits are grouped. A resumed run can recover the same remaining rows
+but group or order them differently, even when the
+[divisibility constraints](/training/distributed-training#parallelism-and-elasticity) hold.
 
 ## Resuming Across Different Topologies {#resuming-across-different-topologies}
 
