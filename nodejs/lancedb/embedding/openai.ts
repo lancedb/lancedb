@@ -7,6 +7,9 @@ import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
 import { registerBuiltIn } from "./registry";
 
+// Maximum number of inputs the OpenAI embeddings API accepts per request.
+const MAX_INPUTS_PER_REQUEST = 2048;
+
 export type OpenAIOptions = {
   apiKey: string;
   model: EmbeddingCreateParams["model"];
@@ -75,14 +78,16 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   }
 
   async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
-    const response = await this.#openai.embeddings.create({
-      model: this.#modelName,
-      input: data,
-    });
-
     const embeddings: number[][] = [];
-    for (let i = 0; i < response.data.length; i++) {
-      embeddings.push(response.data[i].embedding);
+    // The OpenAI embeddings endpoint accepts at most 2048 inputs per request.
+    for (let start = 0; start < data.length; start += MAX_INPUTS_PER_REQUEST) {
+      const response = await this.#openai.embeddings.create({
+        model: this.#modelName,
+        input: data.slice(start, start + MAX_INPUTS_PER_REQUEST),
+      });
+      for (let i = 0; i < response.data.length; i++) {
+        embeddings.push(response.data[i].embedding);
+      }
     }
     return embeddings;
   }
