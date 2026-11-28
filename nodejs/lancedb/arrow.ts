@@ -28,6 +28,7 @@ import {
   RecordBatchStreamWriter,
   Schema,
   Struct,
+  TimeUnit,
   Timestamp,
   Type,
   Utf8,
@@ -1634,6 +1635,22 @@ interface JsonField {
   metadata: Map<string, string>;
 }
 
+// Lance spells time units as "s", "ms", "us" and "ns", not as arrow's
+// numeric `TimeUnit` enum values.
+function timeUnitToJson(unit: TimeUnit): string {
+  switch (unit) {
+    case TimeUnit.SECOND:
+      return "s";
+    case TimeUnit.MILLISECOND:
+      return "ms";
+    case TimeUnit.MICROSECOND:
+      return "us";
+    case TimeUnit.NANOSECOND:
+      return "ns";
+  }
+  throw new Error(`Unsupported time unit: ${unit}`);
+}
+
 // Matches format of https://github.com/lancedb/lance/blob/main/rust/lance/src/arrow/json.rs
 export function dataTypeToJson(dataType: DataType): JsonDataType {
   switch (dataType.typeId) {
@@ -1717,7 +1734,7 @@ export function dataTypeToJson(dataType: DataType): JsonDataType {
       const timestamp = dataType as Timestamp;
       const timezone = timestamp.timezone || "-";
       return {
-        type: `timestamp:${timestamp.unit}:${timezone}`,
+        type: `timestamp:${timeUnitToJson(timestamp.unit)}:${timezone}`,
       };
     }
     case Type.Decimal: {
@@ -1728,7 +1745,7 @@ export function dataTypeToJson(dataType: DataType): JsonDataType {
     }
     case Type.Duration: {
       const duration = dataType as Duration;
-      return { type: `duration:${duration.unit}` };
+      return { type: `duration:${timeUnitToJson(duration.unit)}` };
     }
     case Type.FixedSizeBinary: {
       const byteWidth = (dataType as FixedSizeBinary).byteWidth;

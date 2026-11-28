@@ -6,12 +6,16 @@ import * as vm from "node:vm";
 import { type ApacheArrow, arrow15, arrowVersions } from "./arrow_versions";
 
 import {
+  Duration as CurrentDuration,
   Field as CurrentField,
   LargeBinary as CurrentLargeBinary,
   Schema as CurrentSchema,
+  TimeUnit as CurrentTimeUnit,
+  Timestamp as CurrentTimestamp,
   Vector as CurrentVector,
   convertToTable,
   tableFromIPC as currentTableFromIPC,
+  dataTypeToJson,
   fromBufferToRecordBatch,
   fromDataToBuffer,
   fromRecordBatchToBuffer,
@@ -36,6 +40,34 @@ it("creates a nullable JSON field with the Arrow extension metadata", () => {
   expect(field.metadata).toEqual(
     new Map([["ARROW:extension:name", "arrow.json"]]),
   );
+});
+
+it("serializes timestamp and duration units the way Lance parses them", () => {
+  expect(dataTypeToJson(new CurrentTimestamp(CurrentTimeUnit.SECOND))).toEqual({
+    type: "timestamp:s:-",
+  });
+  expect(
+    dataTypeToJson(new CurrentTimestamp(CurrentTimeUnit.MILLISECOND, "UTC")),
+  ).toEqual({ type: "timestamp:ms:UTC" });
+  expect(
+    dataTypeToJson(new CurrentTimestamp(CurrentTimeUnit.MICROSECOND, "+08:00")),
+  ).toEqual({ type: "timestamp:us:+08:00" });
+  expect(
+    dataTypeToJson(new CurrentTimestamp(CurrentTimeUnit.NANOSECOND)),
+  ).toEqual({ type: "timestamp:ns:-" });
+
+  expect(dataTypeToJson(new CurrentDuration(CurrentTimeUnit.SECOND))).toEqual({
+    type: "duration:s",
+  });
+  expect(
+    dataTypeToJson(new CurrentDuration(CurrentTimeUnit.MILLISECOND)),
+  ).toEqual({ type: "duration:ms" });
+  expect(
+    dataTypeToJson(new CurrentDuration(CurrentTimeUnit.MICROSECOND)),
+  ).toEqual({ type: "duration:us" });
+  expect(
+    dataTypeToJson(new CurrentDuration(CurrentTimeUnit.NANOSECOND)),
+  ).toEqual({ type: "duration:ns" });
 });
 
 it("allows JSON fields to be non-nullable", () => {
