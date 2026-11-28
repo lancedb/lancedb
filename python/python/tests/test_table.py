@@ -2896,6 +2896,136 @@ def test_write_vectors_with_null_elements(
     assert table.to_arrow().to_pylist() == expected
 
 
+@pytest.mark.parametrize("column", ["vector", "text_embedding", "image_VECTOR"])
+@pytest.mark.parametrize("operation", ["create", "append", "overwrite"])
+@pytest.mark.parametrize(
+    "policy, expected_vectors",
+    [
+        ("drop", [[1.0, 2.0], [3.0, 4.0]]),
+        ("fill", [[1.0, 2.0], [3.0, 4.0], [5.0, -1.0], [-1.0, 6.0]]),
+        ("null", [[1.0, 2.0], [3.0, 4.0], None, None]),
+    ],
+)
+def test_bad_vectors_in_name_inferred_columns(
+    mem_db: DBConnection, column, operation, policy, expected_vectors
+):
+    vectors = [[1.0, 2.0], [3.0, 4.0], [5.0], [np.nan, 6.0]]
+    rows = [{"id": i, column: vector} for i, vector in enumerate(vectors)]
+    options = {"on_bad_vectors": policy, "fill_value": -1.0}
+
+    if operation == "create":
+        table = mem_db.create_table("test", rows, **options)
+        expected_rows = []
+    else:
+        initial_row = {"id": -1, column: [7.0, 8.0]}
+        table = mem_db.create_table("test", [initial_row])
+        table.add(rows, mode=operation, **options)
+        expected_rows = [initial_row] if operation == "append" else []
+
+    expected_rows.extend(
+        {"id": i, column: vector} for i, vector in enumerate(expected_vectors)
+    )
+    assert table.schema.field(column).type == pa.list_(pa.float32(), 2)
+    assert table.to_arrow().to_pylist() == expected_rows
+
+
+def test_bad_vectors_in_name_inferred_columns_default_error(mem_db: DBConnection):
+    with pytest.raises(ValueError, match="Vector column 'embedding' has NaNs"):
+        mem_db.create_table(
+            "test", [{"embedding": [1.0, 2.0]}, {"embedding": [np.nan, 4.0]}]
+        )
+
+
+@pytest.mark.parametrize("operation", ["create", "append", "overwrite"])
+@pytest.mark.parametrize("input_type", ["rows", "arrow"])
+@pytest.mark.parametrize("policy", ["drop", "fill"])
+def test_bad_vectors_preserve_declared_nullable_parent(
+    mem_db: DBConnection, operation, input_type, policy
+):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("embedding_history", pa.list_(pa.float32(), 2), nullable=True),
+        ]
+    )
+    rows = [
+        {"id": 0, "vector": [1.0, 2.0], "embedding_history": None},
+        {"id": 1, "vector": [3.0, 4.0], "embedding_history": [10.0, 11.0]},
+        {"id": 2, "vector": [np.nan, 6.0], "embedding_history": [12.0, 13.0]},
+        {"id": 3, "vector": [7.0, 8.0], "embedding_history": [np.nan, 15.0]},
+    ]
+    input_schema = schema
+    if operation == "overwrite":
+        # The existing schema establishes nullability, not the replacement width.
+        input_schema = schema.set(1, pa.field("vector", pa.list_(pa.float32(), 3)))
+        rows = [{**row, "vector": [*row["vector"], 7.0]} for row in rows]
+
+    data = (
+        pa.RecordBatch.from_pylist(rows, schema=input_schema)
+        if input_type == "arrow"
+        else rows
+    )
+    options = {"on_bad_vectors": policy, "fill_value": -1.0}
+
+    initial = {"id": -1, "vector": [9.0, 9.0], "embedding_history": None}
+    if operation == "create":
+        # An Arrow batch already declares its field types and nullability.
+        mem_db.create_table(
+            "test",
+            data=data,
+            schema=schema if input_type == "rows" else None,
+            **options,
+        )
+    else:
+        table = mem_db.create_table("test", data=[initial], schema=schema)
+        table.add(data, mode=operation, **options)
+
+    expected = [initial] if operation == "append" else []
+    expected.extend(rows[:2])
+    if policy == "fill":
+        expected.extend(
+            [
+                {**rows[2], "vector": [-1.0, *rows[2]["vector"][1:]]},
+                {**rows[3], "embedding_history": [-1.0, 15.0]},
+            ]
+        )
+
+    reopened = mem_db.open_table("test")
+    assert reopened.schema == input_schema
+    assert reopened.to_arrow().to_pylist() == expected
+
+
+@pytest.mark.parametrize("bad_prefix", [[np.nan, 3.0], [np.nan, 3.0, 4.0]])
+def test_bad_vectors_inferred_reader_uses_surviving_rows(
+    mem_db: DBConnection, bad_prefix
+):
+    first = pa.record_batch({"id": [0], "text_embedding": [bad_prefix]})
+    second = pa.record_batch({"id": [1, 2], "text_embedding": [[1.0, 2.0], [3.0, 4.0]]})
+    third = pa.record_batch(
+        {
+            "id": [3, 4, 5],
+            "text_embedding": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [5.0, 6.0]],
+        }
+    )
+    reader = pa.RecordBatchReader.from_batches(first.schema, [first, second, third])
+    mem_db.create_table("test", reader, on_bad_vectors="drop")
+
+    reopened = mem_db.open_table("test")
+    assert reopened.schema.field("text_embedding").type == pa.list_(pa.float32(), 2)
+    assert reopened.to_arrow().to_pylist() == [
+        {"id": 1, "text_embedding": [1.0, 2.0]},
+        {"id": 2, "text_embedding": [3.0, 4.0]},
+        {"id": 5, "text_embedding": [5.0, 6.0]},
+    ]
+    result = (
+        reopened.search([1.0, 2.0], vector_column_name="text_embedding")
+        .limit(1)
+        .to_arrow()
+    )
+    assert result["id"].to_pylist() == [1]
+
+
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
