@@ -2256,6 +2256,11 @@ class Table(ABC):
 
         Use [list_indices][lancedb.table.Table.list_indices] to find the names of
         the indices.
+
+        Remote tables reject empty names, ``.`` and ``..`` to prevent URL path
+        normalization. Existing indices named ``.`` or ``..`` require server-side
+        cleanup on managed tables, or a native connection with direct access to
+        the dataset. Other existing and generated names remain addressable.
         """
         raise NotImplementedError("drop_index is not supported for this table type")
 
@@ -3411,6 +3416,10 @@ class Table(ABC):
         """
         List all indices that have been created with
         [Table.create_index][lancedb.table.Table.create_index]
+
+        On older Enterprise servers, this method omits indices named ``.``,
+        ``..`` or the empty string because their statistics cannot be requested
+        safely.
 
         On LanceDB Enterprise tables, an index whose build hasn't finished may
         be missing (vector indices) or listed with 0 indexed rows (scalar and
@@ -8105,6 +8114,11 @@ class AsyncTable:
 
         Use [list_indices][lancedb.table.AsyncTable.list_indices] to find the names
         of the indices.
+
+        Remote tables reject empty names, ``.`` and ``..`` to prevent URL path
+        normalization. Existing indices named ``.`` or ``..`` require server-side
+        cleanup on managed tables, or a native connection with direct access to
+        the dataset. Other existing and generated names remain addressable.
         """
         await self._inner.drop_index(name)
 
@@ -10420,6 +10434,10 @@ class AsyncTable:
     async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
+
+        On older Enterprise servers, this method omits indices named ``.``,
+        ``..`` or the empty string because their statistics cannot be requested
+        safely.
 
         On LanceDB Enterprise tables, an index whose build hasn't finished may
         be missing (vector indices) or listed with 0 indexed rows (scalar and

@@ -1438,6 +1438,89 @@ mod tests {
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
+    #[rstest::rstest]
+    #[case("Customer lookup", false)]
+    #[case("Customer lookup", true)]
+    #[case("café_idx", false)]
+    #[case("café_idx", true)]
+    #[tokio::test]
+    async fn test_custom_index_names_preserve_exist_ok(
+        #[case] name: &str,
+        #[case] background: bool,
+    ) {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("i", Int32, [1])).unwrap();
+        let table = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let builder = table
+            .create_index(&["i"], Index::Auto)
+            .name(name.to_string())
+            .exist_ok(true);
+        if background {
+            builder.execute_async().await.unwrap().wait().await.unwrap();
+        } else {
+            builder.execute().await.unwrap();
+        }
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].name, name);
+        let version = table.version().await.unwrap();
+        let identity = indices[0].index_uuid.clone();
+        // A second call with a different definition must preserve the index.
+        let builder = table
+            .create_index(&["i"], Index::Bitmap(Default::default()))
+            .name(name.to_string())
+            .exist_ok(true);
+        if background {
+            builder.execute_async().await.unwrap().wait().await.unwrap();
+        } else {
+            builder.execute().await.unwrap();
+        }
+        assert_eq!(table.version().await.unwrap(), version);
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices[0].index_uuid, identity);
+        assert_eq!(indices[0].index_type, crate::index::IndexType::BTree);
+        assert!(table.index_stats(name).await.unwrap().is_some());
+        table.drop_index(name).await.unwrap();
+        assert!(table.list_indices().await.unwrap().is_empty());
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_drop_index_with_legacy_index_names() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("i", Int32, [1])).unwrap();
+        let table = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+        let native = table.as_native().unwrap();
+        let params = lance_index::scalar::ScalarIndexParams::for_builtin(
+            lance_index::scalar::BuiltinIndexType::BTree,
+        );
+
+        for name in [".", "..", "old/index", "old\\index"] {
+            // Simulate an index written before LanceDB validated custom names.
+            let mut dataset = (*native.dataset.get().await.unwrap()).clone();
+            dataset
+                .create_index_builder(&["i"], lance_index::IndexType::Scalar, &params)
+                .name(name.to_string())
+                .await
+                .unwrap();
+            native.dataset.update(dataset);
+
+            assert_eq!(table.list_indices().await.unwrap()[0].name, name);
+            table.drop_index(name).await.unwrap();
+            assert!(table.list_indices().await.unwrap().is_empty());
+            assert_eq!(table.count_rows(None).await.unwrap(), 1);
+        }
+    }
+
     #[tokio::test]
     async fn test_create_scalar_index() {
         let conn = connect("memory://").execute().await.unwrap();

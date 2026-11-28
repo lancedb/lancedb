@@ -1176,3 +1176,27 @@ async def test_named_index_exist_ok_checks_before_column_validation(
         await result.wait()
     assert await some_table.version() == version
     assert [index.name for index in await some_table.list_indices()] == ["kept"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["Customer lookup", "café_idx"])
+@pytest.mark.parametrize("background", [False, True])
+async def test_custom_index_names_preserve_exist_ok(some_table, name, background):
+    method = some_table.create_index_async if background else some_table.create_index
+    job = await method("id", config=BTree(), name=name, exist_ok=True)
+    if background:
+        await job.wait()
+    version = await some_table.version()
+    original = await some_table.list_indices()
+    # A second call keeps the existing definition and version.
+    job = await method("id", config=Bitmap(), name=name, exist_ok=True)
+    if background:
+        await job.wait()
+    assert await some_table.version() == version
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].name == name
+    assert indices[0].index_type == original[0].index_type == "BTree"
+    assert (await some_table.index_stats(name)).num_indexed_rows == NROWS
+    await some_table.drop_index(name)
+    assert await some_table.list_indices() == []
