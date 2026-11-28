@@ -658,7 +658,9 @@ def test_create_table_preserves_explicit_non_nullable_schema(tmp_db: DBConnectio
             pa.field("note", pa.string(), nullable=False),
         ]
     )
-    with pytest.raises((pa.ArrowInvalid, ValueError)):
+    with pytest.raises(
+        (pa.ArrowInvalid, ValueError, RuntimeError), match="non-nullable"
+    ):
         tmp_db.create_table(
             "reject_null_later_field",
             data=[{"id": 1}, {"id": 2, "note": "new"}],
