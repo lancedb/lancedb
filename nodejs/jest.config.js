@@ -7,9 +7,20 @@ process.env.LANCEDB_OAUTH_BROWSER =
     ? path.join(__dirname, "__test__/fixtures/oauth_browser.cmd")
     : "/usr/bin/true";
 
-/** @type {import('ts-jest').JestConfigWithTsJest} */
+/** @type {import('jest').Config} */
 module.exports = {
-  preset: "ts-jest",
+  transform: {
+    "^.+\\.ts$": [
+      "@swc/jest",
+      {
+        jsc: {
+          target: "es2022",
+          parser: { syntax: "typescript", decorators: true },
+          transform: { legacyDecorator: true, decoratorMetadata: true },
+        },
+      },
+    ],
+  },
   testEnvironment: "node",
   moduleDirectories: ["node_modules", "./dist"],
   moduleFileExtensions: ["js", "ts"],

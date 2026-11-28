@@ -133,6 +133,7 @@ jobs:
         # make napi-rs treat `--profile ci` as a cargo passthrough arg.
         pnpm build:debug --profile ci --features ${{ matrix.features }}
         pnpm tsc
+        pnpm run typecheck:tests
     - name: Setup examples
       working-directory: nodejs/examples
       run: pnpm install --frozen-lockfile
@@ -234,6 +235,7 @@ jobs:
         # `require("apache-arrow/package.json")` is blocked by the package's exports map.
         node -p "'apache-arrow resolved to ' + JSON.parse(require('fs').readFileSync('node_modules/apache-arrow/package.json')).version"
         pnpm tsc
+        pnpm run typecheck:tests
     - name: Test
       env:
         # Newer @smithy/core uses dynamic ESM imports.

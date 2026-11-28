@@ -13,6 +13,7 @@ strictDepBuilds: true
 
 allowBuilds:
   '@biomejs/biome': true
+  '@swc/core': false # The optional platform package supplies the native binary.
   onnxruntime-node: true
   protobufjs: true
   sharp: true
