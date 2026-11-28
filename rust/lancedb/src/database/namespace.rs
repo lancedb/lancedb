@@ -378,6 +378,14 @@ impl Database for LanceNamespaceDatabase {
                     .await?
                     .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
+                    let table_schema = native_table.schema().await?;
+                    if table_schema != request.data.arrow_schema() {
+                        return Err(Error::Schema {
+                            message: "Provided schema does not match existing table schema"
+                                .to_string(),
+                        });
+                    }
+
                     return Ok(Arc::new(native_table));
                 }
             }
@@ -1398,6 +1406,51 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 5);
+    }
+
+    #[rstest::rstest]
+    #[case::same_schema("a", DataType::Int32, true)]
+    #[case::different_name("b", DataType::Int32, false)]
+    #[case::different_type("a", DataType::Utf8, false)]
+    #[tokio::test]
+    async fn test_namespace_create_table_exist_ok_schema(
+        #[case] name: &str,
+        #[case] data_type: DataType,
+        #[case] matches_schema: bool,
+    ) {
+        let tmp_dir = tempdir().unwrap();
+        let properties = HashMap::from([(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        )]);
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        let original_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        conn.create_empty_table("t", original_schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let requested_schema = Arc::new(Schema::new(vec![Field::new(name, data_type, true)]));
+        let result = conn
+            .create_empty_table("t", requested_schema)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await;
+
+        if matches_schema {
+            assert_eq!(result.unwrap().schema().await.unwrap(), original_schema);
+        } else {
+            let error = result.expect_err("exist_ok must reject an incompatible schema");
+            assert!(matches!(error, Error::Schema { .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Provided schema does not match existing table schema")
+            );
+        }
     }
 
     #[tokio::test]
