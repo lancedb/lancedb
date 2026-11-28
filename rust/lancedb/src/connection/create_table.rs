@@ -235,7 +235,8 @@ impl CreateTableBuilder {
 #[cfg(test)]
 mod tests {
     use arrow_array::{
-        Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, record_batch,
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        cast::AsArray, record_batch, types::Int32Type,
     };
     use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
@@ -490,6 +491,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other_schema, overwritten.schema().await.unwrap());
+    }
+
+    #[tokio::test]
+    #[rstest::rstest]
+    #[case::non_nullable_list_item(DataType::new_fixed_size_list(DataType::Float32, 2, false))]
+    #[case::renamed_list_item(DataType::FixedSizeList(
+        Arc::new(Field::new("element", DataType::Float32, true)),
+        2
+    ))]
+    #[case::string_view(DataType::Utf8View)]
+    async fn test_create_table_exist_ok_with_lance_normalized_type(#[case] data_type: DataType) {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", data_type.clone(), false)]));
+        db.create_empty_table("test", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+        db.create_empty_table("test", schema)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap();
+
+        let nullable_schema = Arc::new(Schema::new(vec![Field::new("x", data_type, true)]));
+        let result = db
+            .create_empty_table("test", nullable_schema)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await;
+        assert!(matches!(result, Err(Error::Schema { .. })));
+    }
+
+    /// `exist_ok` must reopen the table at the requested location, not the one at the
+    /// default location of a table with the same name.
+    #[tokio::test]
+    #[rstest::rstest]
+    #[case::original_schema(false)]
+    #[case::normalized_schema(true)]
+    async fn test_create_table_exist_ok_opens_requested_location(#[case] nullable_item: bool) {
+        let tmp_dir = tempdir().unwrap();
+        let db = connect(tmp_dir.path().join("db").to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let location = tmp_dir.path().join("elsewhere").join("test.lance");
+        let location = location.to_str().unwrap();
+
+        let item = Arc::new(Field::new("item", DataType::Float32, nullable_item));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", DataType::FixedSizeList(item.clone(), 2), false),
+        ]));
+        let batch_with_id = |id: i32| {
+            let vector = FixedSizeListArray::new(
+                item.clone(),
+                2,
+                Arc::new(Float32Array::from(vec![1.0, 2.0])),
+                None,
+            );
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![id])), Arc::new(vector)],
+            )
+            .unwrap()
+        };
+        db.create_table("test", batch_with_id(10))
+            .execute()
+            .await
+            .unwrap();
+        db.create_table("test", batch_with_id(20))
+            .location(location)
+            .execute()
+            .await
+            .unwrap();
+
+        let table = db
+            .create_empty_table("test", schema.clone())
+            .location(location)
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(table.uri().await.unwrap(), location);
+        let batches = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let ids = batches
+            .iter()
+            .flat_map(|batch| batch["id"].as_primitive::<Int32Type>().values().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [20]);
     }
 
     #[tokio::test]
