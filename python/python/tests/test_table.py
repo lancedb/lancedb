@@ -27,6 +27,7 @@ from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pyarrow.dataset
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
@@ -600,6 +601,58 @@ def test_empty_table(mem_db: DBConnection):
         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
     ]
     tbl.add(data=data)
+
+
+def test_add_keeps_columns_first_seen_in_later_rows(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "note": pa.string()})
+    tbl = mem_db.create_table("test", schema=schema)
+    tbl.add([{"id": 1}, {"id": 2, "note": "keep me"}])
+    assert tbl.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": None},
+        {"id": 2, "note": "keep me"},
+    ]
+
+
+def test_create_table_keeps_declared_non_nullable_field(tmp_path):
+    schema = pa.schema(
+        [pa.field("id", pa.int64()), pa.field("note", pa.string(), nullable=False)]
+    )
+    db = lancedb.connect(tmp_path)
+    with pytest.raises(RuntimeError, match="'note' with null values to non-nullable"):
+        db.create_table(
+            "test", data=[{"id": 1}, {"id": 2, "note": "new"}], schema=schema
+        )
+
+    db.create_table("test", data=[{"id": 1, "note": "new"}], schema=schema)
+    reopened = lancedb.connect(tmp_path).open_table("test")
+    assert not reopened.schema.field("note").nullable
+
+
+def test_create_table_enforces_non_nullable_child_only_under_present_parent(tmp_path):
+    profile = pa.struct([pa.field("country", pa.string(), nullable=False)])
+    schema = pa.schema(
+        [
+            pa.field("profile", profile),
+            pa.field("tag", pa.dictionary(pa.int32(), pa.string())),
+        ]
+    )
+    # A Parquet round trip leaves a null child slot beneath the null parent.
+    buffer = pa.BufferOutputStream()
+    rows = [{"profile": {"country": "CN"}, "tag": "a"}, {"profile": None, "tag": "b"}]
+    pq.write_table(pa.Table.from_pylist(rows), buffer)
+    data = pq.read_table(pa.BufferReader(buffer.getvalue()))
+    data = data.set_column(1, "tag", data.column("tag").dictionary_encode())
+
+    db = lancedb.connect(tmp_path)
+    db.create_table("test", data=data, schema=schema)
+    reopened = lancedb.connect(tmp_path).open_table("test")
+    assert reopened.to_arrow().to_pylist() == rows
+    assert not reopened.schema.field("profile").type.field("country").nullable
+
+    with pytest.raises(RuntimeError, match="'country' is non-nullable"):
+        db.create_table(
+            "bad", data=[{"profile": {"country": None}, "tag": "a"}], schema=schema
+        )
 
 
 def test_add_dictionary(mem_db: DBConnection):
