@@ -67,6 +67,23 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
     Ok(options)
 }
 
+fn validate_wand_factor(wand_factor: Option<f32>) -> PyResult<Option<f32>> {
+    if let Some(value) = wand_factor {
+        if !value.is_finite() || value < 0.0 {
+            return Err(PyValueError::new_err(
+                "wand_factor must be finite and non-negative",
+            ));
+        }
+        if value != 1.0 {
+            return Err(PyValueError::new_err(format!(
+                "wand_factor must be None or 1.0 (got {value}); non-default factors are currently unsupported",
+            )));
+        }
+    }
+
+    Ok(wand_factor)
+}
+
 fn execute_to_reader_sync<Q>(
     py: Python<'_>,
     query: Q,
@@ -390,6 +407,7 @@ pub struct PyQueryRequest {
     pub preserve_order: Option<bool>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
+    pub wand_factor: Option<f32>,
     pub select: PySelect,
     pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
@@ -426,7 +444,12 @@ impl From<AnyQuery> for PyQueryRequest {
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
-                    .map(|fts| PyLanceDB(fts.query)),
+                    .as_ref()
+                    .map(|fts| PyLanceDB(fts.query.clone())),
+                wand_factor: query_request
+                    .full_text_search
+                    .as_ref()
+                    .and_then(|fts| fts.wand_factor),
                 select_source_columns: PySelect::source_columns(&query_request.select),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
@@ -459,7 +482,16 @@ impl From<AnyQuery> for PyQueryRequest {
                 take_row_ids: vector_query.base.take_row_ids,
                 preserve_order: vector_query.base.preserve_order.then_some(true),
                 filter: vector_query.base.filter.map(PyQueryFilter),
-                full_text_search: None,
+                full_text_search: vector_query
+                    .base
+                    .full_text_search
+                    .as_ref()
+                    .map(|fts| PyLanceDB(fts.query.clone())),
+                wand_factor: vector_query
+                    .base
+                    .full_text_search
+                    .as_ref()
+                    .and_then(|fts| fts.wand_factor),
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
@@ -637,7 +669,12 @@ impl Query {
                 "Query text is required for nearest_to_text",
             ))?;
 
-        let query = if let Ok(query_text) = fts_query.cast::<PyString>() {
+        let wand_factor = query
+            .get_item("wand_factor")?
+            .map(|wf| wf.extract::<f32>())
+            .transpose()?;
+
+        let mut query = if let Ok(query_text) = fts_query.cast::<PyString>() {
             let mut query_text = query_text.to_string();
             let columns = query
                 .get_item("columns")?
@@ -689,6 +726,10 @@ impl Query {
             let query = fts_query.extract::<PyLanceDB<FtsQuery>>()?;
             FullTextSearchQuery::new_query(query.0)
         };
+
+        if let Some(wf) = validate_wand_factor(wand_factor)? {
+            query.wand_factor = Some(wf);
+        }
 
         Ok(FTSQuery {
             inner: self.inner.clone(),
@@ -919,6 +960,19 @@ pub struct FTSQuery {
     fts_query: FullTextSearchQuery,
 }
 
+impl FTSQuery {
+    fn fts_query_for_execution(&self) -> FullTextSearchQuery {
+        let mut fts_query = self.fts_query.clone();
+        // Normalize the default WAND factor for execution so explicit 1.0
+        // follows the same execution path as None, without mutating the
+        // original query configuration.
+        if fts_query.wand_factor == Some(1.0) {
+            fts_query.wand_factor = None;
+        }
+        fts_query
+    }
+}
+
 #[pymethods]
 impl FTSQuery {
     pub fn r#where(&mut self, predicate: String) {
@@ -992,7 +1046,7 @@ impl FTSQuery {
         let inner = self_
             .inner
             .clone()
-            .full_text_search(self_.fts_query.clone());
+            .full_text_search(self_.fts_query_for_execution());
 
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
@@ -1023,7 +1077,7 @@ impl FTSQuery {
             self_
                 .inner
                 .clone()
-                .full_text_search(self_.fts_query.clone()),
+                .full_text_search(self_.fts_query_for_execution()),
             max_batch_length,
             timeout,
         )
@@ -1040,17 +1094,17 @@ impl FTSQuery {
             self_
                 .inner
                 .clone()
-                .full_text_search(self_.fts_query.clone()),
+                .full_text_search(self_.fts_query_for_execution()),
             max_batch_length,
             timeout,
         )
     }
 
     pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let mut inner = self_
-            .inner
-            .clone()
-            .full_text_search(self_.fts_query.clone());
+        let mut fts_query = self_.fts_query.clone();
+        fts_query.wand_factor = None;
+
+        let mut inner = self_.inner.clone().full_text_search(fts_query);
         let request = inner.mut_query();
         request.limit = None;
         request.offset = None;
@@ -1080,7 +1134,7 @@ impl FTSQuery {
         let inner = self_
             .inner
             .clone()
-            .full_text_search(self_.fts_query.clone());
+            .full_text_search(self_.fts_query_for_execution());
         future_into_py(self_.py(), async move {
             inner
                 .explain_plan(verbose)
@@ -1097,7 +1151,7 @@ impl FTSQuery {
         let inner = self_
             .inner
             .clone()
-            .full_text_search(self_.fts_query.clone());
+            .full_text_search(self_.fts_query_for_execution());
         let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
@@ -1109,6 +1163,15 @@ impl FTSQuery {
 
     pub fn get_query(&self) -> String {
         self.fts_query.query.query().clone()
+    }
+
+    pub fn wand_factor(&mut self, wand_factor: Option<f32>) -> PyResult<()> {
+        self.fts_query.wand_factor = validate_wand_factor(wand_factor)?;
+        Ok(())
+    }
+
+    pub fn get_wand_factor(&self) -> Option<f32> {
+        self.fts_query.wand_factor
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
@@ -1490,6 +1553,16 @@ impl HybridQuery {
         self.inner_fts.inner.current_request().with_row_id
     }
 
+    pub fn wand_factor(&mut self, wand_factor: Option<f32>) -> PyResult<()> {
+        let validated = validate_wand_factor(wand_factor)?;
+        self.inner_fts.wand_factor(validated)?;
+        Ok(())
+    }
+
+    pub fn get_wand_factor(&self) -> Option<f32> {
+        self.inner_fts.get_wand_factor()
+    }
+
     pub fn to_query_request(&self) -> PyQueryRequest {
         let mut req = self.inner_fts.to_query_request();
         let vec_req = self.inner_vec.to_query_request();
@@ -1519,4 +1592,21 @@ pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {
             e
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_rows_cloned_fts_query_clears_wand_factor() {
+        let mut original_fts_query = FullTextSearchQuery::new("machine learning".to_string());
+        original_fts_query.wand_factor = Some(0.8);
+
+        let mut count_fts_query = original_fts_query.clone();
+        count_fts_query.wand_factor = None;
+
+        assert_eq!(original_fts_query.wand_factor, Some(0.8));
+        assert_eq!(count_fts_query.wand_factor, None);
+    }
 }

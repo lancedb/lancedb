@@ -134,14 +134,30 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     {
         return true;
     }
-    if matches!(query, AnyQuery::Query(query) if query.fast_search && query.full_text_search.is_some())
+
+    // wand_factor=1.0 is equivalent to the default (None), so it can use
+    // namespace pushdown. Only non-default factors require local execution
+    // because QueryTable cannot represent wand_factor. Non-default factors
+    // are currently rejected by the public API
+    if query
+        .base()
+        .full_text_search
+        .as_ref()
+        .and_then(|fts| fts.wand_factor)
+        .is_some_and(|wf| wf != 1.0)
     {
         return true;
     }
+
     matches!(
         query,
+        AnyQuery::Query(query)
+            if query.fast_search && query.full_text_search.is_some()
+    ) || matches!(
+        query,
         AnyQuery::VectorQuery(vector_query)
-            if vector_query.approx_mode.is_some() || vector_query.search_effort.is_some()
+            if vector_query.approx_mode.is_some()
+                || vector_query.search_effort.is_some()
     )
 }
 
@@ -959,6 +975,21 @@ fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableReques
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
+    // The namespace QueryTable serializer cannot represent wand_factor.
+    // The default value (1.0) is equivalent to None, so it is safe to push down.
+    // Reject other explicit values because they cannot be preserved by QueryTable.
+    if query
+        .base()
+        .full_text_search
+        .as_ref()
+        .and_then(|fts| fts.wand_factor)
+        .is_some_and(|wf| wf != 1.0)
+    {
+        return Err(Error::NotSupported {
+            message: "namespace QueryTable does not support non-default wand_factor; execute the query locally"
+                .to_string(),
+        });
+    }
     match query {
         AnyQuery::VectorQuery(vq) => {
             // Extract the query vector(s)
@@ -1431,6 +1462,76 @@ mod tests {
         let request = convert_to_namespace_query(&explicitly_unbounded_query).unwrap();
         assert_eq!(request.nprobes, Some(8));
         assert_eq!(request.maximum_nprobes, Some(0));
+    }
+
+    #[test]
+    fn test_namespace_query_wand_factor_pushdown_compatibility() {
+        let fts = lance_index::scalar::FullTextSearchQuery::new("test".into());
+        let default_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(fts),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&default_query));
+
+        let mut fts_with_wand = lance_index::scalar::FullTextSearchQuery::new("test".into());
+        fts_with_wand.wand_factor = Some(1.5);
+        let wand_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(fts_with_wand.clone()),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&wand_query));
+
+        let mut fts_with_wand_1_0 = lance_index::scalar::FullTextSearchQuery::new("test".into());
+        fts_with_wand_1_0.wand_factor = Some(1.0);
+        let wand_1_0_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(fts_with_wand_1_0.clone()),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&wand_1_0_query));
+        assert!(convert_to_namespace_query(&wand_1_0_query).is_ok());
+
+        let default_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            base: QueryRequest {
+                full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                    "test".into(),
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&default_hybrid));
+        assert!(convert_to_namespace_query(&default_hybrid).is_ok());
+
+        let wand_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            base: QueryRequest {
+                full_text_search: Some(fts_with_wand),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&wand_hybrid));
+
+        let wand_1_0_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            base: QueryRequest {
+                full_text_search: Some(fts_with_wand_1_0),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&wand_1_0_hybrid));
+        assert!(convert_to_namespace_query(&wand_1_0_hybrid).is_ok());
+
+        assert!(matches!(
+            convert_to_namespace_query(&wand_query),
+            Err(Error::NotSupported { message }) if message.contains("wand_factor")
+        ));
+        assert!(matches!(
+            convert_to_namespace_query(&wand_hybrid),
+            Err(Error::NotSupported { message }) if message.contains("wand_factor")
+        ));
     }
 
     #[test]

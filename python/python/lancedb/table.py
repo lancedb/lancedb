@@ -144,6 +144,10 @@ def _should_push_down_query_table(
 
 def _requires_local_namespace_execution(query: Query) -> bool:
     # The namespace QueryTable request does not support these query options.
+    _fts_wand = (
+        query.full_text_query.wand_factor if query.full_text_query is not None else None
+    )
+    _fts_forces_local = _fts_wand is not None and _fts_wand != 1.0
     return (
         query.take_offsets is not None
         or query.take_row_ids is not None
@@ -160,6 +164,12 @@ def _requires_local_namespace_execution(query: Query) -> bool:
             and query.fast_search is True
             and query.vector is None
         )
+        # Namespace QueryTable cannot represent non-default wand_factor values.
+        # wand_factor=1.0 is equivalent to None and remains eligible for pushdown.
+        or _fts_forces_local
+        # A hybrid vector subquery carries this sentinel when its FTS sibling
+        # requires local execution, ensuring both legs use the same snapshot.
+        or query._force_local_namespace
     )
 
 
@@ -8871,6 +8881,11 @@ class AsyncTable:
                 query.full_text_query.columns,
                 operator=query.full_text_query.operator,
             )
+            if getattr(query.full_text_query, "wand_factor", None) is not None:
+                async_query = async_query.wand_factor(query.full_text_query.wand_factor)
+
+        if getattr(query, "_force_local_namespace", False):
+            async_query._force_local_namespace = True
 
         return async_query
 
