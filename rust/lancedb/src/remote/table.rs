@@ -1526,6 +1526,9 @@ impl<S: HttpSend> RemoteTable<S> {
             });
         }
         body["prefilter"] = params.prefilter.into();
+        if params.disable_scoring_autoprojection {
+            body["disable_scoring_autoprojection"] = serde_json::Value::Bool(true);
+        }
         // Only forward use_rte when explicitly set; a server that predates it
         // ignores the field and routes as it would by default.
         if let Some(use_rte) = params.use_rte {
