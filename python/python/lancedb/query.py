@@ -31,7 +31,11 @@ import pyarrow.compute as pc
 import pydantic
 from typing_extensions import Annotated
 
-from lancedb._lancedb import fts_query_to_json
+from lancedb._lancedb import (
+    _share_hybrid_subquery_filter,
+    _uses_sql_subquery_filter,
+    fts_query_to_json,
+)
 from lancedb.background_loop import LOOP
 from . import __version__
 from .arrow import AsyncRecordBatchReader
@@ -3365,11 +3369,26 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._pk_fusion is None:
             fts_query = fts_query.with_row_id(True)
             vector_query = vector_query.with_row_id(True)
-        with ThreadPoolExecutor() as executor:
-            fts_future = executor.submit(fts_query.to_arrow, timeout=timeout)
-            vector_future = executor.submit(vector_query.to_arrow, timeout=timeout)
-            fts_results = fts_future.result()
-            vector_results = vector_future.result()
+        if (
+            isinstance(self._where, str)
+            and _uses_sql_subquery_filter(self._where)
+            and not _is_remote_query_table(self._table)
+        ):
+            # Keep the existing Python reranker, but prepare the two native
+            # legs together so they use the same snapshot and eligibility mask.
+            self._table._ensure_no_legacy_fts_index()
+            async_table = self._table._table
+            fts = async_table._sync_query_to_async(fts_query.to_query_object())
+            vec = async_table._sync_query_to_async(vector_query.to_query_object())
+            fts_results, vector_results = LOOP.run(
+                _execute_hybrid_subquery_legs(fts, vec, timeout)
+            )
+        else:
+            with ThreadPoolExecutor() as executor:
+                fts_future = executor.submit(fts_query.to_arrow, timeout=timeout)
+                vector_future = executor.submit(vector_query.to_arrow, timeout=timeout)
+                fts_results = fts_future.result()
+                vector_results = vector_future.result()
         if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
             vector_results, fts_results = self._pk_fusion.stamp(
                 vector_results, fts_results
@@ -5712,6 +5731,18 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
+async def _execute_hybrid_subquery_legs(
+    fts: AsyncFTSQuery, vector: AsyncVectorQuery, timeout: Optional[timedelta]
+) -> tuple[pa.Table, pa.Table]:
+    fts._inner, vector._inner = await _share_hybrid_subquery_filter(
+        fts._inner, vector._inner
+    )
+    fts_results, vector_results = await asyncio.gather(
+        fts.to_arrow(timeout=timeout), vector.to_arrow(timeout=timeout)
+    )
+    return fts_results, vector_results
+
+
 class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     """
     A query builder that performs hybrid vector and full text search.
@@ -5882,10 +5913,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths
 
-        fts_results, vector_results = await asyncio.gather(
-            fts_query.to_arrow(timeout=timeout),
-            vec_query.to_arrow(timeout=timeout),
-        )
+        if isinstance(req.filter, str) and _uses_sql_subquery_filter(req.filter):
+            fts_results, vector_results = await _execute_hybrid_subquery_legs(
+                fts_query, vec_query, timeout
+            )
+        else:
+            fts_results, vector_results = await asyncio.gather(
+                fts_query.to_arrow(timeout=timeout),
+                vec_query.to_arrow(timeout=timeout),
+            )
         if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
             vector_results, fts_results = self._pk_fusion.stamp(
                 vector_results, fts_results

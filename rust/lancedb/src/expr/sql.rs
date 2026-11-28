@@ -55,7 +55,7 @@ impl UnparserDialect for LanceSqlDialect {
 /// delegates only identifier recognition, leaving every other dialect option at
 /// its default. In particular, `/*! ... */` remains an ordinary block comment.
 #[derive(Debug, Default)]
-struct PredicateDialect(GenericDialect);
+pub(crate) struct PredicateDialect(GenericDialect);
 
 impl SqlParserDialect for PredicateDialect {
     fn dialect(&self) -> TypeId {
@@ -72,6 +72,10 @@ impl SqlParserDialect for PredicateDialect {
 
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         ch == '"' || ch == '`'
+    }
+
+    fn supports_lambda_functions(&self) -> bool {
+        true
     }
 }
 

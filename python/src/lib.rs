@@ -76,6 +76,11 @@ fn _append_doc_url(message: &str, campaign: &str) -> PyResult<String> {
     Ok(link.append_to(message))
 }
 
+#[pyfunction]
+fn _uses_sql_subquery_filter(sql: &str) -> bool {
+    lancedb::table::query::uses_sql_subquery_filter(sql)
+}
+
 #[pymodule]
 pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     lancedb::docs::set_sdk_ident("python", env!("CARGO_PKG_VERSION"));
@@ -110,6 +115,8 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::sql::QueryDescription>()?;
     m.add_class::<PyBlobFile>()?;
     m.add_class::<IndexConfig>()?;
+    m.add_function(wrap_pyfunction!(_uses_sql_subquery_filter, m)?)?;
+    m.add_function(wrap_pyfunction!(query::_share_hybrid_subquery_filter, m)?)?;
     m.add_class::<Query>()?;
     m.add_class::<FTSQuery>()?;
     m.add_class::<HybridQuery>()?;

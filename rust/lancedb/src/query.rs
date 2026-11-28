@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
@@ -39,6 +40,7 @@ use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
 
+use crate::database::Database;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
@@ -422,6 +424,10 @@ pub trait QueryBase {
     /// Identifiers may be delimited with SQL-standard double quotes or
     /// backticks. String literals must use single quotes.
     ///
+    /// Embedded prefilters support positive `IN (SELECT ...)` predicates
+    /// alone or combined with other conditions using `AND`. Use unqualified
+    /// table names in the same namespace inside the subquery.
+    ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
     ///
@@ -613,6 +619,7 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn postfilter(mut self) -> Self {
+        self.mut_query().prepared_subquery = None;
         self.mut_query().prefilter = false;
         self
     }
@@ -890,6 +897,12 @@ pub struct QueryRequest {
     /// `Result`.
     pub(crate) filter_error: Option<String>,
 
+    /// Resolves tables referenced by Embedded SQL query filters.
+    pub(crate) database: Option<QueryDatabase>,
+
+    /// Per-execution eligibility plan and snapshot shared by the two hybrid legs.
+    pub(crate) prepared_subquery: Option<Arc<crate::table::query::PreparedSubquery>>,
+
     /// Perform a full text search on the table.
     pub full_text_search: Option<FullTextSearchQuery>,
 
@@ -948,6 +961,16 @@ pub struct QueryRequest {
     pub use_rte: Option<bool>,
 }
 
+#[derive(Clone)]
+pub(crate) struct QueryDatabase(pub(crate) Arc<dyn Database>);
+
+impl fmt::Debug for QueryDatabase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Connection options may contain credentials.
+        f.debug_struct("QueryDatabase").finish_non_exhaustive()
+    }
+}
+
 impl Default for QueryRequest {
     fn default() -> Self {
         Self {
@@ -958,6 +981,8 @@ impl Default for QueryRequest {
             preserve_order: false,
             filter: None,
             filter_error: None,
+            database: None,
+            prepared_subquery: None,
             full_text_search: None,
             select: Select::All,
             fast_search: false,
@@ -984,6 +1009,7 @@ impl QueryRequest {
     /// use different representations) the error is recorded and surfaced later
     /// by [`Self::check_filter`].
     pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        self.prepared_subquery = None;
         let new = match new {
             QueryFilter::Sql(filter) => match crate::expr::canonicalize_sql_predicate(&filter) {
                 Ok(filter) => QueryFilter::Sql(filter),
@@ -1047,6 +1073,11 @@ impl Query {
             parent,
             request: QueryRequest::default(),
         }
+    }
+
+    pub(crate) fn with_database(mut self, database: Option<Arc<dyn Database>>) -> Self {
+        self.request.database = database.map(QueryDatabase);
+        self
     }
 
     /// Helper method to convert the query to a VectorQuery with a `query_vector`
@@ -1601,6 +1632,28 @@ impl VectorQuery {
         self
     }
 
+    /// Share one eligibility plan when a binding executes its hybrid legs separately.
+    #[doc(hidden)]
+    pub async fn share_subquery_filter_with(&mut self, fts_query: &mut Query) -> Result<()> {
+        let Some(table) = self.parent.as_native() else {
+            return Ok(());
+        };
+        let base = &self.request.base;
+        let fts = &fts_query.request;
+        if !Arc::ptr_eq(&self.parent, &fts_query.parent)
+            || base.use_rte != fts.use_rte
+            || base.prefilter != fts.prefilter
+            || !matches!((&base.filter, &fts.filter), (Some(QueryFilter::Sql(a)), Some(QueryFilter::Sql(b))) if a == b)
+        {
+            return Ok(());
+        }
+        fts.check_filter()?;
+        let prepared = crate::table::query::prepare_hybrid_subquery(table, base).await?;
+        fts_query.request.prepared_subquery = prepared.clone();
+        self.request.base.prepared_subquery = prepared;
+        Ok(())
+    }
+
     pub async fn execute_hybrid(
         &self,
         options: QueryExecutionOptions,
@@ -1637,6 +1690,9 @@ impl VectorQuery {
         }
 
         vector_query.request.base.full_text_search = None;
+        vector_query
+            .share_subquery_filter_with(&mut fts_query)
+            .await?;
         let (fts_results, vec_results) = try_join!(
             fts_query.execute_with_options(internal_options.clone()),
             vector_query.inner_execute_with_options(internal_options)
