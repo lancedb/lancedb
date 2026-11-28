@@ -962,6 +962,19 @@ class BooleanQuery(FullTextQuery):
         return FullTextQueryType.BOOLEAN
 
 
+def _validate_wand_factor(wand_factor: Optional[float]) -> Optional[float]:
+    if wand_factor is not None:
+        if wand_factor < 0 or not math.isfinite(wand_factor):
+            raise ValueError("wand_factor must be finite and non-negative")
+        if wand_factor != 1.0:
+            raise ValueError(
+                f"wand_factor must be None or 1.0 (got {wand_factor}); "
+                "non-default factors are currently unsupported "
+                "(see Lance issue #11206)"
+            )
+    return wand_factor
+
+
 class FullTextSearchQuery(pydantic.BaseModel):
     """A LanceDB Full Text Search Query
 
@@ -981,10 +994,20 @@ class FullTextSearchQuery(pydantic.BaseModel):
         Quoted strings keep phrase semantics regardless of the operator.
     """
 
+    model_config = pydantic.ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+    )
+
     columns: Optional[List[str]] = None
     query: Union[str, FullTextQuery]
     wand_factor: Optional[float] = None
     operator: Optional[FullTextOperator] = None
+
+    @pydantic.field_validator("wand_factor")
+    @classmethod
+    def _validate_wand_factor_field(cls, v: Optional[float]) -> Optional[float]:
+        return _validate_wand_factor(v)
 
     @pydantic.model_validator(mode="after")
     def _validate_operator(self) -> Self:
@@ -1116,6 +1139,11 @@ class Query(pydantic.BaseModel):
 
     # Internal: the sync query layer already prepared blob row ids.
     _blob_row_id_prepared: bool = pydantic.PrivateAttr(default=False)
+
+    # Internal: when a hybrid builder has an explicit wand_factor, its vector-only
+    # sub-query carries this flag so _requires_local_namespace_execution routes both
+    # legs through the same local embedded table snapshot.
+    _force_local_namespace: bool = pydantic.PrivateAttr(default=False)
 
     # The name of the vector column to use for vector search.
     vector_column: Optional[str] = None
@@ -2404,6 +2432,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._reranker = None
         self._str_query = str_query
         self._fast_search = fast_search
+        self._force_local_namespace = False
 
     def metric(self, metric: Literal["l2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -2422,6 +2451,21 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         return self.distance_type(metric)
+
+    def _force_local_namespace_execution(self) -> "LanceVectorQueryBuilder":
+        """Mark this vector query to always execute locally (never namespace pushdown).
+
+        This is an internal method used by LanceHybridQueryBuilder to ensure the
+        vector leg and the FTS leg of a hybrid query share the same local embedded
+        table snapshot when an explicit wand_factor is configured.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            self
+        """
+        self._force_local_namespace = True
+        return self
 
     def distance_type(
         self, distance_type: Literal["l2", "cosine", "dot"]
@@ -2703,7 +2747,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
-        return Query(
+        query = Query(
             vector=vector,
             filter=self._where,
             postfilter=self._postfilter,
@@ -2730,6 +2774,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             bypass_vector_index=self._bypass_vector_index,
             order_by=self._order_by,
         )
+        # Propagate the local-execution sentinel so _requires_local_namespace_execution
+        # routes both hybrid legs to the same embedded table snapshot.
+        if self._force_local_namespace:
+            query._force_local_namespace = True
+        return query
 
     def _to_batches_prepared(
         self,
@@ -2926,16 +2975,17 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         wand_factor: Optional[float]
             The WAND factor to use, or ``None`` to restore the default.
 
+            .. note::
+                Only ``None`` and ``1.0`` are currently accepted. Non-default
+                values raise ``ValueError`` pending engine support
+                (see Lance issue #11206).
+
         Returns
         -------
         LanceFtsQueryBuilder
             The LanceFtsQueryBuilder object.
         """
-        if wand_factor is not None and (
-            wand_factor < 0 or not math.isfinite(wand_factor)
-        ):
-            raise ValueError("wand_factor must be finite and non-negative")
-        self._wand_factor = wand_factor
+        self._wand_factor = _validate_wand_factor(wand_factor)
         return self
 
     def operator(
@@ -3364,16 +3414,17 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         wand_factor: Optional[float]
             The WAND factor to use, or ``None`` to restore the default.
 
+            .. note::
+                Only ``None`` and ``1.0`` are currently accepted. Non-default
+                values raise ``ValueError`` pending engine support
+                (see Lance issue #11206).
+
         Returns
         -------
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        if wand_factor is not None and (
-            wand_factor < 0 or not math.isfinite(wand_factor)
-        ):
-            raise ValueError("wand_factor must be finite and non-negative")
-        self._wand_factor = wand_factor
+        self._wand_factor = _validate_wand_factor(wand_factor)
         return self
 
     def to_query_object(self) -> Query:
@@ -4050,6 +4101,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._wand_factor is not None:
             self._fts_query.wand_factor(self._wand_factor)
+            # Both legs must execute on the same local embedded table snapshot.
+            # Mark the vector query so that _requires_local_namespace_execution
+            # returns True for it too, preventing QueryTable pushdown for the
+            # vector leg while the FTS leg executes locally.
+            self._vector_query._force_local_namespace_execution()
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
         if self._nprobes is not None:
@@ -5253,15 +5309,17 @@ class AsyncFTSQuery(AsyncStandardQuery):
         wand_factor: Optional[float]
             The WAND factor to use, or ``None`` to restore the default.
 
+            .. note::
+                Only ``None`` and ``1.0`` are currently accepted. Non-default
+                values raise ``ValueError`` pending engine support
+                (see Lance issue #11206).
+
         Returns
         -------
         AsyncFTSQuery
             The AsyncFTSQuery object.
         """
-        if wand_factor is not None and (
-            wand_factor < 0 or not math.isfinite(wand_factor)
-        ):
-            raise ValueError("wand_factor must be finite and non-negative")
+        _validate_wand_factor(wand_factor)
         self._inner.wand_factor(wand_factor)
         return self
 
@@ -5666,6 +5724,27 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._inner = inner
         self._reranker = None
         self._query_string = None
+        # When True, bypass the Rust-level namespace pushdown and route through
+        # AsyncTable._execute_arrow(), which applies the Python-level
+        # _requires_local_namespace_execution() check with _force_local_namespace=True.
+        # Set by AsyncHybridQuery._create_child_queries() when wand_factor is configured
+        # so that both hybrid legs execute against the same local table snapshot.
+        self._force_local_namespace: bool = False
+
+    def _force_local_namespace_execution(self) -> "AsyncVectorQuery":
+        """Mark this vector query to always execute locally (never namespace pushdown).
+
+        Internal method used by AsyncHybridQuery to ensure the vector leg and the FTS
+        leg share the same local embedded table snapshot when an explicit wand_factor is
+        configured. Mirrors LanceVectorQueryBuilder._force_local_namespace_execution().
+
+        Returns
+        -------
+        AsyncVectorQuery
+            self
+        """
+        self._force_local_namespace = True
+        return self
 
     def rerank(
         self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
@@ -5744,7 +5823,17 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         *,
         timeout: Optional[timedelta] = None,
     ) -> pa.Table:
-        results = await super()._execute_eager(timeout=timeout)
+        if self._force_local_namespace and self._table is not None:
+            # Route through AsyncTable._execute_arrow() so the Python-level
+            # _requires_local_namespace_execution() check with
+            # _force_local_namespace=True prevents QueryTable pushdown,
+            # keeping the vector leg on the same local embedded table handle
+            # and snapshot as the FTS leg.
+            query = self.to_query_object()
+            query._force_local_namespace = True
+            results = await self._table._execute_arrow(query, timeout=timeout)
+        else:
+            results = await super()._execute_eager(timeout=timeout)
         if self._reranker:
             source = results
             results = self._reranker.rerank_vector(self._query_string, results)
@@ -5844,15 +5933,17 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         wand_factor: Optional[float]
             The WAND factor to use, or ``None`` to restore the default.
 
+            .. note::
+                Only ``None`` and ``1.0`` are currently accepted. Non-default
+                values raise ``ValueError`` pending engine support
+                (see Lance issue #11206).
+
         Returns
         -------
         AsyncHybridQuery
             The AsyncHybridQuery object.
         """
-        if wand_factor is not None and (
-            wand_factor < 0 or not math.isfinite(wand_factor)
-        ):
-            raise ValueError("wand_factor must be finite and non-negative")
+        _validate_wand_factor(wand_factor)
         self._inner.wand_factor(wand_factor)
         return self
 
@@ -5878,6 +5969,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._ensure_fragment_constraints_supported("this hybrid query")
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
+
+        # When an explicit wand_factor is set, the FTS leg executes locally
+        # (Rust's requires_local_namespace_execution sees wand_factor on the query).
+        # The vector leg has no wand_factor, so without intervention it would be
+        # eligible for QueryTable pushdown, splitting the two legs across different
+        # namespace snapshots. Mark the vector leg local so both legs share the same
+        # embedded table handle and snapshot.
+        if self.get_wand_factor() is not None:
+            vec_query._force_local_namespace_execution()
 
         fts_req = fts_query._inner.to_query_request()
         vec_req = vec_query._inner.to_query_request()

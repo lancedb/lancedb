@@ -130,6 +130,18 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
         return true;
     }
 
+    // The namespace QueryTable serializer cannot encode wand_factor; any query
+    // carrying an explicit factor must execute locally to preserve the setting.
+    if query
+        .base()
+        .full_text_search
+        .as_ref()
+        .and_then(|fts| fts.wand_factor)
+        .is_some()
+    {
+        return true;
+    }
+
     matches!(
         query,
         AnyQuery::Query(query)
@@ -956,6 +968,18 @@ fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableReques
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
+    if query
+        .base()
+        .full_text_search
+        .as_ref()
+        .and_then(|fts| fts.wand_factor)
+        .is_some()
+    {
+        return Err(Error::NotSupported {
+            message: "namespace QueryTable does not support wand_factor; execute the query locally"
+                .to_string(),
+        });
+    }
     match query {
         AnyQuery::VectorQuery(vq) => {
             // Extract the query vector(s)
@@ -1447,6 +1471,14 @@ mod tests {
         });
         assert!(requires_local_namespace_execution(&wand_query));
 
+        let mut fts_with_wand_1_0 = lance_index::scalar::FullTextSearchQuery::new("test".into());
+        fts_with_wand_1_0.wand_factor = Some(1.0);
+        let wand_1_0_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(fts_with_wand_1_0.clone()),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&wand_1_0_query));
+
         let default_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
             base: QueryRequest {
                 full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
@@ -1466,6 +1498,15 @@ mod tests {
             ..Default::default()
         });
         assert!(requires_local_namespace_execution(&wand_hybrid));
+
+        assert!(matches!(
+            convert_to_namespace_query(&wand_query),
+            Err(Error::NotSupported { message }) if message.contains("wand_factor")
+        ));
+        assert!(matches!(
+            convert_to_namespace_query(&wand_hybrid),
+            Err(Error::NotSupported { message }) if message.contains("wand_factor")
+        ));
     }
 
     #[test]

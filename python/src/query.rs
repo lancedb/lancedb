@@ -68,12 +68,17 @@ fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExec
 }
 
 fn validate_wand_factor(wand_factor: Option<f32>) -> PyResult<Option<f32>> {
-    if let Some(value) = wand_factor
-        && (!value.is_finite() || value < 0.0)
-    {
-        return Err(PyValueError::new_err(
-            "wand_factor must be finite and non-negative",
-        ));
+    if let Some(value) = wand_factor {
+        if !value.is_finite() || value < 0.0 {
+            return Err(PyValueError::new_err(
+                "wand_factor must be finite and non-negative",
+            ));
+        }
+        if value != 1.0 {
+            return Err(PyValueError::new_err(format!(
+                "wand_factor must be None or 1.0 (got {value}); non-default factors are currently unsupported (see Lance issue #11206)",
+            )));
+        }
     }
 
     Ok(wand_factor)
@@ -1083,10 +1088,10 @@ impl FTSQuery {
     }
 
     pub fn count_rows(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let mut inner = self_
-            .inner
-            .clone()
-            .full_text_search(self_.fts_query.clone());
+        let mut fts_query = self_.fts_query.clone();
+        fts_query.wand_factor = None;
+
+        let mut inner = self_.inner.clone().full_text_search(fts_query);
         let request = inner.mut_query();
         request.limit = None;
         request.offset = None;
@@ -1536,7 +1541,9 @@ impl HybridQuery {
     }
 
     pub fn wand_factor(&mut self, wand_factor: Option<f32>) -> PyResult<()> {
-        self.inner_fts.wand_factor(wand_factor)
+        let validated = validate_wand_factor(wand_factor)?;
+        self.inner_fts.wand_factor(validated)?;
+        Ok(())
     }
 
     pub fn get_wand_factor(&self) -> Option<f32> {
@@ -1572,4 +1579,24 @@ pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {
             e
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_rows_cloned_fts_query_clears_wand_factor() {
+        let mut original_fts_query = FullTextSearchQuery::new("machine learning".to_string());
+        original_fts_query.wand_factor = Some(0.8);
+
+        // FTSQuery::count_rows() clones self.fts_query and resets wand_factor to None
+        // so that counting scanner matches all rows regardless of WAND early termination.
+        // The original query must retain its configured factor.
+        let mut count_fts_query = original_fts_query.clone();
+        count_fts_query.wand_factor = None;
+
+        assert_eq!(original_fts_query.wand_factor, Some(0.8));
+        assert_eq!(count_fts_query.wand_factor, None);
+    }
 }
