@@ -2935,6 +2935,7 @@ export class Branches {
         ),
       );
     }
+    validateNonNegativeInteger(fromVersion ?? undefined, "fromVersion");
     return new LocalTable(
       await this.#inner.create(name, fromRefOrOptions, fromVersion),
     );
@@ -2948,6 +2949,7 @@ export class Branches {
    * latest and stays writable.
    */
   async checkout(name: string, version?: number): Promise<Table> {
+    validateNonNegativeInteger(version ?? undefined, "version");
     return new LocalTable(await this.#inner.checkout(name, version));
   }
 
