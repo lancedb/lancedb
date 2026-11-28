@@ -1268,6 +1268,58 @@ def test_literal_time_and_timedelta_round_trip(mem_db):
     assert tbl.search().to_pydantic(TestModel) == rows
 
 
+def test_aware_and_naive_datetime_types():
+    class TestModel(pydantic.BaseModel):
+        aware: pydantic.AwareDatetime
+        aware_with_tz: pydantic.AwareDatetime = Field(
+            json_schema_extra={"tz": "Asia/Shanghai"}
+        )
+        aware_list: List[pydantic.AwareDatetime]
+        opt_aware: Optional[pydantic.AwareDatetime] = None
+        naive: pydantic.NaiveDatetime
+        naive_list: List[pydantic.NaiveDatetime]
+        opt_naive: Optional[pydantic.NaiveDatetime] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("aware").type == pa.timestamp("us", tz="UTC")
+    assert schema.field("aware_with_tz").type == pa.timestamp("us", tz="Asia/Shanghai")
+    assert schema.field("aware_list").type == pa.list_(pa.timestamp("us", tz="UTC"))
+    assert schema.field("opt_aware").type == pa.timestamp("us", tz="UTC")
+    assert schema.field("opt_aware").nullable
+    assert schema.field("naive").type == pa.timestamp("us")
+    assert schema.field("naive_list").type == pa.list_(pa.timestamp("us"))
+    assert schema.field("opt_naive").type == pa.timestamp("us")
+    assert schema.field("opt_naive").nullable
+
+
+def test_aware_and_naive_datetime_round_trip(mem_db):
+    class TestModel(LanceModel):
+        aware: pydantic.AwareDatetime
+        naive: pydantic.NaiveDatetime
+        vector: Vector(2)
+
+    rows = [
+        TestModel(
+            aware=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            naive=datetime(2026, 1, 2, 3, 4, 5),
+            vector=[1.0, 2.0],
+        ),
+        TestModel(
+            aware=datetime(
+                2026, 6, 7, 8, 9, 10, 11, tzinfo=timezone(timedelta(hours=6))
+            ),
+            naive=datetime(2026, 6, 7, 8, 9, 10, 11),
+            vector=[3.0, 4.0],
+        ),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    # Aware values come back in UTC, so compare them as instants.
+    assert tbl.search().to_pydantic(TestModel) == rows
+
+
 @pytest.mark.parametrize("container", ["field", "list", "nested", "enum"])
 def test_tz_aware_time_is_rejected_before_write(mem_db, container):
     class Nested(LanceModel):
