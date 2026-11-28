@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from datetime import timedelta
+
 import lancedb
 import numpy as np
 import pyarrow as pa
@@ -424,7 +426,7 @@ async def test_async_hybrid_execution_with_wand_factor(async_fts_table):
 
 
 def test_requires_local_namespace_execution_with_wand_factor():
-    """_requires_local_namespace_execution must return True when wand_factor is set."""
+    """_requires_local_namespace_execution returns False for None and 1.0."""
     q_no_wand = Query(
         full_text_query=FullTextSearchQuery(query="hello", wand_factor=None)
     )
@@ -433,13 +435,22 @@ def test_requires_local_namespace_execution_with_wand_factor():
     q_with_wand = Query(
         full_text_query=FullTextSearchQuery(query="hello", wand_factor=1.0)
     )
-    assert _requires_local_namespace_execution(q_with_wand)
+    assert not _requires_local_namespace_execution(q_with_wand)
+
+    # A non-default factor (constructed via model_construct to bypass validation)
+    # would require local execution.
+    q_non_default = Query(
+        full_text_query=FullTextSearchQuery.model_construct(
+            query="hello", wand_factor=1.5
+        )
+    )
+    assert _requires_local_namespace_execution(q_non_default)
 
 
 def test_requires_local_namespace_execution_wand_factor_1_0():
-    """wand_factor=1.0 (non-None, explicit) must also require local execution."""
+    """wand_factor=1.0 is the WAND identity and must NOT force local execution."""
     q = Query(full_text_query=FullTextSearchQuery(query="hello", wand_factor=1.0))
-    assert _requires_local_namespace_execution(q)
+    assert not _requires_local_namespace_execution(q)
 
 
 def test_requires_local_namespace_execution_default_query():
@@ -462,10 +473,10 @@ def test_requires_local_namespace_execution_force_local_flag():
     assert _requires_local_namespace_execution(q)
 
 
-def test_hybrid_wand_vector_leg_marked_local(fts_table):
-    """When a hybrid query has wand_factor, the vector sub-query must carry
-    _force_local_namespace=True so that _requires_local_namespace_execution
-    routes it to the same embedded table snapshot as the FTS leg."""
+def test_hybrid_wand_vector_leg_compatible_routing(fts_table):
+    """When a hybrid query has wand_factor=1.0, both legs must follow
+    pushdown-compatible routing without forcing local execution, while
+    preserving wand_factor on the builder and query."""
     builder = (
         fts_table.search(query_type="hybrid")
         .vector([0.1, 0.2, 0.3, 0.4])
@@ -473,17 +484,18 @@ def test_hybrid_wand_vector_leg_marked_local(fts_table):
         .wand_factor(1.0)
     )
     assert isinstance(builder, LanceHybridQueryBuilder)
+    assert builder._wand_factor == pytest.approx(1.0)
     builder._create_query_builders()
 
-    # FTS leg: wand_factor is set -> requires local
+    # FTS leg: wand_factor is set on the query object but does not force local
     fts_q_obj = builder._fts_query.to_query_object()
     assert fts_q_obj.full_text_query.wand_factor == pytest.approx(1.0)
-    assert _requires_local_namespace_execution(fts_q_obj)
+    assert not _requires_local_namespace_execution(fts_q_obj)
 
-    # Vector leg: _force_local_namespace must be True
+    # Vector leg: not forced local, compatible routing
     vec_q_obj = builder._vector_query.to_query_object()
-    assert vec_q_obj._force_local_namespace is True
-    assert _requires_local_namespace_execution(vec_q_obj)
+    assert vec_q_obj._force_local_namespace is False
+    assert not _requires_local_namespace_execution(vec_q_obj)
 
 
 def test_hybrid_no_wand_vector_leg_not_forced_local(fts_table):
@@ -501,10 +513,9 @@ def test_hybrid_no_wand_vector_leg_not_forced_local(fts_table):
 
 
 @pytest.mark.asyncio
-async def test_async_hybrid_wand_vector_leg_marked_local(tmp_path):
-    """Async: when a hybrid query has wand_factor, the vector sub-query must carry
-    _force_local_namespace=True so that both legs execute on the same local
-    embedded table snapshot."""
+async def test_async_hybrid_wand_vector_leg_compatible_routing(tmp_path):
+    """Async: when a hybrid query has wand_factor=1.0, both legs follow
+    pushdown-compatible routing without forcing local execution."""
     properties = {"root": str(tmp_path)}
     db = lancedb.connect_namespace_async("dir", properties)
     tbl = await db.create_table(
@@ -528,7 +539,8 @@ async def test_async_hybrid_wand_vector_leg_marked_local(tmp_path):
         .wand_factor(1.0)
     )
     _, vec_child, _, _ = await q_wand._create_child_queries()
-    assert vec_child._force_local_namespace is True
+    assert vec_child._force_local_namespace is False
+    assert q_wand.get_wand_factor() == pytest.approx(1.0)
 
     # Without wand_factor
     q_default = (
@@ -538,15 +550,20 @@ async def test_async_hybrid_wand_vector_leg_marked_local(tmp_path):
     )
     _, vec_child_default, _, _ = await q_default._create_child_queries()
     assert vec_child_default._force_local_namespace is False
+    assert q_default.get_wand_factor() is None
 
 
 def test_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
-    """Integration test: deleting a row on a namespace table with QueryTable pushdown
-    must return identical results for hybrid queries with or without wand_factor(1.0),
-    and neither query must ever return the deleted row."""
+    """Integration test: deleting a row on a namespace table with QueryTable
+    pushdown must return identical results for hybrid queries with or without
+    wand_factor(1.0), both legs follow equivalent routing, and neither query
+    returns the deleted row."""
     properties = {"root": str(tmp_path)}
     db = lancedb.connect_namespace(
-        "dir", properties, namespace_client_pushdown_operations=["QueryTable"]
+        "dir",
+        properties,
+        read_consistency_interval=timedelta(0),
+        namespace_client_pushdown_operations=["QueryTable"],
     )
     data = pa.table(
         {
@@ -559,34 +576,53 @@ def test_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
             ],
         }
     )
-    tbl = db.create_table("ns_hybrid_tbl", data=data)
-    tbl.create_index("text", config=lancedb.index.FTS())
-    tbl.create_index("vector")
+    tbl1 = db.create_table("ns_hybrid_tbl", data=data)
+    tbl1.create_index("text", config=lancedb.index.FTS())
+    tbl1.create_index("vector")
 
-    # Delete matching row 1
-    tbl.delete("id = 1")
+    # Open a second handle to reproduce concurrent/out-of-band modification
+    tbl2 = db.open_table("ns_hybrid_tbl")
+    tbl2.delete("id = 1")
 
-    # Hybrid query without wand_factor
-    res_default = (
-        tbl.search(query_type="hybrid")
+    # Hybrid query without wand_factor on original handle tbl1
+    builder_default = (
+        tbl1.search(query_type="hybrid")
         .vector([1.0, 0.0, 0.0, 0.0])
         .text("apple")
         .limit(10)
-        .to_list()
     )
+    builder_default._create_query_builders()
+    vec_def = builder_default._vector_query.to_query_object()
+    fts_def = builder_default._fts_query.to_query_object()
+    assert not _requires_local_namespace_execution(vec_def)
+    assert not _requires_local_namespace_execution(fts_def)
+
+    res_default = builder_default.to_list()
     ids_default = [r["id"] for r in res_default]
 
-    # Hybrid query with wand_factor(1.0)
-    res_wand = (
-        tbl.search(query_type="hybrid")
+    # Hybrid query with wand_factor(1.0) on original handle tbl1
+    builder_wand = (
+        tbl1.search(query_type="hybrid")
         .vector([1.0, 0.0, 0.0, 0.0])
         .text("apple")
         .wand_factor(1.0)
         .limit(10)
-        .to_list()
     )
+    assert builder_wand._wand_factor == pytest.approx(1.0)
+    builder_wand._create_query_builders()
+    vec_wand = builder_wand._vector_query.to_query_object()
+    fts_wand = builder_wand._fts_query.to_query_object()
+    # Both legs follow pushdown-compatible routing (neither forced local)
+    assert not _requires_local_namespace_execution(vec_wand)
+    assert not _requires_local_namespace_execution(fts_wand)
+
+    res_wand = builder_wand.to_list()
     ids_wand = [r["id"] for r in res_wand]
 
+    # Verify original builder still reports wand_factor=1.0 after execution
+    assert builder_wand._wand_factor == pytest.approx(1.0)
+
+    # Deleted row must not appear in either result, and results must be identical
     assert 1 not in ids_default, "Deleted row returned in default hybrid query"
     assert 1 not in ids_wand, "Deleted row returned in wand_factor(1.0) hybrid query"
     assert ids_default == ids_wand, (
@@ -596,13 +632,16 @@ def test_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
 
 @pytest.mark.asyncio
 async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
-    """Async integration test: deleting a row on a namespace table
-    with QueryTable pushdown must return identical results for hybrid
-    queries with or without wand_factor(1.0), and neither query must ever
-    return the deleted row."""
+    """Async integration test: deleting a row on a namespace table with
+    QueryTable pushdown must return identical results for hybrid queries with
+    or without wand_factor(1.0), both legs follow equivalent routing, and
+    neither query returns the deleted row."""
     properties = {"root": str(tmp_path)}
     db = lancedb.connect_namespace_async(
-        "dir", properties, namespace_client_pushdown_operations=["QueryTable"]
+        "dir",
+        properties,
+        read_consistency_interval=timedelta(0),
+        namespace_client_pushdown_operations=["QueryTable"],
     )
     data = pa.table(
         {
@@ -615,54 +654,61 @@ async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path)
             ],
         }
     )
-    tbl = await db.create_table("async_ns_hybrid_tbl", data=data)
-    assert "QueryTable" in tbl._pushdown_operations
-    await tbl.create_index("text", config=lancedb.index.FTS())
-    await tbl.create_index("vector")
+    tbl1 = await db.create_table("async_ns_hybrid_tbl", data=data)
+    assert "QueryTable" in tbl1._pushdown_operations
+    await tbl1.create_index("text", config=lancedb.index.FTS())
+    await tbl1.create_index("vector")
 
-    # Instrument tbl._execute_arrow to verify execution routing
+    # Open a second handle to reproduce concurrent/out-of-band modification
+    tbl2 = await db.open_table("async_ns_hybrid_tbl")
+    await tbl2.delete("id = 1")
+
+    # Instrument tbl1._execute_arrow to verify execution routing
     executed_queries = []
-    original_execute_arrow = tbl._execute_arrow
+    original_execute_arrow = tbl1._execute_arrow
 
     async def instrumented_execute_arrow(query, timeout=None):
         executed_queries.append(query)
         return await original_execute_arrow(query, timeout=timeout)
 
-    tbl._execute_arrow = instrumented_execute_arrow
+    tbl1._execute_arrow = instrumented_execute_arrow
 
-    # Delete matching row 1
-    await tbl.delete("id = 1")
-
-    # Hybrid query without wand_factor
+    # Hybrid query without wand_factor on original handle tbl1
     q_default = (
-        tbl.query()
+        tbl1.query()
         .nearest_to(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
         .nearest_to_text("apple")
         .limit(10)
     )
-    _, vec_def, _, _ = await q_default._create_child_queries()
+    fts_def, vec_def, _, _ = await q_default._create_child_queries()
     assert vec_def._force_local_namespace is False
+    assert q_default.get_wand_factor() is None
 
     res_default = (await q_default.to_arrow()).to_pydict()["id"]
-    # Default path must not have been routed through _execute_arrow forced local
-    assert len(executed_queries) == 0
+    calls_default = len(executed_queries)
+    # Default query does not route through forced-local _execute_arrow
+    assert calls_default == 0
 
-    # Hybrid query with wand_factor(1.0)
+    # Hybrid query with wand_factor(1.0) on original handle tbl1
     q_wand = (
-        tbl.query()
+        tbl1.query()
         .nearest_to(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
         .nearest_to_text("apple")
         .wand_factor(1.0)
         .limit(10)
     )
-    _, vec_wand, _, _ = await q_wand._create_child_queries()
-    assert vec_wand._force_local_namespace is True
+    fts_wand, vec_wand, _, _ = await q_wand._create_child_queries()
+    # Explicit WAND=1.0 is normalized for execution: does not force local
+    assert vec_wand._force_local_namespace is False
+    assert q_wand.get_wand_factor() == pytest.approx(1.0)
 
     res_wand = (await q_wand.to_arrow()).to_pydict()["id"]
-    # Explicit WAND must have routed the vector leg through _execute_arrow
-    assert len(executed_queries) == 1
-    assert executed_queries[0]._force_local_namespace is True
-    assert _requires_local_namespace_execution(executed_queries[0]) is True
+    calls_wand = len(executed_queries) - calls_default
+    # wand_factor=1.0 follows the identical routing as default
+    assert calls_wand == 0
+
+    # Verify original builder still reports wand_factor=1.0 after execution
+    assert q_wand.get_wand_factor() == pytest.approx(1.0)
 
     assert 1 not in res_default, "Deleted row returned in async default hybrid query"
     assert 1 not in res_wand, (
@@ -671,6 +717,33 @@ async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path)
     assert res_default == res_wand, (
         f"Async hybrid results diverged: default={res_default}, wand={res_wand}"
     )
+
+
+def test_sync_query_to_async_preserves_force_local_namespace(fts_table):
+    """_sync_query_to_async preserves _force_local_namespace flag."""
+    q = Query(vector=[1.0, 0.0, 0.0, 0.0])
+    q._force_local_namespace = True
+    async_q = fts_table._table._sync_query_to_async(q)
+    assert async_q._force_local_namespace is True
+
+
+def test_fts_wand_factor_preserved_after_execution(fts_table):
+    """Sync FTS query preserves wand_factor=1.0 on builder after execution."""
+    builder = fts_table.search("machine learning", query_type="fts").wand_factor(1.0)
+    assert builder._wand_factor == pytest.approx(1.0)
+    results = builder.limit(5).to_list()
+    assert len(results) > 0
+    assert builder._wand_factor == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_async_fts_wand_factor_preserved_after_execution(async_fts_table):
+    """Async FTS query preserves wand_factor=1.0 on query after execution."""
+    q = async_fts_table.query().nearest_to_text("machine learning").wand_factor(1.0)
+    assert q.get_wand_factor() == pytest.approx(1.0)
+    results = await q.limit(5).to_arrow()
+    assert results.num_rows > 0
+    assert q.get_wand_factor() == pytest.approx(1.0)
 
 
 def test_regression_fts_basic(fts_table):

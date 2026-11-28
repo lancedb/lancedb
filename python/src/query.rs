@@ -960,6 +960,20 @@ pub struct FTSQuery {
     fts_query: FullTextSearchQuery,
 }
 
+impl FTSQuery {
+    fn fts_query_for_execution(&self) -> FullTextSearchQuery {
+        let mut fts_query = self.fts_query.clone();
+        // Normalize wand_factor=1.0 to None for execution. 1.0 is the WAND identity
+        // (equivalent to default / None) and produces identical engine semantics.
+        // Normalizing on an execution copy preserves the original query configuration
+        // while ensuring consistent pushdown / local execution routing.
+        if fts_query.wand_factor == Some(1.0) {
+            fts_query.wand_factor = None;
+        }
+        fts_query
+    }
+}
+
 #[pymethods]
 impl FTSQuery {
     pub fn r#where(&mut self, predicate: String) {
@@ -1033,7 +1047,7 @@ impl FTSQuery {
         let inner = self_
             .inner
             .clone()
-            .full_text_search(self_.fts_query.clone());
+            .full_text_search(self_.fts_query_for_execution());
 
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
@@ -1064,7 +1078,7 @@ impl FTSQuery {
             self_
                 .inner
                 .clone()
-                .full_text_search(self_.fts_query.clone()),
+                .full_text_search(self_.fts_query_for_execution()),
             max_batch_length,
             timeout,
         )
@@ -1081,7 +1095,7 @@ impl FTSQuery {
             self_
                 .inner
                 .clone()
-                .full_text_search(self_.fts_query.clone()),
+                .full_text_search(self_.fts_query_for_execution()),
             max_batch_length,
             timeout,
         )
@@ -1121,7 +1135,7 @@ impl FTSQuery {
         let inner = self_
             .inner
             .clone()
-            .full_text_search(self_.fts_query.clone());
+            .full_text_search(self_.fts_query_for_execution());
         future_into_py(self_.py(), async move {
             inner
                 .explain_plan(verbose)
@@ -1138,7 +1152,7 @@ impl FTSQuery {
         let inner = self_
             .inner
             .clone()
-            .full_text_search(self_.fts_query.clone());
+            .full_text_search(self_.fts_query_for_execution());
         let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner

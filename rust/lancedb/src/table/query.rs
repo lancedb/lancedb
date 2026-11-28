@@ -130,14 +130,19 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
         return true;
     }
 
-    // The namespace QueryTable serializer cannot encode wand_factor; any query
-    // carrying an explicit factor must execute locally to preserve the setting.
+    // The namespace QueryTable serializer cannot encode wand_factor.  However,
+    // wand_factor=1.0 is the WAND identity: the engine treats it as equivalent
+    // to the default (None) and produces identical results.  Forcing local
+    // execution for 1.0 would prevent both hybrid legs from using namespace
+    // pushdown equivalently, causing snapshot divergence.  Only truly non-default
+    // factors (currently rejected by the public API pending Lance issue #11206)
+    // require local execution.
     if query
         .base()
         .full_text_search
         .as_ref()
         .and_then(|fts| fts.wand_factor)
-        .is_some()
+        .is_some_and(|wf| wf != 1.0)
     {
         return true;
     }
@@ -968,15 +973,19 @@ fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableReques
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
+    // The namespace QueryTable serializer cannot encode wand_factor.
+    // wand_factor=1.0 is the WAND identity (equivalent to None / default), so it
+    // passes through; any other non-None value cannot be represented and must be
+    // rejected so that the caller falls back to local execution.
     if query
         .base()
         .full_text_search
         .as_ref()
         .and_then(|fts| fts.wand_factor)
-        .is_some()
+        .is_some_and(|wf| wf != 1.0)
     {
         return Err(Error::NotSupported {
-            message: "namespace QueryTable does not support wand_factor; execute the query locally"
+            message: "namespace QueryTable does not support non-default wand_factor; execute the query locally"
                 .to_string(),
         });
     }
@@ -1477,9 +1486,13 @@ mod tests {
             full_text_search: Some(fts_with_wand_1_0.clone()),
             ..Default::default()
         });
-        assert!(requires_local_namespace_execution(&wand_1_0_query));
+        // wand_factor=1.0 is the WAND identity (equivalent to default / None).
+        // It does not force local execution and converts successfully.
+        assert!(!requires_local_namespace_execution(&wand_1_0_query));
+        assert!(convert_to_namespace_query(&wand_1_0_query).is_ok());
 
         let default_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             base: QueryRequest {
                 full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
                     "test".into(),
@@ -1489,8 +1502,10 @@ mod tests {
             ..Default::default()
         });
         assert!(!requires_local_namespace_execution(&default_hybrid));
+        assert!(convert_to_namespace_query(&default_hybrid).is_ok());
 
         let wand_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             base: QueryRequest {
                 full_text_search: Some(fts_with_wand),
                 ..Default::default()
@@ -1498,6 +1513,17 @@ mod tests {
             ..Default::default()
         });
         assert!(requires_local_namespace_execution(&wand_hybrid));
+
+        let wand_1_0_hybrid = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            base: QueryRequest {
+                full_text_search: Some(fts_with_wand_1_0),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&wand_1_0_hybrid));
+        assert!(convert_to_namespace_query(&wand_1_0_hybrid).is_ok());
 
         assert!(matches!(
             convert_to_namespace_query(&wand_query),

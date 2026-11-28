@@ -4101,11 +4101,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._wand_factor is not None:
             self._fts_query.wand_factor(self._wand_factor)
-            # Both legs must execute on the same local embedded table snapshot.
-            # Mark the vector query so that _requires_local_namespace_execution
-            # returns True for it too, preventing QueryTable pushdown for the
-            # vector leg while the FTS leg executes locally.
-            self._vector_query._force_local_namespace_execution()
+            # When a non-default wand_factor is set, both legs must execute on the
+            # same local embedded table snapshot. Mark the vector query so that
+            # _requires_local_namespace_execution returns True for it too.
+            # wand_factor=1.0 is the WAND identity (normalized to None for execution);
+            # both legs follow equivalent standard routing without forcing
+            # local execution.
+            if self._wand_factor != 1.0:
+                self._vector_query._force_local_namespace_execution()
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
         if self._nprobes is not None:
@@ -5970,13 +5973,12 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 
-        # When an explicit wand_factor is set, the FTS leg executes locally
+        # When a non-default wand_factor is set, the FTS leg executes locally
         # (Rust's requires_local_namespace_execution sees wand_factor on the query).
-        # The vector leg has no wand_factor, so without intervention it would be
-        # eligible for QueryTable pushdown, splitting the two legs across different
-        # namespace snapshots. Mark the vector leg local so both legs share the same
-        # embedded table handle and snapshot.
-        if self.get_wand_factor() is not None:
+        # Mark the vector leg local so both legs share the same embedded table
+        # handle and snapshot. For wand_factor=1.0 (the default WAND identity),
+        # both legs follow equivalent standard routing without forcing local execution.
+        if self.get_wand_factor() is not None and self.get_wand_factor() != 1.0:
             vec_query._force_local_namespace_execution()
 
         fts_req = fts_query._inner.to_query_request()
