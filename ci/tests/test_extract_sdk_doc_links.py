@@ -15,7 +15,7 @@ class TestExtractSdkDocLinks(unittest.TestCase):
     def test_extracts_all_links_from_repo_docs_rs(self) -> None:
         urls = extract_doc_links()
         self.assertIn(
-            "https://docs.lancedb.com/performance#compaction-and-cleanup",
+            "https://docs.lancedb.com/maintenance/compaction#when",
             urls,
         )
         self.assertIn(
@@ -38,7 +38,7 @@ class TestExtractSdkDocLinks(unittest.TestCase):
             self.assertEqual(rc, 0)
             content = out.read_text(encoding="utf-8")
             self.assertIn(
-                "<https://docs.lancedb.com/performance#compaction-and-cleanup>",
+                "<https://docs.lancedb.com/maintenance/compaction#when>",
                 content,
             )
 
