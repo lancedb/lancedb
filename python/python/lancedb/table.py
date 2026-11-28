@@ -4965,6 +4965,15 @@ class LanceTable(Table):
         self._checkout_version = None
         self._branch = self.current_branch()
 
+    def _ensure_mutable(self):
+        # Writes routed through pylance bypass the native pinned-version check,
+        # so reject them here with the same error the Rust write paths raise.
+        if self._checkout_version is not None:
+            raise ValueError(
+                "Invalid input, table cannot be modified when a specific version "
+                "is checked out"
+            )
+
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
 
@@ -5287,6 +5296,7 @@ class LanceTable(Table):
 
             # Handle accelerator through pylance
             if accelerator is not None:
+                self._ensure_mutable()
                 dataset = self.to_lance()
                 _create_accelerated_index(
                     dataset,
@@ -5316,6 +5326,7 @@ class LanceTable(Table):
                 acc = getattr(config, "accelerator", None)
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
+                    self._ensure_mutable()
                     dataset = self.to_lance()
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
@@ -5838,6 +5849,7 @@ class LanceTable(Table):
         1  2  b  e
         2  3  c  f
         """
+        self._ensure_mutable()
         if isinstance(other_table, LanceTable):
             other_table = other_table.to_lance()
         else:
@@ -6393,6 +6405,7 @@ class LanceTable(Table):
             The stats of the cleanup operation, including how many bytes were
             freed.
         """
+        self._ensure_mutable()
         return self.to_lance().cleanup_old_versions(
             older_than, delete_unverified=delete_unverified
         )
@@ -6413,6 +6426,7 @@ class LanceTable(Table):
          (see Lance documentation for more details) For most cases, the default
         should be fine.
         """
+        self._ensure_mutable()
         stats = self.to_lance().optimize.compact_files(*args, **kwargs)
         self.checkout_latest()
         return stats
