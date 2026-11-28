@@ -143,6 +143,7 @@ struct TestSqlService {
     gate_refresh_release: Arc<Notify>,
     exchanges: ReceivedExchanges,
     result_overrides: Arc<std::sync::Mutex<HashMap<String, RecordBatch>>>,
+    submission_errors: HashMap<&'static str, Status>,
     materialized_view_job_handle_supported: bool,
     optimize_error: Option<Status>,
     prewarm_error: Option<Status>,
@@ -326,6 +327,7 @@ impl Default for TestSqlService {
             gate_refresh_release: Arc::new(Notify::new()),
             exchanges: Arc::new(std::sync::Mutex::new(Vec::new())),
             result_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            submission_errors: HashMap::new(),
             materialized_view_job_handle_supported: false,
             optimize_error: None,
             prewarm_error: None,
@@ -538,6 +540,9 @@ impl FlightService for TestSqlService {
                 return Err(Status::invalid_argument("invalid statement"));
             }
             self.capture_headers(request.metadata());
+            if let Some(error) = self.submission_errors.get(command.query.as_str()) {
+                return Err(error.clone());
+            }
             assert_eq!(
                 request.metadata().get(PROTOCOL_HEADER).unwrap(),
                 PROTOCOL_VERSION
@@ -4135,6 +4140,105 @@ async fn secret_listing_preserves_empty_continuations_and_validates_page_options
     assert!(zero.items.is_empty());
     assert!(zero.page_token.is_none());
     assert_eq!(statements.lock().unwrap().len(), 2);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn function_catalog_reports_pairing_for_rejected_clauses() {
+    const FORMAT: &str = "unexpected trailing input after the statement: FORMAT";
+    const LIMIT: &str = "unexpected trailing input after the statement: LIMIT";
+    const DESCRIBE: &str = "DESCRIBE FUNCTION \"embed\" FORMAT JSON";
+    const DESCRIBE_VERSION: &str = "DESCRIBE FUNCTION \"embed\" WITH (version = '1') FORMAT JSON";
+    const LIST: &str = "SHOW FUNCTIONS HISTORY IN \"public\" LIMIT 1000";
+    const CONTINUATION: &str = "SHOW FUNCTIONS HISTORY IN \"public\" LIMIT 1 FROM 'cursor'";
+
+    let mut describe_version_error = Status::invalid_argument(FORMAT);
+    describe_version_error.metadata_mut().insert_bin(
+        "x-lancedb-server-build-bin",
+        tonic::metadata::MetadataValue::from_bytes(
+            br#"{"release":"1.2.3","git_sha":"0123456789ab","build_date":"2024-01-01T00:00:00Z"}"#,
+        ),
+    );
+    let service = TestSqlService {
+        submission_errors: HashMap::from([
+            (DESCRIBE, Status::invalid_argument(FORMAT)),
+            (DESCRIBE_VERSION, describe_version_error),
+            (LIST, Status::invalid_argument(LIMIT)),
+            (CONTINUATION, Status::invalid_argument(LIMIT)),
+        ]),
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let headers = service.headers.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client);
+    let connection = Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+    let errors = [
+        connection
+            .get_function_latest("embed", &[])
+            .await
+            .unwrap_err(),
+        connection
+            .get_function("embed", "1", &[])
+            .await
+            .unwrap_err(),
+        connection
+            .list_functions(&[], Default::default())
+            .next_page()
+            .await
+            .unwrap_err(),
+        connection
+            .list_functions(
+                &[],
+                crate::listing::ListingOptions::default()
+                    .page_limit(1)
+                    .page_token("cursor"),
+            )
+            .next_page()
+            .await
+            .unwrap_err(),
+    ];
+    assert_eq!(
+        *statements.lock().unwrap(),
+        [DESCRIBE, DESCRIBE_VERSION, LIST, CONTINUATION]
+    );
+    let headers = headers.lock().unwrap();
+    for (index, (error, diagnostic)) in errors
+        .into_iter()
+        .zip([FORMAT, FORMAT, LIMIT, LIMIT])
+        .enumerate()
+    {
+        let Error::Sql {
+            message,
+            request_id,
+            grpc_code,
+            metadata,
+        } = error
+        else {
+            panic!("unexpected catalog error: {error}")
+        };
+        assert_eq!(grpc_code, tonic::Code::InvalidArgument as i32);
+        assert_eq!(request_id, headers[index].request_id);
+        assert_eq!(metadata.error_code, None);
+        let original = if let Some(server) = &metadata.server {
+            assert_eq!(index, 1);
+            assert_eq!(server.release, "1.2.3");
+            format!("{diagnostic} [server: {server}]")
+        } else {
+            assert_ne!(index, 1);
+            diagnostic.to_owned()
+        };
+        assert!(message.starts_with(&format!("{original}. ")), "{message}");
+        assert!(message.contains("lancedb==0.42.0b8"), "{message}");
+        assert!(message.contains("lancedb==0.42.0b38"), "{message}");
+        assert!(
+            message.contains("LanceDB Enterprise build that pins b38"),
+            "{message}"
+        );
+    }
     shutdown.send(()).unwrap();
 }
 
