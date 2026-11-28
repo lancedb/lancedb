@@ -105,8 +105,8 @@ class LanceMergeInsertBuilder(object):
         When ``True`` (the default), the operation can use scalar indexes on the
         join keys when the operation supports the indexed path and all join keys
         have usable indexes. When a partial-column update actually takes this path,
-        it patches the supplied columns, rewriting those columns for every row in
-        each fragment containing a match.
+        it patches the supplied non-key columns, rewriting those columns for every
+        row in each fragment containing a match.
 
         An indexed partial update preserves index coverage on the join keys, but indexes
         on the rewritten non-key columns, including vector indexes, lose coverage in the
