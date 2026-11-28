@@ -194,6 +194,9 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // brute-force search the index-only base arm can't do. (ef / approx_mode are
     // recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
+        if query.query_parallelism.is_some() {
+            return unsupported("query_parallelism on vector search");
+        }
         if query.search_effort.is_some() {
             return unsupported("search_effort on vector search");
         }
@@ -852,6 +855,19 @@ mod tests {
         assert!(
             matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
             if message.contains("search_effort") && message.contains("un-compacted RTE"))
+        );
+    }
+
+    #[test]
+    fn query_parallelism_is_not_silently_ignored() {
+        let query = VectorQueryRequest {
+            query_vector: vec![Arc::new(arrow_array::Float32Array::from(vec![1.0, 0.0]))],
+            query_parallelism: Some(4),
+            ..Default::default()
+        };
+        assert!(
+            matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
+            if message.contains("query_parallelism"))
         );
     }
 
