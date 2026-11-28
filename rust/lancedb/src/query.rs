@@ -424,8 +424,9 @@ pub trait QueryBase {
     /// Identifiers may be delimited with SQL-standard double quotes or
     /// backticks. String literals must use single quotes.
     ///
-    /// Embedded prefilters support `IN (SELECT ...)` against tables in the
-    /// same namespace. Use unqualified table names inside the subquery.
+    /// Embedded prefilters support positive `IN (SELECT ...)` predicates
+    /// alone or combined with other conditions using `AND`. Use unqualified
+    /// table names in the same namespace inside the subquery.
     ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).

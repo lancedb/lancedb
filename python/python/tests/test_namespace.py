@@ -2153,3 +2153,33 @@ async def test_hybrid_subquery_filter_async(subquery_namespace):
         .to_arrow()
     )
     assert result["id"].to_pylist() == [2]
+
+
+def test_subquery_filter_rejects_wrapped_nullable_membership(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "chunks",
+        pa.table(
+            {
+                "id": [1, 2, 3],
+                "key": [10, 20, None],
+                "vector": pa.array(
+                    [[0, 0], [1, 1], [2, 2]], type=pa.list_(pa.float32(), 2)
+                ),
+            }
+        ),
+    )
+    db.create_table("acl", pa.table({"key": [20, None]}))
+    membership = "key IN (SELECT key FROM acl)"
+    assert (
+        table.search([0.0, 0.0])
+        .where(f"(id = 2 OR id = 3) AND ({membership})")
+        .to_arrow()["id"]
+        .to_pylist()
+    ) == [2]
+    for predicate in [
+        f"({membership}) IS NULL",
+        "key NOT IN (SELECT key FROM acl) OR id = 3",
+    ]:
+        with pytest.raises(NotImplementedError, match="positive IN"):
+            table.search([0.0, 0.0]).where(predicate).to_arrow()

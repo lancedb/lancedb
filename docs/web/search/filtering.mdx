@@ -68,6 +68,13 @@ candidates, so `limit(1)` returns the best eligible row. When namespace query
 pushdown is enabled, this filter requires the client to have access to the
 table storage.
 
+Use a positive `IN (SELECT ...)` predicate on its own or join it to other
+conditions with `AND`. `OR` is allowed in a separate condition, such as
+`(status = 'draft' OR status = 'published') AND document_id IN (SELECT document_id FROM team_documents)`.
+A membership subquery wrapped in `OR`, `NOT`, or `IS NULL`, a `NOT IN (SELECT ...)`
+predicate, or a nested membership subquery returns an error. Literal `IN`
+and `NOT IN` lists keep their usual behavior.
+
 <CodeGroup>
 ```python Python icon="python"
 matches = (

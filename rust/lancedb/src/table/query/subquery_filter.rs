@@ -83,6 +83,40 @@ pub(super) fn parse_predicate(sql: &str) -> Option<Expr> {
     .then_some(expr)
 }
 
+// DataFusion can lose UNKNOWN when it lowers membership embedded in a
+// Boolean expression to a mark join. A positive top-level conjunct only
+// retains matches, so FALSE and UNKNOWN are equivalent there.
+fn validate_membership_predicate(predicate: &Expr) -> Result<()> {
+    use datafusion::sql::sqlparser::ast::BinaryOperator;
+
+    fn positive_conjuncts(expr: &Expr) -> usize {
+        match expr {
+            Expr::Nested(inner) => positive_conjuncts(inner),
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::And,
+                right,
+            } => positive_conjuncts(left) + positive_conjuncts(right),
+            Expr::InSubquery { negated: false, .. } => 1,
+            _ => 0,
+        }
+    }
+
+    let mut total = 0;
+    let _ = visit_expressions(predicate, |expr| {
+        if matches!(expr, Expr::InSubquery { .. }) {
+            total += 1;
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    if total != positive_conjuncts(predicate) {
+        return Err(Error::NotSupported {
+            message: "SQL subquery filters require positive IN (SELECT ...) as a standalone predicate or directly joined by AND. NOT IN, Boolean expressions wrapping membership, and nested IN subqueries are not supported.".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Replace membership tests with Boolean columns for Lance's scalar planner.
 /// Keep the subqueries intact for DataFusion, which resolves their own scopes.
 struct MembershipSlots<'a> {
@@ -187,6 +221,8 @@ impl PreparedSubquery {
                         .into(),
             });
         };
+
+        validate_membership_predicate(&predicate)?;
 
         // Use the same snapshot for the outer scan and the ranked scan.
         let provider = LanceTableProvider::new_with_ordering(dataset.clone(), true, false, false);
@@ -607,17 +643,204 @@ mod tests {
             vec![4],
         );
         assert_eq!(
-            top_id(&table, "tenantID = 1 AND (id IN (SELECT id FROM acl) OR id IN (SELECT id FROM acl WHERE id = 999))").await,
+            top_id(
+                &table,
+                "(tenantID = 1 OR id = 999) AND (id IN (SELECT id FROM acl))"
+            )
+            .await,
             vec![2],
         );
         assert_eq!(
             top_id(
                 &table,
-                "tenantId = 1 AND id NOT IN (SELECT id FROM acl WHERE id = 2)"
+                "tenantId = 1 AND id NOT IN (2, 3) AND id IN (SELECT id FROM acl)"
             )
             .await,
             vec![4],
         );
+    }
+
+    #[tokio::test]
+    async fn subquery_filter_positive_conjuncts_with_nullable_keys() {
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let batch = RecordBatch::try_from_iter([
+            ("id", Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef),
+            (
+                "key",
+                Arc::new(Int32Array::from(vec![Some(10), Some(20), None])) as ArrayRef,
+            ),
+            (
+                "vector",
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                        [0., 1., 2.].map(|x| Some(vec![Some(x), Some(x)])),
+                        2,
+                    ),
+                ) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let table = db.create_table("chunks", batch).execute().await.unwrap();
+        let keys = RecordBatch::try_from_iter([(
+            "key",
+            Arc::new(Int32Array::from(vec![Some(20), None])) as ArrayRef,
+        )])
+        .unwrap();
+        db.create_table("acl", keys).execute().await.unwrap();
+
+        let membership = "key IN (SELECT key FROM acl)";
+        assert_eq!(top_id(&table, membership).await, vec![2]);
+        assert_eq!(
+            top_id(
+                &table,
+                &format!("({membership}) AND (id = 2 OR id = 3) AND {membership}")
+            )
+            .await,
+            vec![2]
+        );
+        for additional_condition in ["id = 1", "id = 3"] {
+            assert!(
+                top_id(&table, &format!("{membership} AND {additional_condition}"))
+                    .await
+                    .is_empty()
+            );
+        }
+        assert!(
+            top_id(&table, "key IN (SELECT key FROM acl WHERE key = 999)")
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            top_id(&table, "id IN (2, 3) AND id NOT IN (2)").await,
+            vec![3]
+        );
+
+        for filter in [
+            "key NOT IN (SELECT key FROM acl)",
+            "key NOT IN (SELECT key FROM acl) OR id = 3",
+            "(key IN (SELECT key FROM acl)) IS NULL",
+            "NOT (key IN (SELECT key FROM acl))",
+            "(key IN (SELECT key FROM acl) OR id = 3)",
+            "key IN (SELECT key FROM acl WHERE key NOT IN (SELECT key FROM acl))",
+        ] {
+            let result = table
+                .query()
+                .nearest_to(&[0.0_f32, 0.0])
+                .unwrap()
+                .only_if(filter)
+                .execute()
+                .await;
+            assert!(
+                matches!(&result, Err(Error::NotSupported { message })
+                    if message.contains("positive IN")),
+                "expected an unsupported subquery filter: {filter}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn subquery_filter_preserves_cosine_bounds_for_appended_rows() {
+        use crate::index::{Index, vector::IvfPqIndexBuilder};
+
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let batch = |ids: Vec<i32>, vectors: Vec<Vec<Option<f32>>>| {
+            RecordBatch::try_from_iter([
+                ("id", Arc::new(Int32Array::from(ids)) as ArrayRef),
+                (
+                    "vector",
+                    Arc::new(
+                        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                            vectors.into_iter().map(Some),
+                            8,
+                        ),
+                    ) as ArrayRef,
+                ),
+            ])
+            .unwrap()
+        };
+        let mut state = 42_u64;
+        let vectors = (0..256)
+            .map(|_| {
+                let vector = (0..8)
+                    .map(|_| {
+                        state = state
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1);
+                        (state >> 32) as u32 as f32 / u32::MAX as f32 - 0.5
+                    })
+                    .collect::<Vec<_>>();
+                let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+                vector.into_iter().map(|v| Some(v / norm)).collect()
+            })
+            .collect();
+        let table = db
+            .create_table("chunks", batch((0..256).collect(), vectors))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfPq(
+                    IvfPqIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1)
+                        .num_sub_vectors(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        // The appended row lives outside the index. Its exact cosine
+        // distance from [1, 0, ...] is 0.75 on the public scale.
+        let mut appended = vec![Some(0.); 8];
+        appended[0] = Some(0.25);
+        appended[1] = Some((1.0_f32 - 0.25_f32.powi(2)).sqrt());
+        table
+            .add(batch(vec![256], vec![appended]))
+            .execute()
+            .await
+            .unwrap();
+        let keys =
+            RecordBatch::try_from_iter([("id", Arc::new(Int32Array::from(vec![256])) as ArrayRef)])
+                .unwrap();
+        db.create_table("acl", keys).execute().await.unwrap();
+
+        let mut mismatches = Vec::new();
+        for (lower, upper, expected) in [(None, Some(0.5), vec![]), (Some(0.6), None, vec![256])] {
+            for filter in ["id = 256", ELIGIBLE] {
+                let batches = table
+                    .query()
+                    .nearest_to(&[1.0_f32, 0., 0., 0., 0., 0., 0., 0.])
+                    .unwrap()
+                    .distance_type(crate::DistanceType::Cosine)
+                    .distance_range(lower, upper)
+                    .only_if(filter)
+                    .limit(1)
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap();
+                let ids = batches
+                    .iter()
+                    .flat_map(|b| {
+                        b["id"]
+                            .as_primitive::<arrow_array::types::Int32Type>()
+                            .values()
+                            .iter()
+                            .copied()
+                    })
+                    .collect::<Vec<_>>();
+                if ids != expected {
+                    mismatches.push(format!(
+                        "{filter}, range ({lower:?}, {upper:?}): expected {expected:?}, got {ids:?}"
+                    ));
+                }
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 
     #[tokio::test]

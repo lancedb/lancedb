@@ -541,7 +541,10 @@ pub async fn create_plan(
     }
 
     if let Some(eligibility) = eligibility {
-        let preview = create_scanner_plan(&mut scanner, schema, &query).await?;
+        // Planning can translate the bounds for ANN. The deferred scanner
+        // must start with the original bounds for its exact fallback.
+        let mut preview_scanner = scanner.clone();
+        let preview = create_scanner_plan(&mut preview_scanner, schema, &query).await?;
         return Ok(Arc::new(subquery_filter::SubqueryPrefilterExec::new(
             eligibility,
             scanner,
