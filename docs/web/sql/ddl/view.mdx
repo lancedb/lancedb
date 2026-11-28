@@ -49,7 +49,10 @@ The statement returns one row with UTF-8 `name`, `query`, and `schema` columns.
 defining database and namespace. The root namespace is `public`; nested
 namespace components are separated by `$`.
 
-`DESCRIBE VIEW "recent_matches"` returns the same metadata shape. Anything the
+`DESCRIBE VIEW "recent_matches" [FORMAT TEXT | JSON]` returns those fields in
+one `description` document. TEXT is the default; JSON keeps the Arrow schema
+native. CREATE retains its typed result columns. See [DESCRIBE formats](/sql/describe).
+Anything the
 [dialect](/sql/dql/functions) supports can define one: joins, predicates,
 aggregates, window functions.
 

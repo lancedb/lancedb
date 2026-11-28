@@ -110,14 +110,15 @@ The result has `operation`, `name`, and `status` columns, with operation
 
 <CodeGroup>
 ```sql SQL icon="database"
-DESCRIBE SCHEMA analytics.`team$features`
-DESCRIBE NAMESPACE features IN analytics.team
+DESCRIBE SCHEMA analytics.`team$features` [FORMAT TEXT | JSON]
+DESCRIBE NAMESPACE features IN analytics.team [FORMAT TEXT | JSON]
 DESC NAMESPACE features IN team
 ```
 </CodeGroup>
 
-Returns one row with `name` (the complete `$`-joined schema path) and
-`properties` (a JSON object). An unannotated namespace returns `{}`. A
+Returns one `description` document with `name` (the complete `$`-joined schema
+path) and native `properties`. TEXT is the default; `FORMAT JSON` selects a
+structured document. See [DESCRIBE formats](/sql/describe). An unannotated namespace returns `{}`. A
 missing namespace is an error. `DESC` is an alias for `DESCRIBE`.
 
 <Note>

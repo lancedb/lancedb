@@ -43,6 +43,9 @@ and DDL/DML pages below. Reach for the SDKs instead for table-management
 operations that have no SQL form, such as a merge insert. See
 [What SQL cannot do](#cannot).
 
+Use [DESCRIBE formats](/sql/describe) for readable TEXT (the default) or a
+complete JSON metadata document. SHOW listings keep their normal schemas.
+
 ## Reference {#reference}
 
 ### DDL, by object {#ddl}
@@ -52,12 +55,12 @@ operations that have no SQL form, such as a merge insert. See
 | [Database](/sql/ddl/database) | `CREATE`, `DESCRIBE`, `SHOW`, `ATTACH`, `DROP DATABASE` |
 | [Namespace](/sql/ddl/namespace) | `CREATE`, `ALTER`, `DESCRIBE`, `SHOW`, `DROP SCHEMA`/`NAMESPACE` |
 | [Table](/sql/ddl/table) | `CREATE`, `DESCRIBE`, `ALTER`, `CLONE`, `DROP TABLE` |
-| [View](/sql/ddl/view) | `CREATE VIEW`, `DROP VIEW` |
-| [Materialized view](/sql/ddl/materialized-view) | `CREATE MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEWS` |
+| [View](/sql/ddl/view) | `CREATE`, `DESCRIBE`, `SHOW`, `DROP VIEW` |
+| [Materialized view](/sql/ddl/materialized-view) | `CREATE`, `DESCRIBE`, `SHOW MATERIALIZED VIEWS` |
 | [Secret](/sql/ddl/secret) | `CREATE`, `ALTER`, `DESCRIBE`, `SHOW`, `DROP SECRET` |
 | [Storage Integration](/sql/ddl/storage-integration) | `CREATE`, `DESCRIBE`, `SHOW`, `DROP STORAGE INTEGRATION` |
 | [Index](/sql/ddl/index) | `CREATE INDEX`, `DROP INDEX` |
-| [Function](/sql/ddl/function) | `CREATE FUNCTION`, `SHOW FUNCTIONS`, `DROP FUNCTION` |
+| [Function](/sql/ddl/function) | `CREATE`, `DESCRIBE`, `SHOW`, `DROP FUNCTION` |
 | [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW JOB EVENTS`, `DESCRIBE JOB`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
 
 ### DML {#dml}

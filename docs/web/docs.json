@@ -549,6 +549,7 @@
             "group": "SQL Reference",
             "pages": [
               "sql/index",
+              "sql/describe",
               "sql/pagination",
               "sql/data-types",
               {

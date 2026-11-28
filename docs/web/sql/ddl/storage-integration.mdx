@@ -183,17 +183,19 @@ worker finishes. See [`CREATE TABLE`](/sql/ddl/table#create) for
 
 <CodeGroup>
 ```sql SQL icon="database"
-DESCRIBE STORAGE INTEGRATION raw
+DESCRIBE STORAGE INTEGRATION raw [FORMAT TEXT | JSON]
 DESC STORAGE INTEGRATION platform.hub
 ```
 </CodeGroup>
 
-Returns one row with every column `CREATE` returns: the provider, prefix,
-the Secret references and plain-string options that apply to its
+Returns one `description` document as TEXT (default) or JSON, containing the
+provider, prefix, native Secret references and options that apply to its
 provider (the rest are null), `created_at_millis`, `access_verified`, and
 -- for an `STORAGE_AWS_ROLE_ARN` integration -- the generated AWS policy
 documents from [above](#trust). No call ever returns a Secret's value,
-only the reference naming it.
+only the reference naming it. JSON keeps namespace paths, Secret references
+and policy documents native. See [DESCRIBE formats](/sql/describe). CREATE
+retains its own result schema.
 
 ## SHOW STORAGE INTEGRATIONS {#show}
 

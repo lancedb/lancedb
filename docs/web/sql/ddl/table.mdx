@@ -29,12 +29,14 @@ A table inside a [namespace](/sql/ddl/namespace) is written with its
 
 <CodeGroup>
 ```sql SQL icon="database"
-DESCRIBE documents
+DESCRIBE TABLE documents [FORMAT TEXT | JSON]
 ```
 </CodeGroup>
 
-The table's columns and types, without a plan. The SQL counterpart of
-`table.schema`.
+Returns one complete `description` document, with readable TEXT as the default.
+JSON includes the resolved name, database and namespace path, table description
+and a `columns` array with names, displayed types, boolean nullability and
+column descriptions. See [DESCRIBE formats](/sql/describe).
 
 ## ALTER TABLE {#alter}
 

@@ -1,0 +1,132 @@
+---
+title: "DESCRIBE"
+sidebarTitle: "DESCRIBE formats"
+description: "Read complete object descriptions as readable TEXT or structured JSON."
+icon: circle-info
+keywords: ["describe", "desc", "format text", "format json", "sql metadata"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+`DESCRIBE` inspects one object. `TEXT` is the default for reading in a SQL
+shell; choose `FORMAT JSON` when application code needs individual fields.
+`DESC` is an alias for `DESCRIBE`.
+
+## Syntax {#syntax}
+
+```sql
+DESCRIBE DATABASE analytics [FORMAT TEXT | JSON];
+DESCRIBE SCHEMA analytics.`team$features` [FORMAT TEXT | JSON];
+DESCRIBE NAMESPACE features [IN analytics.team] [FORMAT TEXT | JSON];
+DESCRIBE TABLE documents [FORMAT TEXT | JSON];
+DESCRIBE VIEW recent_documents [FORMAT TEXT | JSON];
+DESCRIBE MATERIALIZED VIEW document_features [FORMAT TEXT | JSON];
+DESCRIBE FUNCTION embed [WITH (version = '1', include_source = true)] [FORMAT TEXT | JSON];
+DESCRIBE SECRET platform.api_key [FORMAT TEXT | JSON];
+DESCRIBE STORAGE INTEGRATION raw [FORMAT TEXT | JSON];
+DESCRIBE COMPUTE INTEGRATION batch [FORMAT TEXT | JSON];
+DESCRIBE CLUSTER main [FORMAT TEXT | JSON];
+DESCRIBE JOB '<job_id>' [FORMAT TEXT | JSON];
+```
+
+Square brackets mark optional syntax. Use the same object names and namespace
+resolution as the corresponding object commands. The format changes only the
+representation: authorization, object lookup and metadata visibility are the
+same in both formats. Missing objects are errors. Deployment configuration
+still determines whether a particular object type is available.
+
+Only `TEXT` and `JSON` are accepted. `FORMAT` belongs to the SQL statement;
+it is separate from a client's table, CSV or JSON display setting.
+
+## Result contract {#result}
+
+Both formats return **one SQL row and one non-null UTF8 column named
+`description`**. The value contains the entire description:
+
+- `TEXT`: a readable document with labeled fields and indented nested sections.
+- `JSON`: one JSON object, with nested arrays, objects, booleans and numbers.
+  Nested fields are not additional JSON-encoded strings.
+
+At the Arrow Flight SQL layer, the complete document is still a UTF8 value.
+It is not a set of separate SQL columns or an Arrow struct. Parse the JSON
+value once to access its nested fields. The Arrow schema metadata key
+`lancedb.describe.format` identifies the selected format as `text` or `json`.
+JSON object field order is not part of the contract.
+
+`SHOW` statements keep their ordinary listing schemas and pagination. Use
+`SHOW` to find object names and `DESCRIBE` to inspect one object. Mutation
+results, such as `CREATE VIEW` or `ALTER FUNCTION`, retain their own schemas.
+The job-description aliases `SHOW JOB '<id>'` and `SHOW JOB SUMMARY '<id>'`
+use the same description contract as `DESCRIBE JOB`.
+
+## Complete example {#example}
+
+For a database named `analytics` whose only catalog property is
+`owner=research`, these statements describe the same object:
+
+```sql
+DESCRIBE DATABASE analytics;
+DESCRIBE DATABASE analytics FORMAT TEXT;
+```
+
+The complete `description` value in either result is:
+
+```text
+Database
+name: analytics
+properties:
+  owner: research
+```
+
+```sql
+DESCRIBE DATABASE analytics FORMAT JSON;
+```
+
+The complete JSON `description` value is shown below, pretty-printed for
+readability. The result still has one row and one column.
+
+```json
+{
+  "name": "analytics",
+  "properties": {
+    "owner": "research"
+  }
+}
+```
+
+With an [Enterprise SQL connection](/basics/sql#sql-from-python), application
+code explicitly requests JSON:
+
+```python
+import json
+
+rows = db.execute_query(
+    "DESCRIBE DATABASE analytics FORMAT JSON"
+).read_all().to_pylist()
+metadata = json.loads(rows[0]["description"])
+print(metadata["properties"]["owner"])
+```
+
+## Object contents {#contents}
+
+| Object | Description document |
+| --- | --- |
+| [Database](/sql/ddl/database#describe) | Name and native `properties` object. |
+| [Schema / Namespace](/sql/ddl/namespace#describe) | Resolved schema name and native `properties` object. |
+| [Table](/sql/ddl/table#describe) | Resolved name, database, namespace path, table description and `columns` array. Each column includes its name, displayed data type, boolean nullability and description. |
+| [View](/sql/ddl/view) | Name, stored query and native Arrow schema document, including defining-context metadata. |
+| [Materialized view](/sql/ddl/materialized-view#describe) | Name, query, source version, refresh policy and observed refresh state, timestamps and dependency diagnostics. |
+| [Function](/sql/ddl/function#describe-alter) | The complete immutable Function-version document, including signature, runtime and available provenance. Version selection and `include_source` are explicit options. |
+| [Secret](/sql/ddl/secret#describe) | Name, creation/update times and bounded generation history. Secret values are never returned. |
+| [Storage Integration](/sql/ddl/storage-integration#describe) | Provider, prefix, configuration, native policy documents and Secret references. Credential values are never returned. |
+| Compute Integration | Provider, configuration, namespace and native Secret references; numeric scheduling settings stay numeric. Private credential pins and values are excluded. |
+| Cluster | Identity, state, observed component details and available resource specifications; temporary clusters also expose idle timeout and lifecycle metadata. |
+| [Job](/sql/ddl/job#describe) | Identity, type, state, reported progress, successful result and any timing profile. Unknown measurements stay absent or null; a running job has a null result. |
+
+JSON uses `null` for unavailable nullable metadata and keeps known zero values
+as zero. Catalog properties may be empty objects; empty collections remain
+arrays or objects. Materialized-view timestamp values use RFC3339 strings;
+fields explicitly named `*_millis` keep their numeric millisecond units.
+Describing a job does not fetch its full retained trace recording; use the
+REST/SDK timeline export API for that recording.
