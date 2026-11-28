@@ -47,6 +47,11 @@ The following constraints apply:
 - The filtered row count must be at least `num_splits`. If it is not evenly divisible by `num_splits`, up to
   `num_splits - 1` surplus rows are dropped so that every split has the same length.
 
+These constraints do not guarantee identical per-rank batches when `num_workers` changes. Workers read
+different subgroups of a rank's splits, so changing worker count can change batch composition even if
+the remaining rows are the same. For exact batch replay on the same topology, see
+[Resuming](/training/resuming#same-topology).
+
 For example, to switch between $8$ and $6$ GPUs, use a common multiple such as $24$ for `num_splits`. Highly composite values can support many layouts; for example, `num_splits = 48` is compatible with $10$ distinct possible GPU counts. Remember to include `num_workers` when checking divisibility.
 
 <CodeGroup>
