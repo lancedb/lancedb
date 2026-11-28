@@ -1279,6 +1279,148 @@ def test_lance_table_pickle_preserves_cross_branch_tag_checkout(tmp_path):
     assert restored.version == 2
     assert restored.to_arrow()["id"].to_pylist() == [0, 1]
 
+    # Pickle must preserve both the tagged snapshot and the branch to reattach.
+    for handle in (main, restored):
+        with pytest.raises(ValueError, match="cannot restore.*branch"):
+            handle.restore()
+        handle.checkout_latest()
+        assert handle.current_branch() is None
+        assert handle.to_arrow()["id"].to_pylist() == [0, 9]
+
+    restored.add(pa.table({"id": [100]}))
+    assert db.open_table("pickle_tag_branch").to_arrow()["id"].to_pylist() == [
+        0,
+        9,
+        100,
+    ]
+    assert db.open_table("pickle_tag_branch", branch="exp").version == 2
+    assert branch.to_arrow()["id"].to_pylist() == [0, 1]
+
+
+@pytest.mark.parametrize("operation", ["checkout_latest", "restore"])
+@pytest.mark.parametrize(
+    "consistency_interval", [None, timedelta(0), timedelta(seconds=60)]
+)
+def test_lance_table_pickle_retains_original_branch_identity(
+    tmp_path, operation, consistency_interval
+):
+    db = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
+    main = db.create_table("pickle_branch_identity", pa.table({"id": [0]}))
+    exp = main.branches.create("exp")
+    exp.add(pa.table({"id": [10]}))
+    main.add(pa.table({"id": [100]}))
+    main.tags.create("main_v2", 2)
+    exp.checkout("main_v2")
+    payload = pickle.dumps(exp)
+
+    # Reuse the original branch name while the handle is serialized. Both
+    # branches have version 2, but neither is the original exp identity.
+    main.branches.delete("exp")
+    replacement = main.branches.create("exp", from_version=1)
+    replacement.add(pa.table({"id": [20]}))
+    replacement.tags.create("replacement_v1", 1)
+
+    restored = pickle.loads(payload)
+    assert restored.current_branch() is None
+    assert restored.version == 2
+    assert restored.to_arrow()["id"].to_pylist() == [0, 100]
+    with pytest.raises(RuntimeError, match="deleted and recreated"):
+        if operation == "checkout_latest":
+            restored.checkout_latest()
+        else:
+            restored.restore("replacement_v1")
+
+    for branch, ids in [(None, [0, 100]), ("exp", [0, 20])]:
+        fresh = db.open_table("pickle_branch_identity", branch=branch)
+        assert fresh.version == 2
+        assert fresh.to_arrow()["id"].to_pylist() == ids
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_lance_table_pickle_rejects_replaced_visible_branch(tmp_path, pinned):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("pickle_visible_identity", pa.table({"id": [0]}))
+    exp = main.branches.create("exp")
+    exp.add(pa.table({"id": [10]}))
+    if pinned:
+        exp.checkout(2)
+    payload = pickle.dumps(exp)
+
+    main.branches.delete("exp")
+    replacement = main.branches.create("exp", from_version=1)
+    replacement.add(pa.table({"id": [20]}))
+
+    # A latest or same-branch pinned handle must not reopen replacement data
+    # with the old identity, even when its version number still exists.
+    with pytest.raises(RuntimeError, match="deleted and recreated"):
+        pickle.loads(payload)
+    for branch, version, ids in [(None, 1, [0]), ("exp", 2, [0, 20])]:
+        fresh = db.open_table("pickle_visible_identity", branch=branch)
+        assert fresh.version == version
+        assert fresh.to_arrow()["id"].to_pylist() == ids
+
+
+def test_restore_cross_branch_tag_does_not_write(tmp_path):
+    db = lancedb.connect(tmp_path)
+    main = db.create_table("restore_tag", pa.table({"id": [0]}))
+    exp = main.branches.create("exp")
+    main.add(pa.table({"id": [100]}))
+    exp.add(pa.table({"id": [10]}))
+    main.tags.create("main_v2", 2)
+    exp.tags.create("exp_v2", 2)
+
+    for handle, tag, own_branch, snapshot_branch, snapshot_ids in [
+        (main, "exp_v2", None, "exp", [0, 10]),
+        (exp, "main_v2", "exp", None, [0, 100]),
+    ]:
+        with pytest.raises(ValueError, match="cannot restore.*branch"):
+            handle.restore(tag)
+        assert handle.to_arrow()["id"].to_pylist() == snapshot_ids
+        restored = pickle.loads(pickle.dumps(handle))
+        assert restored.current_branch() == snapshot_branch
+        assert restored.version == 2
+        assert restored.to_arrow()["id"].to_pylist() == snapshot_ids
+        with pytest.raises(ValueError, match="cannot restore.*branch"):
+            restored.restore()
+        restored.checkout_latest()
+        assert restored.current_branch() == own_branch
+        handle.checkout_latest()
+        assert handle.current_branch() == own_branch
+
+    for branch, ids in [(None, [0, 100]), ("exp", [0, 10])]:
+        fresh = db.open_table("restore_tag", branch=branch)
+        assert fresh.version == 2
+        assert fresh.to_arrow()["id"].to_pylist() == ids
+
+
+@pytest.mark.asyncio
+async def test_async_cross_branch_tag_read_and_restore(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    main = await db.create_table("tag_branch", pa.table({"id": [0]}))
+    exp = await main.branches.create("exp")
+    await main.add(pa.table({"id": [100]}))
+    await exp.add(pa.table({"id": [10]}))
+    await main.tags.create("main_v2", 2)
+    await exp.tags.create("exp_v2", 2)
+
+    for handle, tag, own_branch, ids, row in [
+        (main, "exp_v2", None, [0, 10], 101),
+        (exp, "main_v2", "exp", [0, 100], 11),
+    ]:
+        await handle.checkout(tag)
+        assert await handle.version() == 2
+        assert (await handle.to_arrow())["id"].to_pylist() == ids
+        with pytest.raises(ValueError, match="cannot restore.*branch"):
+            await handle.restore(tag)
+        await handle.checkout_latest()
+        assert handle.current_branch() == own_branch
+        await handle.add(pa.table({"id": [row]}))
+
+    for branch, ids in [(None, [0, 100, 101]), ("exp", [0, 10, 11])]:
+        fresh = await db.open_table("tag_branch", branch=branch)
+        assert await fresh.version() == 3
+        assert (await fresh.to_arrow())["id"].to_pylist() == ids
+
 
 def test_lance_table_pickle_preserves_branch_and_version(tmp_path):
     db = lancedb.connect(tmp_path)

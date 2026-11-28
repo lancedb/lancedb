@@ -7,6 +7,7 @@ use std::{
 };
 
 use lance::{Dataset, dataset::refs};
+use tokio::sync::OnceCell;
 
 use crate::table::merge::lsm::ShardWriterCache;
 use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
@@ -29,6 +30,11 @@ pub struct DatasetConsistencyWrapper {
 #[derive(Debug, Clone)]
 struct DatasetState {
     dataset: Arc<Dataset>,
+    /// The handle's branch, independent of the branch of a pinned snapshot.
+    tracking_branch: Option<String>,
+    /// Capture the identity before time travel replaces the dataset that holds
+    /// it. Snapshot copies share the identity, even while reading other branches.
+    tracking_branch_identifier: Arc<OnceCell<refs::BranchIdentifier>>,
     /// `Some(version)` = pinned to a specific version (time travel),
     /// `None` = tracking latest.
     pinned_version: Option<u64>,
@@ -59,6 +65,7 @@ enum ConsistencyMode {
 impl DatasetConsistencyWrapper {
     /// Create a new wrapper in the latest version mode.
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let tracking_branch = dataset.manifest().branch.clone();
         let dataset = Arc::new(dataset);
         let consistency = match read_consistency_interval {
             Some(d) if d == Duration::ZERO => ConsistencyMode::Strong,
@@ -73,6 +80,8 @@ impl DatasetConsistencyWrapper {
         Self {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
+                tracking_branch,
+                tracking_branch_identifier: Arc::new(OnceCell::new()),
                 pinned_version: None,
                 query_snapshot: false,
             })),
@@ -98,6 +107,21 @@ impl DatasetConsistencyWrapper {
         wrapper
     }
 
+    /// Pin an independent handle to the visible snapshot, retaining the branch
+    /// that `as_latest` will reattach to.
+    pub async fn new_snapshot(&self, read_consistency_interval: Option<Duration>) -> Result<Self> {
+        self.get().await?;
+        let state = self.state.lock()?.clone();
+        let wrapper =
+            Self::new_time_travel(state.dataset.as_ref().clone(), read_consistency_interval);
+        {
+            let mut snapshot_state = wrapper.state.lock()?;
+            snapshot_state.tracking_branch = state.tracking_branch;
+            snapshot_state.tracking_branch_identifier = state.tracking_branch_identifier;
+        }
+        Ok(wrapper)
+    }
+
     /// Create an independent read-only wrapper pinned to the current dataset
     /// while retaining this wrapper's live RTE read context.
     pub async fn new_query_snapshot(&self) -> Result<Self> {
@@ -107,12 +131,14 @@ impl DatasetConsistencyWrapper {
         // be cloned together from one authoritative state sample below.
         self.get().await?;
 
-        let (dataset, query_snapshot) = {
+        let (dataset, tracking_branch, tracking_branch_identifier, query_snapshot) = {
             let state = self.state.lock()?;
             // Preserve user time travel so the RTE safety guard still sees
             // it. Latest and already-internal snapshots remain internal pins.
             (
                 state.dataset.clone(),
+                state.tracking_branch.clone(),
+                state.tracking_branch_identifier.clone(),
                 state.query_snapshot || state.pinned_version.is_none(),
             )
         };
@@ -120,6 +146,8 @@ impl DatasetConsistencyWrapper {
         Ok(Self {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
+                tracking_branch,
+                tracking_branch_identifier,
                 pinned_version: Some(version),
                 query_snapshot,
             })),
@@ -180,10 +208,9 @@ impl DatasetConsistencyWrapper {
     /// is silently ignored — the write already committed to storage.
     pub fn update(&self, dataset: Dataset) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.pinned_version.is_some() {
-            // A concurrent as_time_travel() beat us here. The write succeeded
-            // in storage, but since we're now pinned we don't advance the
-            // cached pointer.
+        if state.pinned_version.is_some() || dataset.manifest().branch != state.tracking_branch {
+            // A concurrent checkout beat us here. The write succeeded in
+            // storage, but must not replace a pin or another branch's pointer.
             return;
         }
         if dataset.manifest().version >= state.dataset.manifest().version {
@@ -202,6 +229,8 @@ impl DatasetConsistencyWrapper {
         let new_dataset = dataset.checkout_branch(&branch).await?;
 
         let mut state = self.state.lock()?;
+        state.tracking_branch = new_dataset.manifest().branch.clone();
+        state.tracking_branch_identifier = Arc::new(OnceCell::new());
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = None;
         state.query_snapshot = false;
@@ -225,7 +254,7 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    /// The branch this wrapper is currently tracking, or `None` for `main`.
+    /// The branch of the visible snapshot, or `None` for `main`.
     pub fn current_branch(&self) -> Option<String> {
         self.state
             .lock()
@@ -234,6 +263,73 @@ impl DatasetConsistencyWrapper {
             .manifest()
             .branch
             .clone()
+    }
+
+    /// The branch to reattach to after time travel, or `None` for `main`.
+    #[doc(hidden)]
+    pub fn tracking_branch(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tracking_branch
+            .clone()
+    }
+
+    /// Retain the original branch identity in serialized handle state.
+    #[doc(hidden)]
+    pub async fn tracking_branch_identifier(&self) -> Result<refs::BranchIdentifier> {
+        let state = self.state.lock()?.clone();
+        Ok(state
+            .tracking_branch_identifier
+            .get_or_try_init(|| state.dataset.branch_identifier())
+            .await?
+            .clone())
+    }
+
+    /// Restore the original identity after reopening a serialized handle.
+    /// A foreign snapshot can still be read, but reattachment and restore must
+    /// validate against this identity rather than the newly opened branch.
+    #[doc(hidden)]
+    pub async fn set_tracking_branch_identifier(
+        &self,
+        identifier: refs::BranchIdentifier,
+    ) -> Result<()> {
+        let state = self.state.lock()?.clone();
+        if state.pinned_version.is_none()
+            || state.dataset.manifest().branch == state.tracking_branch
+        {
+            // Do not expose a writable replacement branch, or read replacement
+            // data at the same version as an original same-branch snapshot.
+            validate_branch_identity(&state.dataset, &identifier).await?;
+        }
+        self.state.lock()?.tracking_branch_identifier =
+            Arc::new(OnceCell::new_with(Some(identifier)));
+        Ok(())
+    }
+
+    /// Validate restore against the handle's branch before any commit is made.
+    pub(crate) async fn restore_target(&self) -> Result<Arc<Dataset>> {
+        let state = self.state.lock()?.clone();
+        if state.pinned_version.is_none() || state.query_snapshot {
+            return Err(Error::InvalidInput {
+                message: "you must run checkout before running restore".to_string(),
+            });
+        }
+        if state.dataset.manifest().branch != state.tracking_branch {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "cannot restore a snapshot on branch '{}' with a handle scoped to branch '{}'; open a handle on the snapshot's branch before restoring",
+                    state.dataset.manifest().branch.as_deref().unwrap_or("main"),
+                    state.tracking_branch.as_deref().unwrap_or("main"),
+                ),
+            });
+        }
+        let identifier = state
+            .tracking_branch_identifier
+            .get_or_try_init(|| state.dataset.branch_identifier())
+            .await?;
+        validate_branch_identity(&state.dataset, identifier).await?;
+        Ok(state.dataset)
     }
 
     /// Returns the version, if in time travel mode, or None otherwise.
@@ -246,19 +342,33 @@ impl DatasetConsistencyWrapper {
 
     /// Convert into a wrapper in latest version mode.
     pub async fn as_latest(&self) -> Result<()> {
-        let dataset = {
+        let (dataset, tracking_branch, tracking_branch_identifier) = {
             let state = self.state.lock()?;
             if state.pinned_version.is_none() {
                 return Ok(());
             }
-            state.dataset.clone()
+            (
+                state.dataset.clone(),
+                state.tracking_branch.clone(),
+                state.tracking_branch_identifier.clone(),
+            )
         };
 
-        let latest_version = dataset.latest_version_id().await?;
-        let new_dataset = dataset.checkout_version(latest_version).await?;
+        let identifier = tracking_branch_identifier
+            .get_or_try_init(|| dataset.branch_identifier())
+            .await?;
+        let new_dataset = dataset
+            .checkout_version(refs::Ref::Version(tracking_branch.clone(), None))
+            .await?;
+        validate_branch_identity(&new_dataset, identifier).await?;
 
         let mut state = self.state.lock()?;
-        if state.pinned_version.is_some() {
+        if state.pinned_version.is_some()
+            && Arc::ptr_eq(
+                &state.tracking_branch_identifier,
+                &tracking_branch_identifier,
+            )
+        {
             state.dataset = Arc::new(new_dataset);
             state.pinned_version = None;
             state.query_snapshot = false;
@@ -270,27 +380,42 @@ impl DatasetConsistencyWrapper {
         Ok(())
     }
 
+    /// Pin to a snapshot without changing the handle's tracking branch.
+    /// Numeric versions resolve on the visible snapshot's branch; tags and
+    /// explicit branch/version references can select another branch for reading.
     pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
         let target_ref = target_version.into();
 
-        let (should_checkout, dataset) = {
+        let (should_checkout, dataset, tracking_branch_identifier) = {
             let state = self.state.lock()?;
             let should = match state.pinned_version {
                 None => true,
                 Some(version) => match &target_ref {
-                    refs::Ref::Version(_, Some(target_ver)) => version != *target_ver,
+                    refs::Ref::Version(branch, Some(target_ver)) => {
+                        version != *target_ver
+                            || branch.as_deref() != state.dataset.manifest().branch.as_deref()
+                    }
                     refs::Ref::Version(_, None) => true,
                     refs::Ref::VersionNumber(target_ver) => version != *target_ver,
                     refs::Ref::Tag(_) => true,
                 },
             };
-            (should, state.dataset.clone())
+            (
+                should,
+                state.dataset.clone(),
+                state.tracking_branch_identifier.clone(),
+            )
         };
 
         if !should_checkout {
             return Ok(());
         }
 
+        // Once the visible snapshot leaves this branch, its Dataset can no
+        // longer detect reuse of the original name. Retain that identity first.
+        tracking_branch_identifier
+            .get_or_try_init(|| dataset.branch_identifier())
+            .await?;
         let new_dataset = dataset.checkout_version(target_ref).await?;
         let version_value = new_dataset.version().version;
 
@@ -332,6 +457,22 @@ impl DatasetConsistencyWrapper {
     }
 }
 
+async fn validate_branch_identity(
+    dataset: &Dataset,
+    expected: &refs::BranchIdentifier,
+) -> Result<()> {
+    if &dataset.branch_identifier().await? != expected {
+        return Err(lance::Error::RefNotFound {
+            message: format!(
+                "branch {} was deleted and recreated",
+                dataset.manifest().branch.as_deref().unwrap_or("main")
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 async fn refresh_latest(state: Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>> {
     let dataset = { state.lock()?.dataset.clone() };
 
@@ -342,6 +483,7 @@ async fn refresh_latest(state: Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>>
     {
         let mut state = state.lock()?;
         if state.pinned_version.is_none()
+            && new_arc.manifest().branch == state.tracking_branch
             && new_arc.manifest().version >= state.dataset.manifest().version
         {
             state.dataset = new_arc.clone();
@@ -864,5 +1006,25 @@ mod tests {
         // get() returns the branch dataset
         let on_branch = wrapper.get().await.unwrap();
         assert_eq!(on_branch.manifest().branch.as_deref(), Some("exp"));
+
+        // Cross-branch snapshots keep the branch selected by as_branch,
+        // including when an internal query snapshot is taken.
+        wrapper.as_time_travel(("main", v1)).await.unwrap();
+        assert_eq!(wrapper.current_branch(), None);
+        let snapshot = wrapper.new_query_snapshot().await.unwrap();
+        assert!(snapshot.restore_target().await.is_err());
+        snapshot.as_latest().await.unwrap();
+        assert_eq!(snapshot.current_branch().as_deref(), Some("exp"));
+        wrapper.as_latest().await.unwrap();
+        assert_eq!(wrapper.current_branch().as_deref(), Some("exp"));
+
+        // Internal query snapshots must retain the original identity, too.
+        wrapper.as_time_travel(("main", v1)).await.unwrap();
+        let snapshot = wrapper.new_query_snapshot().await.unwrap();
+        let mut main = wrapper.get().await.unwrap().as_ref().clone();
+        main.delete_branch("exp").await.unwrap();
+        main.create_branch("exp", v1, None).await.unwrap();
+        assert!(snapshot.as_latest().await.is_err());
+        assert!(wrapper.as_latest().await.is_err());
     }
 }

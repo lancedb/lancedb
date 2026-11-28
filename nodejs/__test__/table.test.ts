@@ -4129,6 +4129,43 @@ describe("when dealing with branches", () => {
     tmpDir.removeCallback();
   });
 
+  it("reads cross-branch tags without redirecting writes or restores", async () => {
+    const conn = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const main = await conn.createTable("tag_branch", [{ i: 0 }]);
+    const exp = await (await main.branches()).create("exp");
+    await main.add([{ i: 100 }]);
+    await exp.add([{ i: 10 }]);
+    await (await main.tags()).create("main-v2", 2);
+    await (await exp.tags()).create("exp-v2", 2);
+
+    for (const [handle, tag, ownBranch, snapshotRow] of [
+      [main, "exp-v2", null, 10],
+      [exp, "main-v2", "exp", 100],
+    ] as const) {
+      await handle.checkout(tag);
+      expect(await handle.version()).toBe(2);
+      expect(await handle.countRows(`i = ${snapshotRow}`)).toBe(1);
+      await expect(handle.restore()).rejects.toThrow("cannot restore");
+      expect(await main.version()).toBe(2);
+      expect(await exp.version()).toBe(2);
+      await handle.checkoutLatest();
+      expect(handle.currentBranch()).toBe(ownBranch);
+    }
+    await main.add([{ i: 101 }]);
+    await exp.add([{ i: 11 }]);
+
+    for (const [branch, expectedRow, unexpectedRow] of [
+      ["main", 101, 11],
+      ["exp", 11, 101],
+    ] as const) {
+      const fresh = await (await main.branches()).checkout(branch);
+      expect(await fresh.version()).toBe(3);
+      expect(await fresh.countRows()).toBe(3);
+      expect(await fresh.countRows(`i = ${expectedRow}`)).toBe(1);
+      expect(await fresh.countRows(`i = ${unexpectedRow}`)).toBe(0);
+    }
+  });
+
   it("forks from a tag on a branch with the same version as main", async () => {
     const conn = await connect(tmpDir.name, {
       readConsistencyInterval: 0,
