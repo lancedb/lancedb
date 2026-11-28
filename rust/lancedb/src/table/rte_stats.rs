@@ -87,6 +87,7 @@ pub struct RTEStats {
 
 /// Server-side JSON envelope for `get_rte_stats`. `rte_stats` is null when
 /// the table has no RTE write path.
+#[cfg(feature = "remote")]
 #[derive(Debug, Deserialize)]
 pub(crate) struct GetRTEStatsResponse {
     #[serde(default)]
