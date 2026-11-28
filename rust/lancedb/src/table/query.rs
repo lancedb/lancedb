@@ -118,6 +118,11 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
+    // The namespace QueryTable request cannot represent approx_mode, search_effort,
+    // use_rte, order_by or scan_in_order. For use_rte that is worse than a tuning miss:
+    // RTE read routing lives only in `create_plan`, so a pushed-down query would return
+    // stale base-only data. A dropped order_by would return the wrong top-K rows, and a
+    // dropped ordered scan would silently stop guaranteeing manifest order.
     if query.base().use_rte.is_some()
         || query.base().has_take()
         || query.base().scan_in_order == Some(true)
@@ -130,13 +135,10 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
         return true;
     }
 
-    // The namespace QueryTable serializer cannot encode wand_factor.  However,
-    // wand_factor=1.0 is the WAND identity: the engine treats it as equivalent
-    // to the default (None) and produces identical results.  Forcing local
-    // execution for 1.0 would prevent both hybrid legs from using namespace
-    // pushdown equivalently, causing snapshot divergence.  Only truly non-default
-    // factors (currently rejected by the public API pending Lance issue #11206)
-    // require local execution.
+    // wand_factor=1.0 is equivalent to the default (None), so it can use
+    // namespace pushdown. Only non-default factors require local execution
+    // because QueryTable cannot represent wand_factor. Non-default factors
+    // are currently rejected by the public API
     if query
         .base()
         .full_text_search
@@ -973,10 +975,9 @@ fn namespace_fts_query(fts: &FullTextSearchQuery) -> Result<Box<QueryTableReques
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     query.base().check_filter()?;
-    // The namespace QueryTable serializer cannot encode wand_factor.
-    // wand_factor=1.0 is the WAND identity (equivalent to None / default), so it
-    // passes through; any other non-None value cannot be represented and must be
-    // rejected so that the caller falls back to local execution.
+    // The namespace QueryTable serializer cannot represent wand_factor.
+    // The default value (1.0) is equivalent to None, so it is safe to push down.
+    // Reject other explicit values because they cannot be preserved by QueryTable.
     if query
         .base()
         .full_text_search
@@ -1486,8 +1487,6 @@ mod tests {
             full_text_search: Some(fts_with_wand_1_0.clone()),
             ..Default::default()
         });
-        // wand_factor=1.0 is the WAND identity (equivalent to default / None).
-        // It does not force local execution and converts successfully.
         assert!(!requires_local_namespace_execution(&wand_1_0_query));
         assert!(convert_to_namespace_query(&wand_1_0_query).is_ok());
 
