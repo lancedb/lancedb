@@ -45,7 +45,7 @@ from ._blob import (
     validate_blob_mode,
 )
 from .types import BlobMode
-from lancedb.arrow import peek_reader
+from lancedb.arrow import _normalize_dict_rows, peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.job import AsyncJob, Job, _typed_job
 from .dependencies import (
@@ -437,15 +437,13 @@ def _blob_input_to_arrow(data: Any, schema: Optional[pa.Schema]) -> Optional[pa.
         if not names:
             return None
         values = {name: [row.get(name) for row in data] for name in names}
-        rows = [{**row, **{name: None for name in names}} for row in data]
-        all_keys = dict.fromkeys(
-            k for row in rows if isinstance(row, dict) for k in row
-        )
-        normalized_rows = [
-            {**{k: None for k in all_keys}, **row} if isinstance(row, dict) else row
-            for row in rows
+        blob_nulls = {name: None for name in names}
+        normalized_data = _normalize_dict_rows(data)
+        rows = [
+            {**row, **blob_nulls} if isinstance(row, dict) else row
+            for row in normalized_data
         ]
-        table = pa.Table.from_pylist(normalized_rows)
+        table = pa.Table.from_pylist(rows)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         names = {
             field.name
@@ -545,16 +543,7 @@ def _into_pyarrow_reader(
             data = _serialize_json_values(data, schema)
             table = _blob_input_to_arrow(data, schema)
             if table is None:
-                all_keys = dict.fromkeys(
-                    k for row in data if isinstance(row, dict) for k in row
-                )
-                normalized = [
-                    {**{k: None for k in all_keys}, **row}
-                    if isinstance(row, dict)
-                    else row
-                    for row in data
-                ]
-                table = pa.Table.from_pylist(normalized)
+                table = pa.Table.from_pylist(_normalize_dict_rows(data))
             return table.to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = _blob_input_to_arrow(data, schema)
@@ -1139,13 +1128,15 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             # Keep the source layout until Rust can fill missing range fields or
             # validate every batch before dropping all-null range fields. Arrow
             # casting here would reject differing layouts before that validation.
-            return field.with_metadata(target_field.metadata)
+            return field.with_nullable(target_field.nullable).with_metadata(
+                target_field.metadata
+            )
     # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
     # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
     if _field_extension_name(target_field) == "lance.json":
         if _field_extension_name(field) == "arrow.json":
-            return field
+            return field.with_nullable(target_field.nullable)
         # Plain JSON text, which is what pyarrow infers for a column of `str`, only
         # needs the arrow.json label.
         json_storage = _arrow_json_storage_type(field.type)
@@ -1158,7 +1149,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             # that pyarrow records for a ``pa.json_()`` column.
             metadata = dict(target_field.metadata or {})
             metadata[b"ARROW:extension:name"] = b"arrow.json"
-            return pa.field(field.name, json_storage, field.nullable, metadata)
+            return pa.field(field.name, json_storage, target_field.nullable, metadata)
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
@@ -1214,7 +1205,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
             new_type = target_field.type
     else:
         new_type = target_field.type
-    return pa.field(field.name, new_type, field.nullable, target_field.metadata)
+    return pa.field(field.name, new_type, target_field.nullable, target_field.metadata)
 
 
 def _infer_subschema(
