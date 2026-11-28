@@ -1409,6 +1409,7 @@ def _append_vector_columns(
     if not functions:
         return reader
 
+    target_schema = schema
     fields = list(reader.schema)
     for vector_column, conf in functions.items():
         if vector_column not in reader.schema.names:
@@ -1434,7 +1435,19 @@ def _append_vector_columns(
                     # _handle_bad_vectors can process them according to the
                     # on_bad_vectors policy instead of crashing when PyArrow
                     # tries to cast them into a fixed-size list array.
-                    expected_ndims = conf.function.ndims()
+                    # A fixed-size column already records the width, so only ask
+                    # the function when it doesn't. Tables can use models whose
+                    # dimension the function doesn't know.
+                    field = schema.field(vector_column)
+                    if (
+                        target_schema is not None
+                        and vector_column in target_schema.names
+                    ):
+                        field = target_schema.field(vector_column)
+                    if pa.types.is_fixed_size_list(field.type):
+                        expected_ndims = field.type.list_size
+                    else:
+                        expected_ndims = conf.function.ndims()
                     col_data = [
                         v if v is not None and len(v) == expected_ndims else None
                         for v in col_data
