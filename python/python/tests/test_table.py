@@ -620,6 +620,66 @@ def test_add_dictionary(mem_db: DBConnection):
     )
 
 
+def test_add_later_dictionary_fields_preserved(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "note": pa.string()})
+    tbl = mem_db.create_table("test_later_fields", schema=schema)
+    tbl.add([{"id": 1}, {"id": 2, "note": "keep me"}])
+    result = tbl.to_arrow().sort_by("id").to_pylist()
+    assert result == [{"id": 1, "note": None}, {"id": 2, "note": "keep me"}]
+
+
+def test_merge_insert_later_dictionary_fields(mem_db: DBConnection):
+    schema = pa.schema(
+        {
+            "id": pa.int64(),
+            "note": pa.string(),
+            "tag": pa.string(),
+            "meta": pa.string(),
+        }
+    )
+    tbl = mem_db.create_table("test_merge_later_fields", schema=schema)
+    tbl.add([{"id": 1, "note": "initial", "tag": "original", "meta": "untouched"}])
+    tbl.merge_insert(
+        "id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        [{"id": 1, "note": "updated"}, {"id": 2, "note": "inserted", "tag": "new"}]
+    )
+    result = tbl.to_arrow().sort_by("id").to_pylist()
+    assert result == [
+        {"id": 1, "note": "updated", "tag": None, "meta": "untouched"},
+        {"id": 2, "note": "inserted", "tag": "new", "meta": None},
+    ]
+
+
+def test_create_table_preserves_explicit_non_nullable_schema(tmp_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("note", pa.string(), nullable=False),
+        ]
+    )
+    with pytest.raises(
+        (pa.ArrowInvalid, ValueError, RuntimeError), match="non-nullable"
+    ):
+        tmp_db.create_table(
+            "reject_null_later_field",
+            data=[{"id": 1}, {"id": 2, "note": "new"}],
+            schema=schema,
+        )
+
+    tmp_db.create_table(
+        "valid_non_nullable",
+        data=[{"id": 1, "note": "a"}, {"id": 2, "note": "b"}],
+        schema=schema,
+    )
+    reopened = tmp_db.open_table("valid_non_nullable")
+    assert reopened.schema.field("note").nullable is False
+    assert reopened.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": "a"},
+        {"id": 2, "note": "b"},
+    ]
+
+
 def test_add(mem_db: DBConnection):
     schema = pa.schema(
         [

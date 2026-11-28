@@ -111,6 +111,30 @@ def _arrow_from_table(data: pa.Table) -> pa.Table:
     return data
 
 
+def _normalize_dict_rows(data: list) -> list:
+    """Ensure every dict row contains the union of keys across all dict rows."""
+    first_keys = None
+    all_same = True
+    for row in data:
+        if isinstance(row, dict):
+            if first_keys is None:
+                first_keys = row.keys()
+            elif row.keys() != first_keys:
+                all_same = False
+                break
+    if all_same:
+        return data
+
+    all_keys = dict.fromkeys(k for row in data if isinstance(row, dict) for k in row)
+    template = {k: None for k in all_keys}
+    return [
+        row
+        if not isinstance(row, dict) or len(row) == len(all_keys)
+        else {**template, **row}
+        for row in data
+    ]
+
+
 @to_arrow.register(list)
 def _arrow_from_list(data: list) -> pa.Table:
     if not data:
@@ -121,4 +145,4 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
-    return pa.Table.from_pylist(data)
+    return pa.Table.from_pylist(_normalize_dict_rows(data))
