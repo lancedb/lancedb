@@ -970,7 +970,6 @@ def _validate_wand_factor(wand_factor: Optional[float]) -> Optional[float]:
             raise ValueError(
                 f"wand_factor must be None or 1.0 (got {wand_factor}); "
                 "non-default factors are currently unsupported "
-                "(see Lance issue #11206)"
             )
     return wand_factor
 
@@ -1140,9 +1139,8 @@ class Query(pydantic.BaseModel):
     # Internal: the sync query layer already prepared blob row ids.
     _blob_row_id_prepared: bool = pydantic.PrivateAttr(default=False)
 
-    # Internal: when a hybrid builder has an explicit wand_factor, its vector-only
-    # sub-query carries this flag so _requires_local_namespace_execution routes both
-    # legs through the same local embedded table snapshot.
+    # Internal: forces namespace-backed queries to execute against the local
+    # embedded table instead of using QueryTable pushdown.
     _force_local_namespace: bool = pydantic.PrivateAttr(default=False)
 
     # The name of the vector column to use for vector search.
@@ -2774,8 +2772,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             bypass_vector_index=self._bypass_vector_index,
             order_by=self._order_by,
         )
-        # Propagate the local-execution sentinel so _requires_local_namespace_execution
-        # routes both hybrid legs to the same embedded table snapshot.
+        # Preserve the local-execution requirement when converting to a Query.
         if self._force_local_namespace:
             query._force_local_namespace = True
         return query
@@ -2977,8 +2974,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
             .. note::
                 Only ``None`` and ``1.0`` are currently accepted. Non-default
-                values raise ``ValueError`` pending engine support
-                (see Lance issue #11206).
+                values raise ``ValueError`` pending engine support.
 
         Returns
         -------
@@ -3416,8 +3412,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
             .. note::
                 Only ``None`` and ``1.0`` are currently accepted. Non-default
-                values raise ``ValueError`` pending engine support
-                (see Lance issue #11206).
+                values raise ``ValueError`` pending engine support.
 
         Returns
         -------
@@ -4101,12 +4096,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._wand_factor is not None:
             self._fts_query.wand_factor(self._wand_factor)
-            # When a non-default wand_factor is set, both legs must execute on the
-            # same local embedded table snapshot. Mark the vector query so that
-            # _requires_local_namespace_execution returns True for it too.
-            # wand_factor=1.0 is the WAND identity (normalized to None for execution);
-            # both legs follow equivalent standard routing without forcing
-            # local execution.
+            # For non-default WAND factors, keep both hybrid legs on the same
+            # local snapshot. The default factor (1.0) is normalized to None
+            # for execution, so both legs can use standard namespace routing.
             if self._wand_factor != 1.0:
                 self._vector_query._force_local_namespace_execution()
         if self._distance_type:
@@ -5314,8 +5306,7 @@ class AsyncFTSQuery(AsyncStandardQuery):
 
             .. note::
                 Only ``None`` and ``1.0`` are currently accepted. Non-default
-                values raise ``ValueError`` pending engine support
-                (see Lance issue #11206).
+                values raise ``ValueError`` pending engine support.
 
         Returns
         -------
@@ -5727,11 +5718,6 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._inner = inner
         self._reranker = None
         self._query_string = None
-        # When True, bypass the Rust-level namespace pushdown and route through
-        # AsyncTable._execute_arrow(), which applies the Python-level
-        # _requires_local_namespace_execution() check with _force_local_namespace=True.
-        # Set by AsyncHybridQuery._create_child_queries() when wand_factor is configured
-        # so that both hybrid legs execute against the same local table snapshot.
         self._force_local_namespace: bool = False
 
     def _force_local_namespace_execution(self) -> "AsyncVectorQuery":
@@ -5827,11 +5813,8 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         timeout: Optional[timedelta] = None,
     ) -> pa.Table:
         if self._force_local_namespace and self._table is not None:
-            # Route through AsyncTable._execute_arrow() so the Python-level
-            # _requires_local_namespace_execution() check with
-            # _force_local_namespace=True prevents QueryTable pushdown,
-            # keeping the vector leg on the same local embedded table handle
-            # and snapshot as the FTS leg.
+            # Preserve local execution for the vector leg so it uses the same
+            # embedded table snapshot as the FTS leg.
             query = self.to_query_object()
             query._force_local_namespace = True
             results = await self._table._execute_arrow(query, timeout=timeout)
@@ -5938,8 +5921,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
             .. note::
                 Only ``None`` and ``1.0`` are currently accepted. Non-default
-                values raise ``ValueError`` pending engine support
-                (see Lance issue #11206).
+                values raise ``ValueError`` pending engine support.
 
         Returns
         -------
@@ -5973,11 +5955,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 
-        # When a non-default wand_factor is set, the FTS leg executes locally
-        # (Rust's requires_local_namespace_execution sees wand_factor on the query).
-        # Mark the vector leg local so both legs share the same embedded table
-        # handle and snapshot. For wand_factor=1.0 (the default WAND identity),
-        # both legs follow equivalent standard routing without forcing local execution.
+        # A non-default wand_factor forces the FTS leg to execute locally.
+        # Force the vector leg local as well so both legs use the same
+        # embedded table handle and snapshot. The default factor (1.0)
+        # does not require local execution.
         if self.get_wand_factor() is not None and self.get_wand_factor() != 1.0:
             vec_query._force_local_namespace_execution()
 

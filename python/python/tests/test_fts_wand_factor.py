@@ -114,7 +114,7 @@ def test_fts_builder_wand_factor_non_finite_raises(fts_table, value):
 
 @pytest.mark.parametrize("value", [0.0, 0.8, 1.5, 2.0])
 def test_fts_builder_unsupported_factor_raises(fts_table, value):
-    """Non-default factors other than 1.0 must be rejected (Lance issue #11206)."""
+    """Non-default factors other than 1.0 must be rejected."""
     builder = LanceFtsQueryBuilder(fts_table, "machine learning")
     with pytest.raises(ValueError, match="must be None or 1.0"):
         builder.wand_factor(value)
@@ -437,8 +437,6 @@ def test_requires_local_namespace_execution_with_wand_factor():
     )
     assert not _requires_local_namespace_execution(q_with_wand)
 
-    # A non-default factor (constructed via model_construct to bypass validation)
-    # would require local execution.
     q_non_default = Query(
         full_text_query=FullTextSearchQuery.model_construct(
             query="hello", wand_factor=1.5
@@ -487,12 +485,10 @@ def test_hybrid_wand_vector_leg_compatible_routing(fts_table):
     assert builder._wand_factor == pytest.approx(1.0)
     builder._create_query_builders()
 
-    # FTS leg: wand_factor is set on the query object but does not force local
     fts_q_obj = builder._fts_query.to_query_object()
     assert fts_q_obj.full_text_query.wand_factor == pytest.approx(1.0)
     assert not _requires_local_namespace_execution(fts_q_obj)
 
-    # Vector leg: not forced local, compatible routing
     vec_q_obj = builder._vector_query.to_query_object()
     assert vec_q_obj._force_local_namespace is False
     assert not _requires_local_namespace_execution(vec_q_obj)
@@ -531,7 +527,6 @@ async def test_async_hybrid_wand_vector_leg_compatible_routing(tmp_path):
     await tbl.create_index("text", config=lancedb.index.FTS())
     await tbl.create_index("vector")
 
-    # With wand_factor(1.0)
     q_wand = (
         tbl.query()
         .nearest_to(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
@@ -542,7 +537,6 @@ async def test_async_hybrid_wand_vector_leg_compatible_routing(tmp_path):
     assert vec_child._force_local_namespace is False
     assert q_wand.get_wand_factor() == pytest.approx(1.0)
 
-    # Without wand_factor
     q_default = (
         tbl.query()
         .nearest_to(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
@@ -580,11 +574,9 @@ def test_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
     tbl1.create_index("text", config=lancedb.index.FTS())
     tbl1.create_index("vector")
 
-    # Open a second handle to reproduce concurrent/out-of-band modification
     tbl2 = db.open_table("ns_hybrid_tbl")
     tbl2.delete("id = 1")
 
-    # Hybrid query without wand_factor on original handle tbl1
     builder_default = (
         tbl1.search(query_type="hybrid")
         .vector([1.0, 0.0, 0.0, 0.0])
@@ -600,7 +592,6 @@ def test_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
     res_default = builder_default.to_list()
     ids_default = [r["id"] for r in res_default]
 
-    # Hybrid query with wand_factor(1.0) on original handle tbl1
     builder_wand = (
         tbl1.search(query_type="hybrid")
         .vector([1.0, 0.0, 0.0, 0.0])
@@ -612,17 +603,13 @@ def test_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path):
     builder_wand._create_query_builders()
     vec_wand = builder_wand._vector_query.to_query_object()
     fts_wand = builder_wand._fts_query.to_query_object()
-    # Both legs follow pushdown-compatible routing (neither forced local)
     assert not _requires_local_namespace_execution(vec_wand)
     assert not _requires_local_namespace_execution(fts_wand)
 
     res_wand = builder_wand.to_list()
     ids_wand = [r["id"] for r in res_wand]
 
-    # Verify original builder still reports wand_factor=1.0 after execution
     assert builder_wand._wand_factor == pytest.approx(1.0)
-
-    # Deleted row must not appear in either result, and results must be identical
     assert 1 not in ids_default, "Deleted row returned in default hybrid query"
     assert 1 not in ids_wand, "Deleted row returned in wand_factor(1.0) hybrid query"
     assert ids_default == ids_wand, (
@@ -659,11 +646,9 @@ async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path)
     await tbl1.create_index("text", config=lancedb.index.FTS())
     await tbl1.create_index("vector")
 
-    # Open a second handle to reproduce concurrent/out-of-band modification
     tbl2 = await db.open_table("async_ns_hybrid_tbl")
     await tbl2.delete("id = 1")
 
-    # Instrument tbl1._execute_arrow to verify execution routing
     executed_queries = []
     original_execute_arrow = tbl1._execute_arrow
 
@@ -673,7 +658,6 @@ async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path)
 
     tbl1._execute_arrow = instrumented_execute_arrow
 
-    # Hybrid query without wand_factor on original handle tbl1
     q_default = (
         tbl1.query()
         .nearest_to(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
@@ -686,10 +670,8 @@ async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path)
 
     res_default = (await q_default.to_arrow()).to_pydict()["id"]
     calls_default = len(executed_queries)
-    # Default query does not route through forced-local _execute_arrow
     assert calls_default == 0
 
-    # Hybrid query with wand_factor(1.0) on original handle tbl1
     q_wand = (
         tbl1.query()
         .nearest_to(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
@@ -698,18 +680,13 @@ async def test_async_namespace_hybrid_deleted_row_snapshot_consistency(tmp_path)
         .limit(10)
     )
     fts_wand, vec_wand, _, _ = await q_wand._create_child_queries()
-    # Explicit WAND=1.0 is normalized for execution: does not force local
     assert vec_wand._force_local_namespace is False
     assert q_wand.get_wand_factor() == pytest.approx(1.0)
 
     res_wand = (await q_wand.to_arrow()).to_pydict()["id"]
     calls_wand = len(executed_queries) - calls_default
-    # wand_factor=1.0 follows the identical routing as default
     assert calls_wand == 0
-
-    # Verify original builder still reports wand_factor=1.0 after execution
     assert q_wand.get_wand_factor() == pytest.approx(1.0)
-
     assert 1 not in res_default, "Deleted row returned in async default hybrid query"
     assert 1 not in res_wand, (
         "Deleted row returned in async wand_factor(1.0) hybrid query"
@@ -833,17 +810,13 @@ def test_fts_count_rows_preserves_wand_factor_sync(fts_table):
     query_obj_before = builder.to_query_object()
     assert query_obj_before.full_text_query.wand_factor == 1.0
 
-    # count_rows() must count all matches without being capped by limit/offset
-    # or WAND early-termination thresholds.
     count = builder.count_rows()
     assert count == 2
 
-    # Original query builder and its to_query_object() must retain wand_factor(1.0)
     assert builder._wand_factor == 1.0
     query_obj_after = builder.to_query_object()
     assert query_obj_after.full_text_query.wand_factor == 1.0
 
-    # Subsequent execution of the original query still respects limit/offset
     results = builder.to_list()
     assert len(results) == 1
 
@@ -863,15 +836,12 @@ async def test_fts_count_rows_preserves_wand_factor_async(async_fts_table):
     count = await query.count_rows()
     assert count == 2
 
-    # Both AsyncFTSQuery wrapper and PyO3 inner must retain wand_factor(1.0)
     assert query.get_wand_factor() == 1.0
     assert query._inner.get_wand_factor() == 1.0
 
-    # Subsequent retrieval execution still respects limit/offset
     results = await query.to_list()
     assert len(results) == 1
 
-    # Also verify query().nearest_to_text(...) builder
     direct = (
         async_fts_table.query()
         .nearest_to_text("machine learning")
@@ -897,7 +867,6 @@ async def test_fts_count_rows_internal_count_uses_wand_factor_none(
     the original retrieval query, returning identical exact counts whether
     wand_factor is None or explicitly set to 1.0.
     """
-    # Sync comparison
     sync_default = fts_table.search("machine learning", query_type="fts")
     sync_wand = fts_table.search("machine learning", query_type="fts").wand_factor(1.0)
 
@@ -906,8 +875,6 @@ async def test_fts_count_rows_internal_count_uses_wand_factor_none(
     assert count_default == 2
     assert count_wand == count_default
 
-    # Verify PyO3 inner query: count_rows() uses a clone with wand_factor=None,
-    # so calling count_rows() leaves the inner object's wand_factor as 1.0.
     sync_q = sync_wand.to_query_object()
     async_q = fts_table._table._sync_query_to_async(sync_q)
     assert async_q._inner.get_wand_factor() == 1.0
@@ -915,7 +882,6 @@ async def test_fts_count_rows_internal_count_uses_wand_factor_none(
     assert inner_count == 2
     assert async_q._inner.get_wand_factor() == 1.0
 
-    # Async comparison
     async_default = await async_fts_table.search("machine learning", query_type="fts")
     async_wand = await async_fts_table.search("machine learning", query_type="fts")
     async_wand.wand_factor(1.0)
@@ -933,7 +899,6 @@ def test_fts_count_rows_unaffected_by_limit_and_offset(fts_table):
     total_matching = base_builder.count_rows()
     assert total_matching == 2
 
-    # Various limit and offset combinations with and without wand_factor(1.0)
     combinations = [
         {"limit": 0},
         {"limit": 1},
@@ -943,7 +908,6 @@ def test_fts_count_rows_unaffected_by_limit_and_offset(fts_table):
     ]
 
     for params in combinations:
-        # Default query (no WAND)
         b = fts_table.search("rocks", query_type="fts")
         if "limit" in params:
             b.limit(params["limit"])
@@ -951,7 +915,6 @@ def test_fts_count_rows_unaffected_by_limit_and_offset(fts_table):
             b.offset(params["offset"])
         assert b.count_rows() == total_matching
 
-        # Explicit WAND
         b_wand = fts_table.search("rocks", query_type="fts").wand_factor(1.0)
         if "limit" in params:
             b_wand.limit(params["limit"])
@@ -959,7 +922,6 @@ def test_fts_count_rows_unaffected_by_limit_and_offset(fts_table):
             b_wand.offset(params["offset"])
         assert b_wand.count_rows() == total_matching
 
-    # Where clause filter still applies to count
     filtered = (
         fts_table.search("rocks", query_type="fts")
         .wand_factor(1.0)
@@ -969,7 +931,6 @@ def test_fts_count_rows_unaffected_by_limit_and_offset(fts_table):
     )
     assert filtered.count_rows() == 1
 
-    # Absent token returns 0
     absent = (
         fts_table.search("nonexistent_term_xyz", query_type="fts")
         .wand_factor(1.0)
@@ -984,20 +945,17 @@ async def test_fts_count_rows_ordinary_query_exact_count(fts_table, async_fts_ta
 
     without an explicit WAND factor across sync and async APIs.
     """
-    # Sync ordinary query
     sync_q = fts_table.search("rocks", query_type="fts")
     assert sync_q._wand_factor is None
     assert sync_q.to_query_object().full_text_query.wand_factor is None
     assert sync_q.count_rows() == 2
 
-    # Preserves query options across count_rows
     sync_q.limit(1).offset(1).where("id >= 2")
     before_obj = sync_q.to_query_object()
     assert sync_q.count_rows() == 2
     assert sync_q.to_query_object() == before_obj
     assert len(sync_q.to_list()) == 1
 
-    # Async ordinary query
     async_q = await async_fts_table.search("rocks", query_type="fts")
     assert async_q.get_wand_factor() is None
     assert async_q._inner.get_wand_factor() is None

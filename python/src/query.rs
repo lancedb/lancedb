@@ -76,7 +76,7 @@ fn validate_wand_factor(wand_factor: Option<f32>) -> PyResult<Option<f32>> {
         }
         if value != 1.0 {
             return Err(PyValueError::new_err(format!(
-                "wand_factor must be None or 1.0 (got {value}); non-default factors are currently unsupported (see Lance issue #11206)",
+                "wand_factor must be None or 1.0 (got {value}); non-default factors are currently unsupported",
             )));
         }
     }
@@ -963,10 +963,9 @@ pub struct FTSQuery {
 impl FTSQuery {
     fn fts_query_for_execution(&self) -> FullTextSearchQuery {
         let mut fts_query = self.fts_query.clone();
-        // Normalize wand_factor=1.0 to None for execution. 1.0 is the WAND identity
-        // (equivalent to default / None) and produces identical engine semantics.
-        // Normalizing on an execution copy preserves the original query configuration
-        // while ensuring consistent pushdown / local execution routing.
+        // Normalize the default WAND factor for execution so explicit 1.0
+        // follows the same execution path as None, without mutating the
+        // original query configuration.
         if fts_query.wand_factor == Some(1.0) {
             fts_query.wand_factor = None;
         }
@@ -1604,9 +1603,6 @@ mod tests {
         let mut original_fts_query = FullTextSearchQuery::new("machine learning".to_string());
         original_fts_query.wand_factor = Some(0.8);
 
-        // FTSQuery::count_rows() clones self.fts_query and resets wand_factor to None
-        // so that counting scanner matches all rows regardless of WAND early termination.
-        // The original query must retain its configured factor.
         let mut count_fts_query = original_fts_query.clone();
         count_fts_query.wand_factor = None;
 
