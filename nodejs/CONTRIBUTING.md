@@ -84,6 +84,11 @@ pnpm test
 Jest uses SWC to transpile TypeScript. Run `pnpm run typecheck:tests` after
 `pnpm build` to check the test suite's types.
 
+On Linux, if `pnpm test` fails with `ERR_SWC_NATIVE_CACHE` before Jest
+starts, set `SWC_NATIVE_BINDING_CACHE` to the absolute path of a private
+cache directory. Use a location whose parent directories are under your
+control and are not writable by other users, then rerun `pnpm test`.
+
 To run a single test:
 
 ```shell
