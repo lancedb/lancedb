@@ -22,7 +22,7 @@ MODEL_DIMENSIONS = {
 }
 
 
-@register("nvidia")
+@register("nvidia", safe_to_restore=True)
 class NvidiaEmbeddings(TextEmbeddingFunction):
     """Text embeddings using NVIDIA Nemotron 3.5 Embed 1B or 8B.
 

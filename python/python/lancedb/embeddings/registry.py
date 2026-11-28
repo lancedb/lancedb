@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import inspect
 import json
 from typing import Dict, Mapping, Optional, Set, Tuple, Type, Union
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 from .base import (
     EmbeddingFunction,
@@ -92,12 +93,18 @@ class EmbeddingFunctionRegistry:
 
     def __init__(self):
         self._functions = {}
+        # Kept apart from the classes so subclasses don't inherit it: a subclass
+        # can add settings that load or contact something new.
+        self._safe_to_restore: Set[str] = set()
         self._variables = {}
+        self._secret_variables: Set[str] = set()
         # Revision is a str, None for the default branch, or _ANY_REVISION.
         self._allowed_remote_code: Set[Tuple[str, object]] = set()
         self._allowed_endpoints: Set[str] = set()
+        self._allowed_functions: Set[str] = set()
+        self._trusted_configs: Set[Tuple[str, str]] = set()
 
-    def register(self, alias: Optional[str] = None):
+    def register(self, alias: Optional[str] = None, *, safe_to_restore: bool = False):
         """
         This creates a decorator that can be used to register
         an EmbeddingFunction.
@@ -107,6 +114,18 @@ class EmbeddingFunctionRegistry:
         alias : Optional[str]
             a human friendly name for the embedding function. If not
             provided, the class name will be used.
+        safe_to_restore : bool, default False
+            Whether table metadata may configure this function without approval.
+            Only set this if the class's
+            [remote_code_model][lancedb.embeddings.EmbeddingFunction.remote_code_model],
+            [loaded_models][lancedb.embeddings.EmbeddingFunction.loaded_models] and
+            [endpoints][lancedb.embeddings.EmbeddingFunction.endpoints] report
+            every model and URL its settings can make it load or contact. Those
+            still need approval. Validators defined outside LanceDB also run
+            when settings are checked, so a class that has them still needs
+            `allow_function`. Otherwise, a function restored from table
+            metadata only computes embeddings once the config is approved, see
+            [allow_function][lancedb.embeddings.EmbeddingFunctionRegistry.allow_function].
         """
 
         # This is a decorator for a class that inherits from BaseModel
@@ -120,6 +139,8 @@ class EmbeddingFunctionRegistry:
             ):
                 raise KeyError(f"{key} was already registered")
             self._functions[key] = cls
+            if safe_to_restore:
+                self._safe_to_restore.add(key)
             # Store the name the class is registered under, so the table
             # metadata written for it can be looked up again when reading.
             cls.__embedding_function_registry_alias__ = key
@@ -132,6 +153,7 @@ class EmbeddingFunctionRegistry:
         Reset the registry to its initial state
         """
         self._functions = {}
+        self._safe_to_restore = set()
 
     def get(self, name: str) -> Type[EmbeddingFunction]:
         """
@@ -211,23 +233,57 @@ class EmbeddingFunctionRegistry:
         elsewhere must already be trusted by this process.
         """
         cls = self.get(name)
-        resolved = cls._resolve_variables(args)
-        # Inspect the config without running __init__, which may load a model.
-        probe = cls.model_construct(**resolved)
+        sensitive_keys = set(cls.sensitive_keys())
+        # Sensitive values such as API keys stay unresolved until the config is
+        # approved, so neither the checks nor their messages can contain them.
+        public = cls._resolve_variables(
+            {k: v for k, v in args.items() if k not in sensitive_keys},
+            from_metadata=True,
+        )
+        inspector = _inspector(cls)
+        approved = self._function_approved(name, args)
+        if not approved and (inspector is None or name not in self._safe_to_restore):
+            # Stop before inspecting the config, since validating it would run
+            # code that hasn't been reviewed for side effects.
+            if inspector is None:
+                reason = (
+                    "runs validators or initializers outside LanceDB while "
+                    "validating its settings"
+                )
+            else:
+                reason = "is not registered with safe_to_restore=True"
+            func = UntrustedEmbeddingFunction(
+                function_name=name,
+                reasons=(
+                    f"{reason}, so its settings need approval. If you trust "
+                    "any settings for it from table metadata, call "
+                    f"get_registry().allow_function({name!r})",
+                ),
+            )
+            func._original_args = args
+            return func
+        if inspector is None:
+            # Approved for any settings, and its settings can't be inspected.
+            func = cls(**public, **self._resolve_secrets(cls, args))
+            func._original_args = args
+            return func
+        # Unresolved sensitive values stand in for the real ones, so required
+        # fields such as API keys validate without exposing secrets.
+        probe = inspector.model_validate({**args, **public})
 
         reasons = []
         model = probe.remote_code_model()
         if model is not None:
             allowed = self._remote_code_allowed(*model)
-            explicit = "trust_remote_code" in resolved
+            explicit = "trust_remote_code" in public
             if explicit:
                 requested = TypeAdapter(bool).validate_python(
-                    resolved["trust_remote_code"]
+                    public["trust_remote_code"]
                 )
             else:
                 requested = cls._legacy_trust_remote_code_default()
             # Always set the flag, since a subclass may default it to True.
-            resolved["trust_remote_code"] = requested and allowed
+            public["trust_remote_code"] = requested and allowed
             # A legacy table that omits the flag is downgraded rather than
             # blocked: most sentence-transformers models don't need remote code,
             # and those tables relied on the old True default without asking.
@@ -240,6 +296,14 @@ class EmbeddingFunctionRegistry:
                     f"revision={revision!r})"
                 )
         reasons.extend(
+            f"loads model '{model_name}' at revision {revision!r}, whose files "
+            "can run code. If you trust it, call "
+            f"get_registry().allow_remote_code({model_name!r}, "
+            f"revision={revision!r})"
+            for model_name, revision in probe.loaded_models()
+            if not self._remote_code_allowed(model_name, revision)
+        )
+        reasons.extend(
             f"sends data to endpoint '{url}'. If you trust it, call "
             f"get_registry().allow_endpoint({url!r})"
             for url in probe.endpoints()
@@ -251,9 +315,22 @@ class EmbeddingFunctionRegistry:
                 function_name=name, reasons=tuple(reasons)
             )
         else:
-            func = cls(**resolved)
+            func = cls(**public, **self._resolve_secrets(cls, args))
         func._original_args = args
         return func
+
+    def _function_approved(self, name: str, args: dict) -> bool:
+        return (
+            name in self._allowed_functions
+            or (name, _canonical_config(args)) in self._trusted_configs
+        )
+
+    @staticmethod
+    def _resolve_secrets(cls: Type[EmbeddingFunction], args: dict) -> dict:
+        sensitive_keys = set(cls.sensitive_keys())
+        return cls._resolve_variables(
+            {k: v for k, v in args.items() if k in sensitive_keys}
+        )
 
     def allow_remote_code(self, model: str, revision: Optional[str] = None) -> None:
         """
@@ -261,9 +338,12 @@ class EmbeddingFunctionRegistry:
         loads it is restored from table metadata.
 
         Table metadata cannot enable `trust_remote_code` by itself, since anyone
-        who can write to the table could then run code in this process. Embedding
-        functions created in this process with `trust_remote_code=True` are
-        allowed automatically.
+        who can write to the table could then run code in this process. For the
+        same reason, it cannot pick a model for functions whose model files can
+        run code when loaded, such as pickled checkpoints, other than the
+        function's default model. Embedding functions created in this process
+        are allowed to load their models automatically, and to run their code if
+        created with `trust_remote_code=True`.
 
         Parameters
         ----------
@@ -295,6 +375,27 @@ class EmbeddingFunctionRegistry:
         """
         self._allowed_endpoints.add(_normalize_url(url))
 
+    def allow_function(self, name: str) -> None:
+        """
+        Trust any settings from table metadata for an embedding function that
+        isn't registered with `safe_to_restore=True`, such as your own
+        embedding functions.
+
+        LanceDB can't tell what such a function's settings make it load or
+        contact, so when it is restored from table metadata it only computes
+        embeddings for configs created in this process, unless you call this.
+        Models and endpoints the function reports still need approval with
+        [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code]
+        and
+        [allow_endpoint][lancedb.embeddings.EmbeddingFunctionRegistry.allow_endpoint].
+
+        Parameters
+        ----------
+        name : str
+            The name the function was registered under, such as `"bedrock-text"`.
+        """
+        self._allowed_functions.add(name)
+
     def _remote_code_allowed(self, model: str, revision: Optional[str]) -> bool:
         return (model, _ANY_REVISION) in self._allowed_remote_code or (
             model,
@@ -307,8 +408,14 @@ class EmbeddingFunctionRegistry:
             # Only the revision this code selected, where None means the default
             # branch. Other revisions, such as PR refs, may hold other code.
             self._allowed_remote_code.add(model)
+        self._allowed_remote_code.update(func.loaded_models())
         for url in func.endpoints():
             self.allow_endpoint(url)
+        name = next(
+            (k for k, cls in self._functions.items() if cls is type(func)), None
+        )
+        if name is not None and name not in self._safe_to_restore:
+            self._trusted_configs.add((name, _canonical_config(func._original_args)))
 
     def function_to_metadata(self, conf: "EmbeddingFunctionConfig"):
         """
@@ -343,7 +450,7 @@ class EmbeddingFunctionRegistry:
         metadata = json.dumps(json_data, indent=2).encode("utf-8")
         return {"embedding_functions": metadata}
 
-    def set_var(self, name: str, value: str) -> None:
+    def set_var(self, name: str, value: str, *, secret: bool = True) -> None:
         """
         Set a variable. These can be accessed in embedding configuration using
         the syntax `$var:variable_name`. If they are not set, an error will be
@@ -354,10 +461,29 @@ class EmbeddingFunctionRegistry:
         whether to use a GPU for inference.
 
         The name must not contain a colon. Default values can contain colons.
+
+        Parameters
+        ----------
+        name : str
+            The variable name.
+        value : str
+            The value to substitute.
+        secret : bool, default True
+            Whether the value is a secret, such as an API key. Secret variables
+            can only be used in an embedding function's sensitive fields, which
+            send them only as credentials. Anyone who can write a table chooses
+            the variable names in its embedding config, so a secret in any other
+            field, such as a URL, could be shown to them in an error message or
+            sent to a server they pick. Pass `secret=False` for settings such as
+            the device to run on.
         """
         if ":" in name:
             raise ValueError("Variable names cannot contain colons")
         self._variables[name] = value
+        if secret:
+            self._secret_variables.add(name)
+        else:
+            self._secret_variables.discard(name)
 
     def get_var(self, name: str) -> str:
         """
@@ -373,13 +499,73 @@ def _normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _inspector(cls: Type[EmbeddingFunction]) -> Optional[Type[EmbeddingFunction]]:
+    """
+    A subclass of `cls` whose validation binds settings as `cls(**values)`
+    would, so aliases and extra settings resolve the same way, but without
+    running `cls.__init__` or `cls.model_post_init`, either of which may load
+    the configured model. Returns None if validation would run other code that
+    could have side effects, such as validators defined outside LanceDB.
+    """
+    if cls not in _inspectors:
+
+        class inspector(cls):
+            __init__ = BaseModel.__init__
+            model_post_init = BaseModel.model_post_init
+
+        safe = _validation_is_side_effect_free(
+            inspector.__pydantic_core_schema__, inspector
+        )
+        _inspectors[cls] = inspector if safe else None
+    return _inspectors[cls]
+
+
+_inspectors: Dict[type, Optional[type]] = {}
+_TRUSTED_VALIDATOR_MODULES = ("lancedb", "pydantic", "pydantic_core", "builtins")
+
+
+def _validation_is_side_effect_free(schema, inspector: type) -> bool:
+    if isinstance(schema, list):
+        return all(_validation_is_side_effect_free(s, inspector) for s in schema)
+    if not isinstance(schema, dict):
+        return True
+    kind = schema.get("type")
+    if kind == "model" and schema["cls"] is not inspector:
+        nested = schema["cls"]
+        if nested.__pydantic_custom_init__ or nested.__pydantic_post_init__:
+            return False
+    if kind == "dataclass" and schema.get("post_init"):
+        return False
+    functions = [schema.get("default_factory")]
+    if isinstance(schema.get("function"), dict):
+        functions.append(schema["function"].get("function"))
+    if not all(f is None or _is_trusted_function(f) for f in functions):
+        return False
+    # Serializers and JSON schema hooks don't run during validation.
+    return all(
+        _validation_is_side_effect_free(value, inspector)
+        for key, value in schema.items()
+        if key not in ("serialization", "metadata")
+    )
+
+
+def _is_trusted_function(func) -> bool:
+    func = inspect.unwrap(getattr(func, "__func__", func))
+    module = getattr(func, "__module__", None) or ""
+    return module.split(".")[0] in _TRUSTED_VALIDATOR_MODULES
+
+
+def _canonical_config(args: dict) -> str:
+    return json.dumps(args, sort_keys=True, default=repr)
+
+
 # Global instance
 __REGISTRY__ = EmbeddingFunctionRegistry()
 
 
 # @EmbeddingFunctionRegistry.get_instance().register(name) doesn't work in 3.8
-def register(name):
-    return __REGISTRY__.get_instance().register(name)
+def register(name, *, safe_to_restore: bool = False):
+    return __REGISTRY__.get_instance().register(name, safe_to_restore=safe_to_restore)
 
 
 def get_registry() -> EmbeddingFunctionRegistry:

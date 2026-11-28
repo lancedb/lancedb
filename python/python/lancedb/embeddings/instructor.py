@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
-from typing import List
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -12,7 +12,7 @@ from .registry import register
 from .utils import TEXT, weak_lru
 
 
-@register("instructor")
+@register("instructor", safe_to_restore=True)
 class InstructorEmbeddingFunction(TextEmbeddingFunction):
     """
     An embedding function that uses the InstructorEmbedding library. Instructor models
@@ -98,6 +98,11 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
     query_instruction: str = (
         "represent the document for retrieving the most similar documents"
     )
+
+    def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
+        # InstructorEmbedding imports the classes named in the model's
+        # modules.json.
+        return [] if self._uses_default("name") else [(self.name, None)]
 
     @weak_lru(maxsize=1)
     def ndims(self):

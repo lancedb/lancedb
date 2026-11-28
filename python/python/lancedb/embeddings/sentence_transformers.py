@@ -12,7 +12,7 @@ from .registry import register
 from .utils import weak_lru
 
 
-@register("sentence-transformers")
+@register("sentence-transformers", safe_to_restore=True)
 class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the sentence-transformers library

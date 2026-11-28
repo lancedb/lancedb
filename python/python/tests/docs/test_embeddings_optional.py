@@ -69,7 +69,7 @@ def test_embeddings_secret():
 
     registry = get_registry()
     if torch.cuda.is_available():
-        registry.set_var("device", "cuda")
+        registry.set_var("device", "cuda", secret=False)
 
     func = registry.get("huggingface").create(device="$var:device:cpu")
     # --8<-- [end:register_device]

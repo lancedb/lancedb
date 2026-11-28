@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 
-@register("openai")
+@register("openai", safe_to_restore=True)
 class OpenAIEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the OpenAI API

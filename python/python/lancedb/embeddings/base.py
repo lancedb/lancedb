@@ -71,13 +71,17 @@ class EmbeddingFunction(BaseModel, ABC):
         return instance
 
     @classmethod
-    def _resolve_variables(cls, args: dict) -> dict:
-        return cls.__resolveVariables(args)
+    def _resolve_variables(cls, args: dict, *, from_metadata: bool = False) -> dict:
+        return cls.__resolveVariables(args, from_metadata=from_metadata)
 
     @classmethod
-    def __resolveVariables(cls, args: dict) -> dict:
+    def __resolveVariables(cls, args: dict, *, from_metadata: bool = False) -> dict:
         """
-        Resolve variables in the args
+        Resolve variables in the args.
+
+        Secret variables only resolve in sensitive fields. When the args come
+        from table metadata, a secret variable in any other field is treated as
+        unset, so the result is the same whether or not the variable exists.
         """
         from .registry import EmbeddingFunctionRegistry
 
@@ -86,34 +90,43 @@ class EmbeddingFunction(BaseModel, ABC):
         registry = EmbeddingFunctionRegistry.get_instance()
         sensitive_keys = cls.sensitive_keys()
         for k, v in new_args.items():
-            if isinstance(v, str) and not v.startswith("$var:") and k in sensitive_keys:
+            sensitive = k in sensitive_keys
+            if isinstance(v, str) and not v.startswith("$var:") and sensitive:
                 exc = ValueError(
                     f"Sensitive key '{k}' cannot be set to a hardcoded value"
                 )
                 add_note(exc, "Help: Use $var: to set sensitive keys to variables")
                 raise exc
 
-            if isinstance(v, str) and v.startswith("$var:"):
-                parts = v[5:].split(":", maxsplit=1)
-                if len(parts) == 1:
-                    try:
-                        new_args[k] = registry.get_var(parts[0])
-                    except KeyError:
-                        exc = ValueError(
-                            "Variable '{}' not found in registry".format(parts[0])
-                        )
-                        add_note(
-                            exc,
-                            "Help: Variables are reset in new Python sessions. "
-                            "Use `registry.set_var` to set variables.",
-                        )
-                        raise exc
-                else:
-                    name, default = parts
-                    try:
-                        new_args[k] = registry.get_var(name)
-                    except KeyError:
-                        new_args[k] = default
+            if not (isinstance(v, str) and v.startswith("$var:")):
+                continue
+            name, *default = v[5:].split(":", maxsplit=1)
+            visible = name in registry._variables
+            if visible and not sensitive and name in registry._secret_variables:
+                if not from_metadata:
+                    exc = ValueError(
+                        f"Variable '{name}' is secret, so it can only be used in "
+                        f"sensitive fields such as API keys, not '{k}'"
+                    )
+                    add_note(
+                        exc,
+                        "Help: If it isn't a secret, set it with "
+                        f"`registry.set_var({name!r}, value, secret=False)`.",
+                    )
+                    raise exc
+                visible = False
+            if visible:
+                new_args[k] = registry.get_var(name)
+            elif default:
+                new_args[k] = default[0]
+            else:
+                exc = ValueError("Variable '{}' not found in registry".format(name))
+                add_note(
+                    exc,
+                    "Help: Variables are reset in new Python sessions. "
+                    "Use `registry.set_var` to set variables.",
+                )
+                raise exc
         return new_args
 
     @staticmethod
@@ -135,6 +148,23 @@ class EmbeddingFunction(BaseModel, ABC):
         [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code].
         """
         return None
+
+    def loaded_models(self) -> List[Tuple[str, Optional[str]]]:
+        """
+        Return the models this function loads whose files can run code when
+        loaded, such as pickled checkpoints, as `(name, revision)` pairs.
+
+        Leave out the function's default model, which its author chose. When
+        the function is restored from table metadata, each of these must be
+        allowed with
+        [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code].
+        """
+        return []
+
+    def _uses_default(self, *fields: str) -> bool:
+        return all(
+            getattr(self, f) == type(self).model_fields[f].default for f in fields
+        )
 
     @classmethod
     def _legacy_trust_remote_code_default(cls) -> bool:

@@ -32,7 +32,7 @@ def is_valid_url(text):
         return False
 
 
-@register("jina")
+@register("jina", safe_to_restore=True)
 class JinaEmbeddings(EmbeddingFunction):
     """
     An embedding function that uses the Jina API

@@ -15,7 +15,7 @@ from .registry import register
 from .utils import AUDIO, IMAGES, TEXT
 
 
-@register("imagebind")
+@register("imagebind", safe_to_restore=True)
 class ImageBindEmbeddings(EmbeddingFunction):
     """
     An embedding function that uses the ImageBind API

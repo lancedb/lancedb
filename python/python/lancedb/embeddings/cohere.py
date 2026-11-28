@@ -32,7 +32,7 @@ def _is_redirect_error(error: Exception) -> bool:
     return status is not None and 300 <= status < 400
 
 
-@register("cohere")
+@register("cohere", safe_to_restore=True)
 class CohereEmbeddingFunction(TextEmbeddingFunction):
     """
     An embedding function for Cohere text models, including Cohere Embed v4
