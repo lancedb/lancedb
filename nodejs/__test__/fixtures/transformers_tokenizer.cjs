@@ -47,7 +47,7 @@ async function main() {
     if (testCase === 4) throw new Error("missing tokenizer");
     return {};
   };
-  getRegistry().setVar("tokenizer", "test/tokenizer");
+  getRegistry().setVar("tokenizer", "test/tokenizer", { secret: false });
   const [options, model, tokenizer] = cases[testCase];
   const fn = new TransformersEmbeddingFunction(options);
   if (testCase === 4) {

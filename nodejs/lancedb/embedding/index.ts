@@ -20,6 +20,8 @@ export {
   TextEmbeddingFunction,
   FunctionOptions,
   EmbeddingFunctionConstructor,
+  UntrustedEmbeddingConfigError,
+  UntrustedEmbeddingFunction,
 } from "./embedding_function";
 
 export {
@@ -32,7 +34,9 @@ export type {
   EmbeddingFunctionConfig,
   EmbeddingFunctionCreate,
   EmbeddingMetadataEntry,
+  RegisterOptions,
   ResolvedEmbeddingFunctionConfig,
+  SetVarOptions,
 } from "./registry";
 
 function initializeBuiltInProviders() {

@@ -7,12 +7,14 @@
 # Function: register()
 
 ```ts
-function register(name?): (ctor) => any
+function register(name?, options?): (ctor) => any
 ```
 
 ## Parameters
 
 * **name?**: `string`
+
+* **options?**: [`RegisterOptions`](../interfaces/RegisterOptions.md)
 
 ## Returns
 

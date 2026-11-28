@@ -188,7 +188,7 @@ describe("embedding functions", () => {
     expect(vector0).toEqual([1, 2, 3]);
   });
   it("should append multiple Python embeddings with the same alias", async () => {
-    @register("python-mock")
+    @register("python-mock", { safeToRestore: true })
     // biome-ignore lint/correctness/noUnusedVariables: the decorator registers this class
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       ndims() {

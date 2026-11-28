@@ -25,6 +25,85 @@ new EmbeddingFunctionRegistry(): EmbeddingFunctionRegistry
 
 ## Methods
 
+### allowEndpoint()
+
+```ts
+allowEndpoint(url): void
+```
+
+Trust a custom endpoint when an embedding function that sends data to it
+is restored from table metadata. Trailing slashes are ignored.
+
+Embedding functions whose metadata this process wrote are allowed to use
+their endpoints automatically.
+
+#### Parameters
+
+* **url**: `string`
+
+#### Returns
+
+`void`
+
+***
+
+### allowFunction()
+
+```ts
+allowFunction(name): void
+```
+
+Trust any options from table metadata for an embedding function that
+isn't registered with `safeToRestore: true`, such as your own embedding
+functions.
+
+LanceDB can't tell what such a function's options make it load or
+contact, so when it is restored from table metadata it only computes
+embeddings for options this process wrote, unless you call this. Models
+and endpoints the function reports still need approval with
+[allowModel](EmbeddingFunctionRegistry.md#allowmodel) and [allowEndpoint](EmbeddingFunctionRegistry.md#allowendpoint).
+
+#### Parameters
+
+* **name**: `string`
+    The name the function was registered under.
+
+#### Returns
+
+`void`
+
+***
+
+### allowModel()
+
+```ts
+allowModel(model, revision?): void
+```
+
+Trust a model when an embedding function that loads it is restored from
+table metadata.
+
+Anyone who can write a table controls its embedding options, so table
+metadata cannot pick a model other than the function's default by itself.
+Embedding functions whose metadata this process wrote, for example by
+creating a table with them, are allowed to load their models
+automatically.
+
+#### Parameters
+
+* **model**: `string`
+    The model name, such as `"Xenova/bge-small-en-v1.5"`.
+
+* **revision?**: `string`
+    The revision the table's options must pin. If omitted,
+    any revision is trusted.
+
+#### Returns
+
+`void`
+
+***
+
 ### functionToMetadata()
 
 ```ts
@@ -119,7 +198,10 @@ Get the number of registered functions
 ### register()
 
 ```ts
-register<T>(this, alias?): (ctor) => any
+register<T>(
+   this,
+   alias?,
+   options?): (ctor) => any
 ```
 
 Register an embedding function
@@ -133,6 +215,8 @@ Register an embedding function
 * **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
 
 * **alias?**: `string`
+
+* **options?**: [`RegisterOptions`](../interfaces/RegisterOptions.md) = `{}`
 
 #### Returns
 
@@ -173,7 +257,10 @@ reset the registry to the initial state
 ### setVar()
 
 ```ts
-setVar(name, value): void
+setVar(
+   name,
+   value,
+   options): void
 ```
 
 Set a variable. These can be accessed in the embedding function
@@ -186,11 +273,17 @@ whether to use a GPU for inference.
 
 The name must not contain colons. The default value can contain colons.
 
+Variables are secret unless you pass `{ secret: false }`, and secret
+variables can only be used in sensitive keys such as API keys. See
+[SetVarOptions.secret](../interfaces/SetVarOptions.md#secret).
+
 #### Parameters
 
 * **name**: `string`
 
 * **value**: `string`
+
+* **options**: [`SetVarOptions`](../interfaces/SetVarOptions.md) = `{}`
 
 #### Returns
 

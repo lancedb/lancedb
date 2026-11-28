@@ -28,6 +28,7 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 ## Extended by
 
 - [`TextEmbeddingFunction`](TextEmbeddingFunction.md)
+- [`UntrustedEmbeddingFunction`](UntrustedEmbeddingFunction.md)
 
 ## Type Parameters
 
@@ -153,6 +154,10 @@ protected resolveVariables(config): Partial<M>
 ```
 
 Apply variables to the config.
+
+Secret variables, the default for
+`EmbeddingFunctionRegistry.setVar`, only resolve in the keys
+returned by [getSensitiveKeys](EmbeddingFunction.md#getsensitivekeys).
 
 #### Parameters
 

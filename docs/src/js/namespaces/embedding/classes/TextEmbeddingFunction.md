@@ -181,6 +181,10 @@ protected resolveVariables(config): Partial<M>
 
 Apply variables to the config.
 
+Secret variables, the default for
+`EmbeddingFunctionRegistry.setVar`, only resolve in the keys
+returned by [getSensitiveKeys](TextEmbeddingFunction.md#getsensitivekeys).
+
 #### Parameters
 
 * **config**: `Partial`&lt;`M`&gt;
