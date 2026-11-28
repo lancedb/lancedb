@@ -1306,6 +1306,36 @@ def test_iter_skip_last_batch(some_permutation: Permutation):
         assert len(batch) == batch_size
 
 
+def test_iter_keeps_rows_from_short_reader_batches(some_table: Table):
+    """A filtered split read can yield short batches before the end."""
+    perm_tbl = (
+        permutation_builder(some_table)
+        .split_hash(["id"], [1, 1], discard_weight=0)
+        .execute()
+    )
+    permutation = Permutation.from_tables(some_table, perm_tbl, 0)
+    num_rows = permutation.num_rows
+    expected_ids = [
+        row["id"] for row in permutation.__getitems__(list(range(num_rows)))
+    ]
+    batch_size = 37
+    assert num_rows % batch_size != 0
+
+    batches = list(permutation.iter(batch_size, skip_last_batch=False))
+    assert [len(batch) for batch in batches[:-1]] == [batch_size] * (len(batches) - 1)
+    assert [row["id"] for batch in batches for row in batch] == expected_ids
+
+    num_full = num_rows // batch_size
+    full_batches = list(permutation.iter(batch_size, skip_last_batch=True))
+    assert [len(batch) for batch in full_batches] == [batch_size] * num_full
+    assert [row["id"] for batch in full_batches for row in batch] == expected_ids[
+        : num_full * batch_size
+    ]
+
+    dunder_batches = list(permutation.with_batch_size(batch_size))
+    assert [len(batch) for batch in dunder_batches] == [batch_size] * num_full
+
+
 def test_iter_different_batch_sizes(some_permutation: Permutation):
     """Test iteration with different batch sizes."""
 
@@ -2097,3 +2127,124 @@ def test_map_pickle_round_trip(some_permutation: Permutation, fn, batched):
     explicit = pickle.loads(pickle.dumps(some_permutation.with_format("arrow")))
     with pytest.raises(ValueError, match="map cannot be combined"):
         explicit.map(fn, batched=batched)
+
+
+def test_rebatch_regroups_short_and_empty_batches():
+    """_rebatch fills batches from short, empty and oversized input batches."""
+    from lancedb.permutation import _rebatch
+
+    def make(start, n):
+        return pa.record_batch({"id": pa.array(range(start, start + n), pa.int64())})
+
+    sizes = [3, 0, 4, 10, 1, 2, 4, 0]
+    batches, start = [], 0
+    for n in sizes:
+        batches.append(make(start, n))
+        start += n
+
+    out = list(_rebatch(iter(batches), 4))
+    assert [b.num_rows for b in out] == [4, 4, 4, 4, 4, 4]
+    assert [v for b in out for v in b.column("id").to_pylist()] == list(range(24))
+    assert all(b.schema == batches[0].schema for b in out)
+
+    out = list(_rebatch(iter(batches[:3]), 4))
+    assert [b.num_rows for b in out] == [4, 3]
+
+    assert list(_rebatch(iter([make(0, 0)]), 4)) == []
+    assert list(_rebatch(iter([]), 4)) == []
+
+
+def test_rebatch_rejects_non_positive_batch_size():
+    """_rebatch raises before consuming any input when batch_size <= 0."""
+    from lancedb.permutation import _rebatch
+
+    consumed = []
+
+    def tracking():
+        consumed.append(True)
+        yield pa.record_batch({"id": pa.array([0], pa.int64())})
+
+    for batch_size in (0, -1):
+        with pytest.raises(ValueError, match="batch_size must be greater than 0"):
+            next(_rebatch(tracking(), batch_size))
+    assert consumed == []
+
+
+def test_iter_rejects_non_positive_batch_size(some_permutation: Permutation):
+    for batch_size in (0, -1):
+        with pytest.raises(ValueError, match="batch_size must be greater than 0"):
+            next(some_permutation.iter(batch_size))
+
+
+def test_single_batch_rejects_multi_chunk_combine():
+    """_single_batch raises instead of dropping rows Arrow cannot fit in one batch."""
+    from lancedb.permutation import _single_batch
+
+    parts = [
+        pa.record_batch({"id": pa.array([0], pa.int64())}),
+        pa.record_batch({"id": pa.array([1], pa.int64())}),
+    ]
+
+    class Combined:
+        def to_batches(self):
+            return parts
+
+    class Table:
+        num_rows = 2
+
+        def combine_chunks(self):
+            return Combined()
+
+    with pytest.raises(ValueError, match="smaller batch_size"):
+        _single_batch(Table())
+
+
+def test_rebatch_skip_last_batch_does_not_build_the_tail(monkeypatch):
+    """A short final batch that will be skipped is never passed to _single_batch."""
+    import lancedb.permutation as permutation
+
+    built = []
+    single_batch = permutation._single_batch
+
+    def spy(table):
+        built.append(table.num_rows)
+        return single_batch(table)
+
+    monkeypatch.setattr(permutation, "_single_batch", spy)
+
+    def make(start, n):
+        return pa.record_batch({"id": pa.array(range(start, start + n), pa.int64())})
+
+    out = list(permutation._rebatch(iter([make(0, 1), make(1, 1)]), 3, True))
+    assert out == []
+    assert built == []
+
+    # Short batches before the end still combine; only the tail is dropped.
+    batches = [make(0, 1), make(1, 2), make(3, 1)]
+    out = list(permutation._rebatch(iter(batches), 3, True))
+    assert [b.column("id").to_pylist() for b in out] == [[0, 1, 2]]
+    assert built == [3]
+
+    built.clear()
+    out = list(permutation._rebatch(iter(batches), 3))
+    assert [b.column("id").to_pylist() for b in out] == [[0, 1, 2], [3]]
+    assert built == [3, 1]
+
+
+def test_iter_skip_last_batch_does_not_build_the_tail(
+    some_permutation: Permutation, monkeypatch
+):
+    import lancedb.permutation as permutation
+
+    built = []
+    single_batch = permutation._single_batch
+
+    def spy(table):
+        built.append(table.num_rows)
+        return single_batch(table)
+
+    monkeypatch.setattr(permutation, "_single_batch", spy)
+
+    assert list(some_permutation.iter(1000, skip_last_batch=True)) == []
+    assert built == []
+    assert len(list(some_permutation.iter(1000, skip_last_batch=False))) == 1
