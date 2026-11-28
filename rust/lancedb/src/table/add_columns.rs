@@ -18,7 +18,7 @@ pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
     computed: Vec<(String, String)>,
-    function: Option<(FunctionApplication, Option<String>)>,
+    functions: Vec<(FunctionApplication, Option<String>)>,
     read_columns: Option<Vec<String>>,
     options: Option<ComputedColumnOptions>,
 }
@@ -29,7 +29,7 @@ impl std::fmt::Debug for AddColumnsBuilder {
             .field("parent", &self.parent)
             .field("has_transform", &self.transform.is_some())
             .field("computed", &self.computed)
-            .field("has_function", &self.function.is_some())
+            .field("function_count", &self.functions.len())
             .field("read_columns", &self.read_columns)
             .finish()
     }
@@ -41,7 +41,7 @@ impl AddColumnsBuilder {
             parent,
             transform: None,
             computed: Vec::new(),
-            function: None,
+            functions: Vec::new(),
             read_columns: None,
             options: None,
         }
@@ -89,6 +89,30 @@ impl AddColumnsBuilder {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// In LanceDB Embedded, an expression can also call functions registered
+    /// on a DataFusion `SessionContext` attached to the connection's Lance
+    /// session. They are not stored with the table, so attach them on every
+    /// connection that opens it.
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use datafusion::execution::context::SessionContext;
+    /// # use datafusion::logical_expr::ScalarUDF;
+    /// # async fn declare(my_udf: ScalarUDF) -> Result<(), Box<dyn std::error::Error>> {
+    /// let functions = SessionContext::new();
+    /// functions.register_udf(my_udf);
+    /// let session = lance::session::Session::default().with_datafusion_session(functions);
+    /// let db = lancedb::connect("data/db")
+    ///     .session(Arc::new(session))
+    ///     .execute()
+    ///     .await?;
+    /// let table = db.open_table("t").execute().await?;
+    /// table.add_columns().computed("y", "my_udf(x)").execute().await?;
+    /// table.refresh_column("y").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
         self.computed.push((name.into(), expression.into()));
         self
@@ -107,7 +131,7 @@ impl AddColumnsBuilder {
     /// # }
     /// ```
     pub fn function(mut self, application: FunctionApplication) -> Self {
-        self.function = Some((application, None));
+        self.functions = vec![(application, None)];
         self
     }
 
@@ -132,7 +156,19 @@ impl AddColumnsBuilder {
         name: impl Into<String>,
         application: FunctionApplication,
     ) -> Self {
-        self.function = Some((application, Some(name.into())));
+        self.functions = vec![(application, Some(name.into()))];
+        self
+    }
+
+    /// Declare several registered Function bindings in one Enterprise schema commit.
+    /// Pass a destination name for a scalar or whole struct result. Use `None`
+    /// to expand a named struct into its ordered fields. Inputs may reference
+    /// other outputs in this declaration, regardless of their order.
+    pub fn function_bindings(
+        mut self,
+        bindings: impl IntoIterator<Item = (FunctionApplication, Option<String>)>,
+    ) -> Self {
+        self.functions = bindings.into_iter().collect();
         self
     }
 
@@ -147,15 +183,22 @@ impl AddColumnsBuilder {
 
     /// Configure automatic refresh for every output declared in this call.
     /// Settings are stored with the declaration. They require computed or
-    /// Function columns; LanceDB Embedded persists them without starting a scheduler.
+    /// Function columns. LanceDB Embedded persists enabled and interval settings
+    /// without starting a scheduler; an automatic resource budget requires an
+    /// Enterprise registered Function and rejects SQL-expression columns.
     ///
     /// ```
     /// # use lancedb::{Table, table::computed_columns::ComputedColumnOptions};
     /// # async fn declare(table: &Table) -> lancedb::Result<()> {
     /// table.add_columns().computed("doubled", "x * 2")
     ///     .computed_options(ComputedColumnOptions {
+    ///     gpu_class: Default::default(),
+    ///     gpu_count: Default::default(),
     ///         auto_refresh_enabled: true,
     ///         auto_refresh_interval_seconds: Some(300),
+    ///         total_cpu_millis: None,
+    ///         total_memory_bytes: None,
+    ///         total_gpu_count: None,
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -171,22 +214,28 @@ impl AddColumnsBuilder {
             parent,
             transform,
             computed,
-            function,
+            functions,
             read_columns,
             options,
         } = self;
-        if let Some(options) = options {
+        if let Some(options) = &options {
             options.validate()?;
-            if computed.is_empty() && function.is_none() {
+            if computed.is_empty() && functions.is_empty() {
                 return Err(Error::InvalidInput {
                     message: "automatic refresh options require computed or Function columns"
                         .into(),
                 });
             }
+            if options.has_resource_defaults() && functions.is_empty() {
+                return Err(Error::InvalidInput {
+                    message: "total_* resources require a registered Function declaration".into(),
+                });
+            }
         }
         let options = options.unwrap_or_default();
 
-        let declaration_count = usize::from(!computed.is_empty()) + usize::from(function.is_some());
+        let declaration_count =
+            usize::from(!computed.is_empty()) + usize::from(!functions.is_empty());
         if transform.is_some() && declaration_count != 0 || declaration_count > 1 {
             return Err(Error::InvalidInput {
                 message: "add_columns cannot mix transforms, SQL computed columns, and a Function application; they cannot be added atomically in one call"
@@ -194,11 +243,11 @@ impl AddColumnsBuilder {
             });
         }
 
-        match (transform, computed.is_empty(), function) {
-            (None, true, None) => Err(Error::InvalidInput {
+        match (transform, computed.is_empty(), functions.as_slice()) {
+            (None, true, []) => Err(Error::InvalidInput {
                 message: "add_columns requires a transform or a computed column".into(),
             }),
-            (Some(transform), true, None) => {
+            (Some(transform), true, []) => {
                 if read_columns.is_some() && !matches!(transform, NewColumnTransform::BatchUDF(_)) {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -208,7 +257,7 @@ impl AddColumnsBuilder {
                 }
                 parent.add_columns(transform, read_columns).await
             }
-            (None, false, None) => {
+            (None, false, []) => {
                 if read_columns.is_some() {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -218,16 +267,21 @@ impl AddColumnsBuilder {
                 }
                 parent.add_computed_columns(&computed, options).await
             }
-            (None, true, Some((application, output_name))) => {
+            (None, true, bindings) => {
                 if read_columns.is_some() {
                     return Err(Error::InvalidInput {
                         message: "read_columns does not apply to a Function application; its inputs are already bound"
                             .into(),
                     });
                 }
-                parent
-                    .add_function_columns(&application, output_name.as_deref(), options)
-                    .await
+                match bindings {
+                    [(application, name)] => {
+                        parent
+                            .add_function_columns(application, name.as_deref(), options)
+                            .await
+                    }
+                    _ => parent.add_function_bindings(bindings, options).await,
+                }
             }
             _ => unreachable!("mixed add_columns modes were rejected above"),
         }
@@ -263,13 +317,18 @@ mod tests {
         let table = table_with_two_columns("options").await;
         let version = table.version().await.unwrap();
         let options = ComputedColumnOptions {
+            gpu_class: Default::default(),
+            gpu_count: Default::default(),
             auto_refresh_enabled: false,
             auto_refresh_interval_seconds: Some(300),
+            total_cpu_millis: None,
+            total_memory_bytes: None,
+            total_gpu_count: None,
         };
         let result = table
             .add_columns()
             .computed("doubled", "x * 2")
-            .computed_options(options)
+            .computed_options(options.clone())
             .execute()
             .await
             .unwrap();
@@ -285,7 +344,7 @@ mod tests {
         for interval in [0, u64::MAX] {
             let invalid = ComputedColumnOptions {
                 auto_refresh_interval_seconds: Some(interval),
-                ..options
+                ..options.clone()
             };
             assert!(
                 table
@@ -304,7 +363,7 @@ mod tests {
                     "once".into(),
                     "x".into()
                 )]))
-                .computed_options(options)
+                .computed_options(options.clone())
                 .execute()
                 .await
                 .is_err()
@@ -346,6 +405,38 @@ mod tests {
                 .unwrap()
                 .get("auto_refresh_interval_seconds")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_resource_budget_requires_a_function() {
+        let table = table_with_two_columns("budget_expression").await;
+        let err = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .computed_options(ComputedColumnOptions {
+                gpu_class: Default::default(),
+                gpu_count: Default::default(),
+                auto_refresh_enabled: true,
+                auto_refresh_interval_seconds: None,
+                total_cpu_millis: Some(1000),
+                total_memory_bytes: Some(1024),
+                total_gpu_count: Some(0),
+            })
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("registered Function")),
+            "{err:?}"
+        );
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("doubled")
+                .is_err()
         );
     }
 

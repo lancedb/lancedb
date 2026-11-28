@@ -28,6 +28,16 @@ CREATE STORAGE INTEGRATION <name>
 ```
 </CodeGroup>
 
+{/* Draft for the storage-integration exist_ok release.
+
+`IF NOT EXISTS` returns an existing integration unchanged, including its provider,
+storage prefix, credential references and external ID. In the Python SDK, pass
+`exist_ok=True` to `create_storage_integration`. The default reports an error when
+the name already exists.
+Returning an existing integration requires `USAGE` on that integration.
+
+*/}
+
 `STORAGE_PROVIDER` and `STORAGE_PREFIX` are required for every provider.
 `STORAGE_PREFIX` is the URI prefix the integration covers -- a query only
 matches an integration whose prefix is a prefix of the URI it reads.
@@ -87,9 +97,12 @@ CREATE STORAGE INTEGRATION blobs
 | `STORAGE_AZURE_TENANT_ID_SECRET` | Secret ref | Entra ID tenant |
 | `STORAGE_AZURE_CLIENT_ID_SECRET` | Secret ref | service principal client ID |
 | `STORAGE_AZURE_CLIENT_SECRET_SECRET` | Secret ref | service principal client secret |
+| `STORAGE_AZURE_STORAGE_ACCOUNT_ACCESS_KEY_SECRET` | Secret ref | storage account access key for Azure Shared Key authorization |
 
-All four are required together; there is no role-based alternative for
-Azure.
+Specify the storage account and choose one credential mode. Service principal
+authentication requires all three service principal Secret references. Shared
+Key authentication requires the account access key Secret reference and an Azure
+storage account that allows Shared Key authorization.
 
 ### GCP {#gcp}
 
@@ -170,30 +183,41 @@ worker finishes. See [`CREATE TABLE`](/sql/ddl/table#create) for
 
 <CodeGroup>
 ```sql SQL icon="database"
-DESCRIBE STORAGE INTEGRATION raw
+DESCRIBE STORAGE INTEGRATION raw [FORMAT TEXT | JSON]
 DESC STORAGE INTEGRATION platform.hub
 ```
 </CodeGroup>
 
-Returns one row with every column `CREATE` returns: the provider, prefix,
-the Secret references and plain-string options that apply to its
+Returns one `description` document as TEXT (default) or JSON, containing the
+provider, prefix, native Secret references and options that apply to its
 provider (the rest are null), `created_at_millis`, `access_verified`, and
 -- for an `STORAGE_AWS_ROLE_ARN` integration -- the generated AWS policy
 documents from [above](#trust). No call ever returns a Secret's value,
-only the reference naming it.
+only the reference naming it. JSON keeps namespace paths, Secret references
+and policy documents native. See [DESCRIBE formats](/sql/describe). CREATE
+retains its own result schema.
 
 ## SHOW STORAGE INTEGRATIONS {#show}
 
-<CodeGroup>
-```sql SQL icon="database"
-SHOW STORAGE INTEGRATIONS
-SHOW STORAGE INTEGRATIONS IN platform
-LIST STORAGE INTEGRATIONS
+```sql
+SHOW STORAGE INTEGRATIONS IN analytics.`team$ml` LIMIT 100;
+SHOW STORAGE INTEGRATIONS IN analytics.`team$ml` LIMIT 100 FROM '<page-token>';
 ```
-</CodeGroup>
 
-`LIST` is an alias for `SHOW` here. Returns one `name` column; `IN`
-narrows the listing to one namespace.
+Returns two non-null string columns: `namespace_path`, a compact JSON array
+of parent namespace components (`[]` for root), and `name`, the unqualified
+object name. Omitting `IN` lists all authorized namespaces in the current database;
+`IN team$ml` selects that exact path without a database qualifier; `IN public` selects
+the current database's root. Listings require the relevant database and
+namespace `USAGE` privileges.
+
+`LIST STORAGE INTEGRATIONS` is an exact alias, including pagination.
+
+Page through results using `LIMIT n [FROM '<page-token>']`. Read the opaque
+`lancedb.next_page_token` from the Arrow result schema metadata and pass it back
+unchanged with the same object type and scope. Stop when no token is returned;
+a short or empty page can still carry a continuation. See
+[catalog listing pagination](/sql/pagination).
 
 ## DROP STORAGE INTEGRATION {#drop}
 

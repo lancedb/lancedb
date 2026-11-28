@@ -16,24 +16,24 @@ repository = "https://github.com/lancedb/lancedb"
 description = "Serverless, low-latency vector database for AI applications"
 keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
-rust-version = "1.95.0"
+rust-version = "1.98.0"
 
 [workspace.dependencies]
-lance = { "version" = "=15.0.0-beta.9", default-features = false, "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=15.0.0-beta.9", default-features = false, "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-jsonb = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=15.0.0-beta.9", default-features = false, "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=15.0.0-beta.9", "tag" = "v15.0.0-beta.9", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=16.0.0-beta.5", default-features = false, "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=16.0.0-beta.5", default-features = false, "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-jsonb = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=16.0.0-beta.5", default-features = false, "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=16.0.0-beta.5", "tag" = "v16.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 anyhow = "1"
@@ -49,8 +49,7 @@ arrow-select = "59.2.0"
 arrow-cast = "59.2.0"
 arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
 async-trait = "0"
-# Smithy JSON 0.63 requires the pre-1.7 Document representation; allow the MSRV pin.
-aws-smithy-types = ">=1.3.6, <1.7"
+aws-smithy-types = "1.9.1"
 base64 = "0.22"
 bytes = "1"
 datafusion = { version = "55.0.0", default-features = false }

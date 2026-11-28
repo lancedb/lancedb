@@ -539,6 +539,7 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
             dtype,
             DataType::Boolean
                 | DataType::Utf8
+                | DataType::LargeUtf8
                 | DataType::Time32(_)
                 | DataType::Time64(_)
                 | DataType::Date32
@@ -678,6 +679,22 @@ impl TimeoutStream {
         timeout: std::time::Duration,
     ) -> SendableRecordBatchStream {
         Box::pin(Self::new(inner, timeout))
+    }
+
+    /// Like [`Self::new`], but the stream expires at `deadline` rather than
+    /// `timeout` after its first poll. `timeout` is only used in the error.
+    pub fn with_deadline(
+        inner: SendableRecordBatchStream,
+        timeout: std::time::Duration,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            inner,
+            state: TimeoutState::Started {
+                deadline: Box::pin(tokio::time::sleep_until(deadline)),
+                timeout,
+            },
+        }
     }
 
     fn timeout_error(timeout: &std::time::Duration) -> DataFusionError {

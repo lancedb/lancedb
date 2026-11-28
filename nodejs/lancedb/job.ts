@@ -1,8 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { writeFile } from "node:fs/promises";
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
-import { JobFailureInfo, Job as NativeJob } from "./native";
+import { decodeCleanupResult } from "./cleanup";
+import { decodeCompactionResult } from "./compaction";
+import type { JobFailureInfo, Job as NativeJob } from "./native";
+import { decodePrewarmDataResult } from "./prewarm";
+import {
+  type FunctionProfile,
+  type FunctionProfileOptions,
+  type FunctionProfileWaitOptions,
+  decodeFunctionProfile,
+  validateProfileOptions,
+} from "./profiling";
 
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
@@ -10,6 +21,8 @@ export interface JobEventsOptions {
   limit?: number;
   /** SQL-like filter over the event columns. */
   filter?: string;
+  /** Opaque continuation from the preceding page's schema metadata. */
+  pageToken?: string;
 }
 
 /**
@@ -39,6 +52,31 @@ export interface JobProgress {
   rows_remaining?: number | null;
   // biome-ignore lint/style/useNamingConvention: server wire format
   rows_failed?: number | null;
+  /** Maintenance work observations; rewritten rows are not committed rows. */
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  groups_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  rows_rewritten?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_targeted?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_partial?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_active?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  executors_failed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  fragments_selected?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_completed?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  ranges_planned?: number | null;
+  // biome-ignore lint/style/useNamingConvention: server wire format
+  bytes_read?: number | null;
   /** Execution identity and sample time used for client-side ETA derivation. */
   // biome-ignore lint/style/useNamingConvention: server wire format
   execution_epoch?: number | null;
@@ -53,6 +91,28 @@ export interface JobProgress {
 
 /** Callback for progress snapshots observed while waiting for a job. */
 export type JobProgressCallback = (progress: JobProgress) => void;
+
+/** Client-side controls for waiting without cancelling the underlying job. */
+export interface JobWaitOptions {
+  /**
+   * Maximum wait in milliseconds, including status requests and polling backoff.
+   * Must be a nonnegative safe integer. Omit to wait indefinitely; zero allows
+   * only an immediately ready result.
+   */
+  timeoutMs?: number;
+  /** Observe progress using the same poller that waits for completion. */
+  onProgress?: JobProgressCallback;
+}
+/** Detailed lifecycle state. Unrecognized future values remain strings. */
+export type JobState =
+  | "created"
+  | "queued"
+  | "in_progress"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "timed_out"
+  | (string & {});
 
 /**
  * A handle to an operation that may still be running.
@@ -71,11 +131,22 @@ export type JobProgressCallback = (progress: JobProgress) => void;
  *
  * @hideconstructor
  */
-export class Job {
+export class Job<T = void> {
   private readonly inner: NativeJob;
 
-  constructor(inner: NativeJob) {
+  private readonly resultDecoder?: (value: unknown) => T;
+
+  constructor(inner: NativeJob, resultDecoder?: (value: unknown) => T) {
     this.inner = inner;
+    this.resultDecoder =
+      resultDecoder ??
+      (inner.jobType === "prewarm_page_cache"
+        ? (decodePrewarmDataResult as (value: unknown) => T)
+        : inner.jobType === "compact"
+          ? (decodeCompactionResult as (value: unknown) => T)
+          : inner.jobType === "cleanup"
+            ? (decodeCleanupResult as (value: unknown) => T)
+            : undefined);
   }
 
   /**
@@ -88,6 +159,56 @@ export class Job {
    */
   get id(): string | null {
     return this.inner.id ?? null;
+  }
+
+  /**
+   * Identity of the selected attempt last observed by this handle.
+   * For operation handles, `refresh()` or `status()` can select a different
+   * attempt while `id` stays unchanged. Save this value after refreshing and
+   * use it throughout paged diagnostics. Local IDs cannot be reopened on a server.
+   */
+  get jobId(): string | null {
+    return this.inner.jobId ?? null;
+  }
+
+  /** Root of the explicit retry lineage, when reported. */
+  get operationId(): string | null {
+    return this.inner.operationId ?? null;
+  }
+
+  /** One-based attempt ordinal. Worker replacement does not increment it. */
+  get attempt(): number | null {
+    return this.inner.attempt ?? null;
+  }
+
+  /** Immediate predecessor attempt, when reported. */
+  get retryOf(): string | null {
+    return this.inner.retryOf ?? null;
+  }
+
+  /** Detailed state last observed; unknown values never establish success. */
+  get lifecycleState(): JobState | null {
+    return this.inner.lifecycleState ?? null;
+  }
+
+  /** Source snapshot pinned for this attempt, when reported. */
+  get sourceTableVersion(): number | null {
+    return this.inner.sourceTableVersion ?? null;
+  }
+
+  /** Most recent execution's fencing token, when reported. */
+  get executionEpoch(): number | null {
+    return this.inner.executionEpoch ?? null;
+  }
+
+  /** Refresh and return the detailed lifecycle state. */
+  async statusTyped(): Promise<JobState> {
+    const state = await this.status();
+    if (this.lifecycleState !== null) return this.lifecycleState;
+    if (state === "running") return "in_progress";
+    if (state === "finished") return "succeeded";
+    if (state === "cancelled") return "canceled";
+    return state;
   }
 
   /** The last observed lifecycle state, without contacting the backend. */
@@ -130,8 +251,8 @@ export class Job {
   }
 
   /**
-   * The operation's current lifecycle state: "running", "finished", "failed",
-   * or "cancelled".
+   * The current status, usually "running", "finished", "failed", or "cancelled".
+   * A Function refresh waiting for execution workers reports "waiting_for_capacity".
    *
    * A point snapshot; unlike {@link Job.wait} it does not block or reject on a
    * terminal failure state. Also refreshes the getters above.
@@ -161,23 +282,74 @@ export class Job {
    * synchronous observer: its return value is ignored and not awaited. If it
    * throws, the error is logged with `console.warn` and waiting continues; a
    * callback exception does not reject `wait`.
+   *
+   * Pass an options object to set a client-side timeout. Expiry rejects with an
+   * error and stops this wait, including pending status requests and backoff.
+   * The operation continues; use the same handle to wait again. Registry jobs
+   * can also be reopened with `Connection.openJob`; query IDs cannot.
+   *
+   * @example
+   * ```ts
+   * const result = await job.wait({ timeoutMs: 60_000, onProgress: console.log });
+   * ```
    */
-  async wait(progressCallback?: JobProgressCallback): Promise<void> {
-    if (progressCallback === undefined) {
-      return this.inner.wait();
+  async wait(
+    optionsOrProgress?: JobWaitOptions | JobProgressCallback,
+  ): Promise<T> {
+    const options: JobWaitOptions =
+      typeof optionsOrProgress === "function"
+        ? { onProgress: optionsOrProgress }
+        : (optionsOrProgress ?? {});
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError(
+        "wait expects an options object or a progress callback",
+      );
     }
-    return this.inner.wait((progress) => {
-      try {
-        progressCallback(this.enrichProgress(progress));
-      } catch (error) {
-        console.warn("Job progress callback threw:", error);
+    for (const key of Object.keys(options)) {
+      if (key !== "timeoutMs" && key !== "onProgress") {
+        throw new TypeError(`Unknown job wait option: ${key}`);
       }
-    });
+    }
+    const { timeoutMs, onProgress: progressCallback } = options;
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0)
+    ) {
+      throw new RangeError("timeoutMs must be a nonnegative safe integer");
+    }
+    if (
+      progressCallback !== undefined &&
+      typeof progressCallback !== "function"
+    ) {
+      throw new TypeError("onProgress must be a function");
+    }
+    const callback =
+      progressCallback === undefined
+        ? undefined
+        : (progress: Record<string, unknown>) => {
+            try {
+              progressCallback(this.enrichProgress(progress));
+            } catch (error) {
+              console.warn("Job progress callback threw:", error);
+            }
+          };
+    if (this.resultDecoder !== undefined) {
+      return this.resultDecoder(
+        await this.inner.waitResult(callback, timeoutMs),
+      );
+    }
+    await this.inner.wait(callback, timeoutMs);
+    return undefined as T;
   }
 
   /** Request cancellation. Cancelling a finished operation is a no-op. */
   async cancel(): Promise<void> {
     return this.inner.cancel();
+  }
+
+  /** Select this exact attempt's pinned successor. Requires backend support. */
+  async retry(): Promise<Job<T>> {
+    return new Job<T>(await this.inner.retry(), this.resultDecoder);
   }
 
   /**
@@ -203,11 +375,120 @@ export class Job {
    * `updated_by`, `emitted_from`, `emitted_by`, and `claim_entity` columns.
    */
   async events(options?: JobEventsOptions): Promise<ArrowTable> {
-    const buf = await this.inner.events(options?.limit, options?.filter);
+    const buf = await this.inner.events(
+      options?.limit,
+      options?.filter,
+      options?.pageToken,
+    );
     if (buf.length === 0) {
       return new ArrowTable();
     }
     return tableFromIPC(buf);
+  }
+
+  /** Walk retained history one page at a time using the server's continuation. */
+  async *history(options?: JobEventsOptions): AsyncGenerator<ArrowTable> {
+    let pageToken = options?.pageToken;
+    for (;;) {
+      const page = await this.events({ ...options, pageToken });
+      yield page;
+      const next = page.schema.metadata.get(
+        "lancedb.job_coordinator.page_token",
+      );
+      if (next === undefined) return;
+      if (next === pageToken)
+        throw new Error("Job history repeated its page token");
+      pageToken = next;
+    }
+  }
+
+  /**
+   * Request a profile of a running Enterprise Function worker session.
+   * Returns the accepted identity without waiting for recording to finish.
+   * Requires System Operate permission and server profiling support. The server
+   * pins the worker, Python session and execution epoch. One capture per job
+   * can be active. Captures add workload-dependent overhead.
+   *
+   * GPU tracing requires initialized PyTorch CUDA/CUPTI. CPU sampling requires
+   * readable per-thread procfs and is unavailable in dedicated sandboxes.
+   *
+   * @example
+   * ```ts
+   * const profile = await job.captureProfile("worker-id", {
+   *   kind: "gpu", durationSeconds: 2,
+   * });
+   * await job.waitForProfile(profile.profileId, { timeoutMs: 60_000 });
+   * await job.exportProfile(profile.profileId, "gpu.trace.json");
+   * ```
+   */
+  async captureProfile(
+    workerId: string,
+    options: FunctionProfileOptions = {},
+  ): Promise<FunctionProfile> {
+    validateProfileOptions(options, ["kind", "durationSeconds", "sessionSlot"]);
+    const kind = options.kind ?? "cpu";
+    if (!["cpu", "gpu", "memory"].includes(kind)) {
+      throw new TypeError("kind must be cpu, memory or gpu");
+    }
+    return decodeFunctionProfile(
+      await this.inner.captureProfile(
+        workerId,
+        kind,
+        options.durationSeconds,
+        options.sessionSlot,
+      ),
+    );
+  }
+
+  /**
+   * Fetch capture identity and status, including retained lookup after refresh.
+   * Failed captures return status "failed" with the server's error reason.
+   * This never changes the parent job's cached state.
+   */
+  async profileStatus(profileId: string): Promise<FunctionProfile> {
+    return decodeFunctionProfile(await this.inner.profileStatus(profileId));
+  }
+
+  /**
+   * Wait for a capture with a configurable timeout and polling cadence.
+   * Defaults to 60 seconds with two seconds between requests. A timeout stops
+   * only this wait; the capture and Function refresh continue. A failed capture
+   * rejects with its server-reported reason. Keep its ID to wait again.
+   */
+  async waitForProfile(
+    profileId: string,
+    options: FunctionProfileWaitOptions = {},
+  ): Promise<FunctionProfile> {
+    validateProfileOptions(options, ["timeoutMs", "pollIntervalMs"]);
+    return decodeFunctionProfile(
+      await this.inner.waitForProfile(
+        profileId,
+        options.timeoutMs,
+        options.pollIntervalMs,
+      ),
+    );
+  }
+
+  /**
+   * Retrieve a completed capture's actual JSON: speedscope for CPU,
+   * tracemalloc for Python allocations, or Chrome Trace Event JSON for GPU.
+   * Truncation flags are preserved. Retention is at most one hour and eight
+   * captures per job, until earlier scratch reclamation or archival.
+   * Permission, expired-artifact and unsupported-server errors propagate.
+   */
+  async profileArtifact(profileId: string): Promise<Record<string, unknown>> {
+    return JSON.parse(await this.inner.profileArtifact(profileId));
+  }
+
+  /**
+   * Write a completed capture's JSON after successful retrieval. Open CPU
+   * exports in speedscope and GPU exports in Perfetto. GPU activity durations
+   * can overlap and are not utilization; Python operator attribution and GPU
+   * allocation stacks are excluded. Filesystem errors propagate to the caller.
+   */
+  async exportProfile(profileId: string, path: string): Promise<void> {
+    const artifact = await this.inner.profileArtifact(profileId);
+    await writeFile(path, artifact, "utf8");
   }
 
   private lastProgress: JobProgress | null = null;

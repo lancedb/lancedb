@@ -16,6 +16,8 @@ statistics without reading every row. For a random subset through the
 Python SDK instead -- in Embedded or Enterprise -- see
 [Permutation](/training/permutation). To select specific, known rows
 rather than a random fraction, see [Selective Sampling](/curation/selective-sampling).
+To draw rows from every cluster of an existing vector index, use
+[Semantic Sampling](/curation/semantic-sampling).
 
 ## Example data {#example-data}
 
@@ -157,9 +159,9 @@ before running it over the whole table. Register `caption_quality` first:
 
 <CodeGroup>
 ```python Python icon="python"
-from lancedb import udf
+from lancedb import function
 
-@udf
+@function
 def caption_quality(caption: str) -> float:
     ...  # score the caption, e.g. with a lightweight heuristic or model
 

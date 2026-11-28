@@ -17,6 +17,7 @@ import {
   tableFromIPC,
   vectorFromArray,
 } from "./arrow";
+import { isBlobDescriptorField, isBlobField } from "./blob";
 import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
@@ -148,6 +149,34 @@ async function readBlobBytes(
   );
 }
 
+// Discover descriptors from the executed query, not the live table's cached
+// schema. Projection names are literal aliases; only source paths use dots.
+function projectedBlobSources(
+  schema: Schema,
+  projection: [string, string][] | undefined,
+): BlobSource[] {
+  const sources: BlobSource[] = [];
+  for (const field of schema.fields) {
+    const source =
+      projection?.find(([output]) => output === field.name)?.[1] ?? field.name;
+    const visit = (child: Field, path: string[]) => {
+      if (isBlobField(child) || isBlobDescriptorField(child)) {
+        sources.push({
+          output: field.name,
+          path,
+          source: [source, ...path].join("."),
+        });
+      } else if (DataType.isStruct(child.type)) {
+        for (const nested of child.type.children) {
+          visit(nested, [...path, nested.name]);
+        }
+      }
+    };
+    visit(field, []);
+  }
+  return sources;
+}
+
 function withBinaryColumns(
   table: ArrowTable,
   replacements: Map<Field, (Buffer | null)[]>,
@@ -237,6 +266,9 @@ export interface QueryExecutionOptions {
 
   /**
    * Timeout for query execution in milliseconds
+   *
+   * The timeout also covers reading the results, so consuming them slowly can
+   * exceed it.
    */
   timeoutMs?: number;
 
@@ -251,11 +283,14 @@ export interface QueryExecutionOptions {
    *   called. All the bytes are held in memory.
    *
    * Selecting a parent struct or directly aliasing a blob or struct also returns
-   * bytes. Blobs inside lists keep their descriptors. Arbitrary projection
-   * expressions are not materialized as bytes.
+   * bytes, including through an `Expr` that only references a column, such as
+   * `col("image")`. Blobs inside lists keep their descriptors. Arbitrary
+   * projection expressions are not materialized as bytes.
    *
-   * The rows and the bytes come from the same table version. If the table
-   * changes while the query runs, the query runs again, up to three times.
+   * The rows and bytes come from the same snapshot. Remote queries require
+   * authoritative query version and snapshot identity headers, verified again
+   * by the blob response. Older servers can still return `"descriptions"`.
+   * Local queries retry up to three times if the table changes while they run.
    *
    * @example
    * ```ts
@@ -382,34 +417,62 @@ export class QueryBase<
    * For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
    * seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
    *
-   * To create dynamic columns you can pass in a Map<string, string>.  A column will be returned
-   * for each entry in the map.  The key provides the name of the column.  The value is
-   * an SQL string used to specify how the column is calculated.
+   * To create dynamic columns you can pass in a Map<string, string | Expr>.  A column will be
+   * returned for each entry in the map.  The key provides the name of the column.  The value is
+   * an SQL string or an `Expr` that specifies how the column is calculated.  An `Expr` built
+   * with `col` keeps the exact, case-sensitive column name.
    *
    * For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
-   * input to this method would be:
-   * @example
-   * new Map([["combined", "a + b"], ["c", "c"]])
+   * input to this method would be `new Map([["combined", "a + b"], ["c", "c"]])`.
    *
    * Columns will always be returned in the order given, even if that order is different than
    * the order used when adding the data.
    *
-   * Note that you can pass in a `Record<string, string>` (e.g. an object literal). This method
-   * uses `Object.entries` which should preserve the insertion order of the object.  However,
-   * object insertion order is easy to get wrong and `Map` is more foolproof.
+   * Note that you can pass in a `Record<string, string | Expr>` (e.g. an object literal). This
+   * method uses `Object.entries` which should preserve the insertion order of the object.
+   * However, object insertion order is easy to get wrong and `Map` is more foolproof.
+   *
+   * @example
+   * ```ts
+   * table.query().select(new Map([["combined", "a + b"], ["c", "c"]]));
+   * table.query().select({ id: "id", doubled: col("unitPrice").mul(2) });
+   * ```
    */
   select(
-    columns: string[] | Map<string, string> | Record<string, string> | string,
+    columns:
+      | string[]
+      | Map<string, string | Expr>
+      | Record<string, string | Expr>
+      | string,
   ): this {
     const selectColumns = (columnArray: string[]) => {
       this.doCall((inner: NativeQueryType) => {
         inner.selectColumns(columnArray);
       });
     };
-    const selectMapping = (columnTuples: [string, string][]) => {
+    const selectMapping = (entries: [string, string | Expr][]) => {
+      const columnTuples: [string, string][] = [];
+      const sources: [string, string][] = [];
+      for (const [name, value] of entries) {
+        if (value instanceof Expr) {
+          const sql = value.toSql();
+          columnTuples.push([name, sql]);
+          // toSql() quotes camelCase names and SQL keywords, so blobMode
+          // matches a bare column reference by its plain name instead.
+          sources.push([name, value.inner.columnName() ?? sql]);
+        } else if (typeof value === "string") {
+          columnTuples.push([name, value]);
+          sources.push([name, value]);
+        } else {
+          throw new TypeError(
+            `select() values must be SQL strings or Expr objects, got ${typeof value} for "${name}"`,
+          );
+        }
+      }
       this.doCall((inner: NativeQueryType) => {
         inner.select(columnTuples);
       });
+      return sources;
     };
 
     let projection: [string, string][];
@@ -420,11 +483,9 @@ export class QueryBase<
       selectColumns(columns);
       projection = columns.map((column) => [column, column]);
     } else if (columns instanceof Map) {
-      projection = Array.from(columns.entries());
-      selectMapping(projection);
+      projection = selectMapping(Array.from(columns.entries()));
     } else {
-      projection = Object.entries(columns);
-      selectMapping(projection);
+      projection = selectMapping(Object.entries(columns));
     }
     if (this.blobContext !== undefined) {
       this.blobContext = { ...this.blobContext, projection };
@@ -496,6 +557,34 @@ export class QueryBase<
     if (context === undefined) {
       return this.collect(options, false);
     }
+    if (!context.table.isNative()) {
+      // Request row IDs in the same query so newly added Blob columns can be
+      // fetched without rerunning the query against a different snapshot.
+      const addRowId = !context.withRowId;
+      const table = await this.collect(options, addRowId);
+      const sources = projectedBlobSources(table.schema, context.projection);
+      if (sources.length === 0) {
+        return addRowId
+          ? table.select(
+              table.schema.fields
+                .map((field) => field.name)
+                .filter((name) => name !== "_rowid"),
+            )
+          : table;
+      }
+      const version = table.schema.metadata.get("lancedb:query_version");
+      const identity = table.schema.metadata.get("lancedb:query_snapshot");
+      if (version === undefined || identity === undefined) {
+        throw new Error(
+          'blobMode "bytes" requires a trustworthy query snapshot: missing, invalid, or inconsistent x-lancedb-query-version or x-lancedb-query-snapshot. Upgrade every serving node, or use blobMode "descriptions".',
+        );
+      }
+      const snapshot = await context.table.querySnapshotWithIdentity(
+        version,
+        identity,
+      );
+      return readBlobBytes(table, sources, snapshot, addRowId);
+    }
     for (let attempt = 1; ; attempt++) {
       // The snapshot pins the bytes. The query runs on the live table, so an
       // unchanged version afterwards proves it read the snapshot's version.
@@ -530,10 +619,10 @@ export class QueryBase<
     for await (const batch of RecordBatchIterator(iterator)) {
       batches.push(batch);
     }
-    if (batches.length === 0) {
-      return tableFromIPC((await iterator).schema());
-    }
-    return new ArrowTable(batches);
+    // Read metadata from the executed stream, including empty results and
+    // query types whose individual batches do not carry the stream metadata.
+    const schema = tableFromIPC((await iterator).schema()).schema;
+    return new ArrowTable(schema, batches);
   }
 
   private blobBytesContext(
@@ -853,6 +942,11 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
 
   /**
    * Set the initial IVF search effort to a finite value in [0, 1].
+   *
+   * Efforts 0.1 and 0.25 target empirical mean partition-routing recall of
+   * 80% and 90% for L2, cosine and dot through k=100000. The probe budget
+   * adapts to the metric and k. Hamming and larger k remain uncalibrated;
+   * 100000 is not an API limit. Remote queries also require server support.
    *
    * The default, null, uses Auto (internally 0.5). Zero starts at the caller
    * minimum; one searches all partitions within the caller maximum. Later

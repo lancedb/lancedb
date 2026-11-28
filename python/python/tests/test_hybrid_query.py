@@ -81,6 +81,31 @@ async def test_async_hybrid_query_with_row_ids(table: AsyncTable):
     assert result["_rowid"].to_pylist() == [0, 3]
 
 
+def test_hybrid_fragment_constraints_fail_loud(sync_table: Table):
+    query = (
+        sync_table.search("dog", query_type="hybrid")
+        .vector([0.5, -0.5])
+        .fragment_ids([0])
+    )
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        query.to_arrow()
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        query.explain_plan()
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_fragment_constraints_fail_loud(table: AsyncTable):
+    query = (
+        table.query().nearest_to([0.5, -0.5]).nearest_to_text("dog").fragment_ids([0])
+    )
+
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await query.to_arrow()
+    with pytest.raises(NotImplementedError, match="fragment selection"):
+        await query.analyze_plan()
+
+
 @pytest.mark.asyncio
 async def test_async_hybrid_query_filters(table: AsyncTable):
     # test that query params are passed down from the regular builder to
@@ -577,6 +602,37 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+@pytest.mark.parametrize("normalize", ["score", "rank"])
+def test_hybrid_single_fts_match_keeps_fts_weight(tmp_path, normalize):
+    from lancedb.rerankers import LinearCombinationReranker
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        [
+            {"text": "apple banana", "vector": [0.0, 0.0]},
+            {"text": "zebra unicorn", "vector": [0.1, 0.0]},
+            {"text": "cherry grape", "vector": [5.0, 5.0]},
+        ],
+    )
+    table.create_fts_index("text")
+
+    results = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("zebra")
+        .rerank(LinearCombinationReranker(weight=0.3), normalize=normalize)
+        .limit(3)
+        .to_arrow()
+    )
+
+    assert results["text"].to_pylist() == [
+        "zebra unicorn",
+        "apple banana",
+        "cherry grape",
+    ]
 
 
 def test_hybrid_query_rejects_query_with_vector(sync_table: Table):

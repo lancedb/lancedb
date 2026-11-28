@@ -196,9 +196,19 @@ it can be queried, indexed and searched, and it appears in `tableNames`.
 
 * **options?**
 
+* **options.gpuClass?**: `string`
+
+* **options.gpuCount?**: `number`
+
 * **options.limit?**: `number`
 
 * **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
+
+* **options.totalCpuMillis?**: `number`
+
+* **options.totalGpuCount?**: `number`
+
+* **options.totalMemoryBytes?**: `number`
 
 * **options.where?**: `string`
 
@@ -456,7 +466,7 @@ Rejects a table that exists but is not a materialized view.
 ### dropMaterializedViewAsync()
 
 ```ts
-abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
+abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job<void>>
 ```
 
 Start dropping the materialized view named `name` and return its job.
@@ -473,7 +483,7 @@ Rejects a table that exists but is not a materialized view.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -532,7 +542,7 @@ Drop an existing table.
 ### dropTableAsync()
 
 ```ts
-abstract dropTableAsync(name, namespacePath?): Promise<Job>
+abstract dropTableAsync(name, namespacePath?): Promise<Job<void>>
 ```
 
 Start dropping a table and return its cleanup job.
@@ -548,7 +558,7 @@ on the returned job to know when cleanup has finished.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -579,7 +589,7 @@ catalog removal; physical cleanup continues in the background.
 ### dropViewAsync()
 
 ```ts
-abstract dropViewAsync(name, namespacePath?): Promise<Job>
+abstract dropViewAsync(name, namespacePath?): Promise<Job<void>>
 ```
 
 Drop a view and return its SQL query job.
@@ -594,7 +604,7 @@ catalog removal; physical cleanup continues in the background.
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`void`&gt;&gt;
 
 ***
 
@@ -729,7 +739,7 @@ state and error behavior; options control page size and the starting token.
 ### openJob()
 
 ```ts
-abstract openJob(jobId): Promise<Job>
+abstract openJob<T>(jobId): Promise<Job<T>>
 ```
 
 Open a server-side job by id, returning a handle with its record already
@@ -740,13 +750,17 @@ The returned [Job](Job.md) answers for its own state, specification,
 result, failure and event history, so there is no separate
 connection-level call for any of them.
 
+#### Type Parameters
+
+• **T** = `void`
+
 #### Parameters
 
 * **jobId**: `string`
 
 #### Returns
 
-`Promise`&lt;[`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&lt;`T`&gt;&gt;
 
 ***
 

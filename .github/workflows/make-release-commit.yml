@@ -39,7 +39,9 @@ jobs:
       contents: write
     steps:
       - name: Output Inputs
-        run: echo "${{ toJSON(github.event.inputs) }}"
+        env:
+          INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
+        run: echo "$INPUTS_JSON"
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -59,10 +61,17 @@ jobs:
       - name: Bump version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TYPE: ${{ inputs.type }}
+          BUMP_MINOR: ${{ inputs.bump-minor }}
         run: |
           pip install bump-my-version PyGithub packaging
-          bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }}
+          bash ci/bump_version.sh "$RELEASE_TYPE" "$BUMP_MINOR"
+          release_tag=$(git describe --tags --exact-match HEAD)
           bash ci/update_lockfiles.sh --amend
+          # Keep the unpublished tag on the commit that includes the synced lockfile.
+          if [ "$(git rev-parse "${release_tag}^{}")" != "$(git rev-parse HEAD)" ]; then
+            git tag --force --annotate "$release_tag" --message "$(git log -1 --format=%s)" HEAD
+          fi
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@881a6320fdb16eb5318c5054f31c218aec2b324c # v1.3.0

@@ -28,6 +28,10 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/ingestion/migrate-from-embedded",
+      "destination": "/ingestion/attach-database"
+    },
+    {
       "source": "/enterprise/expected-performance",
       "destination": "/search/vector-search#expected-performance"
     },
@@ -38,10 +42,6 @@
     {
       "source": "/deployment/monitoring",
       "destination": "/deployment/opentelemetry"
-    },
-    {
-      "source": "/enterprise",
-      "destination": "/#architecture"
     },
     {
       "source": "/enterprise/intelligent-scheduling",
@@ -85,11 +85,11 @@
     },
     {
       "source": "/basics/offerings",
-      "destination": "/#architecture"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/enterprise/deployment",
-      "destination": "/#architecture"
+      "destination": "/basics/embedded-vs-enterprise"
     },
     {
       "source": "/feature-engineering/data-evolution",
@@ -121,11 +121,11 @@
     },
     {
       "source": "/curation/sunk-integration",
-      "destination": "/curation/slurm-scheduling"
+      "destination": "/deployment/slurm"
     },
     {
       "source": "/curation/slurm-integration",
-      "destination": "/curation/slurm-scheduling"
+      "destination": "/deployment/slurm"
     },
     {
       "source": "/curation/sampling",
@@ -362,6 +362,14 @@
     {
       "source": "/enterprise/distributed-column-refresh",
       "destination": "/enterprise/adaptive-execution"
+    },
+    {
+      "source": "/curation/slurm-scheduling",
+      "destination": "/deployment/slurm"
+    },
+    {
+      "source": "/enterprise/slurm-refresh-scheduling",
+      "destination": "/deployment/slurm"
     }
   ],
   "navigation": {
@@ -370,9 +378,16 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting Started",
+            "group": "Introduction",
             "pages": [
               "index",
+              "basics/lancedb-embedded",
+              "basics/embedded-vs-enterprise"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
               "quickstart",
               "basics/sdk",
               "basics/sql",
@@ -400,19 +415,18 @@
               "ingestion/index",
               "ingestion/create-table",
               "ingestion/insert",
-              "ingestion/merge-insert",
               "ingestion/update",
               "ingestion/delete",
+              "ingestion/realtime-write",
               "ingestion/define-storage-integration",
-              "ingestion/migrate-from-embedded",
+              "ingestion/attach-database",
               "ingestion/import",
               "enterprise/distributed-write",
-              "ingestion/realtime-write",
               "enterprise/distributed-real-time-write"
             ]
           },
           {
-            "group": "Semantic Search",
+            "group": "Search",
             "pages": [
               "search/index",
               "search/vector-search",
@@ -435,8 +449,8 @@
               "curation/inspect-datasets",
               "curation/create-function",
               "curation/chunking",
-              "curation/changes",
               "curation/statistical-sampling",
+              "curation/semantic-sampling",
               "curation/selective-sampling",
               "curation/aggregate",
               "curation/join",
@@ -445,10 +459,9 @@
               "curation/windowing",
               "curation/clustering",
               "curation/dedupe",
+              "curation/changes",
               "feature-engineering/view",
-              "curation/vend-secret",
-              "curation/gpu-function-execution",
-              "curation/slurm-scheduling"
+              "curation/vend-secret"
             ]
           },
           {
@@ -462,9 +475,7 @@
               "enterprise/incremental-refresh",
               "enterprise/auto-refresh",
               "enterprise/checkpointing",
-              "enterprise/adaptive-execution",
-              "enterprise/gpu-refresh-execution",
-              "enterprise/slurm-refresh-scheduling"
+              "enterprise/adaptive-execution"
             ]
           },
           {
@@ -487,11 +498,11 @@
               "management/database",
               "management/namespace",
               "management/table",
-              "tables/branching",
               "management/view",
               "management/materialized-view",
               "management/secret",
               "management/function",
+              "management/function-failures",
               "management/storage-integration"
             ]
           },
@@ -529,13 +540,17 @@
             "pages": [
               "enterprise/horizontal-scaling",
               "deployment/opentelemetry",
-              "enterprise/deployment/kubernetes"
+              "enterprise/deployment/kubernetes",
+              "deployment/multicloud",
+              "deployment/slurm"
             ]
           },
           {
             "group": "SQL Reference",
             "pages": [
               "sql/index",
+              "sql/describe",
+              "sql/pagination",
               "sql/data-types",
               {
                 "group": "DDL",
@@ -585,7 +600,6 @@
                   "sql/dql/dedupe",
                   "sql/dql/duplicate-pairs",
                   "sql/dql/vector-distance",
-                  "sql/dql/json-functions",
                   "sql/dql/blob-descriptor",
                   "sql/dql/generate-series",
                   "sql/dql/explain"
@@ -663,6 +677,7 @@
               "integrations/ai/llamaIndex",
               "integrations/ai/genkit",
               "integrations/ai/kiln",
+              "integrations/ai/mastra",
               "integrations/ai/prompttools",
               "integrations/ai/synthetic-data-kit",
               "integrations/ai/vscode"
@@ -703,8 +718,7 @@
             "group": "Feature Engineering",
             "pages": [
               "tutorials/feature-engineering/feature-engineering-101",
-              "tutorials/feature-engineering/materialized-views",
-              "agent-branch-experiments"
+              "tutorials/feature-engineering/materialized-views"
             ]
           },
           {

@@ -39,9 +39,11 @@ jobs:
           distribution: temurin
           java-version: 8
           cache: "maven"
-          server-id: ossrh
-          server-username: SONATYPE_USER
-          server-password: SONATYPE_TOKEN
+          # Betas go to Fury and stable releases to Maven Central, which limits
+          # how many releases an organization may publish each month.
+          server-id: ${{ contains(github.ref, 'beta') && 'fury' || 'ossrh' }}
+          server-username: ${{ contains(github.ref, 'beta') && 'FURY_TOKEN' || 'SONATYPE_USER' }}
+          server-password: ${{ contains(github.ref, 'beta') && 'FURY_PASSWORD' || 'SONATYPE_TOKEN' }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
       - name: Set git config
@@ -52,8 +54,16 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           ./mvnw --batch-mode -DskipTests package -pl lancedb-core -am
-      - name: Publish
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish to Fury
+        if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, 'beta')
+        run: |
+          ./mvnw --batch-mode -DskipTests deploy -pl lancedb-core -am -P deploy-to-fury
+        env:
+          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
+          # Fury authenticates with the token as the username; the password is ignored.
+          FURY_PASSWORD: NOPASS
+      - name: Publish to Maven Central
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, 'beta')
         run: |
           echo "use-agent" >> ~/.gnupg/gpg.conf
           echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf

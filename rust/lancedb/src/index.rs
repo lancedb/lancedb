@@ -16,7 +16,8 @@ use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 use self::{
     scalar::{
         BTreeIndexBuilder, BitmapIndexBuilder, BloomFilterIndexBuilder, FmIndexBuilder,
-        LabelListIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
+        LabelListIndexBuilder, NGramIndexBuilder, PluginIndexBuilder, RTreeIndexBuilder,
+        ZoneMapIndexBuilder,
     },
     vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
@@ -73,6 +74,24 @@ pub enum Index {
     /// An R-tree index accelerates spatial intersection filters on GeoArrow geometries.
     /// Native creation requires the `geo` feature.
     RTree(RTreeIndexBuilder),
+
+    /// Configure a scalar index of a type recognized by a registered database plugin.
+    ///
+    /// Select the type by name and provide optional JSON parameters with
+    /// [`PluginIndexBuilder`]. Prefer a dedicated variant when one is available.
+    ///
+    /// ```
+    /// use lancedb::index::{Index, scalar::PluginIndexBuilder};
+    ///
+    /// # async fn create_zonemap(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// table
+    ///     .create_index(&["timestamp"], Index::Plugin(PluginIndexBuilder::new("zonemap")?))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    Plugin(PluginIndexBuilder),
 
     /// Full text search index using BM25.
     ///
@@ -220,6 +239,7 @@ pub struct IndexBuilder {
     pub(crate) index: Index,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
+    pub(crate) exist_ok: bool,
     pub(crate) wait_timeout: Option<Duration>,
     pub(crate) train: bool,
     pub(crate) name: Option<String>,
@@ -232,6 +252,7 @@ impl IndexBuilder {
             index,
             columns,
             replace: true,
+            exist_ok: false,
             train: true,
             wait_timeout: None,
             name: None,
@@ -321,6 +342,21 @@ impl IndexBuilder {
     /// ```
     pub fn train(mut self, v: bool) -> Self {
         self.train = v;
+        self
+    }
+
+    /// Preserve an existing index with the requested name. Defaults to false.
+    /// This takes precedence over `replace`; a skipped creation does not rebuild.
+    ///
+    /// ```no_run
+    /// # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// table.create_index(&["id"], lancedb::index::Index::Auto)
+    ///     .exist_ok(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exist_ok(mut self, exist_ok: bool) -> Self {
+        self.exist_ok = exist_ok;
         self
     }
 

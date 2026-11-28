@@ -2,21 +2,21 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
-  Connection,
+  type Connection,
   LocalConnection,
   cleanseStorageOptions,
 } from "./connection";
 
 import {
-  ConnectNamespaceOptions,
-  ConnectionOptions,
+  type ConnectNamespaceOptions,
+  type ConnectionOptions,
   Connection as LanceDbConnection,
   JsHeaderProvider as NativeJsHeaderProvider,
-  Session,
+  type Session,
   tokenize as nativeTokenize,
 } from "./native.js";
 
-import { HeaderProvider } from "./header";
+import type { HeaderProvider } from "./header";
 import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
@@ -56,11 +56,20 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnOptions,
+  FunctionRefreshPlanningConfig,
+  FunctionRefreshPodResources,
+  FunctionRetryPolicy,
   RefreshColumnResult,
   FunctionErrors,
   FunctionErrorsOptions,
+  FunctionErrorGroup,
   FunctionErrorRecord,
   FunctionErrorFragment,
+  FunctionProvenance,
+  FunctionProvenanceOptions,
+  FunctionQuarantineOptions,
+  FunctionValueProvenance,
   RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
@@ -84,11 +93,13 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
+export type { BlobDescriptor, BlobDescriptorSource } from "./blob";
 export type {
   BlobData,
   BlobInput,
   BlobOptions,
   BlobRange,
+  BlobRangeRequest,
   BlobReadOptions,
   BlobUri,
 } from "./blob";
@@ -106,13 +117,34 @@ export {
   RenameTableOptions,
 } from "./connection";
 
+export type {
+  FunctionErrorRowsOptions,
+  FunctionFailedRow,
+  FunctionRecompute,
+  RefreshColumnJobResult,
+  RetryFailedOptions,
+  UpgradeColumnOptions,
+} from "./function_recovery";
+
 export { JobFailureInfo, JobInfo, Session } from "./native.js";
 
 export {
   Job,
   JobEventsOptions,
 } from "./job";
-export type { JobProgress, JobProgressCallback } from "./job";
+export type {
+  JobProgress,
+  JobProgressCallback,
+  JobState,
+  JobWaitOptions,
+} from "./job";
+export type {
+  FunctionProfile,
+  FunctionProfileKind,
+  FunctionProfileOptions,
+  FunctionProfileStatus,
+  FunctionProfileWaitOptions,
+} from "./profiling";
 
 export {
   AutoQuery,
@@ -147,12 +179,22 @@ export {
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
+  RTreeOptions,
   BaseTokenizer,
 } from "./indices";
 
 export {
   Table,
+  TableDelta,
+  TableDeltaReader,
+  TableDeltaTransaction,
+  DeltaVersion,
+  FunctionColumnAutoRefreshStatus,
+  FunctionColumnLastRefreshJob,
+  FunctionColumnStatus,
+  FunctionColumnVersionStatus,
   Branches,
+  CreateBranchOptions,
   BranchColumnSummary,
   BranchColumnChange,
   BranchIndexSummary,
@@ -164,6 +206,8 @@ export {
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
+  CompactionOptions,
+  PrewarmDataOptions,
   Version,
   WriteProgress,
   FtsToken,
@@ -653,3 +697,14 @@ export {
 } from "./catalog";
 
 export { Listing, ListingOptions } from "./listing";
+
+export type { CompactionResult } from "./compaction";
+export type { CleanupOptions, CleanupPlan, CleanupResult } from "./cleanup";
+
+export type {
+  PrewarmDataPlan,
+  PrewarmDataResult,
+  PrewarmPruningSummary,
+} from "./prewarm";
+
+export type { QueryParameters, QueryParameterValue } from "./sql";

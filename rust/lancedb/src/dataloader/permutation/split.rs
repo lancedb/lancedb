@@ -406,8 +406,8 @@ impl Splitter {
             .collect::<Vec<_>>();
         let row_ids = arrow::compute::concat(&row_id_arrays)?;
         // Sample against however many rows this scan actually returned, not the
-        // separately computed `num_rows` count checked by `validate` -- that count and
-        // this scan are two different queries, not pinned to one snapshot, so a
+        // separately computed `num_rows` count checked by `validate`. `apply` does
+        // not require its caller to pass a count and scan from one snapshot, so a
         // concurrent append or delete between them could otherwise push
         // `random_range` out of `row_ids`'s real bounds.
         let num_eligible_rows = row_ids.len() as u64;

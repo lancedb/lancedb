@@ -78,7 +78,17 @@ source-version pinning. Their results leave `mode`, `rowsWritten`, and
 
 * **options.full?**: `boolean`
 
+* **options.gpuClass?**: `string`
+
+* **options.gpuCount?**: `number`
+
 * **options.sourceVersion?**: `number`
+
+* **options.totalCpuMillis?**: `number`
+
+* **options.totalGpuCount?**: `number`
+
+* **options.totalMemoryBytes?**: `number`
 
 #### Returns
 

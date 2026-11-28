@@ -1,0 +1,208 @@
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / RefreshColumnOptions
+
+# Interface: RefreshColumnOptions
+
+Options for `Table.refreshColumn` and `Table.refreshColumnAsync`. Every
+option is LanceDB Enterprise only; a LanceDB Embedded refresh ignores
+`batchSize`, `gpuClass` and `totalGpuCount` and rejects the rest.
+
+## Properties
+
+### batchSize?
+
+```ts
+optional batchSize: number;
+```
+
+Maximum rows per Function call; must be greater than zero.
+
+***
+
+### errorPolicy?
+
+```ts
+optional errorPolicy: string;
+```
+
+`"fail"` stops on a row error; `"skip"` records it and continues,
+subject to the failure limits. The default is server-dependent.
+
+***
+
+### gpuClass?
+
+```ts
+optional gpuClass: string;
+```
+
+GPU class for Function workers.
+
+***
+
+### gpuCount?
+
+```ts
+optional gpuCount: number;
+```
+
+Positive GPU count allocated to each Function worker.
+
+***
+
+### initTimeoutSeconds?
+
+```ts
+optional initTimeoutSeconds: number;
+```
+
+Deadline for Function initialization, in seconds.
+
+***
+
+### maxConcurrency?
+
+```ts
+optional maxConcurrency: number;
+```
+
+Override the registered Function's maximum concurrent user-code calls
+for this logical execution.
+
+***
+
+### maxExecutorProcessesPerWorker?
+
+```ts
+optional maxExecutorProcessesPerWorker: number;
+```
+
+Cap on executor processes per Function worker.
+
+***
+
+### maxFailedFraction?
+
+```ts
+optional maxFailedFraction: number;
+```
+
+Under a skip policy, fail the job once more than this share of rows
+(0 to 1) has failed.
+
+***
+
+### maxFailedRows?
+
+```ts
+optional maxFailedRows: number;
+```
+
+Under a skip policy, fail the job once more than this many rows have
+failed.
+
+***
+
+### numWorkers?
+
+```ts
+optional numWorkers: number;
+```
+
+Worker count for an expression column; Function columns reject it.
+
+***
+
+### planningWorkers?
+
+```ts
+optional planningWorkers: FunctionRefreshPlanningConfig;
+```
+
+Resources and sizing for the refresh planning fleet.
+
+***
+
+### publicationIntervalRows?
+
+```ts
+optional publicationIntervalRows: number;
+```
+
+Row-count threshold for publishing completed Function split ranges.
+Must be a positive safe integer. Omit for whole-fragment publication.
+Actual publications can be larger; remaining rows publish at completion.
+Requires LanceDB Enterprise with non-Blob Function outputs.
+
+***
+
+### retryPolicy?
+
+```ts
+optional retryPolicy: FunctionRetryPolicy;
+```
+
+Override retries of failed user-code calls for this refresh.
+
+***
+
+### rowTimeoutSeconds?
+
+```ts
+optional rowTimeoutSeconds: number;
+```
+
+Deadline for one Function call, in seconds.
+
+***
+
+### supervisorResources?
+
+```ts
+optional supervisorResources: FunctionRefreshPodResources;
+```
+
+CPU, memory, and ephemeral-storage limits for the refresh supervisor.
+
+***
+
+### totalCpuMillis?
+
+```ts
+optional totalCpuMillis: number;
+```
+
+Override the total CPU budget in millicores for this refresh.
+
+***
+
+### totalGpuCount?
+
+```ts
+optional totalGpuCount: number;
+```
+
+Nonnegative total GPU budget for Function workers.
+
+***
+
+### totalMemoryBytes?
+
+```ts
+optional totalMemoryBytes: number;
+```
+
+Override the total memory budget in bytes for this refresh.
+
+***
+
+### where?
+
+```ts
+optional where: string;
+```
+
+Only refresh the rows matching this SQL filter.

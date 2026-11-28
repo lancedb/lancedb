@@ -13,6 +13,13 @@ import {
     PySchemaAddSetup,
 } from '/snippets/tables.mdx';
 
+<Note>
+Declare computed columns on ordinary tables. A materialized view derives its
+schema from its query; include the calculation in the view's `SELECT` instead
+of attaching a Function with `add_columns`. See
+[materialized-view schema changes](/feature-engineering/materialized-views#schema-changes).
+</Note>
+
 Lance can write a new column without rewriting the columns already in the
 table. That matters most on a table that also holds large images, video or
 embeddings, where rewriting everything just to add one small derived field
@@ -60,9 +67,50 @@ columns through `col(...)`, keyed by the output column name. It commits a
 new, empty table version the same way a SQL expression does, so the usual
 [versioning](/management/table#versioning) applies.
 
-Both a Function application and a SQL expression accept the same
-`auto_refresh_enabled` and `auto_refresh_interval_seconds` options, and both
-refresh and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
+Both a Function application and a SQL expression accept
+`auto_refresh_enabled` and `auto_refresh_interval_seconds`, and both refresh
+and toggle the same way; see [Auto Refresh](/enterprise/auto-refresh).
+
+Function declarations can set `total_cpu_millis`,
+`total_memory_bytes`, and `total_gpu_count`. Each optional
+value supplies a default for both manual and automatic refreshes. `gpu_class`
+and `gpu_count` similarly override the Function's per-worker GPU defaults.
+
+<CodeGroup>
+```python Python icon="python"
+table.add_columns(
+    {"caption": version(jpeg=col("jpeg"))},
+    total_cpu_millis=8000,
+    total_memory_bytes=16 * 1024**3,
+    total_gpu_count=4,
+    gpu_class="any",
+    gpu_count=2,
+)
+```
+
+```rust Rust icon="rust"
+use lancedb::table::computed_columns::ComputedColumnOptions;
+
+table
+    .add_columns()
+    .function(function_application)
+    .computed_options(ComputedColumnOptions {
+        total_cpu_millis: Some(8000),
+        total_memory_bytes: Some(16 * 1024_u64.pow(3)),
+        total_gpu_count: Some(4),
+        gpu_class: Some("any".into()),
+        gpu_count: Some(2),
+        ..Default::default()
+    })
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+Refresh values with the same names override these column defaults. Unspecified column
+values inherit the pinned Function's `total_*` settings, then the
+deployment defaults. The GPU budget must fit one Function worker. These
+settings apply to registered Function columns in LanceDB Enterprise.
 
 ## Fill a column with a SQL expression {#expressions}
 
@@ -135,7 +183,7 @@ large enough that you would rather control when the work happens.
 
 Automatic refresh is on by default for each computed column, and takes effect
 when your Enterprise deployment enables its refresh scheduler. Until then,
-call [`refresh_column`](/feature-engineering/refresh-column) yourself. Pass
+call [`refresh_column_async`](/feature-engineering/refresh-column#async) yourself. Pass
 `auto_refresh_enabled=False` to opt a column out, or
 `auto_refresh_interval_seconds` to set how often it refreshes:
 

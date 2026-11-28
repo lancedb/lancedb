@@ -34,6 +34,23 @@ values remain NULL. Children are read-only diagnostic identities.
 following backend continuation pages up to that limit. Child history can be
 `available`, `not_yet_recorded`, or `unavailable` after archival.
 
+{/* Draft for the Enterprise release that provides extended job listing metadata.
+
+```sql
+SHOW JOBS EXTENDED;
+SHOW JOBS EXTENDED FOR TABLE documents;
+```
+
+`EXTENDED` adds `completed_at_millis`, `duration_millis`, `columns`,
+`function_name`, `function_version`, and `failure` to database and table
+listings. Plain `SHOW JOBS` keeps its existing result columns. `columns` is a
+list, Function identity is pinned to the computed column refresh, and
+`failure` is nullable JSON text with phase, message, and retryability. Duration
+is creation-to-completion wall time, including queueing and pauses; it is
+NULL when unfinished or unavailable. `EXTENDED` does not apply to `FOR JOB`.
+
+*/}
+
 <Note>
 A job you completed weeks ago eventually stops appearing here -- it was
 archived, not deleted. Two deployment-scheduled jobs sweep the registry on a
@@ -62,14 +79,19 @@ allowlisted diagnostics; raw parent payloads are excluded.
 
 <CodeGroup>
 ```sql SQL icon="database"
-DESCRIBE JOB '<job_id>' [FORMAT TEXT | TABLE | JSON]
-DESC JOB '<job_id>' [FORMAT TEXT | TABLE | JSON]
+DESCRIBE JOB '<job_id>' [FORMAT TEXT | JSON]
+DESC JOB '<job_id>' [FORMAT TEXT | JSON]
 ```
 </CodeGroup>
 
-Both spellings show a finished root job's timing profile. `TEXT` is the
-default; `TABLE` returns typed phase/step rows and `JSON` returns the
-profile as one document. A running job has no profile rows.
+Both formats return one `description` document with job identity, type, state,
+reported progress, successful result and any timing profile. TEXT is the
+default. JSON keeps nested profile/progress/result values native; a running
+job's result is null. Unknown measurements remain absent or null. Compaction
+progress describes observed work, while its result describes committed work.
+Data prewarm results include the pinned table version and executor work.
+See [DESCRIBE formats](/sql/describe). Detailed retained timelines remain
+available through the REST/SDK export API and are not loaded by DESCRIBE.
 
 ## SHOW ERRORS {#errors}
 
