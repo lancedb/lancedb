@@ -48,8 +48,8 @@ class BTree:
     sizeof(Scalar) * 4096 bytes to find the correct row ids.
 
     This index is good for scalar columns with mostly distinct values and does best
-    when the query is highly selective. It works with numeric, temporal, and string
-    columns.
+    when the query is highly selective. It works with numeric, temporal, string,
+    and binary columns.
 
     The btree index does not currently have any parameters though parameters such as
     the block size may be added in the future.

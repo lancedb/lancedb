@@ -1793,9 +1793,8 @@ impl Table {
     ///
     /// There are a variety of indices available.  They are described more in
     /// [`crate::index::Index`].  The simplest thing to do is to use `index::Index::Auto` which
-    /// will attempt to create the most useful index based on the column type and column
-    /// statistics. `BTree` index is created by default for numeric, temporal, and
-    /// string columns.
+    /// selects `IvfPq` for vector columns and `BTree` for scalar columns supported by Lance's
+    /// BTree index, including numeric, temporal, string, and binary columns.
     ///
     /// Once an index is created it will remain until the data is overwritten (e.g. an
     /// add operation with mode overwrite) or the indexed column is dropped.

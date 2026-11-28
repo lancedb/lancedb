@@ -14,6 +14,11 @@ use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_index::scalar::{
+    InvertedIndexParams, bitmap::BitmapIndexPlugin, btree::BTreeIndexPlugin,
+    fmindex::FMIndexPlugin, inverted::InvertedIndexPlugin, label_list::LabelListIndexPlugin,
+    registry::BasicTrainer, zonemap::ZoneMapIndexPlugin,
+};
 use std::pin::Pin;
 
 use crate::error::{Error, Result};
@@ -533,59 +538,71 @@ pub(crate) fn resolve_arrow_fts_field_path(
 }
 
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
-    dtype.is_integer()
-        || dtype.is_floating()
-        || matches!(
-            dtype,
-            DataType::Boolean
-                | DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Time32(_)
-                | DataType::Time64(_)
-                | DataType::Date32
-                | DataType::Date64
-                | DataType::Timestamp(_, _)
-                | DataType::FixedSizeBinary(_)
-        )
+    supports_btree_field(&Field::new("value", dtype.clone(), true))
 }
 
+/// Whether a ZoneMap index can be trained on `dtype`.
+///
+/// Validation is delegated to the pinned Lance `ZoneMapIndexPlugin` trainer, whose
+/// request only parses params, so every non-`Null` type passes -- including `List`
+/// and `Struct` columns, where the index tracks just the parent null counts. `Null`
+/// is still rejected because these min/max indexes would lose `IS NULL` matches.
 pub fn supported_zonemap_data_type(dtype: &DataType) -> bool {
-    supported_btree_data_type(dtype)
-        || matches!(
-            dtype,
-            DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-        )
+    supports_zonemap_field(&Field::new("value", dtype.clone(), true))
 }
 
 pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
-    dtype.is_integer()
-        || matches!(
-            dtype,
-            DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Binary
-                | DataType::LargeBinary
-                | DataType::Boolean
-        )
+    supports_scalar_index(
+        &BitmapIndexPlugin,
+        &Field::new("value", dtype.clone(), true),
+    )
 }
 
 pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
-    match dtype {
-        DataType::List(field) | DataType::LargeList(field) => {
-            supported_bitmap_data_type(field.data_type())
-        }
-        DataType::FixedSizeList(field, _) => supported_bitmap_data_type(field.data_type()),
-        _ => false,
-    }
+    supports_scalar_index(
+        &LabelListIndexPlugin,
+        &Field::new("value", dtype.clone(), true),
+    )
 }
 
 pub fn supported_fts_data_type(dtype: &DataType) -> bool {
-    supported_fts_data_type_impl(dtype, false)
+    supports_fts_field(&Field::new("value", dtype.clone(), true))
+}
+
+pub(crate) fn supports_btree_field(field: &Field) -> bool {
+    supports_min_max_index(&BTreeIndexPlugin, field)
+}
+
+pub(crate) fn supports_zonemap_field(field: &Field) -> bool {
+    supports_min_max_index(&ZoneMapIndexPlugin, field)
+}
+
+fn supports_min_max_index(plugin: &dyn BasicTrainer, field: &Field) -> bool {
+    // Lance accepts the Null type at training time, but these indexes lose IS NULL matches.
+    !field.data_type().is_null() && supports_scalar_index(plugin, field)
+}
+
+pub(crate) fn supports_scalar_index(plugin: &dyn BasicTrainer, field: &Field) -> bool {
+    plugin.new_training_request("{}", field).is_ok()
+}
+
+fn supports_fts_field(field: &Field) -> bool {
+    if field.data_type().is_binary() && !lance_arrow::json::is_json_field(field) {
+        return false;
+    }
+    // Use Lance's default format explicitly so the client environment cannot affect type validation.
+    let format_version = InvertedIndexParams::default()
+        .resolved_format_version()
+        .index_version();
+    let params = serde_json::json!({ "format_version": format_version });
+    InvertedIndexPlugin
+        .new_training_request(&params.to_string(), field)
+        .is_ok()
 }
 
 /// Validate FTS input without losing the logical type in field metadata.
 pub(crate) fn validate_fts_field(field: &Field) -> Result<()> {
-    if lance_arrow::json::is_json_field(field) || supported_fts_data_type(field.data_type()) {
+    if supports_fts_field(field) {
         return Ok(());
     }
     let logical_type = field
@@ -603,23 +620,10 @@ pub(crate) fn validate_fts_field(field: &Field) -> Result<()> {
     })
 }
 
-fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
-    match (dtype, in_list) {
-        (DataType::Utf8 | DataType::LargeUtf8, _) => true,
-        (DataType::List(field) | DataType::LargeList(field), false) => {
-            supported_fts_data_type_impl(field.data_type(), true)
-        }
-        _ => false,
-    }
-}
-
 /// FM-Index accelerates substring (`contains`) search over raw bytes, so it
 /// applies to string and binary columns.
 pub fn supported_fm_data_type(dtype: &DataType) -> bool {
-    matches!(
-        dtype,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-    )
+    supports_scalar_index(&FMIndexPlugin, &Field::new("value", dtype.clone(), true))
 }
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {
@@ -1159,6 +1163,56 @@ mod tests {
         let string = "int32";
         let expected = DataType::Int32;
         assert_eq!(string_to_datatype(string), Some(expected));
+    }
+
+    #[test]
+    fn test_supported_zonemap_data_type_accepts_every_non_null_type() {
+        // The delegated Lance trainer only parses params, so every non-`Null` type
+        // passes -- including `List` and `Struct` columns, where the index tracks
+        // just the parent null counts.
+        let struct_type = DataType::Struct(vec![Field::new("x", DataType::Int32, true)].into());
+        for dtype in [
+            DataType::Boolean,
+            DataType::Int32,
+            DataType::Float32,
+            DataType::Utf8,
+            DataType::LargeUtf8,
+            DataType::Binary,
+            DataType::LargeBinary,
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+            DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, true))),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 3),
+            struct_type,
+        ] {
+            assert!(supported_zonemap_data_type(&dtype), "{dtype}");
+        }
+        assert!(!supported_zonemap_data_type(&DataType::Null));
+    }
+
+    #[test]
+    fn test_supported_label_list_data_type_rejects_fixed_size_list() {
+        // The delegated Lance trainer accepts `List` / `LargeList` with a non-nested
+        // item type and rejects everything else -- `FixedSizeList`, which the previous
+        // client-side policy allowed, no longer passes.
+        for dtype in [
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, true))),
+        ] {
+            assert!(supported_label_list_data_type(&dtype), "{dtype}");
+        }
+        for dtype in [
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 3),
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::List(Arc::new(Field::new("inner", DataType::Int32, true))),
+                true,
+            ))),
+            DataType::Int32,
+            DataType::Utf8,
+        ] {
+            assert!(!supported_label_list_data_type(&dtype), "{dtype}");
+        }
     }
 
     fn sample_batch(num_rows: i32) -> RecordBatch {
