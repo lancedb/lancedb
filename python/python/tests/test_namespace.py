@@ -2067,3 +2067,89 @@ def test_namespace_fts_count_fast_search(tmp_path):
     query = pushed.search("gripper", query_type="fts").fast_search()
     assert query.count_rows() == 15
     assert len(query.limit(100).to_list()) == 15
+
+
+@pytest.fixture
+def subquery_namespace(tmp_path):
+    properties = {"root": str(tmp_path)}
+    db = lancedb.connect_namespace("dir", properties)
+    path = ["team"]
+    db.create_namespace(path)
+    schema = pa.schema(
+        [
+            ("id", pa.int32()),
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 2)),
+        ]
+    )
+    table = db.create_table(
+        "chunks",
+        [
+            {"id": 1, "text": "alpha alpha", "vector": [0.0, 0.0]},
+            {"id": 2, "text": "alpha", "vector": [1.0, 1.0]},
+        ],
+        schema=schema,
+        namespace_path=path,
+    )
+    table.create_index("text", config=FTS())
+    db.create_table("acl", [{"id": 1}])
+    db.create_table("acl", [{"id": 2}], namespace_path=path)
+    return properties, path
+
+
+@pytest.mark.parametrize("python_dispatch", [False, True])
+def test_subquery_filter_query_table_pushdown(subquery_namespace, python_dispatch):
+    properties, path = subquery_namespace
+    filter_sql = "id IN (SELECT id FROM acl)"
+    for enabled in (False, True):
+        db = lancedb.connect_namespace(
+            "dir",
+            properties,
+            namespace_client_pushdown_operations=["QueryTable"] if enabled else [],
+        )
+        table = db.open_table("chunks", namespace_path=path)
+        client = _NamespaceClient()
+        if python_dispatch:
+            table._route_pushdown_to_rust = False
+            table._namespace_client = client
+            table._table._route_pushdown_to_rust = False
+            table._table._namespace_client = client
+
+        query = table.search([0.0, 0.0]).where(filter_sql).limit(1)
+        assert query.to_arrow()["id"].to_pylist() == [2]
+        assert query.to_batches().read_all()["id"].to_pylist() == [2]
+        assert table.search("alpha", query_type="fts").where(filter_sql).limit(
+            1
+        ).to_arrow()["id"].to_pylist() == [2]
+        assert client.requests == []
+
+
+def test_hybrid_subquery_filter_sync(subquery_namespace):
+    properties, path = subquery_namespace
+    table = lancedb.connect_namespace("dir", properties).open_table(
+        "chunks", namespace_path=path
+    )
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("alpha")
+        .where("id IN (SELECT id FROM acl)")
+        .limit(1)
+        .to_arrow()
+    )
+    assert result["id"].to_pylist() == [2]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_subquery_filter_async(subquery_namespace):
+    properties, path = subquery_namespace
+    db = lancedb.connect_namespace_async("dir", properties)
+    table = await db.open_table("chunks", namespace_path=path)
+    result = await (
+        table.vector_search([0.0, 0.0])
+        .nearest_to_text("alpha")
+        .where("id IN (SELECT id FROM acl)")
+        .limit(1)
+        .to_arrow()
+    )
+    assert result["id"].to_pylist() == [2]

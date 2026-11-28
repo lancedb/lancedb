@@ -1509,6 +1509,23 @@ impl HybridQuery {
     }
 }
 
+/// Share a fresh eligibility plan without changing Python's reranking path.
+#[pyfunction]
+pub fn _share_hybrid_subquery_filter(
+    py: Python<'_>,
+    mut fts: FTSQuery,
+    mut vector: VectorQuery,
+) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        vector
+            .inner
+            .share_subquery_filter_with(&mut fts.inner)
+            .await
+            .infer_error()?;
+        Ok((fts, vector))
+    })
+}
+
 /// Convert a Python FTS query to JSON string
 #[pyfunction]
 pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {

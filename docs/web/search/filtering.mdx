@@ -63,10 +63,24 @@ Enterprise SQL queries, see [SELECT](/sql/dql/select#filtering).
 
 In LanceDB Embedded, use `IN (SELECT ...)` to restrict vector or full-text
 search to keys in another table in the same namespace. Use unqualified table
-names in the subquery. LanceDB computes the matching base-table row IDs while
-planning the search, so `limit(1)` returns the best eligible row.
+names in the subquery. LanceDB computes the matching row IDs before ranking
+candidates, so `limit(1)` returns the best eligible row. When namespace query
+pushdown is enabled, this filter requires the client to have access to the
+table storage.
 
-```typescript
+<CodeGroup>
+```python Python icon="python"
+matches = (
+    chunks.search(query_vector)
+    .where(
+        "document_id IN (SELECT document_id FROM team_documents WHERE team_id = 'Team 1')"
+    )
+    .limit(1)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
 const matches = await chunks
   .vectorSearch(queryVector)
   .where(
@@ -75,6 +89,19 @@ const matches = await chunks
   .limit(1)
   .toArray();
 ```
+
+```rust Rust icon="rust"
+use lancedb::query::{ExecutableQuery, QueryBase};
+
+let matches = chunks
+    .query()
+    .nearest_to(query_vector)?
+    .only_if("document_id IN (SELECT document_id FROM team_documents WHERE team_id = 'Team 1')")
+    .limit(1)
+    .execute()
+    .await?;
+```
+</CodeGroup>
 
 ## Filtering examples by language {#example-metadata-filtering}
 

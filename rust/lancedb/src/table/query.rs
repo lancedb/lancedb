@@ -9,6 +9,8 @@ use std::{
 mod lsm;
 mod subquery_filter;
 
+pub(crate) use subquery_filter::PreparedSubquery;
+
 use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
@@ -124,7 +126,8 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     // RTE read routing lives only in `create_plan`, so a pushed-down query would return
     // stale base-only data. A dropped order_by would return the wrong top-K rows, and a
     // dropped ordered scan would silently stop guaranteeing manifest order.
-    if query.base().use_rte.is_some()
+    if subquery_filter::predicate(query.base().filter.as_ref()).is_some()
+        || query.base().use_rte.is_some()
         || query.base().has_take()
         || query.base().scan_in_order == Some(true)
         || query
@@ -144,6 +147,32 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
         AnyQuery::VectorQuery(vector_query)
             if vector_query.approx_mode.is_some() || vector_query.search_effort.is_some()
     )
+}
+
+/// Returns whether an Embedded SQL filter needs cross-table eligibility resolution.
+#[doc(hidden)]
+pub fn uses_sql_subquery_filter(sql: &str) -> bool {
+    subquery_filter::parse_predicate(sql).is_some()
+}
+
+pub(crate) async fn prepare_hybrid_subquery(
+    table: &NativeTable,
+    query: &QueryRequest,
+) -> Result<Option<Arc<PreparedSubquery>>> {
+    let Some(predicate) = subquery_filter::predicate(query.filter.as_ref()) else {
+        return Ok(None);
+    };
+    query.check_filter()?;
+    let dataset = table.dataset.get().await?;
+    // Let create_plan report the ordinary validation error for an LSM scan.
+    if query.use_rte == Some(true)
+        || (query.use_rte.is_none() && dataset.mem_wal_index_details().await?.is_some())
+    {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(
+        PreparedSubquery::try_new(table, dataset, query, predicate, true).await?,
+    )))
 }
 
 pub async fn analyze_query_plan(
@@ -234,7 +263,10 @@ pub async fn create_plan(
     query.base.check_filter()?;
     query.validate_search_effort()?;
 
-    let ds_ref = table.dataset.get().await?;
+    let ds_ref = match &query.base.prepared_subquery {
+        Some(prepared) => prepared.dataset.clone(),
+        None => table.dataset.get().await?,
+    };
 
     // RTE read routing driven by `use_rte`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
@@ -447,16 +479,25 @@ pub async fn create_plan(
         scanner.fast_search();
     }
 
+    let mut eligibility = query.base.prepared_subquery.clone();
     if let Some(filter) = &query.base.filter {
         match filter {
             QueryFilter::Sql(sql) => {
-                if let Some(predicate) = subquery_filter::predicate(Some(filter)) {
-                    let mask =
-                        subquery_filter::row_mask(table, ds_ref.clone(), &query.base, predicate)
-                            .await?;
-                    scanner.with_row_id_prefilter(mask);
-                } else {
-                    scanner.filter(sql)?;
+                if eligibility.is_none() {
+                    if let Some(predicate) = subquery_filter::predicate(Some(filter)) {
+                        eligibility = Some(Arc::new(
+                            PreparedSubquery::try_new(
+                                table,
+                                ds_ref.clone(),
+                                &query.base,
+                                predicate,
+                                false,
+                            )
+                            .await?,
+                        ));
+                    } else {
+                        scanner.filter(sql)?;
+                    }
                 }
             }
             QueryFilter::Substrait(substrait) => {
@@ -499,6 +540,23 @@ pub async fn create_plan(
         }
     }
 
+    if let Some(eligibility) = eligibility {
+        let preview = create_scanner_plan(&mut scanner, schema, &query).await?;
+        return Ok(Arc::new(subquery_filter::SubqueryPrefilterExec::new(
+            eligibility,
+            scanner,
+            query,
+            preview,
+        )));
+    }
+    create_scanner_plan(&mut scanner, schema, &query).await
+}
+
+async fn create_scanner_plan(
+    scanner: &mut Scanner,
+    schema: &lance_core::datatypes::Schema,
+    query: &VectorQueryRequest,
+) -> Result<Arc<dyn ExecutionPlan>> {
     let mut plan = scanner
         .create_plan()
         .await

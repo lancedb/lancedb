@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
-from ._lancedb import FunctionColumnStatus, _parse_field_path
+from ._lancedb import FunctionColumnStatus, _parse_field_path, _uses_sql_subquery_filter
 from ._blob import (
     BlobFile,
     _normalize_blob_descriptor,
@@ -145,7 +145,8 @@ def _should_push_down_query_table(
 def _requires_local_namespace_execution(query: Query) -> bool:
     # The namespace QueryTable request does not support these query options.
     return (
-        query.take_offsets is not None
+        (isinstance(query.filter, str) and _uses_sql_subquery_filter(query.filter))
+        or query.take_offsets is not None
         or query.take_row_ids is not None
         or query.search_effort is not None
         or query.approx_mode is not None
