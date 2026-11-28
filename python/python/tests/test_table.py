@@ -2340,6 +2340,33 @@ def test_create_ivfrq_index_accelerator(mock_to_lance, mem_db: DBConnection, rq_
         assert kwargs["num_bits"] == rq_kwargs["num_bits"]
 
 
+@patch("lancedb.table.LanceTable.to_lance")
+def test_accelerated_index_rejected_on_checked_out_version(
+    mock_to_lance, mem_db: DBConnection
+):
+    from lancedb.index import IvfPq
+
+    table = mem_db.create_table("test", [{"vector": [1.0] * 8}])
+    table.add([{"vector": [2.0] * 8}])
+    table.checkout(1)
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = True
+    with patch.dict(sys.modules, {"torch": torch}):
+        with pytest.raises(
+            ValueError,
+            match="table cannot be modified when a specific version is checked out",
+        ):
+            table.create_index("vector", config=IvfPq(accelerator="cuda"))
+        with pytest.raises(
+            ValueError,
+            match="table cannot be modified when a specific version is checked out",
+        ):
+            table.create_index("l2", vector_column_name="vector", accelerator="cuda")
+
+    mock_to_lance.return_value.create_index.assert_not_called()
+    assert table.version == 1
+
+
 @pytest.mark.parametrize("method", ["create_index", "create_index_async"])
 @pytest.mark.parametrize("wait_timeout", ["invalid", 1, []])
 def test_create_index_invalid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
@@ -5411,6 +5438,42 @@ def test_compact_cleanup(tmp_db: DBConnection):
 
     with pytest.raises(Exception, match="Version 3 no longer exists"):
         table.checkout(3)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(lambda table: table.compact_files(), id="compact_files"),
+        pytest.param(
+            lambda table: table.cleanup_old_versions(), id="cleanup_old_versions"
+        ),
+        pytest.param(
+            lambda table: table.merge(
+                pa.table({"id": [0, 1, 2], "doc": ["a", "b", "c"]}), left_on="id"
+            ),
+            id="merge",
+        ),
+    ],
+)
+def test_pylance_writes_rejected_on_checked_out_version(tmp_db: DBConnection, write):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table("my_table", data=[{"id": 0}])
+    table.add([{"id": 1}])
+    table.add([{"id": 2}])
+    table.checkout(2)
+
+    with pytest.raises(
+        ValueError,
+        match="table cannot be modified when a specific version is checked out",
+    ):
+        write(table)
+
+    # The handle stays pinned and the latest version is untouched
+    assert table.version == 2
+    assert table.count_rows() == 2
+    latest = tmp_db.open_table("my_table")
+    assert latest.version == 3
+    assert latest.schema.names == ["id"]
 
 
 def test_count_rows(mem_db: DBConnection):
