@@ -42,6 +42,9 @@ Enterprise SQL offers [`INSERT`](/sql/dml/insert), including `INSERT ... SELECT`
 ## Prepare the input {#prepare}
 
 Match the table's schema, including required fields and vector dimensions.
+In Python and Rust, `add()` fails with a cast error if an integer column or
+integer vector receives a float or decimal with a fractional part, such as
+`2.7`; whole values such as `4.0` are accepted.
 Supported input formats differ by SDK; see
 [Create a table](/ingestion/create-table). Inspect conversion errors before
 retrying, and verify the final row count and representative values.

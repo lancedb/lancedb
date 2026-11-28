@@ -3,10 +3,18 @@
 
 use std::sync::{Arc, LazyLock};
 
-use arrow_array::StructArray;
 use arrow_array::cast::AsArray;
+use arrow_array::types::{
+    Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type, Float16Type, Float32Type,
+    Float64Type,
+};
+use arrow_array::{
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, OffsetSizeTrait, StructArray,
+};
+use arrow_buffer::i256;
 use arrow_cast::can_cast_types;
-use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
+use arrow_cast::display::array_value_to_string;
+use arrow_schema::{ArrowError, DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::metadata::FieldMetadata;
@@ -99,11 +107,15 @@ pub(super) fn build_field_exprs(
             // alongside it, because DataFusion derives the projection's output schema from
             // `PhysicalExpr::return_field`.
             let target: FieldRef = Arc::new(target);
-            let expr = Arc::new(CastExpr::new_with_target_field(
-                input_expr,
+            let mut expr: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new_with_target_field(
+                input_expr.clone(),
                 target.clone(),
                 None,
             ));
+            // The cast converts a whole list or map, numbers beside the JSON fields included.
+            if may_drop_fraction(input_field.data_type(), target.data_type()) {
+                expr = reject_fractions(expr, input_expr, target.clone(), config.clone());
+            }
             result.push((expr, target));
             continue;
         }
@@ -210,11 +222,25 @@ pub(super) fn build_field_exprs(
             // Types match: pass through.
             (inp, tbl) if inp == tbl => input_expr,
             // Types differ: cast.
-            // safe: false (the default) means overflow/truncation errors surface at execution time.
-            (_, _) if can_cast_types(input_field.data_type(), table_field.data_type()) => Arc::new(
-                CastExpr::new(input_expr, table_field.data_type().clone(), None),
-            )
-                as Arc<dyn PhysicalExpr>,
+            // safe: false (the default) means overflow errors surface at execution time;
+            // `reject_fractions` does the same for a fractional part the cast would drop.
+            (_, _) if can_cast_types(input_field.data_type(), table_field.data_type()) => {
+                let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+                    input_expr.clone(),
+                    table_field.data_type().clone(),
+                    None,
+                ));
+                if may_drop_fraction(input_field.data_type(), table_field.data_type()) {
+                    let output_field = Field::new(
+                        table_field.name(),
+                        table_field.data_type().clone(),
+                        table_field.is_nullable(),
+                    );
+                    reject_fractions(cast_expr, input_expr, output_field.into(), config.clone())
+                } else {
+                    cast_expr
+                }
+            }
             (inp, tbl) => {
                 return Err(Error::InvalidInput {
                     message: format!(
@@ -313,6 +339,213 @@ impl ScalarUDFImpl for RestoreValidityUdf {
         let restored = StructArray::try_new_with_length(fields, columns, nulls, rows)?;
         Ok(ColumnarValue::Array(Arc::new(restored)))
     }
+}
+
+/// Whether a `from` → `to` cast can drop a fractional part. Arrow casts a float or decimal to an
+/// integer by truncating it toward zero and reports only overflow, so 2.7 would become 2. The walk
+/// follows Arrow's casts: list items, struct fields by name, map keys and values by position, and
+/// dictionary values.
+pub(super) fn may_drop_fraction(from: &DataType, to: &DataType) -> bool {
+    match (from, to) {
+        (DataType::Dictionary(_, from), to) => may_drop_fraction(from, to),
+        (from, DataType::Dictionary(_, to)) => may_drop_fraction(from, to),
+        (
+            DataType::List(from) | DataType::LargeList(from) | DataType::FixedSizeList(from, _),
+            DataType::List(to) | DataType::LargeList(to) | DataType::FixedSizeList(to, _),
+        ) => may_drop_fraction(from.data_type(), to.data_type()),
+        (DataType::Struct(from), DataType::Struct(to)) => to.iter().any(|to| {
+            from.find(to.name())
+                .is_some_and(|(_, from)| may_drop_fraction(from.data_type(), to.data_type()))
+        }),
+        (DataType::Map(from, _), DataType::Map(to, _)) => {
+            match (from.data_type(), to.data_type()) {
+                (DataType::Struct(from), DataType::Struct(to)) => from
+                    .iter()
+                    .zip(to.iter())
+                    .any(|(from, to)| may_drop_fraction(from.data_type(), to.data_type())),
+                _ => false,
+            }
+        }
+        _ => (from.is_floating() || from.is_decimal()) && to.is_integer(),
+    }
+}
+
+// Wraps a cast that `may_drop_fraction`, so that a fractional value fails the write the way an
+// overflowing one does instead of being stored truncated. `output_field` is the cast's.
+pub(super) fn reject_fractions(
+    cast_expr: Arc<dyn PhysicalExpr>,
+    input_expr: Arc<dyn PhysicalExpr>,
+    output_field: FieldRef,
+    config: Arc<ConfigOptions>,
+) -> Arc<dyn PhysicalExpr> {
+    Arc::new(ScalarFunctionExpr::new(
+        &format!("reject_fractions({})", output_field.name()),
+        REJECT_FRACTIONS_UDF.clone(),
+        vec![cast_expr, input_expr],
+        output_field,
+        config,
+    ))
+}
+
+static REJECT_FRACTIONS_UDF: LazyLock<Arc<datafusion_expr::ScalarUDF>> =
+    LazyLock::new(|| Arc::new(datafusion_expr::ScalarUDF::from(RejectFractionsUdf::new())));
+
+/// Returns its first argument, the cast of its second, unless the second holds a value that is
+/// not a whole number.
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct RejectFractionsUdf {
+    signature: Signature,
+}
+
+impl RejectFractionsUdf {
+    fn new() -> Self {
+        Self {
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for RejectFractionsUdf {
+    fn name(&self) -> &str {
+        "reject_fractions"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(arg_types[0].clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let input = args.args[1].to_array(args.number_rows)?;
+        if let Some((value, to)) = first_fraction(input.as_ref(), args.return_type())? {
+            return Err(ArrowError::CastError(format!(
+                "Can't cast value {value} in column '{}' to {to} without losing its fractional part",
+                args.return_field.name(),
+            ))
+            .into());
+        }
+        Ok(args.args[0].clone())
+    }
+}
+
+/// The first value in `array` that a cast to `to` would truncate, with the integer type it was
+/// bound for. Walks the types like `may_drop_fraction`, reads the values in place, and skips list
+/// child values outside the array's offsets, which belong to no row.
+fn first_fraction(
+    array: &dyn Array,
+    to: &DataType,
+) -> std::result::Result<Option<(String, DataType)>, ArrowError> {
+    if let DataType::Dictionary(_, to) = to {
+        return first_fraction(array, to);
+    }
+    if let Some(dictionary) = array.as_any_dictionary_opt() {
+        let values = dictionary.values().as_ref();
+        // A value no key points at is not written, so recheck a hit against the used values.
+        if first_fraction(values, to)?.is_none() {
+            return Ok(None);
+        }
+        let used = arrow_select::take::take(values, dictionary.keys(), None)?;
+        return first_fraction(used.as_ref(), to);
+    }
+    let found = match (array.data_type(), to) {
+        (
+            DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..),
+            DataType::List(to) | DataType::LargeList(to) | DataType::FixedSizeList(to, _),
+        ) => return first_fraction(list_items(array).as_ref(), to.data_type()),
+        (DataType::Struct(_), DataType::Struct(fields)) => {
+            let array = array.as_struct();
+            for field in fields {
+                if let Some(column) = array.column_by_name(field.name())
+                    && let Some(found) = first_fraction(column.as_ref(), field.data_type())?
+                {
+                    return Ok(Some(found));
+                }
+            }
+            return Ok(None);
+        }
+        (DataType::Map(..), DataType::Map(entries, _)) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                return Ok(None);
+            };
+            let map = array.as_map();
+            let (start, len) = item_range(map.value_offsets());
+            for (column, field) in [map.keys(), map.values()].into_iter().zip(fields.iter()) {
+                let column = column.slice(start, len);
+                if let Some(found) = first_fraction(column.as_ref(), field.data_type())? {
+                    return Ok(Some(found));
+                }
+            }
+            return Ok(None);
+        }
+        (_, to) if !to.is_integer() => None,
+        (DataType::Float16, _) => position::<Float16Type>(array, |v| v.to_f32().fract() != 0.0),
+        (DataType::Float32, _) => position::<Float32Type>(array, |v| v.fract() != 0.0),
+        (DataType::Float64, _) => position::<Float64Type>(array, |v| v.fract() != 0.0),
+        (DataType::Decimal32(_, scale), _) => decimal_position::<Decimal32Type>(array, *scale, 10),
+        (DataType::Decimal64(_, scale), _) => decimal_position::<Decimal64Type>(array, *scale, 10),
+        (DataType::Decimal128(_, scale), _) => {
+            decimal_position::<Decimal128Type>(array, *scale, 10)
+        }
+        (DataType::Decimal256(_, scale), _) => {
+            decimal_position::<Decimal256Type>(array, *scale, i256::from_i128(10))
+        }
+        _ => None,
+    };
+    found
+        .map(|i| Ok((array_value_to_string(array, i)?, to.clone())))
+        .transpose()
+}
+
+// The child values of a list array's rows.
+fn list_items(array: &dyn Array) -> ArrayRef {
+    fn items<O: OffsetSizeTrait>(array: &dyn Array) -> ArrayRef {
+        let list = array.as_list::<O>();
+        let (start, len) = item_range(list.value_offsets());
+        list.values().slice(start, len)
+    }
+    match array.data_type() {
+        DataType::List(_) => items::<i32>(array),
+        DataType::LargeList(_) => items::<i64>(array),
+        // Slicing a fixed-size list slices its values.
+        _ => array.as_fixed_size_list().values().clone(),
+    }
+}
+
+fn item_range<O: OffsetSizeTrait>(offsets: &[O]) -> (usize, usize) {
+    let start = offsets[0].as_usize();
+    (start, offsets[offsets.len() - 1].as_usize() - start)
+}
+
+// The index of the first valid value that `is_fraction` holds for.
+fn position<T: ArrowPrimitiveType>(
+    array: &dyn Array,
+    is_fraction: impl Fn(T::Native) -> bool,
+) -> Option<usize> {
+    let array = array.as_primitive::<T>();
+    let values = array.values();
+    match array.nulls() {
+        None => values.iter().position(|v| is_fraction(*v)),
+        Some(nulls) => (0..values.len()).find(|&i| nulls.is_valid(i) && is_fraction(values[i])),
+    }
+}
+
+fn decimal_position<T: ArrowPrimitiveType>(
+    array: &dyn Array,
+    scale: i8,
+    ten: T::Native,
+) -> Option<usize> {
+    if scale <= 0 {
+        return None;
+    }
+    // When 10^scale does not fit the type, every value is smaller than one unit.
+    let unit = ten.pow_checked(scale as u32).ok();
+    position::<T>(array, |v| match unit {
+        Some(unit) => !v.mod_wrapping(unit).is_zero(),
+        None => !v.is_zero(),
+    })
 }
 
 // The storage type arrow.json would use for `input`, or None if it cannot hold JSON text.
@@ -441,9 +674,11 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::buffer::OffsetBuffer;
+    use arrow_array::types::{Float32Type, Float64Type, Int32Type};
     use arrow_array::{
-        Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch,
-        StringArray, StructArray, UInt32Array, UInt64Array,
+        Array, ArrayRef, Decimal128Array, DictionaryArray, FixedSizeListArray, Float32Array,
+        Float64Array, Int32Array, Int64Array, ListArray, MapArray, RecordBatch, StringArray,
+        StructArray, UInt32Array, UInt64Array, new_empty_array,
     };
     use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::prelude::SessionContext;
@@ -823,6 +1058,254 @@ mod tests {
         let stream = casted.execute(0, ctx.task_ctx()).unwrap();
         let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
         assert!(result.is_err(), "expected overflow error at execution time");
+    }
+
+    fn batch_of(column: ArrayRef) -> RecordBatch {
+        let field = Field::new("a", column.data_type().clone(), true);
+        RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![column]).unwrap()
+    }
+
+    fn f64s(values: &[f64]) -> ArrayRef {
+        Arc::new(Float64Array::from(values.to_vec()))
+    }
+
+    fn i32s(values: &[i32]) -> ArrayRef {
+        Arc::new(Int32Array::from(values.to_vec()))
+    }
+
+    fn struct_of(fields: Vec<(&str, ArrayRef)>) -> StructArray {
+        StructArray::from(
+            fields
+                .into_iter()
+                .map(|(name, values)| {
+                    let field = Field::new(name, values.data_type().clone(), true);
+                    (Arc::new(field), values)
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    // One row holding every item.
+    fn list_of(items: StructArray) -> ArrayRef {
+        let field = Arc::new(Field::new_list_field(items.data_type().clone(), true));
+        let offsets = OffsetBuffer::from_lengths([items.len()]);
+        Arc::new(ListArray::new(field, offsets, Arc::new(items), None))
+    }
+
+    fn fixed_size_list_of(items: StructArray) -> ArrayRef {
+        let field = Arc::new(Field::new_list_field(items.data_type().clone(), true));
+        let size = items.len() as i32;
+        Arc::new(FixedSizeListArray::new(field, size, Arc::new(items), None))
+    }
+
+    // One row mapping "k" to each value.
+    fn map_of(values: ArrayRef) -> ArrayRef {
+        let keys: ArrayRef = Arc::new(StringArray::from(vec!["k"; values.len()]));
+        let entries = StructArray::from(vec![
+            (Arc::new(Field::new("key", DataType::Utf8, false)), keys),
+            (
+                Arc::new(Field::new("value", values.data_type().clone(), true)),
+                values,
+            ),
+        ]);
+        let field = Arc::new(Field::new("entries", entries.data_type().clone(), false));
+        let offsets = OffsetBuffer::from_lengths([entries.len()]);
+        Arc::new(MapArray::new(field, offsets, entries, None, false))
+    }
+
+    fn dictionary_of(keys: Vec<i32>, values: ArrayRef) -> ArrayRef {
+        let keys = Int32Array::from(keys);
+        Arc::new(DictionaryArray::<Int32Type>::try_new(keys, values).unwrap())
+    }
+
+    // Order lines: a JSON payload beside each quantity.
+    fn order_items(quantities: &[f64]) -> StructArray {
+        let payloads = StringArray::from(vec![r#"{"sku": "a-1"}"#; quantities.len()]);
+        struct_of(vec![
+            ("payload", Arc::new(payloads) as ArrayRef),
+            ("quantity", f64s(quantities)),
+        ])
+    }
+
+    // The table type for `order_items`, with a lance.json payload.
+    fn order_item_type() -> DataType {
+        DataType::Struct(
+            vec![
+                lance_arrow::json::json_field("payload", true),
+                Field::new("quantity", DataType::Int32, true),
+            ]
+            .into(),
+        )
+    }
+
+    // Arrow casts a float or decimal to an integer by truncating it toward zero and reports
+    // only overflow, so without a check 2.7 would be written as 2.
+    #[rstest::rstest]
+    #[case::float_to_int(
+        Arc::new(Float64Array::from(vec![Some(4.0), None, Some(2.7)])) as ArrayRef,
+        DataType::Int32,
+        "2.7"
+    )]
+    #[case::float_vector_to_uint8_vector(
+        Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vec![Some(vec![Some(1.0), Some(2.0)]), Some(vec![Some(0.5), Some(1.75)])],
+            2,
+        )) as ArrayRef,
+        DataType::new_fixed_size_list(DataType::UInt8, 2, true),
+        "0.5"
+    )]
+    #[case::decimal_to_int(
+        Arc::new(
+            Decimal128Array::from(vec![200, 275])
+                .with_precision_and_scale(5, 2)
+                .unwrap(),
+        ) as ArrayRef,
+        DataType::Int64,
+        "2.75"
+    )]
+    #[case::struct_field_in_list(
+        list_of(struct_of(vec![("q", f64s(&[2.7])), ("f", f64s(&[0.5]))])),
+        list_of(struct_of(vec![("q", i32s(&[0])), ("f", f64s(&[0.0]))])).data_type().clone(),
+        "2.7"
+    )]
+    #[case::struct_field_in_fixed_size_list(
+        fixed_size_list_of(struct_of(vec![("q", f64s(&[2.7]))])),
+        fixed_size_list_of(struct_of(vec![("q", i32s(&[0]))])).data_type().clone(),
+        "2.7"
+    )]
+    #[case::map_value(map_of(f64s(&[2.7])), map_of(i32s(&[0])).data_type().clone(), "2.7")]
+    #[case::dictionary(dictionary_of(vec![0], f64s(&[2.7])), DataType::Int32, "2.7")]
+    // A null row's child values are checked too, as Arrow's cast checks them for overflow.
+    #[case::fraction_under_null_fixed_size_list_row(
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new_list_field(DataType::Float64, true)),
+            2,
+            f64s(&[0.5, 0.5, 1.0, 2.0]),
+            Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+        )) as ArrayRef,
+        DataType::new_fixed_size_list(DataType::UInt8, 2, true),
+        "0.5"
+    )]
+    #[case::fraction_under_null_list_row(
+        Arc::new(ListArray::new(
+            Arc::new(Field::new_list_field(DataType::Float64, true)),
+            OffsetBuffer::from_lengths([1, 2]),
+            f64s(&[0.5, 1.0, 2.0]),
+            Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+        )) as ArrayRef,
+        DataType::new_list(DataType::Int32, true),
+        "0.5"
+    )]
+    // Labelling a JSON field casts its whole list or map, numbers beside it included.
+    #[case::json_sibling_in_list(
+        list_of(order_items(&[4.0, 2.7])),
+        DataType::new_list(order_item_type(), true),
+        "2.7"
+    )]
+    #[case::json_sibling_in_fixed_size_list(
+        fixed_size_list_of(order_items(&[2.7])),
+        DataType::new_fixed_size_list(order_item_type(), 1, true),
+        "2.7"
+    )]
+    #[case::json_sibling_in_map_value(
+        map_of(Arc::new(order_items(&[2.7]))),
+        map_of(new_empty_array(&order_item_type())).data_type().clone(),
+        "2.7"
+    )]
+    #[case::json_sibling_in_list_in_struct(
+        Arc::new(struct_of(vec![("items", list_of(order_items(&[2.7])))])) as ArrayRef,
+        DataType::Struct(
+            vec![Field::new("items", DataType::new_list(order_item_type(), true), true)].into()
+        ),
+        "2.7"
+    )]
+    #[tokio::test]
+    async fn test_cast_dropping_fraction_errors(
+        #[case] input: ArrayRef,
+        #[case] table_type: DataType,
+        #[case] value: &str,
+    ) {
+        let plan = plan_from_batch(batch_of(input)).await;
+        let table_schema = Schema::new(vec![Field::new("a", table_type, true)]);
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let ctx = SessionContext::new();
+        let stream = casted.execute(0, ctx.task_ctx()).unwrap();
+        let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
+        let err = result.expect_err("expected a truncation error").to_string();
+        assert!(err.contains(value), "unexpected error: {err}");
+    }
+
+    // Whole values cast exactly as Arrow casts them.
+    #[rstest::rstest]
+    #[case::whole_floats(
+        Arc::new(Float64Array::from(vec![Some(4.0), Some(-0.0), None])) as ArrayRef,
+        DataType::Int32
+    )]
+    #[case::whole_vectors(
+        Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vec![Some(vec![Some(1.0), Some(255.0)]), None, Some(vec![Some(0.0), None])],
+            2,
+        )) as ArrayRef,
+        DataType::new_fixed_size_list(DataType::UInt8, 2, true)
+    )]
+    // The slice leaves out the row holding 0.5, though its child values still do.
+    #[case::sliced_list(
+        Arc::new(
+            ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                Some(vec![Some(0.5)]),
+                Some(vec![Some(1.0), Some(2.0)]),
+            ])
+            .slice(1, 1),
+        ) as ArrayRef,
+        DataType::new_list(DataType::Int32, true)
+    )]
+    #[case::double_beside_int_in_list_struct(
+        list_of(struct_of(vec![("q", f64s(&[2.0])), ("f", f64s(&[0.5]))])),
+        list_of(struct_of(vec![("q", i32s(&[0])), ("f", f64s(&[0.0]))])).data_type().clone()
+    )]
+    // No key points at the 2.7.
+    #[case::unused_dictionary_value(dictionary_of(vec![1], f64s(&[2.7, 3.0])), DataType::Int32)]
+    #[tokio::test]
+    async fn test_cast_whole_values(#[case] input: ArrayRef, #[case] table_type: DataType) {
+        let expected = arrow_cast::cast(input.as_ref(), &table_type).unwrap();
+        let plan = plan_from_batch(batch_of(input)).await;
+        let table_schema = Schema::new(vec![Field::new("a", table_type, true)]);
+        let result = collect(cast_to_table_schema(plan, &table_schema).unwrap()).await;
+        assert_eq!(result.column(0).as_ref(), expected.as_ref());
+    }
+
+    // Checking the numbers beside a JSON field keeps the arrow.json label the cast gives it.
+    #[tokio::test]
+    async fn test_json_sibling_whole_values_keep_json_label() {
+        use arrow_array::cast::AsArray;
+        use lance_arrow::json::is_arrow_json_field;
+
+        let input = batch_of(list_of(order_items(&[4.0, 2.0])));
+        let input_field = input.schema().field(0).clone();
+        let table_field = Field::new("a", DataType::new_list(order_item_type(), true), true);
+        let table_schema = Schema::new(vec![table_field.clone()]);
+        let projected = cast_to_table_schema(plan_from_batch(input).await, &table_schema).unwrap();
+
+        let out_field = projected.schema().field(0).clone();
+        assert_eq!(
+            Some(out_field.clone()),
+            super::json_write_target(&input_field, &table_field)
+        );
+        let DataType::List(item) = out_field.data_type() else {
+            panic!("expected a list, got {}", out_field.data_type());
+        };
+        let DataType::Struct(children) = item.data_type() else {
+            panic!("expected a struct, got {}", item.data_type());
+        };
+        assert!(is_arrow_json_field(&children[0]), "{:?}", children[0]);
+
+        let result = collect(projected).await;
+        let items = result.column(0).as_list::<i32>().values().as_struct();
+        let quantities = items.column(1).as_primitive::<Int32Type>();
+        assert_eq!(quantities.values(), &[4, 2]);
+        let payloads = items.column(0).as_string::<i32>();
+        assert_eq!(payloads.value(0), r#"{"sku": "a-1"}"#);
     }
 
     #[tokio::test]
