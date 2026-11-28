@@ -93,7 +93,7 @@ def _normalize_gpu_request(
     if gpu_class is not None:
         gpu_class = _validate_gpu_class_name(gpu_class)
     if gpu_count is None:
-        gpu_count = 1
+        return True, gpu_class, None
     if isinstance(gpu_count, bool) or not isinstance(gpu_count, int):
         raise ValueError("gpu_count must be a positive integer")
     if not 1 <= gpu_count <= 2**32 - 1:
@@ -4046,10 +4046,11 @@ def function(
         any eligible configured GPU class. Use ``"default"`` to select the
         deployment's default pool explicitly.
     gpu_count : int, optional
-        Default GPUs allocated together to each Function worker. Requires ``gpu=True``
-        and defaults to one. Column/MV creation and refresh can override it.
-        Must be a positive integer. Refresh
-        ``total_gpu_count`` limits the total GPUs across the worker fleet.
+        GPUs allocated together to each Function worker. Requires ``gpu=True``
+        and must be a positive integer. When omitted, the registration request
+        leaves the count unset and the server defaults to one. Column/MV
+        creation and refresh can override it. Refresh ``total_gpu_count`` limits
+        the total GPUs across the worker fleet.
     total_cpu_millis : int, optional
         Default total CPU budget for an execution, in millicores (1000 = one
         core). A column/MV declaration or refresh may override this value.
