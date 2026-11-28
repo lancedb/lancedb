@@ -27,6 +27,39 @@ is small (i.e., less than a few hundreds).
 
 ***
 
+### bloomFilter()
+
+```ts
+static bloomFilter(options?): Index
+```
+
+Create a Bloom filter index.
+
+Bloom filters accelerate equality and membership filters by skipping groups
+of rows that cannot match. Candidate rows are checked to remove false
+positives. This index uses less space than a btree or bitmap index, but does
+not accelerate range filters. Unset options use Lance's defaults.
+
+#### Parameters
+
+* **options?**: [`BloomFilterOptions`](../interfaces/BloomFilterOptions.md)
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Example
+
+Tuning a Bloom filter on an Embedded table:
+
+```ts
+await table.createIndex("id", {
+  config: Index.bloomFilter({ numberOfItems: 4096, probability: 0.01 }),
+});
+```
+
+***
+
 ### btree()
 
 ```ts
@@ -348,4 +381,39 @@ await table
   .query()
   .where("ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))")
   .toArray();
+```
+
+***
+
+### zoneMap()
+
+```ts
+static zoneMap(): Index
+```
+
+Create a ZoneMap index.
+
+This index stores min/max summaries for ranges of rows and skips ranges that
+cannot match a filter. It works best for numeric or temporal columns whose
+values are correlated with row order, such as timestamps or sequential IDs.
+
+For strings, binary data, and supported types wider than eight bytes, this
+index uses per-fragment write seeds. By default, these use version 0 and do
+not activate the version 1 table capability.
+
+A commit that explicitly sets the table configuration key
+`lance.zone_write_seeds.version` to `"1"` activates a persistent reader and
+writer capability. Upgrade all readers and writers before opting in: clients
+that do not support this capability cannot access the resulting snapshots.
+Dropping the index or restoring an older version does not remove the
+capability from subsequent snapshots.
+
+#### Returns
+
+[`Index`](Index.md)
+
+#### Example
+
+```ts
+await table.createIndex("timestamp", { config: Index.zoneMap() });
 ```

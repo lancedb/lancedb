@@ -65,6 +65,7 @@
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
 - [BlobDescriptor](interfaces/BlobDescriptor.md)
 - [BlobDescriptorSource](interfaces/BlobDescriptorSource.md)
+- [BloomFilterOptions](interfaces/BloomFilterOptions.md)
 - [BranchColumnChange](interfaces/BranchColumnChange.md)
 - [BranchColumnSummary](interfaces/BranchColumnSummary.md)
 - [BranchDiff](interfaces/BranchDiff.md)

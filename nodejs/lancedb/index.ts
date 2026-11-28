@@ -178,6 +178,7 @@ export {
   IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
+  BloomFilterOptions,
   FtsOptions,
   RTreeOptions,
   BaseTokenizer,
