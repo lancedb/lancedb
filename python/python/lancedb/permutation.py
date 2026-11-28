@@ -1324,9 +1324,8 @@ class Permutation:
             except StopAsyncIteration:
                 return
 
-        for batch in _rebatch(reader_batches(), batch_size):
-            if batch.num_rows == batch_size or not skip_last_batch:
-                yield self.transform_fn(batch)
+        for batch in _rebatch(reader_batches(), batch_size, skip_last_batch):
+            yield self.transform_fn(batch)
 
     def with_format(
         self,
@@ -1645,12 +1644,14 @@ class Permutation:
 
 
 def _rebatch(
-    batches: Iterator[pa.RecordBatch], batch_size: int
+    batches: Iterator[pa.RecordBatch], batch_size: int, skip_last_batch: bool = False
 ) -> Iterator[pa.RecordBatch]:
     """Regroup batches so every batch except the last has batch_size rows.
 
     The permutation reader only bounds batches by batch_size; a filtered
-    split read can yield short batches before the end of the stream.
+    split read can yield short batches before the end of the stream. With
+    skip_last_batch, a final batch shorter than batch_size is dropped
+    without being built.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than 0")
@@ -1674,7 +1675,7 @@ def _rebatch(
         rest = table.slice(offset)
         pending = rest.to_batches() if rest.num_rows else []
         pending_rows = rest.num_rows
-    if pending_rows:
+    if pending_rows and not skip_last_batch:
         yield _single_batch(pa.Table.from_batches(pending))
 
 

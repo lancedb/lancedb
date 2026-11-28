@@ -2197,3 +2197,54 @@ def test_single_batch_rejects_multi_chunk_combine():
 
     with pytest.raises(ValueError, match="smaller batch_size"):
         _single_batch(Table())
+
+
+def test_rebatch_skip_last_batch_does_not_build_the_tail(monkeypatch):
+    """A short final batch that will be skipped is never passed to _single_batch."""
+    import lancedb.permutation as permutation
+
+    built = []
+    single_batch = permutation._single_batch
+
+    def spy(table):
+        built.append(table.num_rows)
+        return single_batch(table)
+
+    monkeypatch.setattr(permutation, "_single_batch", spy)
+
+    def make(start, n):
+        return pa.record_batch({"id": pa.array(range(start, start + n), pa.int64())})
+
+    out = list(permutation._rebatch(iter([make(0, 1), make(1, 1)]), 3, True))
+    assert out == []
+    assert built == []
+
+    # Short batches before the end still combine; only the tail is dropped.
+    batches = [make(0, 1), make(1, 2), make(3, 1)]
+    out = list(permutation._rebatch(iter(batches), 3, True))
+    assert [b.column("id").to_pylist() for b in out] == [[0, 1, 2]]
+    assert built == [3]
+
+    built.clear()
+    out = list(permutation._rebatch(iter(batches), 3))
+    assert [b.column("id").to_pylist() for b in out] == [[0, 1, 2], [3]]
+    assert built == [3, 1]
+
+
+def test_iter_skip_last_batch_does_not_build_the_tail(
+    some_permutation: Permutation, monkeypatch
+):
+    import lancedb.permutation as permutation
+
+    built = []
+    single_batch = permutation._single_batch
+
+    def spy(table):
+        built.append(table.num_rows)
+        return single_batch(table)
+
+    monkeypatch.setattr(permutation, "_single_batch", spy)
+
+    assert list(some_permutation.iter(1000, skip_last_batch=True)) == []
+    assert built == []
+    assert len(list(some_permutation.iter(1000, skip_last_batch=False))) == 1
